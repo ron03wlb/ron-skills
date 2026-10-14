@@ -16,12 +16,21 @@ Matt's skills stay as published. When a Matt step and the adapter disagree, the 
 
 ## Steps
 
-0. **Gate.** Read the adapter, then each Issue with its comments. An Issue passes when its state is the adapter's ready state, the adapter's preflight exits 0, and each blocker is merged or is another Issue in this run. Done when every Issue passed or is reported with what it lacks; a failing Issue goes back to the human with the entry that fixes it (`/triage`, `/to-spec`, or the adapter's refine command), never run by you.
-1. **Graph.** Build the **task graph**: each passing Issue (or each child of a passing parent) is a ticket; edges come from the tracker's blocking relations. Write the checkpoint where the adapter says, in its format. Done when every ticket has its blockers, its focused tests, and its worktree recorded.
+0. **Gate.** Read the adapter, then each Issue with its comments. An Issue passes when its state is the adapter's ready state, the adapter's preflight exits 0, and each blocker is merged or is another Issue in this run; a preflight failure caused only by an open gated ticket in this run counts as such a blocker. Done when every Issue passed or is reported with what it lacks; a failing Issue goes back to the human with the entry that fixes it (`/triage`, `/to-spec`, or the adapter's refine command), never run by you.
+1. **Graph.** Build the **task graph**: each passing Issue (or each child of a passing parent) is a ticket, marked code or gated per the adapter; edges come from the tracker's blocking relations. Write the checkpoint where the adapter says, in its format. Done when every ticket has its kind, its blockers, its focused tests or handoff state, and its worktree recorded.
 2. **Claim.** Run the adapter's claim command per ticket as it reaches the **frontier**. Done when each claimed ticket shows the in-progress state.
-3. **Build.** One ticket → follow `implement`; several → follow `implement-spec`. Replace their worktree, branch, verification, review, and closing steps with the adapter's. Review loops are bounded: after two fix → re-review cycles, remaining findings become a stop. Done when every ticket is merged into the run's branch and the adapter's checks pass on it, each with its command and exit code.
-4. **Candidate.** Produce the candidate the adapter defines and run its acceptance pinned to the candidate's full SHA. Done when acceptance has a terminal result on that SHA.
-5. **Report.** Post evidence where the adapter says, then report in the user's language: candidate SHA, commands with exit codes, review findings per axis (kept separate), unexecuted checks listed as unfinished, Matt overrides used, and the human's next actions (push, close). Done when nothing remains for you to run.
+3. **Build.** Gated tickets first, as in [Gated tickets](#gated-tickets). Code tickets: one → follow `implement`; several → follow `implement-spec`. Replace their worktree, branch, verification, review, and closing steps with the adapter's. Review loops are bounded: after two fix → re-review cycles, remaining findings become a stop. Done when every code ticket on the frontier is merged into the run's branch and the adapter's checks pass on it, each with its command and exit code, and every other ticket is `handoff`, `waiting`, or stopped.
+4. **Candidate.** Produce the candidate the adapter defines and run its acceptance pinned to the candidate's full SHA. Skip this step when no code ticket merged. Done when acceptance has a terminal result on that SHA.
+5. **Report.** Post evidence where the adapter says, then report in the user's language: candidate SHA, commands with exit codes, review findings per axis (kept separate), unexecuted checks listed as unfinished, Matt overrides used, the human's next actions (push, close), and per gated ticket its handoff evidence, the human's execution steps, and the tickets waiting on it. Done when nothing remains for you to run.
+
+## Gated tickets
+
+A **gated ticket** delivers an artifact only the human may execute against a shared target, such as a schema migration or a data repair; the adapter defines which tickets are gated and their procedure.
+
+- Run the adapter's gated procedure in the ticket's own worktree up to its **handoff** state, then post its evidence. You prepare and validate offline; executing the artifact, reading back from the target, and closing the ticket belong to the human.
+- A ticket blocked by a gated ticket is `waiting`, not stopped: keep every independent ticket moving. A run whose remaining tickets are all `waiting` ends at step 5.
+- Rerunning `/issue-run` with the same refs resumes: once the human has closed a gated ticket under the adapter's closing gate, its dependents pass step 0 and continue.
+- **Discovery**: when a code ticket turns out to need a gated artifact, follow the adapter's discovery rule (by default, suspend that ticket and everything it blocks, keep its changes, and stop with the missing artifact named). Splitting out the gated ticket stays with the human.
 
 ## Stops
 
@@ -37,4 +46,4 @@ Pause only for these; on one, stop that ticket and the tickets it blocks, keep t
 
 ## Resume
 
-After compaction or a hand-off, resume from the checkpoint. Read a ticket's branch and worktree before redispatching anything past `pending`.
+After compaction or a hand-off, resume from the checkpoint. Read a ticket's branch and worktree before redispatching anything past `pending`; re-read a gated ticket's tracker state before treating its dependents as still `waiting`.

@@ -42,6 +42,11 @@ Default: the run's branch tip; acceptance is the full suite on that SHA.
 Where evidence is posted, and the human's next actions.
 Default: a comment on each Issue; the human pushes and closes.
 
+## Gated tickets
+
+How to recognise a gated ticket (a body marker, a label), its procedure up to the handoff state, where its evidence goes, the human's execution and closing steps, and the discovery rule when a code ticket turns out to need one.
+Default: no gated tickets; any need for one found mid-run is a stop.
+
 ## Stops
 
 Repo-specific stop conditions on top of the skill's.
