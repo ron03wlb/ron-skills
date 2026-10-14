@@ -32,3 +32,7 @@ in-progress/writing-beats
 productivity/writing-for-agents
 in-progress/writing-fragments
 in-progress/writing-shape
+-misc/git-guardrails-claude-code
+-misc/migrate-to-shoehorn
+-misc/scaffold-exercises
+-misc/setup-pre-commit

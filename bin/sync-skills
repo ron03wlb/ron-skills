@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 重建 skill 連結：Matt 原版（唯讀）＋ overlays/ 補丁＋本 repo 自有 skills。
-# 用法：bin/sync-skills [--check]
+# 用法：bin/sync-skills [--check | --list]
 #   --check  只檢查 overlay 能否套用在目前的 Matt checkout，不改任何連結。
+#   --list   列出目前可用的 skill：user/model、名稱、來源（含目前目錄的 .claude/skills 專案 skill）。
 # 環境變數：MATT_SKILLS（預設 ~/code/skills）、SKILL_DIRS（預設 ~/.claude/skills 與 ~/.agents/skills）
 set -euo pipefail
 
@@ -12,6 +13,20 @@ read -r -a DESTS <<< "${SKILL_DIRS:-$HOME/.claude/skills $HOME/.agents/skills}"
 CHECK=0
 [[ ${1:-} == --check ]] && CHECK=1
 
+if [[ ${1:-} == --list ]]; then
+  for dir in "${DESTS[0]}"/*/ "$PWD"/.claude/skills/*/; do
+    [[ -f $dir/SKILL.md ]] || continue
+    real=$(readlink -f "$dir")
+    case $real in
+      "$BUILD"/*) src=overlay;; "$MATT"/*) src=matt;; "$ROOT"/*) src=ron-skills;;
+      "$PWD"/.claude/*) src=project;; *) src=other;;
+    esac
+    kind=model; grep -q '^disable-model-invocation: true' "$dir/SKILL.md" && kind=user
+    printf '%s\t%s\t%s\n' "$kind" "$(basename "$dir")" "$src"
+  done | sort -u
+  exit 0
+fi
+
 branch=$(git -C "$MATT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "非 git 目錄")
 if [[ $branch != main ]] || [[ -n $(git -C "$MATT" status --porcelain -- skills) ]]; then
   echo "WARN Matt checkout 不是乾淨的 main（$branch）；overlay 會套在目前內容上" >&2
@@ -20,8 +35,11 @@ fi
 declare -A target
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 failed=0
+declare -A listed
 while read -r rel; do
   [[ -z $rel || $rel == \#* ]] && continue
+  listed[${rel#-}]=1
+  [[ $rel == -* ]] && continue
   name=$(basename "$rel"); src=$MATT/skills/$rel
   [[ -d $src ]] || { echo "MISSING $rel（Matt 已移除或改名，請更新 matt-skills.txt）" >&2; failed=1; continue; }
   patch=$ROOT/overlays/$name.patch
@@ -35,6 +53,12 @@ while read -r rel; do
     target[$name]=$src
   fi
 done < "$ROOT/matt-skills.txt"
+
+# 上游新增、清單未列的 skill 只提示：要用就加一行，不用就加 `-<path>`。
+for f in "$MATT"/skills/*/*/SKILL.md; do
+  rel=${f#"$MATT"/skills/}; rel=${rel%/SKILL.md}
+  [[ -n ${listed[$rel]:-} ]] || echo "NEW $rel（上游新增；在 matt-skills.txt 加入或以 -$rel 略過）" >&2
+done
 
 for dir in "$ROOT"/skills/*/*/; do
   [[ -f $dir/SKILL.md ]] && target[$(basename "$dir")]=${dir%/}

@@ -13,13 +13,15 @@
 ## 安裝與升級
 
 ```bash
-bin/sync-skills --check   # 只檢查 overlay 能否套用在目前的 Matt 版本
+bin/sync-skills --check   # 只檢查 overlay 能否套用在目前的 Matt 版本，並提示上游新增的 skill
 bin/sync-skills           # 重建 ~/.claude/skills 與 ~/.agents/skills 的連結
+bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來源（在專案目錄執行會含專案 skill）
 ```
 
 升級 Matt：`git -C ~/code/skills pull`，再跑 `bin/sync-skills`。出現 `OVERLAY_FAILED` 代表上游改到補丁位置，連結保持舊版，重做該補丁後再同步。
 
-- `matt-skills.txt`：要連結的 Matt skill 清單（相對 `skills/`）。上游新增想用的 skill 時加一行。
+- `matt-skills.txt`：要連結的 Matt skill 清單（相對 `skills/`）；`-<path>` 表示刻意不連結。`--check` 列出的 `NEW` 行，二選一加入清單。
+- CI（`.github/workflows/checks.yml`）：每次 push 與每週一，對 Matt 上游最新 main 跑 `--check`，並以 `node scripts/check-links.mjs` 檢查 Markdown 連結；上游改到補丁位置時會先在這裡變紅。
 - `overlays/<name>.patch`：對 Matt skill 的最小改動，同步時套在 `~/.local/share/ron-skills/overlay/<name>` 的副本上，Matt checkout 本身不變。
 - 只處理指向 Matt、本 repo 或 overlay 副本的 symlink；實體目錄與其他來源的連結不動。
 
