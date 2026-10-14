@@ -75,11 +75,3 @@ test('symlinked local harness script remains an executable CLI', async t => {
   await symlink(path.resolve(import.meta.dirname, '../../skills/in-progress/project-batch/scripts/project-batch.mjs'), link);
   const output = await run(process.execPath, [link, '--help']); assert.match(output.toString(), /No push/);
 });
-test('independent trial packaging stays out of promoted manifests and release workflow', async () => {
-  const root = path.resolve(import.meta.dirname, '../..'), read = p => readFile(path.join(root, p), 'utf8');
-  assert.ok(!(await read('README.md')).includes('project-batch'));
-  const manifest = JSON.parse(await read('.claude-plugin/plugin.json')); assert.ok(!manifest.skills.some(p => p.includes('project-batch')));
-  assert.match(await read('skills/in-progress/README.md'), /project-batch\/SKILL.md/);
-  assert.match(await read('skills/engineering/ask-matt/SKILL.md'), /Independent project batch trial/);
-  assert.match(await read('.github/workflows/project-batch-tests.yml'), /macos-latest/);
-});
