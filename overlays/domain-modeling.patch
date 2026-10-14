@@ -1,0 +1,35 @@
+diff --git a/ADR-FORMAT.md b/ADR-FORMAT.md
+index d7e61f3..3a88d3d 100644
+--- a/ADR-FORMAT.md
++++ b/ADR-FORMAT.md
+@@ -2,6 +2,8 @@
+ 
+ ADRs live in `docs/adr/` and use sequential numbering: `0001-slug.md`, `0002-slug.md`, etc.
+ 
++A repo's own ADR layout overrides this one. When `docs/adr/README.md` or the repo's agent instructions define the layout (for example, one file per concept where each ADR is an anchored, numbered section appended to the concept file that owns it), follow that layout for file placement, headings, numbering, and index updates; this file then supplies only the content guidance.
++
+ Create the `docs/adr/` directory lazily: only when the first ADR is needed.
+ 
+ ## Template
+@@ -24,7 +26,7 @@ Only include these when they add genuine value. Most ADRs won't need them.
+ 
+ ## Numbering
+ 
+-Scan `docs/adr/` for the highest existing number and increment by one.
++Scan `docs/adr/` for the highest existing number and increment by one. When the repo keeps an ADR index that records the next available number, take the number from it and update the index in the same change instead.
+ 
+ ## When to offer an ADR
+ 
+diff --git a/SKILL.md b/SKILL.md
+index a4438c6..bc27867 100644
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -37,6 +37,8 @@ If a `GLOSSARY-MAP.md` exists at the root, the repo has multiple contexts. The m
+ │       └── docs/adr/
+ ```
+ 
++Some repos define their own ADR layout (for example, concept files with one section per ADR and an index in `docs/adr/README.md`); follow it as described in [ADR-FORMAT.md](./ADR-FORMAT.md).
++
+ Create files lazily: only when you have something to write. If no `GLOSSARY.md` exists, create one when the first term is resolved. If no `docs/adr/` exists, create it when the first ADR is needed.
+ 
+ ## During the session

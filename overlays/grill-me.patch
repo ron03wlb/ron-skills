@@ -1,0 +1,12 @@
+diff --git a/SKILL.md b/SKILL.md
+index 3947ff9..d2b4097 100644
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -2,6 +2,7 @@
+ name: grill-me
+ description: A relentless interview to sharpen a plan or design.
+ disable-model-invocation: true
++effort: high
+ ---
+ 
+ Call the Skill tool with "grilling".

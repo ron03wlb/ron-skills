@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# 重建 skill 連結：Matt 原版（唯讀）＋ overlays/ 補丁＋本 repo 自有 skills。
+# 用法：bin/sync-skills [--check]
+#   --check  只檢查 overlay 能否套用在目前的 Matt checkout，不改任何連結。
+# 環境變數：MATT_SKILLS（預設 ~/code/skills）、SKILL_DIRS（預設 ~/.claude/skills 與 ~/.agents/skills）
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+MATT=${MATT_SKILLS:-$HOME/code/skills}
+BUILD=${XDG_DATA_HOME:-$HOME/.local/share}/ron-skills/overlay
+read -r -a DESTS <<< "${SKILL_DIRS:-$HOME/.claude/skills $HOME/.agents/skills}"
+CHECK=0
+[[ ${1:-} == --check ]] && CHECK=1
+
+branch=$(git -C "$MATT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "非 git 目錄")
+if [[ $branch != main ]] || [[ -n $(git -C "$MATT" status --porcelain -- skills) ]]; then
+  echo "WARN Matt checkout 不是乾淨的 main（$branch）；overlay 會套在目前內容上" >&2
+fi
+
+declare -A target
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+failed=0
+while read -r rel; do
+  [[ -z $rel || $rel == \#* ]] && continue
+  name=$(basename "$rel"); src=$MATT/skills/$rel
+  [[ -d $src ]] || { echo "MISSING $rel（Matt 已移除或改名，請更新 matt-skills.txt）" >&2; failed=1; continue; }
+  patch=$ROOT/overlays/$name.patch
+  if [[ -f $patch ]]; then
+    cp -r "$src" "$tmp/$name"
+    if ! (cd "$tmp/$name" && git apply "$patch"); then
+      echo "OVERLAY_FAILED $name：$patch 無法套用在目前的 Matt 版本，請重做補丁" >&2; failed=1; continue
+    fi
+    target[$name]=$BUILD/$name
+  else
+    target[$name]=$src
+  fi
+done < "$ROOT/matt-skills.txt"
+
+for dir in "$ROOT"/skills/*/*/; do
+  [[ -f $dir/SKILL.md ]] && target[$(basename "$dir")]=${dir%/}
+done
+
+(( failed )) && exit 1
+(( CHECK )) && { echo "CHECK_OK ${#target[@]} skills"; exit 0; }
+
+mkdir -p "$BUILD"
+for p in "$ROOT"/overlays/*.patch; do
+  name=$(basename "$p" .patch)
+  [[ -d $tmp/$name ]] || continue
+  rm -rf "${BUILD:?}/$name"; mv "$tmp/$name" "$BUILD/$name"
+done
+
+for dest in "${DESTS[@]}"; do
+  mkdir -p "$dest"
+  # 移除指向受管來源、但已不在清單內的舊連結；其他連結與實體目錄一律不碰。
+  for link in "$dest"/*; do
+    [[ -L $link ]] || continue
+    t=$(readlink "$link")
+    case $t in "$MATT"/*|"$ROOT"/*|"$BUILD"/*) [[ -n ${target[$(basename "$link")]:-} ]] || rm "$link";; esac
+  done
+  for name in "${!target[@]}"; do
+    if [[ -e $dest/$name && ! -L $dest/$name ]]; then
+      echo "SKIP $dest/$name（實體目錄，不覆蓋）" >&2; continue
+    fi
+    ln -sfn "${target[$name]}" "$dest/$name"
+  done
+done
+echo "SYNCED ${#target[@]} skills → ${DESTS[*]}"

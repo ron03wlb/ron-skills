@@ -1,0 +1,5 @@
+interface:
+  display_name: "Explain"
+  short_description: "Understand issues, options, and expected effects, read-only"
+policy:
+  allow_implicit_invocation: false
