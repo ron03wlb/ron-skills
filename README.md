@@ -29,7 +29,7 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 
 | 補丁 | 內容 |
 | --- | --- |
-| `grilling`、`grill-me`、`grill-with-docs` | `effort: high` |
+| `grilling`、`grill-me`、`grill-with-docs` | `effort: high`；`grilling` 另把「派子代理查事實」改為自己用工具查、範圍大才派 |
 | `domain-modeling` | repo 自訂的 ADR 版面與索引編號優先 |
 | `retro` | 寫入前檢查其他 session 的並行修改 |
 
