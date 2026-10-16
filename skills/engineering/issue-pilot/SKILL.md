@@ -5,6 +5,10 @@ description: "Standing coordinator: pick ready or triageable Issues from the tra
 
 You are the **coordinator** of a standing delivery program, running in the repo's main checkout. You own the program, never the code: you pick work from the pool, dispatch one worker per Issue, stage, regress, and merge verified batches into the local integration branch, decide everything reversible, and hand the human only what no rule settles. Start it with `/loop /issue-pilot` (self-paced) so each wake re-enters this skill; the skill is model-invocable only so that `/loop` can call it, so never invoke it unless the user's own command names it.
 
+## Entry
+
+`$ARGUMENTS` may name Issues (`<iid>…`) the human wants first, or `stop` / `hold`. Before anything else, read `.scratch/pilot/coordinator` in the main checkout. When it names a pid other than this session's `$CLAUDE_PID` and `kill -0 <pid>` succeeds, another coordinator is live: append the human's request to `.scratch/pilot/requests.md` (timestamp, request, source session), tell the human it was handed to that coordinator, and stop here. Otherwise this session is the coordinator: write `pid <CLAUDE_PID>   loop <yes|no>   since <ISO time>` to that file (`loop yes` only when `/loop` invoked you) and run the ticks below.
+
 ## Sources
 
 Read these at the first tick and again after compaction; when they disagree, the earlier one wins.
@@ -25,17 +29,19 @@ Keep it under the main checkout's `.scratch/pilot/`; the adapter's batch and Iss
 - `gates.md`: one entry per open human gate: id, Issue, question, options, the default you applied or will apply, and what is parked behind it. Mark an entry `resolved <how>` instead of deleting it.
 - `decisions.md`: the decision trail per the `show-me-your-work` skill, one row per decision with reason, evidence, and result.
 - `status.md`: regenerated from the checkpoints at each drain, never hand-narrated.
+- `coordinator`: the live coordinator's pid and loop mode, per [Entry](#entry); rewrite it each tick.
+- `requests.md`: requests other sessions hand over (priority Issues, hold, stop). Apply each at Reconcile and mark it `applied <tick time>` or `declined <reason>`.
 
 ## Each tick
 
 Run these in order; each ends with its stated outcome or a logged reason it was skipped.
 
-1. **Reconcile.** Read `preferences.md`, `gates.md`, and every open batch checkpoint. For each gate, look for the human's answer (their message in this session, or a tracker comment newer than the gate) and apply it. For a batch waiting on the push, fetch and check whether its merge reached the remote integration branch; if so, run the adapter's close steps. Probe running workers read-only with the adapter's watch command in `--once` form; never resume an agent to check on it.
+1. **Reconcile.** Read `preferences.md`, `gates.md`, `requests.md`, and every open batch checkpoint; apply new requests. For each gate, look for the human's answer (their message in this session, or a tracker comment newer than the gate) and apply it. For a batch waiting on the push, fetch and check whether its merge reached the remote integration branch; if so, run the adapter's close steps. Probe running workers read-only with the adapter's watch command in `--once` form; never resume an agent to check on it.
 2. **Drain.** Classify every finished worker: `DONE` (candidate SHA recorded), `STOP` (blocker named), or a question. Answer a worker's question only from a rule in the adapter or this file; a product question becomes a gate. Handle each STOP per [Stops](#stops).
 3. **Pick.** When workers in flight are below the cap and no batch is between staging and its integration merge, choose the next batch from the pool per the adapter's pool rules, then refine any `needs-triage` member per the adapter before dispatching it. An Issue the human named in this session goes first.
 4. **Dispatch.** Run the adapter's dispatch for the batch, record handles in its checkpoint, and start the watcher in the background.
 5. **Land.** When every member is DONE or STOPped: stage, verify, regress, and integrate per the adapter. Drift that the adapter would put to the user as "re-stage or accept" is yours: re-stage and rerun; only a rerun that fails or a conflict needing a design judgement becomes a gate. Then run the push gate and hand over the push per [Notify](#notify). Do not wait for the push before picking the next batch; later batches build on the local integration branch.
-6. **Report and sleep.** Regenerate `status.md`. If anything changed for the human since their last message, catch them up per the `ketchup` skill in the repo's language; otherwise stay quiet. Schedule the next wake: workers running → the background watcher wakes you, with a 1200-second fallback; nothing in flight → 1800 seconds. Never end the loop on an empty pool; only the human's stop ends it.
+6. **Report and sleep.** Regenerate `status.md`. If anything changed for the human since their last message, catch them up per the `ketchup` skill in the repo's language; otherwise stay quiet. Schedule the next wake: workers running → the background watcher wakes you, with a 1200-second fallback; nothing in flight → 1800 seconds. Never end the loop on an empty pool; only the human's stop ends it. When `/loop` did not invoke you, nothing will wake you: end the tick by telling the human that open batches stay idle until they run `/loop /issue-pilot`.
 
 ## Stops
 

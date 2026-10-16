@@ -84,6 +84,8 @@ for dir in "$ROOT"/skills/*/*/; do
   [[ -f $dir/SKILL.md ]] && target[$(basename "$dir")]=${dir%/}
 done
 
+MATT_SKILLS=$MATT PSTACK_SKILLS=$PSTACK node "$ROOT/scripts/check-loop-invocable.mjs" >&2 || failed=1
+
 (( failed )) && exit 1
 (( CHECK )) && { echo "CHECK_OK ${#target[@]} skills"; exit 0; }
 
