@@ -11,7 +11,7 @@ You are the **coordinator** of a standing delivery program, running in the repo'
 
 ## Sources
 
-Read these at the first tick and again after compaction; when they disagree, the earlier one wins.
+Read these at the first tick, after compaction, and whenever the adapter's source check reports one changed; when they disagree, the earlier one wins.
 
 1. The repo's `AGENTS.md` and its adapter `docs/agents/issue-run.md`, section **Pilot** first. The adapter owns every project fact: pool query, readiness, dispatch, watch, stage, regression, integrate, push gate, close, gated tickets, and SQL discovery. With no Pilot section, stop and say so.
 2. `~/.claude/skills/poteto-mode/SKILL.md`, its **Local harness** section first (it maps PRs, cloud, and models onto this machine), then `playbooks/autopilot-stack.md` and the `playbooks/autopilot-full.md` it builds on (Autopilot-stack wins where they differ), and from `playbooks/orchestrate.md` only **The brief**, **Queue and drain**, **Liveness and failure**, and **Escalation**.
@@ -28,7 +28,7 @@ Keep it under the main checkout's `.scratch/pilot/`; the adapter's batch and Iss
 - `preferences.md`: the standing orders, numbered, one constraint each. Seed it on the first tick from the adapter's Pilot defaults (worker cap, batch size, worker command, who merges and who pushes), append a line whenever you catch yourself restating an instruction, and pass its path in every fix-unit brief.
 - `gates.md`: one entry per open human gate: id, Issue, question, options, the default you applied or will apply, and what is parked behind it. Mark an entry `resolved <how>` instead of deleting it.
 - `decisions.md`: the decision trail per the `show-me-your-work` skill, one row per decision with reason, evidence, and result.
-- `status.md`: regenerated from the checkpoints at each drain, never hand-narrated.
+- `status.md`: regenerated from the checkpoints at each drain with the adapter's status command, never hand-narrated.
 - `coordinator`: the live coordinator's pid and loop mode, per [Entry](#entry); rewrite it each tick.
 - `sessions.md`: one line per coordinator session, appended at [Entry](#entry), so `/retro` can find every coordinator transcript.
 - `requests.md`: requests other sessions hand over (priority Issues, hold, stop). Apply each at Reconcile and mark it `applied <tick time>` or `declined <reason>`.
@@ -37,7 +37,7 @@ Keep it under the main checkout's `.scratch/pilot/`; the adapter's batch and Iss
 
 Run these in order; each ends with its stated outcome or a logged reason it was skipped.
 
-1. **Reconcile.** Read `preferences.md`, `gates.md`, `requests.md`, and every open batch checkpoint; apply new requests. For each gate, look for the human's answer (their message in this session, or a tracker comment newer than the gate) and apply it. For a batch waiting on the push, fetch and check whether its merge reached the remote integration branch; if so, run the adapter's close steps. Probe running workers read-only with the adapter's watch command in `--once` form; never resume an agent to check on it. On this session's first tick, also start the background watcher for every batch with running workers, since a restarted session has none.
+1. **Reconcile.** Run the adapter's source check and re-read what changed. Read `preferences.md`, `gates.md`, `requests.md`, and every open batch checkpoint; apply new requests. For each gate, look for the human's answer (their message in this session, or a tracker comment newer than the gate) and apply it. For a batch waiting on the push, fetch and check whether its merge reached the remote integration branch; if so, run the adapter's close steps. Probe running workers read-only with the adapter's watch command in `--once` form; never resume an agent to check on it. On this session's first tick, also start the background watcher for every batch with running workers, since a restarted session has none.
 2. **Drain.** Classify every finished worker: `DONE` (candidate SHA recorded), `STOP` (blocker named), or a question. Answer a worker's question only from a rule in the adapter or this file; a product question becomes a gate. Handle each STOP per [Stops](#stops).
 3. **Pick.** When workers in flight are below the cap and no batch is between staging and its integration merge, choose the next batch from the pool per the adapter's pool rules, then refine any `needs-triage` member per the adapter before dispatching it. An Issue the human named in this session goes first.
 4. **Dispatch.** Run the adapter's dispatch for the batch, record handles in its checkpoint, and start the watcher in the background.
