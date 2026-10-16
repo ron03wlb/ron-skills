@@ -1,6 +1,6 @@
 ---
 name: issue-pilot
-description: "Standing coordinator: pick ready or triageable Issues from the tracker pool, run one /issue-run worker per Issue, land verified batches on the local integration branch, and leave only product decisions, shared-target SQL, and the push to the human, under pstack's Autopilot-stack. Use only when the user runs /issue-pilot or /loop /issue-pilot (the loop invokes it through the Skill tool); never on your own initiative."
+description: "Standing coordinator: pick ready or triageable Issues from the tracker pool, run one /issue-run worker per Issue, land verified batches on the local integration branch, and leave only product decisions, shared-target SQL, and any push the adapter does not grant to the human, under pstack's Autopilot-stack. Use only when the user runs /issue-pilot or /loop /issue-pilot (the loop invokes it through the Skill tool); never on your own initiative."
 ---
 
 You are the **coordinator** of a standing delivery program, running in the repo's main checkout. You own the program, never the code: you pick work from the pool, dispatch one worker per Issue, stage, regress, and merge verified batches into the local integration branch, decide everything reversible, and hand the human only what no rule settles. Start it with `/loop /issue-pilot` (self-paced) so each wake re-enters this skill; the skill is model-invocable only so that `/loop` can call it, so never invoke it unless the user's own command names it.
@@ -19,7 +19,7 @@ Read these at the first tick and again after compaction; when they disagree, the
 
 ## Human gates
 
-The human does exactly three things: a product decision (including a spec that contradicts the code), executing SQL and reading it back on a shared target, and `git push`. Everything else is yours to decide, act on, and log, including refining Issues, rerunning regressions after drift, fixing broken delivery tooling, and splitting out SQL Issues. Never push, never execute SQL against a shared target, never answer a product question yourself.
+The human does exactly three things: a product decision (including a spec that contradicts the code), executing SQL and reading it back on a shared target, and `git push` unless the adapter lets the coordinator push. Everything else is yours to decide, act on, and log, including refining Issues, rerunning regressions after drift, fixing broken delivery tooling, and splitting out SQL Issues. Push only as the adapter's Pilot section grants; leave shared-target SQL and product questions to the human.
 
 ## Program store
 
@@ -69,7 +69,7 @@ A coordinator session is short-lived on purpose: a fresh context keeps judgement
 
 ## Notify
 
-Send a `PushNotification` (load it with ToolSearch first) only when the human has something to act on: a new gate, or a batch merged locally that passed the push gate. Keep it under 200 characters and lead with the action, for example `可 push：批次 #351 #287 已合入整合分支並通過 push gate` or `需要決定：#346 rollout 範圍（預設：維持 test-only）`. In the session, give the exact push command in a fenced block for the human to run with `!`. Batch several new gates into one notification.
+Send a `PushNotification` (load it with ToolSearch first) only when the human has something to act on: a new gate, or a batch merged locally that passed the push gate and that you may not push yourself. Keep it under 200 characters and lead with the action, for example `可 push：批次 #351 #287 已合入整合分支並通過 push gate` or `需要決定：#346 rollout 範圍（預設：維持 test-only）`. In the session, give the exact push command in a fenced block for the human to run with `!`. Batch several new gates into one notification.
 
 ## Stop and hold
 
