@@ -20,7 +20,9 @@ jobs:
           node-version: '22.19.0'
       - name: Clone Matt upstream
         run: git clone --depth 1 https://github.com/mattpocock/skills.git "$RUNNER_TEMP/matt"
-      - name: Overlays apply on Matt upstream main
-        run: MATT_SKILLS="$RUNNER_TEMP/matt" bin/sync-skills --check
+      - name: Clone pstack upstream
+        run: git clone --depth 1 https://github.com/backnotprop/pstack.git "$RUNNER_TEMP/pstack"
+      - name: Overlays apply on upstream main
+        run: MATT_SKILLS="$RUNNER_TEMP/matt" PSTACK_SKILLS="$RUNNER_TEMP/pstack" bin/sync-skills --check
       - name: Markdown links
         run: node scripts/check-links.mjs

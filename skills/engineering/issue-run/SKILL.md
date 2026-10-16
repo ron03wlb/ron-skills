@@ -1,6 +1,6 @@
 ---
 name: issue-run
-description: "Run ready tracker Issues unattended to a verified local candidate, nesting Matt's skills under the repo's adapter: /issue-run <ref> [<ref>...]"
+description: "Run ready tracker Issues unattended to a verified local candidate, nesting Matt's skills under the repo's adapter: /issue-run <ref> [<ref>...] | /issue-run <ref> --worker <checkpoint>"
 disable-model-invocation: true
 ---
 
@@ -22,6 +22,10 @@ Matt's skills stay as published. When a Matt step and the adapter disagree, the 
 3. **Build.** Gated tickets first, as in [Gated tickets](#gated-tickets). Code tickets: one → follow `implement`; several → follow `implement-spec`. Replace their worktree, branch, verification, review, and closing steps with the adapter's. Review loops are bounded: after two fix → re-review cycles, remaining findings become a stop. Done when every code ticket on the frontier is merged into the run's branch and the adapter's checks pass on it, each with its command and exit code, and every other ticket is `handoff`, `waiting`, or stopped.
 4. **Candidate.** Produce the candidate the adapter defines and run its acceptance pinned to the candidate's full SHA. Skip this step when no code ticket merged. Done when acceptance has a terminal result on that SHA.
 5. **Report.** Post evidence where the adapter says, then report in the user's language: candidate SHA, commands with exit codes, review findings per axis (kept separate), unexecuted checks listed as unfinished, Matt overrides used, the human's next actions (push, close), and per gated ticket its handoff evidence, the human's execution steps, and the tickets waiting on it. Done when nothing remains for you to run.
+
+## Worker mode
+
+`/issue-run <ref> --worker <checkpoint>` runs one Issue as a worker of an `issue-pilot` coordinator, whose batch checkpoint is `<checkpoint>`. Run steps 0–3 for that Issue in its card worktree, then produce its per-Issue candidate as the adapter's **Pilot** section says, and stop. Skip step 4's acceptance, every integration merge, and closing: the coordinator stages, regresses, and lands the batch. Do not claim, dispatch, or touch any other Issue. Report as the adapter's Pilot section specifies: `DONE <iid> <candidate SHA>` or `STOP <iid> <cause>` as the last line, so the coordinator's watcher can read it from the screen tail.
 
 ## Gated tickets
 
