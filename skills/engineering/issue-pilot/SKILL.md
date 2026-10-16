@@ -7,7 +7,7 @@ You are the **coordinator** of a standing delivery program, running in the repo'
 
 ## Entry
 
-`$ARGUMENTS` may name Issues (`<iid>…`) the human wants first, or `stop` / `hold`. Before anything else, read `.scratch/pilot/coordinator` in the main checkout. When it names a pid other than this session's `$CLAUDE_PID` and `kill -0 <pid>` succeeds, another coordinator is live: append the human's request to `.scratch/pilot/requests.md` (timestamp, request, source session), tell the human it was handed to that coordinator, and stop here. Otherwise this session is the coordinator: write `pid <CLAUDE_PID>   loop <yes|no>   since <ISO time>` to that file (`loop yes` only when `/loop` invoked you) and run the ticks below.
+`$ARGUMENTS` may name Issues (`<iid>…`) the human wants first, or `stop` / `hold`. Before anything else, read `.scratch/pilot/coordinator` in the main checkout. When `.scratch/pilot/sessions.md` records a handoff from this session (`$CLAUDE_CODE_SESSION_ID`), this session is retired: do nothing, schedule no wake, and say which session took over. A `handoff` line in `coordinator` names no live coordinator. When it names a pid other than this session's `$CLAUDE_PID` and `kill -0 <pid>` succeeds, another coordinator is live: append the human's request to `.scratch/pilot/requests.md` (timestamp, request, source session), tell the human it was handed to that coordinator, and stop here. Otherwise this session is the coordinator: write `pid <CLAUDE_PID>   loop <yes|no>   since <ISO time>` to that file (`loop yes` only when `/loop` invoked you), register this session per the adapter's Pilot **Sessions** line, and run the ticks below.
 
 ## Sources
 
@@ -30,18 +30,19 @@ Keep it under the main checkout's `.scratch/pilot/`; the adapter's batch and Iss
 - `decisions.md`: the decision trail per the `show-me-your-work` skill, one row per decision with reason, evidence, and result.
 - `status.md`: regenerated from the checkpoints at each drain, never hand-narrated.
 - `coordinator`: the live coordinator's pid and loop mode, per [Entry](#entry); rewrite it each tick.
+- `sessions.md`: one line per coordinator session, appended at [Entry](#entry), so `/retro` can find every coordinator transcript.
 - `requests.md`: requests other sessions hand over (priority Issues, hold, stop). Apply each at Reconcile and mark it `applied <tick time>` or `declined <reason>`.
 
 ## Each tick
 
 Run these in order; each ends with its stated outcome or a logged reason it was skipped.
 
-1. **Reconcile.** Read `preferences.md`, `gates.md`, `requests.md`, and every open batch checkpoint; apply new requests. For each gate, look for the human's answer (their message in this session, or a tracker comment newer than the gate) and apply it. For a batch waiting on the push, fetch and check whether its merge reached the remote integration branch; if so, run the adapter's close steps. Probe running workers read-only with the adapter's watch command in `--once` form; never resume an agent to check on it.
+1. **Reconcile.** Read `preferences.md`, `gates.md`, `requests.md`, and every open batch checkpoint; apply new requests. For each gate, look for the human's answer (their message in this session, or a tracker comment newer than the gate) and apply it. For a batch waiting on the push, fetch and check whether its merge reached the remote integration branch; if so, run the adapter's close steps. Probe running workers read-only with the adapter's watch command in `--once` form; never resume an agent to check on it. On this session's first tick, also start the background watcher for every batch with running workers, since a restarted session has none.
 2. **Drain.** Classify every finished worker: `DONE` (candidate SHA recorded), `STOP` (blocker named), or a question. Answer a worker's question only from a rule in the adapter or this file; a product question becomes a gate. Handle each STOP per [Stops](#stops).
 3. **Pick.** When workers in flight are below the cap and no batch is between staging and its integration merge, choose the next batch from the pool per the adapter's pool rules, then refine any `needs-triage` member per the adapter before dispatching it. An Issue the human named in this session goes first.
 4. **Dispatch.** Run the adapter's dispatch for the batch, record handles in its checkpoint, and start the watcher in the background.
 5. **Land.** When every member is DONE or STOPped: stage, verify, regress, and integrate per the adapter. Drift that the adapter would put to the user as "re-stage or accept" is yours: re-stage and rerun; only a rerun that fails or a conflict needing a design judgement becomes a gate. Then run the push gate and hand over the push per [Notify](#notify). Do not wait for the push before picking the next batch; later batches build on the local integration branch.
-6. **Report and sleep.** Regenerate `status.md`. If anything changed for the human since their last message, catch them up per the `ketchup` skill in the repo's language; otherwise stay quiet. Schedule the next wake: workers running → the background watcher wakes you, with a 1200-second fallback; nothing in flight → 1800 seconds. Never end the loop on an empty pool; only the human's stop ends it. When `/loop` did not invoke you, nothing will wake you: end the tick by telling the human that open batches stay idle until they run `/loop /issue-pilot`.
+6. **Report and sleep.** Regenerate `status.md`. If anything changed for the human since their last message, catch them up per the `ketchup` skill in the repo's language; otherwise stay quiet. Schedule the next wake: workers running → the background watcher wakes you, with a 1200-second fallback; nothing in flight → 1800 seconds. Never end the loop on an empty pool; only the human's stop or a [Handoff](#handoff) ends it. Then check for a [Handoff](#handoff). When `/loop` did not invoke you, nothing will wake you: end the tick by telling the human that open batches stay idle until they run `/loop /issue-pilot`.
 
 ## Stops
 
@@ -58,6 +59,13 @@ A worker's STOP blocks only its dependents; keep everything else moving.
 | Unrelated changes in a worktree, or anything else | Gate it with the evidence. |
 
 You never edit product code: code changes, conflict fixes needing judgement, and tool repairs are units with briefs. Mechanical bookkeeping the adapter allows the controller (staging merges, import-only conflicts, checkpoint rows) is yours.
+
+## Handoff
+
+A coordinator session is short-lived on purpose: a fresh context keeps judgements sharp, and a finished session is one `/retro` can read whole. Hand off when the adapter's Pilot defaults say so (batches landed in this session, or the compaction probe reporting a compaction), at a safe point only: no batch between staging and its integration merge, and this tick's push handover already given. Workers in flight are fine; the next coordinator picks them up from their checkpoints.
+
+1. Regenerate `status.md` and add one `decisions.md` row naming the reason.
+2. Run the adapter's handoff command. On `HANDED_OFF`, stop the loop (`ScheduleWakeup` with `stop: true`) and tell the human, in one line, which terminal took over and that this session is ready for `/retro`. On `STOP`, stay coordinator and try again next tick; the same stop twice becomes a gate.
 
 ## Notify
 
