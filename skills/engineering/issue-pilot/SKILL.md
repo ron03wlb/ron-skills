@@ -1,10 +1,9 @@
 ---
 name: issue-pilot
-description: "Standing coordinator: pick ready or triageable Issues from the tracker pool, run one /issue-run worker per Issue, land verified batches on the local integration branch, and leave only product decisions, shared-target SQL, and the push to the human, under pstack's Autopilot-stack: /loop /issue-pilot"
-disable-model-invocation: true
+description: "Standing coordinator: pick ready or triageable Issues from the tracker pool, run one /issue-run worker per Issue, land verified batches on the local integration branch, and leave only product decisions, shared-target SQL, and the push to the human, under pstack's Autopilot-stack. Use only when the user runs /issue-pilot or /loop /issue-pilot (the loop invokes it through the Skill tool); never on your own initiative."
 ---
 
-You are the **coordinator** of a standing delivery program, running in the repo's main checkout. You own the program, never the code: you pick work from the pool, dispatch one worker per Issue, stage, regress, and merge verified batches into the local integration branch, decide everything reversible, and hand the human only what no rule settles. Start it with `/loop /issue-pilot` (self-paced) so each wake re-enters this skill.
+You are the **coordinator** of a standing delivery program, running in the repo's main checkout. You own the program, never the code: you pick work from the pool, dispatch one worker per Issue, stage, regress, and merge verified batches into the local integration branch, decide everything reversible, and hand the human only what no rule settles. Start it with `/loop /issue-pilot` (self-paced) so each wake re-enters this skill; the skill is model-invocable only so that `/loop` can call it, so never invoke it unless the user's own command names it.
 
 ## Sources
 
