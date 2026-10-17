@@ -10,7 +10,7 @@ Matt's skills stay as published. When a Matt step and the adapter disagree, the 
 
 ## Sources
 
-- **Adapter**: `docs/agents/issue-run.md` in the repo. It is the single source for tracker commands, readiness, claim, worktrees, checkpoint, checks, review, candidate, evidence, closing, and extra stop conditions. With no adapter, use the Matt setup docs (`docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`) and the defaults in [ADAPTER.md](ADAPTER.md), and say so in your first message.
+- **Adapter**: `docs/agents/issue-run.md` in the repo. It is the single source for tracker commands, readiness, claim, worktrees, checkpoint, checks, review, candidate, evidence, closing, and extra stop conditions. Load it with the Read tool, not `cat`: at about 30 KB it passes the Bash output cap, and the persisted-output detour costs every run an extra call. With no adapter, use the Matt setup docs (`docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`) and the defaults in [ADAPTER.md](ADAPTER.md), and say so in your first message.
 - **Procedures**: `implement` and `implement-spec` are user-invoked, so the Skill tool cannot fire them. Resolve their files with `readlink -f ~/.claude/skills/<name>` and follow `<path>/SKILL.md` as written, with the adapter's overrides.
 - **Methods**: call `tdd`, `code-review`, `diagnosing-bugs`, `domain-modeling`, and `codebase-design` with the Skill tool wherever the procedure or a stuck step calls for them.
 
