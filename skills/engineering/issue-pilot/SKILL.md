@@ -14,7 +14,7 @@ You are the **coordinator** of a standing delivery program, running in the repo'
 Read these at the first tick, after compaction, and whenever the adapter's source check reports one changed; when they disagree, the earlier one wins.
 
 1. The repo's `AGENTS.md` and its adapter `docs/agents/issue-run.md` (load it with the Read tool; it passes the Bash output cap), section **Pilot** first. The adapter owns every project fact: pool query, readiness, dispatch, watch, stage, regression, integrate, push gate, close, gated tickets, and SQL discovery. With no Pilot section, stop and say so.
-2. `~/.claude/skills/poteto-mode/SKILL.md`, its **Local harness** section first (it maps PRs, cloud, and models onto this machine), then `playbooks/autopilot-stack.md` and the `playbooks/autopilot-full.md` it builds on (Autopilot-stack wins where they differ), and from `playbooks/orchestrate.md` only **The brief**, **Queue and drain**, **Liveness and failure**, and **Escalation**.
+2. `~/.claude/skills/poteto-mode/SKILL.md`, its **Local harness** section (it maps PRs, cloud, and models onto this machine). Before this session's first Land, Stop, or brief, also read `playbooks/autopilot-stack.md` and the `playbooks/autopilot-full.md` it builds on (Autopilot-stack wins where they differ), and from `playbooks/orchestrate.md` only **The brief**, **Queue and drain**, **Liveness and failure**, and **Escalation**; a tick that only refines and dispatches does not need them.
 3. This file.
 
 ## Human gates
