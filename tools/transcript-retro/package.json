@@ -1,0 +1,9 @@
+{
+  "name": "transcript-retro",
+  "private": true,
+  "type": "module",
+  "description": "以 Claude API（Batch）分析 Claude Code session transcript，產出 retro 候選清單",
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.131.0"
+  }
+}
