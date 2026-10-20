@@ -26,3 +26,5 @@ jobs:
         run: MATT_SKILLS="$RUNNER_TEMP/matt" PSTACK_SKILLS="$RUNNER_TEMP/pstack" bin/sync-skills --check
       - name: Markdown links
         run: node scripts/check-links.mjs
+      - name: Tests
+        run: node --test --test-force-exit tests/*.test.mjs

@@ -86,6 +86,7 @@ node analyze.mjs report --since <上次報告日期> \
 ### 注意
 
 - 報告中的次數是模型粗估（「≥N 個 session」）。動手前以 `/retro` 讀原始紀錄確認。
+- `collect` 印出「N 筆 finding 的證據提到截斷或無法確認」時，先挑幾筆對照原始 transcript，確認摘要沒有漏掉關鍵內容，再全量送出或據此修改。截斷行為由 `tests/transcript-retro-extract.test.mjs` 把關（CI 的 Tests 步驟）。
 - 改了 `extract.mjs` 的萃取方式後，新舊 finding 不可比較：先把 `~/.local/share/transcript-retro/findings` 改名備份，再以 `--rerun` 全部重送。2026-10-20 曾因截斷只保留開頭，把 worker 末行的 `DONE <iid> <SHA>` 誤判為缺漏，就是這樣重跑修正。
 - 在 Console 為這把 key 設月上限；依上述頻率，每月約 $5–10。
 

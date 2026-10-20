@@ -31,6 +31,9 @@ const PRICE = {
   'claude-opus-5-5': { in: 4, out: 20 },
 };
 
+// 證據含這些字眼時，finding 可能是摘要截斷造成的誤判（2026-10-20：worker 末行 DONE 被截掉而誤報為缺漏）
+const UNSURE = /截斷|無法(完全)?確認|看不到|truncat|clipped/i;
+
 const SEVERITY = { type: 'string', enum: ['high', 'medium', 'low'] };
 
 function findingsSchema(itemProps) {
@@ -308,6 +311,7 @@ async function cmdCollect() {
     let failed = 0;
     let tin = 0;
     let tout = 0;
+    let unsure = 0;
     for await (const r of await api.messages.batches.results(id)) {
       const m = b.meta[r.custom_id];
       if (r.result.type !== 'succeeded') {
@@ -335,6 +339,7 @@ async function cmdCollect() {
       }
       fs.writeFileSync(path.join(dir, `${r.custom_id}.json`), `${JSON.stringify({ ...m, ...parsed }, null, 2)}\n`);
       ok++;
+      unsure += parsed.findings.filter((f) => UNSURE.test(`${f.evidence} ${f.suggestion}`)).length;
     }
     // 只有整個 session 的所有段落都成功才標記為已分析
     const failedSessions = new Set();
@@ -348,6 +353,9 @@ async function cmdCollect() {
     b.usage = { input: Math.round(tin), output: tout };
     saveState(state);
     console.log(`${id}（${mode}）：成功 ${ok}、失敗 ${failed}；約 ${costLine(tin, tout, b.model, true)}`);
+    if (unsure) {
+      console.log(`  警告：${unsure} 筆 finding 的證據提到截斷或無法確認；全量送出或據此修改前，先對照原始 transcript 確認摘要沒有漏掉關鍵內容`);
+    }
   }
 }
 
