@@ -46,12 +46,56 @@ node analyze.mjs report --skill issue-run --repo ~/code/spay2 --repo ~/code/ron-
 (cd ~/code/spay2 && node ~/code/ron-skills/tools/transcript-retro/analyze.mjs submit --skill deliver-spec)
 ```
 
-## 費用參考（2026-10-20，268 個 session）
+## 例行流程
 
-| 步驟 | 模型 | 估計 |
+指令都在本目錄執行。`submit` 只送新增或變動過的 session，所以例行執行只付增量的費用。
+
+### 全面 retro（建議每週一次）
+
+```bash
+node analyze.mjs estimate
+node analyze.mjs submit
+node analyze.mjs collect      # 約 1 小時後執行；未完成時只顯示進度，稍後再跑
+node analyze.mjs report --since <上次報告日期> \
+  --memory ~/.claude/projects/-home-ron-code-spay2/memory/MEMORY.md \
+  --repo ~/code/spay2 --repo ~/code/ron-skills
+```
+
+`report` 預設彙整所有累積的 finding。`--since` 填上次報告的日期，報告就只涵蓋這段期間，舊問題不會一再出現。
+
+### Skill 遵循度
+
+- **整體健檢**：照上一節的 `--skill` 指令執行，`report` 同樣加上 `--since`。
+- **確認修正是否生效**（最常用）：改過的 skill 實際跑過幾個 session 後，以 `--since <修正 commit 日期>` 產生報告，看「已修正 vs 仍發生」一節。修正後仍發生，代表文字規則無效，應改成腳本或 gate。
+
+| skill | 額外參數 | 執行位置 |
 | --- | --- | --- |
-| 全量逐 session 分析 | Haiku 5.5 Batch | 約 $0.3 |
-| 同上改用 Sonnet | Sonnet 5.5 Batch（`--model claude-sonnet-5-5`） | 約 $5.4 |
-| 彙整報告 | Sonnet 5.5 | 約 $0.5–1 |
-| `--skill issue-run`（78 個 session，含 adapter） | Sonnet 5.5 Batch | 上限約 $2.3 |
-| `--skill deliver-spec`（77 個 session） | Sonnet 5.5 Batch | 上限約 $1.9 |
+| `issue-run`、`issue-pilot` | `--rubric ~/code/spay2/docs/agents/issue-run.md`（adapter） | 任意 |
+| spay2 專案內的 skill（`deliver-spec` 等） | 無 | `~/code/spay2` 下，或以 `--skill-path` 指定 |
+| overlay（`grilling` 等） | 無 | 任意；不在 git 中，只能以目前版本評分 |
+
+### 從報告到修正
+
+報告只負責找出問題與排序，修正仍透過 `/retro`：
+
+1. 從報告的結論、「已有 memory 仍重犯」或「修正後仍發生」挑一兩項。
+2. 報告引用的 session id 為前 8 碼。在新 session 由使用者輸入 `/retro 針對 session <id>：<問題標題>`（`/retro` 只能由使用者輸入）。
+3. 修正落點：spay2 開 retro branch，commit 用 `chore: retro …`；ron-skills 直接 commit 到 `main`。
+4. 之後以「確認修正是否生效」的方式驗證。
+
+### 注意
+
+- 報告中的次數是模型粗估（「≥N 個 session」）。動手前以 `/retro` 讀原始紀錄確認。
+- 改了 `extract.mjs` 的萃取方式後，新舊 finding 不可比較：先把 `~/.local/share/transcript-retro/findings` 改名備份，再以 `--rerun` 全部重送。2026-10-20 曾因截斷只保留開頭，把 worker 末行的 `DONE <iid> <SHA>` 誤判為缺漏，就是這樣重跑修正。
+- 在 Console 為這把 key 設月上限；依上述頻率，每月約 $5–10。
+
+## 費用參考（2026-10-20 實際用量）
+
+| 步驟 | 模型 | 實際 |
+| --- | --- | --- |
+| 全量逐 session 分析（276 個請求） | Haiku 5.5 Batch | 約 $0.5 |
+| 全面 retro 彙整（1406 筆 finding） | Sonnet 5.5 | 約 $1.1 |
+| `--skill issue-run`（80 個 session，含 adapter） | Sonnet 5.5 Batch | 約 $2.9 |
+| `--skill issue-pilot`（19 個 session，含 adapter） | Sonnet 5.5 Batch | 約 $0.9 |
+| skill 報告彙整 | Sonnet 5.5 | 每份約 $0.2 |
+| 每週增量（新 session 與報告） | — | 約 $0.5–1.5 |
