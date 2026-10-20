@@ -27,6 +27,13 @@ Matt's skills stay as published. When a Matt step and the adapter disagree, the 
 
 `/issue-run <ref> --worker <checkpoint>` runs one Issue as a worker of an `issue-pilot` coordinator, whose batch checkpoint is `<checkpoint>`. Run steps 0–3 for that Issue in its card worktree, then produce its per-Issue candidate as the adapter's **Pilot** section says, and stop. Skip step 4's acceptance, every integration merge, and closing: the coordinator stages, regresses, and lands the batch. Do not claim, dispatch, or touch any other Issue. Report as the adapter's Pilot section specifies: `DONE <iid> <candidate SHA>` or `STOP <iid> <cause>` as the last line, so the coordinator's watcher can read it from the screen tail.
 
+A worker has no human at its screen, so it never calls `AskUserQuestion`, including where a Matt skill (`tdd`, `grilling`) would ask. A product decision, a spec that contradicts the code or a contract, or a change outside the Issue's pinned scope goes to an Issue comment listing the options, then ends the run with `STOP <iid> <cause>`.
+
+Worker mode replaces step 3's review bound:
+
+1. After two fix → re-review cycles, take each remaining finding's options. When exactly one option satisfies the Issue's acceptance criteria and confirmed decisions (`## 驗收條件`, `## 已確認決策`), adopt it and record it in the checkpoint's rulings. When every option fits the Issue's text, the finding is a genuine product trade-off: comment and `STOP` as above.
+2. Then run one review-only verifier round (the adapter's review command, no fixes) on the final candidate. A P2 or higher finding ends with `STOP <iid> findings after two review cycles`, which the coordinator handles per its Stops; P3 findings only go into the rulings and the run ends with `DONE`.
+
 ## Gated tickets
 
 A **gated ticket** delivers an artifact only the human may execute against a shared target, such as a schema migration or a data repair; the adapter defines which tickets are gated and their procedure.
