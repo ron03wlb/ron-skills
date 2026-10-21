@@ -33,7 +33,7 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 | --- | --- |
 | `grilling`、`grill-me`、`grill-with-docs` | `effort: high`；`grilling` 另把「派子代理查事實」改為自己用工具查、範圍大才派 |
 | `domain-modeling` | repo 自訂的 ADR 版面與索引編號優先 |
-| `retro` | 寫入前檢查其他 session 的並行修改 |
+| `retro` | 寫入前檢查其他 session 的並行修改；repo 有 `scripts/retro-collect.mjs` 且本 session 是退役 coordinator 時改為收集模式：只寫 retro 檔、不實作，等 `/retro-collect` |
 | `poteto-mode` | 本機 harness：repo 規則與語言優先、無 GitHub PR（對應 candidate／整合分支）、無 cloud（Orca terminal）、只有 Claude 加 Codex verifier、未安裝 skill 改用 Matt 對應 |
 
 ## issue-run
@@ -49,3 +49,7 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 `/loop /issue-pilot`：在專案主 checkout 常駐的 coordinator，採 pstack Autopilot-stack 語意。它自己從 tracker 池子挑 Issue、每張派一個 `/issue-run <iid> --worker <checkpoint>` 的 Orca terminal、整批 regression 後合入本機整合分支，再通知人 push。人只做產品決策、共用環境 SQL 執行與讀回、`git push`。專案事實讀 adapter 的 **Pilot** 段落。
 
 目前為 pilot：下一批 2–3 張 Issue 試跑，達標（整批到 regression 通過、人只做上述三件事）後再下架 `deliver-batch`、`deliver-spec`、`project-batch`；未達標前 `/issue-run` 單獨使用仍是 fallback。
+
+## retro-collect
+
+`/retro-collect [<session8>...]`：收集退役 coordinator 以收集模式寫下的 `/retro` 檔，彙整成一份計畫，在單一 retro worktree 實作全部採用項，合入整合分支並推送，最後關掉已收集的分頁。流程是人在每個舊分頁輸入 `/retro`，再於任一 session 輸入 `/retro-collect`。專案事實讀 adapter Pilot 段的 **Retro collect** 行。

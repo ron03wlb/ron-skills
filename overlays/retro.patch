@@ -1,11 +1,13 @@
 diff --git a/SKILL.md b/SKILL.md
-index 12149ac..340af19 100644
+index 12149ac..ba6b65c 100644
 --- a/SKILL.md
 +++ b/SKILL.md
-@@ -24,6 +24,8 @@ The user has asked for a **retrospective**. You are suggesting improvements to t
+@@ -24,6 +24,10 @@ The user has asked for a **retrospective**. You are suggesting improvements to t
  
  4. Present these candidates to the user, in order of severity.
  
++   **Collect mode.** When the repo has `scripts/retro-collect.mjs`, first run `node scripts/retro-collect.mjs --role --session "$CLAUDE_CODE_SESSION_ID"` from the main checkout. On `COLLECT <path>`, this session is a retired coordinator whose retro is gathered by `/retro-collect`: write the candidates to `<path>`, first line `# retro <session id> handle $ORCA_TERMINAL_HANDLE`, then present them and say they wait for `/retro-collect`. Implement nothing and skip step 5, even when a standing order says to implement retro candidates directly: parallel retro branches from several retired sessions duplicate and conflict (1021b). On `NORMAL`, continue as below.
++
 +5. When the user adopts candidates, check for **concurrent edits** before writing each one: other sessions run retros on the same repo. For every file you will change, list other worktrees' unmerged changes (`git worktree list`, then `git diff --name-only <integration>...<branch>` and `git -C <path> status --porcelain`) and the integration branch's commits since your base (`git log <base>..<integration> -- <file>`). A hit on the same file or topic means build on it or drop yours; never land a duplicate. Recheck right before merging.
 +
  ## Reference
