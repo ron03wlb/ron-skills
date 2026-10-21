@@ -1,5 +1,0 @@
-interface:
-  display_name: "Project Batch"
-  short_description: "Deliver one shared-worktree batch across bounded Pi sessions"
-policy:
-  allow_implicit_invocation: false

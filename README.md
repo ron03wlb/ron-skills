@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | Matt 原版 | `~/code/skills`（`main`，只追上游） | 工程方法：`tdd`、`code-review`、`implement-spec`… | 只 `git pull` |
 | pstack 原版 | `~/code/pstack`（`backnotprop/pstack` mirror，`main`） | 編排與原則：`poteto-mode` 的 Autopilot／Orchestrate playbook、`principle-*`、`show-me-your-work`、`ketchup` | 只 `git pull` |
-| 個人層 | 本 repo | `issue-run` 編排、`explain`、`project-batch` 試作、`overlays/` 補丁 | 自己 |
+| 個人層 | 本 repo | `issue-run`／`issue-pilot` 編排、`explain`、`overlays/` 補丁 | 自己 |
 | 專案 adapter | 各 repo 的 `docs/agents/issue-run.md` | tracker、gate、驗證、交付指令 | 各專案 |
 
 ## 安裝與升級
@@ -49,7 +49,7 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 
 `/loop /issue-pilot`：在專案主 checkout 常駐的 coordinator，採 pstack Autopilot-stack 語意。它自己從 tracker 池子挑 Issue、每張派一個 `/issue-run <iid> --worker <checkpoint>` 的 Orca terminal、整批 regression 後合入本機整合分支，再通知人 push。人只做產品決策、共用環境 SQL 執行與讀回、`git push`。專案事實讀 adapter 的 **Pilot** 段落。
 
-目前為 pilot：下一批 2–3 張 Issue 試跑，達標（整批到 regression 通過、人只做上述三件事）後再下架 `deliver-batch`、`deliver-spec`、`project-batch`；未達標前 `/issue-run` 單獨使用仍是 fallback。
+pilot 已達標，2026-10-21 起是唯一編排：`deliver-batch`、`deliver-spec`、`project-batch` 已下架。`/issue-run` 單獨使用是手動入口，不是備援。
 
 ## retro-collect
 
