@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# 本機 commit 前跑與 CI（.github/workflows/checks.yml）相同的三項檢查，不必等 push 後 CI 才變紅（retro spay2 1021c：先 commit 後測試）。
+# 啟用：ln -s ../../.githooks/pre-commit .git/hooks/pre-commit
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+bin/sync-skills --check >/dev/null
+node scripts/check-links.mjs >/dev/null
+node --test --test-force-exit tests/*.test.mjs >/dev/null

@@ -23,6 +23,7 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 
 - `matt-skills.txt`：要連結的 Matt skill 清單（相對 `skills/`）；`-<path>` 表示刻意不連結。`--check` 列出的 `NEW` 行，二選一加入清單。
 - `pstack-skills.txt`：pstack 白名單，同樣格式；`# pin:` 記錄驗證過的上游 SHA，HEAD 不同時只警告。與 Matt 重疊（`tdd`、`teach`）、需要多家模型（`how`、`why`、`arena`、`swarm`…）或 Cursor 專屬的 skill 不連結。
+- 本機 pre-commit（`.githooks/pre-commit`，clone 後執行一次 `ln -s ../../.githooks/pre-commit .git/hooks/pre-commit` 啟用）：跑與 CI 相同的 `--check`、連結檢查與 `tests/`。
 - CI（`.github/workflows/checks.yml`）：每次 push 與每週一，對 Matt 上游最新 main 跑 `--check`，並以 `node scripts/check-links.mjs` 檢查 Markdown 連結；上游改到補丁位置時會先在這裡變紅。
 - `overlays/<name>.patch`：對 Matt skill 的最小改動，同步時套在 `~/.local/share/ron-skills/overlay/<name>` 的副本上，Matt checkout 本身不變。
 - 只處理指向 Matt、本 repo 或 overlay 副本的 symlink；實體目錄與其他來源的連結不動。
