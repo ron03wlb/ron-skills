@@ -14,8 +14,22 @@ You are the **coordinator** of a standing delivery program, running in the repo'
 Read these at the first tick, after compaction, and whenever the adapter's source check reports one changed; when they disagree, the earlier one wins.
 
 1. The repo's `AGENTS.md` and its adapter `docs/agents/issue-run.md` (load it with the Read tool; it passes the Bash output cap), section **Pilot** first; when that section points to its own file, read that file whole as part of the adapter. The adapter owns every project fact: pool query, readiness, dispatch, watch, stage, regression, integrate, push gate, close, gated tickets, and SQL discovery. With no Pilot section, stop and say so.
-2. `~/.claude/skills/poteto-mode/SKILL.md`, its **Local harness** section (it maps PRs, cloud, and models onto this machine). Before this session's first Land, Stop, or brief, also read `playbooks/autopilot-stack.md` and the `playbooks/autopilot-full.md` it builds on (Autopilot-stack wins where they differ), and from `playbooks/orchestrate.md` only the `#### The brief`, `#### Queue and drain`, `#### Liveness and failure`, and `#### Escalation` sections (level-4 headings); a tick that only refines and dispatches does not need them.
+2. `~/.claude/skills/poteto-mode/SKILL.md`, its **Local harness** section (it maps PRs, cloud, and models onto this machine). The [Playbook digest](#playbook-digest) below carries the parts of `playbooks/autopilot-stack.md`, `playbooks/autopilot-full.md`, and `playbooks/orchestrate.md` that survive the Local harness; read those playbooks only for a situation the digest does not cover (a short-lived coordinator re-read about 60 KB of mostly overridden gh, cloud, `orch`, and swarm text every session, retro 5cf76505#4).
 3. This file.
+
+## Playbook digest
+
+What pstack's Autopilot-stack, Autopilot-full, and Orchestrate still require on this machine, after the Local harness maps PRs to cards and batches, cloud to Orca terminals, and pushing to the adapter:
+
+- **One writer on the topology.** Workers commit only to their own card branch and never merge, rebase onto, or reset to another branch; only the coordinator stages, re-stages, and merges into the batch and integration branches. A worker that needs a newer base asks for a sync through the adapter's fix command.
+- **Verdict before landing.** Nothing reaches the integration branch without the adapter's regression passing on the exact staged SHA; a pass covers that SHA only. A re-stage, conflict resolution, or minor fix needs a fresh run at the new head. Before integrating, ask whether the integration branch's new commits can affect the batch; when they can, re-stage and rerun. A third forced re-stage becomes a gate.
+- **Loosening a gate needs a countersign.** An allowlist entry, raised budget, or skipped check needs evidence from a run the worker did not write and the coordinator's recorded decision; a disabled or soft-failed check always comes back out.
+- **Briefs.** Every brief names goal, scope (paths it may write, its worktree and branch), context pointers, checkable acceptance, exact verify commands, a timebox, what is forbidden, the report shape, and the standing orders (`preferences.md` by path). Size it to the unit. Never resume-chain a brief: respawn fresh with consolidated scope.
+- **Liveness.** Never resume an agent to check on it; probe read-only. A worker is stuck when it errors, cannot start turns, or shows nothing new past its usual runtime; one waiting on you or the human is not stuck, so answer it. Replace a stuck worker at once. Retry by mode: cap or OOM → smaller scope; network → as-is; tool error → different model; unknown → once. After two retries, abandon the unit and replan around it. A worker returning late reconciles against the current checkpoint before anything is accepted.
+- **Drain at safe points.** Handle completions at the end of a critical section (a brief, a stage, a conflict decision, a gate, a checkpoint write), never by reviewing a diff inline; a completion that needs review becomes a review unit. Account for every spawned worker: arrived, respawned, or its scope absorbed.
+- **Escalation.** Only gates reach the human: irreversible actions, product or preference calls no experiment settles, a standing order that contradicts reality, a dead end that survived a replan. Retries, flake triage, rebase mechanics, format fixes, and "should I keep going" never do. Mid-run discoveries fix only what blocks the frontier; the rest goes to follow-ups.
+- **Bound your own retries.** After a few consecutive tool aborts, stop, write a terminal handoff to durable state (done, where it lives, the exact resume command), and end the run.
+- **Stop and hold** reach every worker as a zero-writes order (see [Stop and hold](#stop-and-hold)).
 
 ## Human gates
 
@@ -53,7 +67,7 @@ A worker's STOP blocks only its dependents; keep everything else moving.
 | Product decision open, or spec contradicts code | Gate it; set the Issue to the adapter's human-ready state. |
 | Missing prerequisite, credential, or fixture authorization | Gate it with the exact missing item. |
 | SQL turns out to be needed | Follow the adapter's SQL discovery for the pilot: split the SQL Issue, dispatch its preparation to handoff, mark the feature waiting. The human only executes and reads back. |
-| Delivery tooling failure | Open a **tooling fix unit**: a fresh worker in its own worktree with a full brief (orchestrate's template), landed as tooling-only per the adapter, then redispatch the affected Issues. The same tool failing twice after a fix becomes a gate. |
+| Delivery tooling failure | Open a **tooling fix unit**: a fresh worker in its own worktree with a full brief ([Playbook digest](#playbook-digest) fields), landed as tooling-only per the adapter, then redispatch the affected Issues. The same tool failing twice after a fix becomes a gate. |
 | Findings left after two review cycles | Dispatch one fresh worker with consolidated scope (original Issue, findings, prior branch). Still failing → gate. |
 | Merge conflict | Resolve it yourself only when both sides combine mechanically, as the adapter describes; one needing design judgement → gate. |
 | Unrelated changes in a worktree, or anything else | Gate it with the evidence. |
