@@ -54,3 +54,9 @@ pilot 已達標，2026-10-21 起是唯一編排：`deliver-batch`、`deliver-spe
 ## retro-collect
 
 `/retro-collect [<session8>...]`：收集退役 coordinator 以收集模式寫下的 `/retro` 檔，彙整成一份計畫，在單一 retro worktree 實作全部採用項，合入整合分支並推送，最後關掉已收集的分頁。流程是人在每個舊分頁輸入 `/retro`，再於任一 session 輸入 `/retro-collect`。專案事實讀 adapter Pilot 段的 **Retro collect** 行。
+
+## learning
+
+`/senior-interview-loop`：一次練一題資深後端面試題。先閉卷作答，再照 `learn-professional-topics` 的方法追問並評分；收尾經人確認後，原始作答寫成一張 Heptabase 練習卡，掌握度只寫入 Growth 的 validation ledger。路徑、Heptabase ID 和門檻都讀 Growth repo 的 `docs/agents/senior-interview-loop.md`；在 Growth checkout 內執行，或設定 `GROWTH_ROOT`。需要 Heptabase MCP。
+
+`learn-professional-topics` 從舊 fork（`ron03wlb/skills` 的 `skills/personal/`）移入，現以本 repo 為正式版本。

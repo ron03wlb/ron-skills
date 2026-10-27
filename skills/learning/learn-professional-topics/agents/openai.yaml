@@ -1,0 +1,4 @@
+interface:
+  display_name: "Professional Learning Gym"
+  short_description: "Master technical topics through bilingual progressive overload"
+  default_prompt: "Use $learn-professional-topics to train me on this topic in English while allowing Chinese answers."
