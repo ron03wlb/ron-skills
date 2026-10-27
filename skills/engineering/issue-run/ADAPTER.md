@@ -50,3 +50,17 @@ Default: no gated tickets; any need for one found mid-run is a stop.
 ## Stops
 
 Repo-specific stop conditions on top of the skill's.
+
+## Permissions
+
+The `.claude/settings.json` allow rules an unattended `/issue-pilot` tick needs, and where git runs.
+Default: none; every git write prompts.
+
+When the pilot runs git in worktrees other than its cwd, do not write `Bash(git -C * <subcommand>)`. A `*` before the subcommand also matches extra git options, so `git -C <path> -c core.sshCommand=<cmd> fetch origin` passes, and Claude Code warns "allows any option at its `*`" on every session start; anchoring the path (`git -C /root/feature-ron-* …`) still warns. Keep each `*` at the end of a rule, after the arguments git parses as options:
+
+1. Copy [templates/pilot_git.py](templates/pilot_git.py) to the repo's `scripts/pilot_git.py` and set its four constants (main checkout, worktree root, branch prefix, base branch). It runs `git -C` itself after checking the target and arguments: the main checkout gets only `fetch`, `rev`, `log`; writes (`sync`, `stage`, `push`) only go to `<worktree root>/<prefix>*`; no argument may start with `-`; `push` only targets `<prefix>*` branches.
+2. Allow `Bash(python3 scripts/pilot_git.py:*)` and remove any `Bash(git -C …)` rule.
+3. Write the adapter's git steps as `python3 scripts/pilot_git.py <subcommand> <checkout> …`, and add a test that every adapter command has a matching rule and no adapter step calls `git -C` directly (Growth: `tests/test_pilot_permissions.py`).
+4. Start a new session and confirm no permission warning is printed.
+
+A repo that already wraps its git steps in delivery scripts (spay2: `node scripts/batch-land.mjs`, `bash scripts/push-pinned.sh feature/ron/*`) needs no `pilot_git.py`; the same rule applies to those scripts' allow rules.
