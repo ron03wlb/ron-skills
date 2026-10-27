@@ -60,3 +60,7 @@ pilot 已達標，2026-10-21 起是唯一編排：`deliver-batch`、`deliver-spe
 `/senior-interview-loop`：一次練一題資深後端面試題。先閉卷作答，再照 `learn-professional-topics` 的方法追問並評分；收尾經人確認後，原始作答寫成一張 Heptabase 練習卡，掌握度只寫入 Growth 的 validation ledger。路徑、Heptabase ID 和門檻都讀 Growth repo 的 `docs/agents/senior-interview-loop.md`；在 Growth checkout 內執行，或設定 `GROWTH_ROOT`。需要 Heptabase MCP。
 
 `learn-professional-topics` 從舊 fork（`ron03wlb/skills` 的 `skills/personal/`）移入，現以本 repo 為正式版本。
+
+## daily-summary
+
+`/daily-summary [YYYY-MM-DD]`：把 Personal Life vault 某天的 Daily 整理進「🌙 晚間回顧」。推進與可解決的問題從晨間意圖、工作目標、工作紀錄與當天 vault commit 起草；情緒、肯定自己、感恩、擔憂這類只有本人知道的欄位一次問完。確認後只改晚間回顧段，可選擇把未完成的工作目標帶到隔天。段落結構以 `.obsidian/daily-notes.json` 指向的 template 為準；在 vault 內執行，或設定 `PERSONAL_LIFE_ROOT`。
