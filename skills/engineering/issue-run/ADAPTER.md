@@ -26,11 +26,12 @@ Default: `implement-spec`'s integration branch and per-ticket worktrees; checkpo
 
 The commands per kind of change, and how to attribute a failure.
 Default: typecheck and the touched test files while building; the full suite once on the run's branch; attribute by rerunning on the base.
+Also name the baseline suites a behavior-preserving refactor runs green before its first change, and the history command for reopened or regressed Issues (tracker, git, transcripts).
 
 ## Review
 
-The review command and its output.
-Default: the `code-review` skill on the run's branch.
+The review command and its output, and what the skill's [Review rules](SKILL.md#review-rules) need: where non-blocking findings go as follow-ups, the files pinned by hash, the safety-fact classes, the high-risk classes with the scenario driver and verifier runner, and the cross-model command.
+Default: the `code-review` skill on the run's branch; follow-ups in the Issue's report; no pinned files; the default safety-fact classes; no high-risk classes.
 
 ## Candidate and acceptance
 
