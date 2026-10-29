@@ -51,6 +51,16 @@ Default: no gated tickets; any need for one found mid-run is a stop.
 
 Repo-specific stop conditions on top of the skill's.
 
+## Pilot
+
+What `/issue-pilot` needs on top of the sections above: pool query, worker cap and batch size, dispatch, watch and probe commands, stage, regression, integrate, push gate, close, and handoff. Besides those, name:
+
+- **Hold flag.** How the coordinator sets and clears a hold, and which landing commands check it right before they merge.
+- **Brief check.** A command that refuses a brief missing goal, scope, acceptance, verify, timebox, forbidden, report, or the standing orders path.
+- **Agent rows.** Where the checkpoint records each spawned agent (parent, handle, start time, stuck-after), and which probe line reports a parent still waiting past its child's stuck-after.
+
+Default: no Pilot section; `/issue-pilot` stops and says so.
+
 ## Permissions
 
 The `.claude/settings.json` allow rules an unattended `/issue-pilot` tick needs, and where git runs.
