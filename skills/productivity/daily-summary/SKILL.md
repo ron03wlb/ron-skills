@@ -1,12 +1,12 @@
 ---
 name: daily-summary
-description: Summarise one day's Daily note in the Personal Life vault into its 🌙 晚間回顧 section, drafting from the day's goals and records and asking the user for the parts only they know, then writing after the user confirms.
+description: Summarise one day's Daily note in the Personal Life vault into its 🌙 晚間回顧 section, drafting from the day's records and agent sessions and asking the user for the parts only they know, then writing after the user confirms.
 disable-model-invocation: true
 ---
 
 # Daily Summary
 
-`/daily-summary [YYYY-MM-DD]` closes one day: the note's own content becomes a filled 晚間回顧. **Evidence, not invention**: every line written traces to the note, the vault's git history for that day, or the user's own reply. Talk to the user in Traditional Chinese.
+`/daily-summary [YYYY-MM-DD]` closes one day: the note's own content becomes a filled 晚間回顧. **Evidence, not invention**: every line written traces to the note, the day's agent sessions, the vault's git history for that day, or the user's own reply. Talk to the user in Traditional Chinese.
 
 ## 0. Locate the note
 
@@ -21,17 +21,21 @@ Done when the note path is known and its content (or absence) is read. When the 
 Read from the note, quoting only what is there:
 
 - 晨間意圖: the intended feeling, the most urgent responsibility, the smallest long-term step.
-- 工作目標: checked `[x]` items are done; unchecked `[ ]` items with text are open; empty `- [ ]` lines are ignored.
+- 工作目標: checked `[x]` items are done; unchecked `[ ]` items with text are open; empty `- [ ]` lines are ignored. The checkboxes already say done or open, so they are context for matching, never content to restate.
 - 工作紀錄 and 💡 靈感與反思: what was actually worked on or thought about.
+- Agent sessions of that day, the main source for what work actually happened. The date is local time (UTC+8); session timestamps are UTC.
+  - Claude Code: `~/.claude/projects/*/*.jsonl` and `/mnt/c/Users/ron.chang/.claude/projects/*/*.jsonl`, entries timestamped that day.
+  - Codex: `~/.codex/sessions/YYYY/MM/DD/*.jsonl`.
+  - Per session take the project (directory name or `cwd`), the user's prompts, and outcomes such as PRs opened or merged, Issues closed, commits. Group sessions by project and task; skip sessions that did nothing.
 - `git -C <vault> log --since=<date> --until=<date+1>` subjects: vault edits made that day (trip planning, finance updates…), as supporting signals only.
 
-Done when each of the three morning intentions is matched to done, partial, open or no evidence.
+Done when the day's sessions are grouped into work items and each of the three morning intentions is matched to done, partial, open or no evidence.
 
 ## 2. Draft and ask
 
 Split the 晚間回顧 prompt lines into two kinds:
 
-- **Drafted** from evidence: 今日實際推進了什麼 (done goals, record highlights, morning intentions met); 可解決的問題 (open goals and concrete next steps from the records).
+- **Drafted** from evidence: 今日實際推進了什麼 (session work items and record highlights, morning intentions met); 可解決的問題 (concrete next steps from the records and sessions). Never copy 工作目標 items or annotate them with done/open wording; mention a goal only when sessions add what the checkbox does not, such as what was concretely delivered.
 - **Asked**, since only the user knows them: 困難、挑戰與情緒, 可以肯定自己的是, 值得感恩的事情, 尚未處理的煩惱, 目前無法控制的擔憂. Ask all of them in one message, each with a one-line hint drawn from the evidence (for example, an open goal as a possible 困難). The user may answer, skip, or say 你寫; for 你寫, draft from evidence and mark the draft as yours in the proposal.
 
 When ### English Practice has text, give brief corrections in chat; the note keeps the user's original unless they ask otherwise.
