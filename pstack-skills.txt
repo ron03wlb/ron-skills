@@ -1,5 +1,5 @@
 # pstack（~/code/pstack，backnotprop/pstack mirror）要連結的 skill；相對 skills/。-<name> 表示刻意不連結。
-# pin: 6f131f137de64fdaf928278c0fd9ecec520ccbee
+# pin: 25abb38559ddbabec563646224d09eff9a250eca
 -architect
 -arena
 -automate-me
@@ -7,12 +7,15 @@ benchmark-checklist
 -blast-radius
 bro
 -correct
+-create-formal-verification-skill
 -create-verification-skill
 -figure-it-out
 -how
 -in-your-own-words
 -interrogate
 ketchup
+-ketchup-video
+-maintain-formal-verification-skill
 -maintain-verification-skill
 -make-bot-ui
 -no-comments
@@ -47,6 +50,7 @@ principle-type-system-discipline
 -setup-pstack
 -sharpen
 show-me-your-work
+-statechart
 -swarm
 -tdd
 -teach

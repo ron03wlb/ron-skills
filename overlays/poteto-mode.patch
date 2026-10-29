@@ -1,8 +1,8 @@
 diff --git a/SKILL.md b/SKILL.md
-index 53f3f3d..a7cdad9 100644
+index 53ecd50..9afcd7b 100644
 --- a/SKILL.md
 +++ b/SKILL.md
-@@ -8,7 +8,17 @@ color: yellow
+@@ -8,7 +8,18 @@ color: yellow
  
  # Poteto mode
  
@@ -13,11 +13,12 @@ index 53f3f3d..a7cdad9 100644
 +
 +These lines override the rest of this skill and its playbooks on this machine.
 +
++- **Claude Code names.** Read `~/code/pstack/docs/harness/claude-code.md` once per session and map Cursor tools, subagent fields, models, paths, and Cursor-only steps with it. Where it and these lines differ, these lines win; read its `<pstack>/skills/<name>` as `~/.claude/skills/<name>`.
 +- **Repo rules win.** The repo's `AGENTS.md` and adapter docs outrank any pstack step, including language: user-visible text, comments, commit messages, and tracker notes follow the repo's language rule. **Writing the reply** and **Comments** apply only where they do not conflict.
-+- **Forge.** There are no GitHub PRs. A delivery unit is a local branch with a candidate commit; "PR", "stack", "merge-ready", and "land" map to the repo adapter's candidate, batch branch, regression, and local merge into the integration branch. Pushing is the operator's, so never push. Skip `gh`, `origin`, `watch-pr`, Babysit, Shipping, and Opening a PR.
-+- **No cloud.** A worker that would be `environment: "cloud"` runs locally as one Orca terminal session per unit in its own worktree, dispatched by the repo's tooling. Docker test runs share the machine, so respect the concurrency cap in the standing orders.
-+- **Models.** Subagents are Claude models only; set the `effort` option instead of slug suffixes. The cross-family verifier is Codex through the repo's review script; when it fails, fall back to the `code-review` skill and record that verdict as lower-grade.
-+- **Not installed.** `how`, `why`, `architect`, `arena`, `interrogate`, `swarm`, `teach`, `no-comments`, `technical-writing`, `figure-it-out`, `reflect`, `recall`, `deslop`, and `setup-pstack` are not linked, and pstack's `tdd` is replaced by Matt's. Where a trigger names a missing skill, use the Matt equivalent (`grilling`, `codebase-design`, `tdd`, `code-review`, `diagnosing-bugs`) or skip it with a one-line reason. Do not install or run `scripts/` (bun, orch store, watch-pr).
++- **Forge.** There are no GitHub PRs. A delivery unit is a local branch with a candidate commit; "PR", "stack", "merge-ready", and "land" map to the repo adapter's candidate, batch branch, regression, and local merge into the integration branch. Push only as the adapter grants. Skip `gh`, `origin`, `watch-pr`, Babysit, Shipping, and Opening a PR.
++- **No cloud.** A delivery unit that would be `environment: "cloud"` runs as one Orca terminal session in its own worktree, dispatched by the repo's tooling, not as an `isolation: "worktree"` subagent. Docker test runs share the machine, so respect the concurrency cap in the standing orders.
++- **Models.** Two families: Claude subagents (`model` plus `effort`) and Codex through the repo's Codex runner or review script. Every non-Claude slug, `grok-*` included, means Codex. When Codex fails, fall back to the `code-review` skill and record that verdict as lower-grade.
++- **Linked set.** `~/code/ron-skills/pstack-skills.txt` lists what is linked; `arena` carries its own local overlay and `eval` runs through it. pstack's `tdd` and `teach` are replaced by Matt's. Where a trigger names an unlinked skill, use the Matt equivalent (`grilling`, `codebase-design`, `tdd`, `code-review`, `diagnosing-bugs`) or skip it with a one-line reason. Do not install or run `scripts/` (bun, watch-pr).
  
  ## Non-negotiables
  
