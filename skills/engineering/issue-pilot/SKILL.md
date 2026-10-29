@@ -68,7 +68,7 @@ A worker's STOP blocks only its dependents; keep everything else moving.
 | Missing prerequisite, credential, or fixture authorization | Gate it with the exact missing item. |
 | SQL turns out to be needed | Follow the adapter's SQL discovery for the pilot: split the SQL Issue, dispatch its preparation to handoff, mark the feature waiting. The human only executes and reads back. |
 | Delivery tooling failure | Open a **tooling fix unit**: a fresh worker in its own worktree with a full brief ([Playbook digest](#playbook-digest) fields), landed as tooling-only per the adapter, then redispatch the affected Issues. The same tool failing twice after a fix becomes a gate. |
-| Findings left after two review cycles | Dispatch one fresh worker with consolidated scope (original Issue, findings, prior branch). Still failing → gate. |
+| Findings left after two review cycles | Dispatch one fresh worker with consolidated scope (original Issue, findings, prior branch). Still failing → gate, unless the adapter grants one limited fix round first. |
 | Merge conflict | Resolve it yourself only when both sides combine mechanically, as the adapter describes; one needing design judgement → gate. |
 | Unrelated changes in a worktree, or anything else | Gate it with the evidence. |
 
