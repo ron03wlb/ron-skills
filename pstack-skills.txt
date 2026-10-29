@@ -1,7 +1,7 @@
 # pstack（~/code/pstack，backnotprop/pstack mirror）要連結的 skill；相對 skills/。-<name> 表示刻意不連結。
 # pin: 25abb38559ddbabec563646224d09eff9a250eca
 -architect
--arena
+arena
 -automate-me
 benchmark-checklist
 -blast-radius

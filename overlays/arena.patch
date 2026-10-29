@@ -1,0 +1,19 @@
+diff --git a/SKILL.md b/SKILL.md
+index e4aaa2d..f1f4908 100644
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -6,6 +6,14 @@ disable-model-invocation: true
+ 
+ # Arena
+ 
++## Local harness (ron-skills overlay)
++
++These lines override the phases below on this machine.
++
++- **When.** Run an arena only for a costly, hard-to-reverse decision with several plausible shapes, such as a shared API, an error model, or a data shape. A routine change that spans functions gets one attempt. The `poteto-mode` Eval playbook runs through this only for a skill change to worker, review, or stop policy, on a few representative tasks.
++- **Runners.** Default to two seats: one Claude `Agent` subagent with `isolation: "worktree"`, and one Codex run in its own worktree through the repo's Codex task runner (the adapter names it), or `codex exec -s workspace-write -C <worktree>` when the repo has none. Every `grok-*` or other non-Claude slug means the Codex seat.
++- **Cross-judge.** A Claude parent's judge is Codex, read-only: the repo's read-only Codex runner, or `codex exec -s read-only`. Give it the rubric and the candidate paths by label only.
++
+ Open a todolist with one entry per phase (Frame, Fan out, Cross-judge, Pick, Graft, Verify) before launching anything.
+ 
+ ## Phase A: Frame
