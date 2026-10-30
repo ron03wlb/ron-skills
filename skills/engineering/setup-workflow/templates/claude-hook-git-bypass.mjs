@@ -63,20 +63,20 @@ const filtered = spec => new RegExp(String.raw`(?:^|[;&|\n(])[^;&|\n"']*?${specP
  * @returns {string|null} 過濾輸出的指令名稱（grep／head／tail…）；未命中為 null
  */
 export function probeFilterReason(command, specs = []) {
+  return filteredOutput(command, specs)?.filter ?? null;
+}
+
+/** 被過濾的 spec 與過濾指令名稱；未命中為 null。 */
+function filteredOutput(command, specs) {
   for (const spec of specs) {
     const filter = filtered(spec).exec(command)?.groups.filter;
-    if (filter) return /(e?grep|rg|head|tail)\b/.exec(filter)[1];
+    if (filter) return { spec, filter: /(e?grep|rg|head|tail)\b/.exec(filter)[1] };
   }
   return null;
 }
 
-/** 輸出要整份讀而被過濾的 spec；未命中為 null。 */
-function filteredSpec(command, specs) {
-  return specs.find(spec => probeFilterReason(command, [spec])) ?? null;
-}
-
-/** argv 中所有 `<flag> <value>` 的 value。 */
-const values = (args, flag) => args.flatMap((arg, i) => (arg === flag && args[i + 1] ? [args[i + 1]] : []));
+/** argv 中所有 `<flag> <value>` 的 value；緊接的是另一個旗標時不算值。 */
+const values = (args, flag) => args.flatMap((arg, i) => (arg === flag && args[i + 1] && !args[i + 1].startsWith('--') ? [args[i + 1]] : []));
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   let command = '';
@@ -92,10 +92,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     process.stderr.write(`拒絕：以 shell \`&\` 在前景 Bash 背景化 ${job}，結束時不會觸發 task notification。去掉 \`&\`，改用 Bash tool 的 run_in_background: true 執行同一指令。\n`);
     process.exit(2);
   }
-  const whole = values(args, '--whole-output');
-  const filter = probeFilterReason(command, whole);
-  if (filter) {
-    process.stderr.write(`拒絕：${filteredSpec(command, whole)} 的輸出以 ${filter} 過濾。這個輸出要整份讀：底下的縮排明細行會被濾掉，下一輪誤判為沒變。拿掉管線，直接執行。\n`);
+  const found = filteredOutput(command, values(args, '--whole-output'));
+  if (found) {
+    const { spec, filter } = found;
+    process.stderr.write(`拒絕：${spec} 的輸出以 ${filter} 過濾。這個輸出要整份讀：底下的縮排明細行會被濾掉，下一輪誤判為沒變。拿掉管線，直接執行。\n`);
     process.exit(2);
   }
 }

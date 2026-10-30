@@ -57,4 +57,5 @@ test('--watched <regex>：只比對符合的路徑，取代預設的 src／sql�
   f.branch('retro-t', { 'app/B.kt': 'b', 'src/A.java': 'b' });
   assert.equal(overlap(f.repo, 'retro-t', 'main', '--watched', '^app/').stdout.trim(), 'INFLIGHT_OVERLAP\nissue-3 shared app/B.kt');
   assert.equal(overlap(f.repo, 'retro-t', 'main', '--watched').status, 2);
+  assert.equal(overlap(f.repo, 'retro-t', 'main', '--watched', '(').status, 2);
 });

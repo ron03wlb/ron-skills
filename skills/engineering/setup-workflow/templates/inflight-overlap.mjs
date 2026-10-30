@@ -67,11 +67,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const flag = args.indexOf('--watched');
   const pattern = flag >= 0 ? args.splice(flag, 2)[1] : undefined;
   const [source, integration] = args;
-  if (!source || !integration || (flag >= 0 && !pattern)) {
-    console.error('用法：node scripts/inflight-overlap.mjs <source-branch> <integration> [--watched <regex>]'); process.exit(2);
-  }
+  const usage = () => { console.error('用法：node scripts/inflight-overlap.mjs <source-branch> <integration> [--watched <regex>]'); process.exit(2); };
+  if (!source || !integration || (flag >= 0 && !pattern)) usage();
+  let watched = WATCHED;
+  try { if (pattern) watched = new RegExp(pattern); } catch (error) { console.error(error.message); usage(); }
   try {
-    const found = overlaps(process.cwd(), source, integration, branch => console.error(`SKIP gone ${branch}`), pattern ? new RegExp(pattern) : WATCHED);
+    const found = overlaps(process.cwd(), source, integration, branch => console.error(`SKIP gone ${branch}`), watched);
     console.log(found.length ? ['INFLIGHT_OVERLAP', ...found].join('\n') : 'NONE');
   } catch (error) {
     console.error(error.message);

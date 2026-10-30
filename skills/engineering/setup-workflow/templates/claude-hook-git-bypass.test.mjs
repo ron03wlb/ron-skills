@@ -89,3 +89,11 @@ test('hook：probe 被過濾時 exit 2，說明要整份讀', () => {
   assert.equal(hook(JSON.stringify({ tool_input: { command: 'node scripts/job-status.mjs --probe | grep STALE' } })).status, 0);
   assert.equal(allowed.status, 0); assert.equal(allowed.stdout + allowed.stderr, '');
 });
+
+test('hook 參數：旗標後面緊接另一個旗標時不當成 spec', () => {
+  const input = cmd => JSON.stringify({ tool_input: { command: cmd } });
+  const args = ['--long-wait', '--whole-output', 'job-watch.mjs'];
+  assert.equal(hook(input('node x.mjs --whole-output &'), args).status, 0);
+  const denied = hook(input('node scripts/job-watch.mjs | grep x'), args);
+  assert.equal(denied.status, 2); assert.match(denied.stderr, /job-watch\.mjs 的輸出以 grep 過濾/);
+});
