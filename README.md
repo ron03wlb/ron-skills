@@ -44,7 +44,9 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 
 `/issue-run <ref> [<ref>...]`：把已 ready 的 Issue 不中斷地跑到本機 candidate commit。方法照 Matt 的 `implement` / `implement-spec`，專案事實全部讀 repo 的 adapter；沒有 adapter 時用 Matt setup 文件與 [ADAPTER.md](skills/engineering/issue-run/ADAPTER.md) 的預設值。push、合併到共用分支、產品決策仍由人負責。
 
-新專案導入：把 `ADAPTER.md` 複製成該 repo 的 `docs/agents/issue-run.md`，填入實際指令。pilot 要在其他 worktree 跑 git 時，照 ADAPTER.md 的 **Permissions** 段複製 [templates/pilot_git.py](skills/engineering/issue-run/templates/pilot_git.py)，allow 只放行該腳本，不寫 `git -C *`（中間的 `*` 能夾帶 git 選項，Claude Code 每次啟動都會警告）。
+新專案導入：照 [ron-skills 交付流程](https://ron-skills-workflow.pages.dev/site/) 分 L1 基本、L2 守門、L3 常駐三級導入（來源 [docs/workflow/](docs/workflow/README.md)）；起點是把 `ADAPTER.md` 複製成該 repo 的 `docs/agents/issue-run.md`，填入實際指令。pilot 要在其他 worktree 跑 git 時，照 ADAPTER.md 的 **Permissions** 段複製 [templates/pilot_git.py](skills/engineering/issue-run/templates/pilot_git.py)，allow 只放行該腳本，不寫 `git -C *`（中間的 `*` 能夾帶 git 選項，Claude Code 每次啟動都會警告）。
+
+流程站由 [workflow-site.yml](.github/workflows/workflow-site.yml) 在合入 `main` 後重跑 `bin/check --upstream`（含機密與私有網址掃描）、以 wrangler 部署 `docs/workflow/` 到 Cloudflare Pages，再逐檔比對公開網址；PR 只跑檢查。第一次設定由 Operator 執行 [scripts/setup-workflow-site.sh](scripts/setup-workflow-site.sh)，建立 Pages 專案、只有 Pages 編輯權限的 token 與 GitHub secret。
 
 新增或改動 skill 的入口時，在新 session 實際觸發一次才算完成。被 `/loop` 驅動的 skill 必須可由 Skill tool 呼叫（不設 `disable-model-invocation`），`bin/sync-skills --check` 以 `scripts/check-loop-invocable.mjs` 檢查。skill 引用的每一行 adapter Pilot 設定，都必須是 ADAPTER.md Pilot 段的條目，`--check` 以 `scripts/check-pilot-lines.mjs` 檢查。
 
