@@ -12,7 +12,8 @@
 // $CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE），再 `--add-assignee @me`，印 `CLAIMED <n>`。同一個帳號會在好幾台機器上跑，
 // 指派分不出是誰，所以看認領留言：
 // - 已被指派時，最近一則認領留言必須是這個 session、作者還在指派名單裡，才再認領一次（重派；新留言順便更新 stale 的時間），否則不改 Issue。
-// - 寫入後重讀：這次讀到之後新增的認領留言裡，最早一則不是自己就是別台搶先了，收回自己的留言（指派是同一個帳號，不動）。
+// - 還沒人指派、但最近一則認領是別的 session 在 5 分鐘內留的：對方正在認領，不改 Issue。
+// - 寫入後重讀：這次讀到之後新增的認領留言裡，最早一則不是自己就是別台搶先了，收回自己的留言（指派到這裡一定是同一個帳號，不動）。
 // 被擋時印 `STOP <n> claimed <機器>／<session>`（沒有認領留言時是指派者登入名），exit 4。
 import { spawnSync } from 'node:child_process';
 import { hostname } from 'node:os';
@@ -61,7 +62,7 @@ export function bucketOf(issue, { staleHours = 24, now = Date.now() } = {}) {
 const BUCKETS = ['ready', 'parent', 'human', 'stale', 'claimed', 'retro', 'blocked', 'needs-info', 'needs-triage', 'unlabeled'];
 
 /** 直接或間接被這張 block、而且還開著的 Issue 數；沿本 repo 列表裡的 blocking 邊走，別的 repo 或不在列表裡的開著的單只算一張。 */
-function blockedCount(issue, byNumber, repo) {
+function blockingCount(issue, byNumber, repo) {
   const seen = new Set([`${repo}#${issue.number}`]);
   const walk = node => {
     for (const { number, repository: { nameWithOwner } } of openNodes(node.blocking)) {
@@ -81,13 +82,16 @@ export function pool(issues, { repo, ...options }) {
   const rows = issues.map(issue => ({
     issue, bucket: bucketOf(issue, options),
     priority: issue.labels.nodes.some(({ name }) => name === 'priority') ? 1 : 0,
-    blocks: blockedCount(issue, byNumber, repo),
+    blocks: blockingCount(issue, byNumber, repo),
   }));
   const rank = row => BUCKETS.indexOf(row.bucket);
   return rows.sort((a, b) => rank(a) - rank(b)
     || (a.bucket === 'ready' && (b.priority - a.priority || b.blocks - a.blocks))
     || a.issue.number - b.issue.number);
 }
+
+/** 沒人指派時，這段時間內別人留的認領留言算進行中（留言與指派之間的空檔）；更舊的視為已被取消指派。 */
+const IN_FLIGHT_MS = 5 * 60_000;
 
 /** 整則留言只有「認領：<機器>／<session>」一行時回傳認領者；引用或夾在其他文字裡的不算。 */
 const claimerOf = ({ body }) => body.trim().match(/^認領：([^\n]+)$/)?.[1];
@@ -98,11 +102,14 @@ function claim(n, repo, session) {
   const stop = claimer => { console.log(`STOP ${n} claimed ${claimer}`); return 4; };
   const mine = `${hostname()}／${session}`;
   const before = read();
+  const last = before.comments.filter(claimerOf).at(-1);
   if (before.assignees.length) {
     const logins = before.assignees.map(({ login }) => login);
-    const last = before.comments.filter(claimerOf).at(-1);
     if (!last || !logins.includes(last.author.login)) return stop(logins.join(','));
     if (claimerOf(last) !== mine) return stop(claimerOf(last));
+  } else if (last && claimerOf(last) !== mine && Date.now() - Date.parse(last.createdAt) < IN_FLIGHT_MS) {
+    // 別的 session 剛留言、還沒指派：當成進行中的認領，不然兩邊都會在對方指派前寫入、各自以為贏了。
+    return stop(claimerOf(last));
   }
   // 先留言再指派：指派成功、留言失敗時，重跑會被自己沒有留言的指派擋住。
   gh('issue', 'comment', ...target, '--body', `認領：${mine}`);

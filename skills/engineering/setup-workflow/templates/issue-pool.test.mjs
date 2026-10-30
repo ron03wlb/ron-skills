@@ -34,10 +34,10 @@ function issue(number, { labels = [], assignees = [], subIssues = 0, blockedBy =
   }, 'issue');
 }
 
-/** claim 讀到的 Issue：assignees 是登入名，comments 是 [作者, 內文]。 */
+/** claim 讀到的 Issue：assignees 是登入名，comments 是 [作者, 內文, 建立時間（省略時沿用樣本，是很久以前）]。 */
 const view = ({ assignees = [], comments = [] } = {}) => mergeSample(VIEW, {
   assignees: assignees.map(login => ({ login })),
-  comments: comments.map(([login, body]) => ({ author: { login }, body })),
+  comments: comments.map(([login, body, createdAt = VIEW.comments[0].createdAt]) => ({ author: { login }, body, createdAt })),
 }, 'view');
 
 /** PATH 上的假 gh：`api graphql` 回 issues 頁面；`issue view` 依序回 views 的第 i 個（用完就一直回最後一個），其餘只記錄 argv；
@@ -179,6 +179,23 @@ test('claim：已被別的機器或別的 session 認領就停下，不改 Issue
     assert.equal(result.stdout, `STOP 7 claimed ${claimer}\n`);
     assert.deepEqual(writes(calls()), []);
   }
+});
+
+// A 留了認領、還沒指派的空檔裡 B 讀到「沒人指派」：B 要把 A 剛留的認領當成進行中，不能也寫進去。
+test('claim：還沒人指派，但 5 分鐘內有別的 session 留了認領，就停下', () => {
+  const { run, calls } = fakeGh({ views: [view({ comments: [['ron', '認領：other-box／sess-9', hoursAgo(0.01)]] })] });
+  const result = run('claim', '7', '--session', 'sess-1');
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, 'STOP 7 claimed other-box／sess-9\n');
+  assert.deepEqual(writes(calls()), []);
+});
+
+test('claim：沒人指派、只有很久以前的認領留言（已被取消指派）時照常認領', () => {
+  const mine = `認領：${HOST}／sess-1`;
+  const { run } = fakeGh({ views: [view({ comments: [['ron', '認領：other-box／sess-9', hoursAgo(48)]] }), view({ assignees: ['ron'], comments: [['ron', '認領：other-box／sess-9', hoursAgo(48)], ['ron', mine]] })] });
+  const result = run('claim', '7', '--session', 'sess-1');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'CLAIMED 7\n');
 });
 
 test('claim：被指派卻沒有認領留言（人手動指派、或引用文字裡的認領）就停下', () => {
