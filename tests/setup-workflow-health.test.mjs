@@ -187,6 +187,8 @@ test('掃到的路徑是目錄（指向目錄的 symlink）時略過而不中斷
   const root = repo(t, { 'lib/a.mjs': 'x\n' });
   symlinkSync('../lib', join(root, 'scripts'));
   symlinkSync('lib', join(root, 'notes.md'));
+  symlinkSync('loop-b', join(root, 'loop-a'));
+  symlinkSync('loop-a', join(root, 'loop-b'));
   git(root, 'add', '.');
   git(root, 'commit', '-qm', 'links');
   const { status, stderr, lines } = health(root);
@@ -204,6 +206,11 @@ test('清單項目的副本或正本是目錄時回報而不中斷', t => {
   assert.match(lines.join('\n'), /missing-copy lib /);
   assert.match(lines.join('\n'), /missing-canonical scripts\/x\.mjs /);
   assert.equal(lines.at(-1), 'FINDINGS 2');
+});
+
+test('隱性跨 repo 依賴：settings.json 裡跳脫的雙引號（\\"$HOME\\"/...）也算', t => {
+  const { lines } = health(repo(t, { '.claude/settings.json': '{"command":"node \\"$HOME\\"/code/spay2/a.mjs"}\n' }));
+  assert.match(lines.find(line => line.startsWith('FINDING cross-repo')) ?? '', /^FINDING cross-repo \$HOME\/code\/spay2\/a\.mjs .*# \.claude\/settings\.json:1/);
 });
 
 test('隱性跨 repo 依賴：bash 把 $HOME 或 ~ 單獨加引號的寫法也算', t => {

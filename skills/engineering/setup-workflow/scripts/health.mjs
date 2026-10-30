@@ -23,7 +23,8 @@ if (git('rev-parse', '--show-toplevel') === null) fail(`${root} 不是 git repo`
 
 const lines = text => (text ? text.split('\n').filter(Boolean) : []);
 // 已追蹤與未追蹤（不含 gitignore）的檔案；工作樹裡刪掉的，以及其實是目錄的（指向目錄的 symlink、submodule）都不算。
-const isFile = path => statSync(path, { throwIfNoEntry: false })?.isFile() ?? false;
+// stat 失敗（不存在、symlink 迴圈、路徑太長）都當成不是檔案。
+const isFile = path => { try { return statSync(path).isFile(); } catch { return false; } };
 const files = lines(git('ls-files', '--cached', '--others', '--exclude-standard')).filter(file => isFile(join(root, file)));
 const read = path => readFileSync(join(root, path), 'utf8');
 
@@ -89,16 +90,18 @@ for (const [path, entry] of Object.entries(copies)) {
 // 隱性跨 repo 依賴：adapter、.claude/settings.json 與 scripts/、bin/、git hook 目錄裡家目錄下的絕對路徑，路徑中沒有本 repo 的名稱就是指向別的 repo。
 // 家目錄下的設定目錄（~/.claude）與只到某個目錄本身（~/code/<repo>）的提及不算：依賴的是那個 repo 裡的檔案，
 // 所以路徑要指到檔案（最後一段有副檔名，如 ~/spay2/send.mjs），或在家目錄下至少三段（~/code/spay2/scripts）。
-// bash 常在路徑中間開關雙引號（"$HOME"/code/x、"$HOME/code/x"/y），所以每個 / 前後可以接一個雙引號，比對前去掉；單引號裡的 $HOME 不會展開，不算。
-const HOME_PATH = /(?:~|\$\{?HOME\}?|\/home\/[\w.-]+|\/Users\/[\w.-]+)((?:"?\/"?[\w.@+-]+)+)/g;
+// bash 常在路徑中間開關雙引號（"$HOME"/code/x、"$HOME/code/x"/y，JSON 裡寫成 \"$HOME\"/code/x），所以每個 / 前後可以接一個（跳脫的）雙引號，比對前去掉；
+// '$HOME'/code/x 這種只把家目錄單引號起來的寫法不會展開，不算。
+const HOME_PATH = /(?:~|\$\{?HOME\}?|\/home\/[\w.-]+|\/Users\/[\w.-]+)((?:\\?"?\/\\?"?[\w.@+-]+)+)/g;
+const unquote = text => text.replace(/\\?"/g, '').replace(/\.+$/, '');
 const hooksPath = git('config', 'core.hooksPath');
 const scriptDirs = ['scripts/', 'bin/', '.githooks/', '.husky/', ...(hooksPath && !hooksPath.startsWith('/') ? [`${hooksPath.replace(/\/?$/, '/')}`] : [])];
 const scanned = files.filter(file => file === adapterPath || file === '.claude/settings.json' || scriptDirs.some(dir => file.startsWith(dir)));
 for (const file of scanned) {
   read(file).split('\n').forEach((text, i) => {
     for (const match of text.matchAll(HOME_PATH)) {
-      const path = match[0].replaceAll('"', '').replace(/\.+$/, '');
-      const segments = match[1].replaceAll('"', '').replace(/\.+$/, '').split('/').filter(Boolean);
+      const path = unquote(match[0]);
+      const segments = unquote(match[1]).split('/').filter(Boolean);
       const toFile = /\.\w+$/.test(segments.at(-1));
       if (segments.length < (toFile ? 2 : 3) || segments[0].startsWith('.') || segments.some(segment => names.has(segment))) continue;
       finding('cross-repo', `${path} 指向本 repo 以外的檔案`, `${file}:${i + 1}`);
