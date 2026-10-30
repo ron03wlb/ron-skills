@@ -251,6 +251,24 @@ test('requests.md 與 gates.md 只印還開著的列', t => {
   ]);
 });
 
+// 寫錯格式的 resolved（retro a6：G8 寫成 `- status：resolved …`）不算解除，gate 會一直被當成開著，
+// 下一任 coordinator 再問一次人已經回答過的問題；另印 GATE_MALFORMED 指出那一行。
+test('段落 gate 的 resolved 寫進別的欄位時印 GATE_MALFORMED', t => {
+  const { pilot, probe } = fixture(t);
+  writeFileSync(join(pilot, 'gates.md'), `# Gates
+
+## G8 #31 consolidated 重派後仍有 findings
+- Issue：#31（batch-31）
+- question：resolved 以前的做法要不要沿用？
+- opened：2026-10-30T19:13:47+08:00
+- status：resolved 2026-10-30T19:21:18+08:00 Operator 選預設
+`);
+  assert.deepEqual(lines(probe()), [
+    'GATE G8 #31 consolidated 重派後仍有 findings',
+    'GATE_MALFORMED G8 - status：resolved 2026-10-30T19:21:18+08:00 Operator 選預設',
+  ]);
+});
+
 // review 第一、二輪：標記只認最後一個 `source` 欄之後的 `applied`／`declined`，請求內文提到這兩個字（連同 source）不算已處理。
 test('請求內文出現 applied 但沒有標記時仍是開著的', t => {
   const { pilot, probe } = fixture(t);
