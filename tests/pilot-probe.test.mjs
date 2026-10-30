@@ -271,6 +271,31 @@ test('沒有 ORCA_CLI_COMMAND 時其他檢查照跑，running 成員印 STUCK no
   assert.deepEqual(lines(result), [`UNBARE ${repo}`, 'WORKER 23 STUCK no-orca']);
 });
 
+// #52：coordinator 讀主 checkout 的 adapter，pilot/integration 上的版本比較新時會照過時的規則 stage（#21 的 Stage worktree）。
+// issue-run.md 與 pilot.md（#45 之後）都比；只有一邊有也算不同，兩邊相同或沒有 pilot/integration 時不印。
+test('pilot/integration 的 adapter 與 main 不同時印 ADAPTER_AHEAD <檔案>', t => {
+  const { repo, git, probe } = fixture(t);
+  const commit = (files, message) => {
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(join(repo, path, '..'), { recursive: true });
+      writeFileSync(join(repo, path), text);
+      git('add', path);
+    }
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', message);
+  };
+  commit({ 'docs/agents/issue-run.md': '# adapter\n' }, 'adapter');
+  assert.equal(probe().stdout, '');
+  git('branch', 'pilot/integration');
+  assert.equal(probe().stdout, '');
+
+  git('switch', '-q', 'pilot/integration');
+  commit({ 'docs/agents/issue-run.md': '# adapter\n- Stage worktree\n', 'docs/agents/pilot.md': '# pilot\n' }, 'newer adapter');
+  git('switch', '-q', 'main');
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), ['ADAPTER_AHEAD docs/agents/issue-run.md', 'ADAPTER_AHEAD docs/agents/pilot.md']);
+});
+
 // `moved` 的成員已經移到別的 batch（如 batch-21-27 的 #27），不再擋這個 batch；Claude Code 的結果 bullet 也可能是 `⏺`。
 test('moved 成員不擋 STAGEABLE，⏺ 開頭的結果行也讀得到', t => {
   const { batch, probe } = fixture(t, { screens: { term_21: { status: 'running', tail: [`⏺ DONE 21 ${SHA}`] } } });

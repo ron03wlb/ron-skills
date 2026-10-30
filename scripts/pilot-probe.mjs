@@ -5,6 +5,7 @@
 // 用法：node scripts/pilot-probe.mjs <主 checkout>（讀 running 成員要 ORCA_CLI_COMMAND；沒有時其他檢查照跑）
 // stdout 每行一項，沒事的項目不印（全部正常且沒有 batch 時不輸出）：
 //   主 checkout：UNBARE <checkout>（Bare guard 剛還原 core.bare）｜NOT_MAIN <分支>｜HOLD｜DIRTY <git status --short 的一行>
+//   adapter：ADAPTER_AHEAD <檔案>（pilot/integration 上的 docs/agents/issue-run.md 或 pilot.md 與 main 不同，#52）
 //   開著的列：REQUEST <requests.md 原文>｜GATE <id> <Issue> <question 或段落標題>
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
 //                 WORKER <n> STUCK exited|stuck-after <分鐘>|orca <錯誤碼>|no-orca|checkpoint <欄位> <值>
@@ -49,6 +50,16 @@ export function checkoutState(checkout) {
   if (status.status !== 0) throw new Error(`git status exit ${status.status}：${status.stderr.trim()}`);
   for (const line of status.stdout.split('\n').filter(Boolean)) out.push(`DIRTY ${line}`);
   return out;
+}
+
+/** 下一批在 pilot/integration 上 stage，主 checkout 的 adapter 卻是 main 的版本（#52）。 */
+const ADAPTERS = ['docs/agents/issue-run.md', 'docs/agents/pilot.md'];
+
+/** main 與 pilot/integration 上內容不同的 adapter 檔（只有一邊有也算）；沒有 pilot/integration 時不比。 */
+export function adapterAhead(checkout) {
+  const blob = (branch, path) => git(checkout, 'rev-parse', '--verify', '-q', `refs/heads/${branch}:${path}`).stdout.trim();
+  if (!git(checkout, 'rev-parse', '--verify', '-q', 'refs/heads/pilot/integration').stdout.trim()) return [];
+  return ADAPTERS.filter(path => blob('main', path) !== blob('pilot/integration', path)).map(path => `ADAPTER_AHEAD ${path}`);
 }
 
 /**
@@ -137,7 +148,7 @@ function mergedNotInMain(checkout, key, regression) {
 
 export async function probe(ctx, checkout) {
   const pilot = join(checkout, '.scratch/pilot');
-  const out = [...checkoutState(checkout), ...openRows(pilot)];
+  const out = [...checkoutState(checkout), ...adapterAhead(checkout), ...openRows(pilot)];
   const batches = (existsSync(pilot) ? readdirSync(pilot) : []).filter(file => /^batch-.+\.md$/.test(file)).sort();
   const landing = [];
   for (const file of batches) {
