@@ -10,8 +10,8 @@ import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-main-checkout.mjs', import.meta.url));
 // 預設不帶 CLAUDE_PROJECT_DIR：測試本身可能跑在 Claude Code 底下，繼承到的值指向真正的 repo，不是 fixture。
-const hook = (input, projectDir) => {
-  const env = { ...process.env };
+const hook = (input, projectDir, extraEnv = {}) => {
+  const env = { ...process.env, ...extraEnv };
   delete env.CLAUDE_PROJECT_DIR;
   if (projectDir) env.CLAUDE_PROJECT_DIR = projectDir;
   return spawnSync('node', [script], { input, encoding: 'utf8', env });
@@ -148,13 +148,18 @@ test('Bash：主 checkout 切換或新開分支 exit 2；切回預設分支、�
 // 真實發生過的錯（#71）：沒展開的 `$變數` 被接在 cwd 底下，當成主 checkout 內未 gitignore 的路徑擋下。
 test('Bash：無法解析的 $變數 不當成主 checkout 路徑；同一條指令裡賦值的變數先代換再判斷', () => {
   const { root, main } = fixture();
-  const bash = command => hook(JSON.stringify({ tool_name: 'Bash', cwd: main, tool_input: { command } }));
+  const bash = command => hook(JSON.stringify({ tool_name: 'Bash', cwd: main, tool_input: { command } }), undefined, { HOME: root });
   for (const command of [
     'f=docs/a.md; sed -i "s/a/b/" $f',
     `D=${main}/docs; echo hi > "$D/new.md"`,
     `D=${main}; mkdir -p $D && cd $D\ncat > GLOSSARY.md <<'X'\nx\nX`,
     'export F=docs/a.md && echo hi >> ${F}',
     "echo hi > '$f'.md", // 單引號裡的 $ 是字面
+    'declare F=docs/a.md; sed -i "s/a/b/" $F',
+    'cd docs && echo hi > $PWD/new.md', // $PWD 是指令當下的目錄，不是 hook 行程的
+    // cd 到解析不了的目錄時，後面的相對路徑仍依原本的目錄判斷：在主 checkout 常見這種寫法
+    'cd "$(git rev-parse --show-toplevel)" && sed -i "s/a/b/" docs/a.md',
+    'cd $D && echo hi > GLOSSARY.md',
   ]) {
     const denied = bash(command);
     assert.equal(denied.status, 2, command);
@@ -164,8 +169,8 @@ test('Bash：無法解析的 $變數 不當成主 checkout 路徑；同一條指
     'sed -i "s/a/b/" $f',
     `cat > "$SP/79.md" <<'EOF'\nbody\nEOF`,
     'echo hi > ${OUT:-docs/a.md}',
-    'cd $D && echo hi > GLOSSARY.md',
     'echo hi > "$(mktemp)"',
+    'D=~/scratch; echo hi > $D/x.md && echo hi > ~/y.md', // ~ 是 HOME（測試裡指到 repo 外）
     // retro 2026-10-31 的指令形狀：變數賦值成 repo 外的絕對路徑後 cd 進去寫檔
     `D=${join(root, 'scratchpad', 'issues')}; mkdir -p $D && cd $D\ncat > parent.md <<'X'\nx\nX`,
     'f=.scratch/x.md; echo hi > $f',
@@ -200,6 +205,7 @@ test('hook：目標檔所在 repo 不是 CLAUDE_PROJECT_DIR 的 repo 時放行�
     [edit(join(main, 'docs', 'a.md'), worktree), 'session 開在 worktree 時 Edit 主 checkout'],
     [bash('echo hi > GLOSSARY.md', main), 'Bash 寫本專案主 checkout 新檔'],
     [edit(join(other, 'settings.json')), '沒有 CLAUDE_PROJECT_DIR 時照舊：任何主 checkout 都擋'],
+    [edit(join(main, 'docs', 'a.md'), join(root, 'missing')), 'CLAUDE_PROJECT_DIR 無法判定時照舊'],
   ]) {
     assert.equal(result.status, 2, label);
     assert.match(result.stderr, /主 checkout 防護/, label);
