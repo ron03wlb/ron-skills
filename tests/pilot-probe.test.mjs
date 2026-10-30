@@ -306,6 +306,28 @@ test('pilot/integration 的 adapter 比 main 新時印 ADAPTER_AHEAD <檔案>', 
   // main 直接合入新的 issue-run.md：integration 那份比較舊，不印。
   commit({ 'docs/agents/issue-run.md': '# adapter\n- Push gate\n' }, 'main adapter');
   assert.deepEqual(lines(probe()), ['ADAPTER_AHEAD docs/agents/pilot.md']);
+
+  // review 第二輪：integration 刪掉的檔讀不到（`git show pilot/integration:<檔案>` 會失敗），不印。
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '-q', '--no-edit', 'pilot/integration');
+  git('switch', '-q', 'pilot/integration');
+  git('merge', '-q', '--ff-only', 'main');
+  git('rm', '-q', 'docs/agents/pilot.md');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'drop pilot');
+  git('switch', '-q', 'main');
+  assert.equal(probe().stdout, '');
+});
+
+test('沒有本機 main 時不比 adapter，其他檢查照跑', t => {
+  const { repo, git, probe } = fixture(t);
+  git('switch', '-q', '-c', 'pilot/integration');
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  writeFileSync(join(repo, 'docs/agents/issue-run.md'), '# adapter\n');
+  git('add', 'docs/agents/issue-run.md');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'adapter');
+  git('branch', '-q', '-D', 'main');
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), ['NOT_MAIN pilot/integration']);
 });
 
 // `moved` 的成員已經移到別的 batch（如 batch-21-27 的 #27），不再擋這個 batch；Claude Code 的結果 bullet 也可能是 `⏺`。

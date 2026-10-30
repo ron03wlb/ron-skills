@@ -63,17 +63,22 @@ function rev(checkout, ref) {
 }
 
 /**
- * pilot/integration 上比 main 新的 adapter 檔：內容不同，而且 main 最後一次改這個檔的 commit 已經在 integration 裡
- * （main 從沒有這個檔也算）。main 自己改過、integration 還沒跟上時，integration 那份比較舊，不印。沒有 pilot/integration 時不比。
+ * pilot/integration 上比 main 新的 adapter 檔：integration 有這個檔、內容與 main 不同，而且 main 最後一次改它的 commit
+ * 已經在 integration 裡（main 從沒有這個檔也算）。main 自己改過、integration 還沒跟上時，integration 那份比較舊，不印；
+ * 兩邊都改過（歷史分岔）時分不出誰新，也不印。integration 刪掉的檔讀不到，不印。沒有 pilot/integration 或 main 時不比。
  */
 export function adapterAhead(checkout) {
-  if (!rev(checkout, 'refs/heads/pilot/integration')) return [];
+  if (!rev(checkout, 'refs/heads/pilot/integration') || !rev(checkout, 'refs/heads/main')) return [];
   return ADAPTERS.filter(path => {
-    if (rev(checkout, `refs/heads/main:${path}`) === rev(checkout, `refs/heads/pilot/integration:${path}`)) return false;
+    const ahead = rev(checkout, `refs/heads/pilot/integration:${path}`);
+    if (!ahead || ahead === rev(checkout, `refs/heads/main:${path}`)) return false;
     const touched = git(checkout, 'log', '-1', '--format=%H', 'refs/heads/main', '--', path);
     if (touched.status !== 0) throw new Error(`git log main -- ${path} exit ${touched.status}：${touched.stderr.trim()}`);
     const last = touched.stdout.trim();
-    return !last || git(checkout, 'merge-base', '--is-ancestor', last, 'refs/heads/pilot/integration').status === 0;
+    if (!last) return true;
+    const ancestor = git(checkout, 'merge-base', '--is-ancestor', last, 'refs/heads/pilot/integration');
+    if (ancestor.status > 1) throw new Error(`git merge-base --is-ancestor exit ${ancestor.status}：${ancestor.stderr.trim()}`);
+    return ancestor.status === 0;
   }).map(path => `ADAPTER_AHEAD ${path}`);
 }
 
