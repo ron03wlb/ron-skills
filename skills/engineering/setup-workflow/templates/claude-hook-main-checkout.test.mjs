@@ -106,3 +106,35 @@ test('Bash：sed -i／perl -i／重導向／tee 寫主 checkout 追蹤檔或新�
     assert.equal(allowed.stdout + allowed.stderr, '', command);
   }
 });
+
+// 真實發生過的錯（retro 2026-10-30）：在主 checkout `git switch -c` 開分支後，另一個 session 也在主 checkout 開分支，commit 落到對方分支。
+test('Bash：主 checkout 切換或新開分支 exit 2；切回預設分支、還原檔案、worktree 內切分支放行', () => {
+  const { main, worktree } = fixture();
+  git(main, 'branch', 'other');
+  const bash = (command, cwd = main) => hook(JSON.stringify({ tool_name: 'Bash', cwd, tool_input: { command } }));
+  const real = 'git switch -c daily-summary/day-sessions && git add README.md && git commit -q -m x';
+  for (const command of [
+    real,
+    'git checkout -b retro/x',
+    'git switch other',
+    'git checkout other',
+    `git -C ${main} switch --detach HEAD`,
+    `cd /tmp && cd ${main} && git switch -C x`,
+  ]) {
+    const denied = bash(command, command.startsWith('cd /tmp') ? '/tmp' : main);
+    assert.equal(denied.status, 2, command);
+    assert.match(denied.stderr, /主 checkout 防護/, command);
+  }
+  for (const [command, cwd] of [
+    ['git switch main', main],
+    ['git checkout main', main],
+    ['git checkout -- docs/a.md', main],
+    ['git switch -c y', worktree],
+    [`git -C ${worktree} checkout -b z`, main],
+    ['git status && git log -1', main],
+  ]) {
+    const allowed = bash(command, cwd);
+    assert.equal(allowed.status, 0, command);
+    assert.equal(allowed.stdout + allowed.stderr, '', command);
+  }
+});
