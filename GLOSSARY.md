@@ -49,5 +49,5 @@ _Avoid_: 關聯單、mirror issue
 _Avoid_: queue、backlog、待辦
 
 **認領**:
-session 開始處理一張 Issue 前，在 tracker 上把它指派給自己，讓其他機器或 session 不會撿到同一張。
+session 開始處理一張 Issue 前，在 tracker 上把它指派給自己，讓其他機器或 session 不會撿到同一張；同一個帳號分不出 session，所以先留一則「認領：<機器>／<session>」留言再指派。
 _Avoid_: lock、claim、佔單

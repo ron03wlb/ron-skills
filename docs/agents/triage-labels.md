@@ -23,4 +23,4 @@ Edit the "Label in our tracker" column to match whatever vocabulary you actually
 兩個都不是 triage 角色，可以和上表的 label 同時掛。`scripts/issue-pool.mjs` 讀它們：
 
 - **`priority`**：`ready` 桶排在最前，勝過 block 開著的單的數目和號碼。
-- **`retro`**：retro 收集來的改進候選，還沒細化；不論掛了哪個 triage label，都歸到 `retro` 桶，不進池子。
+- **`retro`**：retro 收集來的改進候選，還沒細化；不進池子。沒被指派、也不是母單或 `ready-for-human` 時，不論掛了 `needs-*` 或 `ready-for-agent`，都歸到 `retro` 桶（優先序寫在腳本檔頭）。
