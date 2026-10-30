@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Claude Code 語言 hook：使用者可見文字（assistant text block）以英文為主時回報，要求以繁體中文重新說明。
-// CLAUDE.md 規定使用者可見訊息一律繁體中文，連工具呼叫之間的一行進度也算；只靠文字規則會反覆重犯，所以用 hook 擋。移植自 spay2，判斷邏輯與門檻照舊。
+// 專案規定使用者可見訊息一律繁體中文（寫在 CLAUDE.md 等 agent 指引），連工具呼叫之間的一行進度也算；只靠文字規則會反覆重犯，所以用 hook 擋。
 // 依 stdin hook JSON 的 hook_event_name 分兩種用法：
 // - PostToolUse／PostToolUseFailure：檢查這次工具呼叫前緊鄰的文字段（上一個工具呼叫或 tool_result 之後到本 tool_use 為止），
 //   同一輪就能改正；工具已執行，exit 2 只把 stderr 交回 agent。
@@ -32,7 +32,7 @@ const WORD = /\b[A-Za-z]{2,}\b/g;
  * 或英文單字 3–5 個且完全沒有中文字（「Still running; nothing new.」）。
  * 以中文句型串起技術名詞的進度行（「Fast check exit 0。跑 Docker focused」）不會命中；
  * 門檻依 2026-10-20 對 ~/.claude/projects 全部 11386 段 assistant 文字的抽樣調整；
- * 短句規則依 2026-10-21 對 spay2 最近 173 個 transcript 7334 段文字抽樣：多命中 93 段，全是英文進度句。
+ * 短句規則依 2026-10-21 對一個專案最近 173 個 transcript 7334 段文字抽樣：多命中 93 段，全是英文進度句。
  * @param {string} text assistant text block
  * @returns {boolean}
  */
@@ -53,7 +53,7 @@ const HARNESS = [
 const HARNESS_MAX = 300;
 const NOTICE = '語言檢查：';
 
-/** harness 合成的 assistant 項目：isApiErrorMessage、apiError 或 model `<synthetic>`（spay2 2026-10-23 transcript 的 weekly limit 即此形狀）。 */
+/** harness 合成的 assistant 項目：isApiErrorMessage、apiError 或 model `<synthetic>`（2026-10-23 某 transcript 的 weekly limit 即此形狀）。 */
 export function isSyntheticEntry(entry) {
   return entry.type === 'assistant' && (entry.isApiErrorMessage === true || Boolean(entry.apiError) || entry.message?.model === '<synthetic>');
 }

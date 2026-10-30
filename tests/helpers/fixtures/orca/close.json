@@ -1,0 +1,7 @@
+{
+  "close": {
+    "handle": "term_sample",
+    "tabId": "sample",
+    "ptyKilled": true
+  }
+}

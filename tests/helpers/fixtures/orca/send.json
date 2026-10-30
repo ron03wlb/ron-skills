@@ -1,0 +1,25 @@
+{
+  "send": {
+    "handle": "term_sample",
+    "accepted": true,
+    "bytesWritten": 8,
+    "prompt": {
+      "requestId": "sample",
+      "stages": [
+        "sample"
+      ],
+      "provider": "sample",
+      "observation": "sample",
+      "processIncarnation": "sample",
+      "generation": 815,
+      "baselineWorkingSequence": 0
+    }
+  },
+  "mutation": {
+    "requestId": "sample",
+    "replayed": false
+  },
+  "warnings": [
+    "sample"
+  ]
+}

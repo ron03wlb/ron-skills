@@ -3,4 +3,6 @@
 # 啟用：ln -s ../../.githooks/pre-commit .git/hooks/pre-commit
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
+# hook 帶入的 GIT_DIR、GIT_INDEX_FILE 等會被 bin/check 裡測試的 git 繼承，`git init` 就把主 checkout 設成 bare（#25）；清掉 git 自己列出的 repo 區域變數（連帶清掉 `git -c` 帶入的設定）。
+unset $(git rev-parse --local-env-vars)
 bin/check >/dev/null

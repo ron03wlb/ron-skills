@@ -23,9 +23,11 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 
 - `matt-skills.txt`：要連結的 Matt skill 清單（相對 `skills/`）；`-<path>` 表示刻意不連結。`--check` 列出的 `NEW` 行，二選一加入清單。
 - `pstack-skills.txt`：pstack 白名單，同樣格式；`# pin:` 記錄驗證過的上游 SHA，HEAD 不同時只警告。不連結的理由只有三種：與 Matt 或本 repo 的流程重疊（`tdd`、`teach`、`reflect`／`recall`／`correct` 已併入 `retro` 與 `issue-run`、`swarm` 由專案的分區掃描涵蓋）、與 repo 規範衝突（`no-comments` 的刪註解策略、`technical-writing` 的英文句式規則），或 Cursor 專屬。pstack 的方法沒有一個需要兩家以上模型，Claude 加 Codex 即可；`arena` 以 overlay 接本機 worktree 與 Codex judge，`poteto-mode` 的 Eval playbook 經由它執行。`create-formal-verification-skill`／`maintain-formal-verification-skill` 用於金流與並發屬性的形式驗證（TLA+ 等），`statechart` 是前者讀 TLA+ 結果的依賴，一併連結。
-- `bin/check`：唯一的檢查入口，依序跑 `bin/sync-skills --check`、連結檢查、流程站三道守門與 `tests/`；`bin/check --upstream` 改對 Matt 與 pstack 上游最新 main 檢查（與 CI 相同）。
+- `bin/check`：唯一的檢查入口，依序跑 `bin/sync-skills --check`、連結檢查、流程站三道守門、`tests/` 與 setup-workflow 正本的測試；`bin/check --upstream` 改對 Matt 與 pstack 上游最新 main 檢查（與 CI 相同）。
 - 流程站（`docs/workflow/`，產出在 `site/`）：`bin/check` 跑三道守門。`node scripts/build-workflow-site.mjs --check` 擋手改 HTML 或忘了重產；`node scripts/check-workflow-strings.mjs` 擋 spay2 專屬字串（專案名、`192.168.`、`feature/ron/#`，只放行 spay2 公開站網址）；`node scripts/check-workflow-sync.mjs` 在 `issue-run`／`issue-pilot`／`retro-collect` 的 `SKILL.md` 或 `ADAPTER.md` 變動時失敗，對照 `docs/workflow/` 後執行 `--restamp`。
+- setup-workflow 的 script 正本（`skills/engineering/setup-workflow/templates/`）：其他專案導入用的通用 script 與測試，來自 spay2、已去除專案字樣。本 repo 的 `scripts/orca-session-send.mjs`、`scripts/claude-hook-language.mjs` 是從正本複製的副本，`tests/template-copies.test.mjs` 檢查兩者逐位元組相同：要改就改正本，再複製過來。
 - 語言 hook（`.claude/settings.json` 掛 `scripts/claude-hook-language.mjs`）：在 `Stop`、`PostToolUse`、`PostToolUseFailure` 檢查使用者可見文字，以英文為主時 exit 2，要求 agent 改用繁體中文重新說明；規則見 `CLAUDE.md`。
+- bare 防護 hook（`.claude/settings.json` 的 `PreToolUse`（Bash）掛 `scripts/claude-hook-unbare.sh`）：Orca 從 WSL 操作 worktree 時，可能在任何 session 進行中把主 checkout 的 `core.bare` 設成 true；hook 從 git common dir 找到主 checkout，呼叫 `scripts/pilot-unbare.sh` 還原並記入 `.scratch/pilot/decisions.md`。
 - 本機 pre-commit（`.githooks/pre-commit`，clone 後執行一次 `ln -s ../../.githooks/pre-commit .git/hooks/pre-commit` 啟用）：跑 `bin/check`。
 - CI（`.github/workflows/checks.yml`）：每次 push 與每週一跑 `bin/check --upstream`；上游改到補丁位置時會先在這裡變紅。
 - `overlays/<name>.patch`：對 Matt 或 pstack skill 的最小改動，同步時套在 `~/.local/share/ron-skills/overlay/<name>` 的副本上，上游 checkout 本身不變。
@@ -35,7 +37,7 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 
 | 補丁 | 內容 |
 | --- | --- |
-| `grilling`、`grill-me`、`grill-with-docs` | `effort: high`；`grilling` 另把「派子代理查事實」改為自己用工具查、範圍大才派 |
+| `grilling`、`grill-me`、`grill-with-docs` | `effort: high`；`grilling` 另把「派子代理查事實」改為自己用工具查、範圍大才派，並在第一輪前列出與主題相關、還開著的 Issue |
 | `domain-modeling` | repo 自訂的 ADR 版面與索引編號優先 |
 | `retro` | 寫入前檢查其他 session 的並行修改；repo 有 `scripts/retro-collect.mjs` 且本 session 是退役 coordinator 時改為收集模式：只寫 retro 檔、不實作，等 `/retro-collect` |
 | `poteto-mode` | 本機 harness：先讀上游 `docs/harness/claude-code.md` 做名稱對照；repo 規則與語言優先、無 GitHub PR（對應 candidate／整合分支）、無 cloud（Orca terminal）、Claude 加 Codex 兩家、未連結 skill 改用 Matt 對應 |
@@ -56,6 +58,10 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 `/loop /issue-pilot`：在專案主 checkout（或 adapter Pilot 段 **Coordinator checkout** 指定的 checkout）常駐的 coordinator，採 pstack Autopilot-stack 語意。它自己從 tracker 池子挑 Issue、每張派一個 `/issue-run <iid> --worker <checkpoint>` 的 Orca terminal、整批 regression 後合入本機整合分支，再通知人 push。人只做產品決策、共用環境 SQL 執行與讀回、`git push`。專案事實讀 adapter 的 **Pilot** 段落。專案自己的每 tick 檢查（例如 investing 的每日採集派發與額度檢查）寫在 Pilot 段的 **Project tick hooks**：每個 tick 在 Drain 之後、Pick 之前執行，exit 0 繼續，非 0 開 gate 並跳過該 tick 的 Pick 與 Dispatch；沒寫就略過。
 
 pilot 已達標，2026-10-21 起是唯一編排：`deliver-batch`、`deliver-spec`、`project-batch` 已下架。`/issue-run` 單獨使用是手動入口，不是備援。
+
+## land
+
+`node scripts/land.mjs <branch> --body-file <file> [--title <title>]`：把做完的分支一次合入 `main`，依序是 push、開 PR（已經開著就沿用）、等 CI、以 merge commit 合併，接著移除 worktree（透過 Orca）、還原 `core.bare`、刪除本機和 `origin` 的分支，主 checkout 用 `--ff-only` 跟上，最後執行 `bin/sync-skills`。最後一行是 `LANDED <pr> <sha>`，或 `STOP <原因>`（exit 4）；中斷後用同一條指令重跑，會從斷掉的地方接著做，不重開 PR、不重複合併。CI 超過 480 秒還沒跑完時印 `STOP checks-timeout`，重跑會接著等。`--keep-branch` 保留分支，只用 `--ff-only` 讓它跟上 `origin/main` 再 push，給 `pilot/integration` 用（adapter 的 Push gate 等 #27 合入後改用這支）。
 
 ## retro-collect
 

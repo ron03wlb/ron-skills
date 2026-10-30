@@ -40,7 +40,23 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 
 - **Map**: a single issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. `gh issue create --label wayfinder:map`.
 - **Child ticket**: an issue linked to the map as a GitHub sub-issue (see **Make an issue a sub-issue of a parent**). Where sub-issues aren't enabled, add the child to a task list in the map body and put `Part of #<map>` at the top of the child body. Labels: `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.
-- **Blocking**: GitHub's **native issue dependencies**, the canonical, UI-visible representation. Add an edge with `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/<owner>/<repo>/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). GitHub reports `issue_dependencies_summary.blocked_by` (open blockers only, the live gate). Where dependencies aren't available, fall back to a `Blocked by: #<n>, #<n>` line at the top of the child body. A ticket is unblocked when every blocker is closed.
-- **Frontier query**: list the map's open children (`gh issue list --state open`, scoped to the map's sub-issues / task list), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in map order wins.
+- **Blocking**: GitHub's **native issue dependencies**, the canonical, UI-visible representation. Add an edge with `gh issue edit <child> --add-blocked-by <blocker>` (`#number`; verified on `gh` 2.101). Older `gh`: `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/<owner>/<repo>/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). GitHub reports `issue_dependencies_summary.blocked_by` (open blockers only, the live gate). Where dependencies aren't available, fall back to a `Blocked by: #<n>, #<n>` line at the top of the child body. A ticket is unblocked when every blocker is closed.
+- **Frontier query**: `gh issue list --state open --search 'parent-issue:<owner>/<repo>#<map> -is:blocked'` lists the map's open children without an open blocker (where sub-issues aren't enabled, scope to the map's task list and drop any with an open issue in the `Blocked by` line); then drop any with an assignee; first in map order wins.
+
+## 母單
+
+母單是範圍已定、子單已拆好的 issue：它只把子單分組，不派工、不驗收，開關跟著子單走。和 **Map**（`wayfinder:map`）不同：Map 還在探索，子票會陸續長出來；母單在建立時就拆完了。
+
+- **辨識**：有 sub-issue（`sub_issues_summary.total > 0`）的 issue 就是母單，掛 `parent` label、不掛任何 triage label（[triage-labels.md](triage-labels.md#parent-label)）。
+- **上游行為**：`/to-spec` 給 spec issue 掛 `ready-for-agent`；`/to-tickets` 把子單掛成該 spec 的 sub-issue、各掛 `ready-for-agent`，不動母單。所以 spec 一拆成子單，母單和子單都帶 `ready-for-agent`。本 repo 不改這兩個 skill，改由 pilot 的 Pool 規則排除母單、Reconcile 整理母單的 label（[issue-run.md](issue-run.md) 的 **Pool**、**Probe**），Close 在子單全部結束後關掉母單（**Close**）。
+- **檢視**：
+  - 可開工：`gh issue list --search 'is:open label:ready-for-agent -is:blocked'`
+  - 母單：`gh issue list --search 'is:open label:parent'`
+  - 某一組：`gh issue list --state all --search 'parent-issue:ron03wlb/ron-skills#<n>'`
+- **關係總覽**：一次列出每張開著的 issue 的 parent、子單進度與相依：
+
+  ```bash
+  gh api graphql -f query='{repository(owner:"ron03wlb",name:"ron-skills"){issues(first:100,states:OPEN){nodes{number title parent{number} subIssuesSummary{total completed} blockedBy(first:10){nodes{number state}} blocking(first:10){nodes{number}}}}}}'
+  ```
 - **Claim**: `gh issue edit <n> --add-assignee @me`, the session's first write.
 - **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
