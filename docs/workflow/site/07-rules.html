@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>07 規則沉澱｜ron-skills 交付流程</title>
+<link rel="stylesheet" href="static/site.css">
+<script defer src="static/site.js"></script>
+</head>
+<body>
+<button class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">目錄</button>
+<aside class="sidebar" id="sidebar" aria-label="流程導讀目錄">
+<nav class="chapters" aria-label="章節"><h2>章節</h2><a href="index.html">ron-skills 交付流程</a><a href="01-tooling.html">01 工具與角色</a><a href="02-lifecycle.html">02 Issue 生命週期</a><a href="03-level1.html">03 L1 導入</a><a href="04-level2.html">04 L2 導入</a><a href="05-level3.html">05 L3 導入</a><a href="06-quality-gates.html">06 品質校驗時間軸</a><a href="07-rules.html" aria-current="page">07 規則沉澱</a><a href="08-pitfalls.html">08 常見坑</a><a href="09-skills.html">09 Skills 索引</a></nav>
+<nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2></nav>
+<nav class="rules" aria-label="正式規範"><h2>正式規範（原始 Markdown）</h2><a href="../../../README.md">README.md</a><a href="../../../skills/engineering/issue-run/ADAPTER.md">skills/engineering/issue-run/ADAPTER.md</a></nav>
+</aside>
+<main class="content">
+<article>
+<h1>07 規則沉澱</h1>
+<p>agent 每個 session 都從零開始。踩過的坑要不再踩，就得寫在下一個 session 讀得到、而且擋得住的地方。本章講規則放哪一層、什麼時候往下一層升級。</p>
+<h2 id="四層">四層</h2>
+<div class="table-wrap"><table><thead><tr><th>層</th><th>放在哪</th><th>誰讀</th><th>強制力</th></tr></thead><tbody><tr><td><strong>memory</strong></td><td>個人的 <code>~/.claude/projects/&lt;repo&gt;/memory/</code>，一檔一個事實，<code>MEMORY.md</code> 當索引</td><td>只有自己在這個 repo 的 session</td><td>無；只是提醒</td></tr><tr><td><strong>skill</strong></td><td>使用者層 <code>~/.claude/skills/</code>（ron-skills 同步），專案層 repo 的 <code>.claude/skills/</code></td><td>觸發該 skill 的 session</td><td>照步驟跑才生效</td></tr><tr><td><strong>repo 規範</strong></td><td><code>CLAUDE.md</code>／<code>AGENTS.md</code>、<code>docs/agents/</code>（adapter、tracker、label）、<code>docs/adr/</code>；給 agent 讀的用英文</td><td>每個在這個 repo 工作的 agent</td><td>照步驟跑才生效</td></tr><tr><td><strong>腳本與 gate</strong></td><td>單一檢查入口裡的檢查、入口腳本、git hooks、Claude Code hooks</td><td>每次執行都跑</td><td>流程內或本地強制（見 <a href="06-quality-gates.html#強度分級">06 強度分級</a>）</td></tr></tbody></table></div>
+<p>原則是<strong>寫了仍被忽略，就往下一層升級</strong>。同一個失誤出現第二次，不再把文字寫得更用力，而是把它做成檢查或入口，失敗時印出修正指示。反過來，只有判斷題（「和周圍風格一致」「這個抽象值不值得」）才留在文字層，因為沒有檢查能代替判斷。</p>
+<h2 id="升級的例子ron-skills">升級的例子（ron-skills）</h2>
+<div class="table-wrap"><table><thead><tr><th>失誤</th><th>原本的規則</th><th>升級成</th></tr></thead><tbody><tr><td>本機的 Matt fork 落後上游，overlay 補丁在上游已經套不上，本機卻一直是綠的</td><td>README 寫「升級前先同步 fork」</td><td><code>bin/check --upstream</code> 對上游最新版重跑，CI 每週一跑一次</td></tr><tr><td><code>/loop</code> 驅動的 skill 被設成 <code>disable-model-invocation</code>，loop 叫不起來</td><td>README 一句話</td><td><code>scripts/check-loop-invocable.mjs</code> 接進 <code>bin/sync-skills --check</code></td></tr><tr><td>skill 引用了 adapter 範本裡不存在的 Pilot 設定行</td><td>寫 skill 時自己對照</td><td><code>scripts/check-pilot-lines.mjs</code></td></tr><tr><td>導讀站從實例專案改寫時，專案名與內網位址混進通用版</td><td>改寫時注意</td><td><code>scripts/check-workflow-strings.mjs</code></td></tr><tr><td>skill 規範改了，導讀還是舊說法</td><td>改 skill 的人記得改導讀</td><td><code>scripts/check-workflow-sync.mjs</code>：規範一改就失敗，對照後 <code>--restamp</code></td></tr></tbody></table></div>
+<p>每一條都在 <code>bin/check</code> 裡，所以 pre-commit、CI、<code>/issue-run</code> 的 acceptance 都會跑到，不必再記得。</p>
+<h2 id="新檢查要先證明自己">新檢查要先證明自己</h2>
+<p>一個只證明「正確的程式能通過」的檢查，沒有證明任何事。新增 lint、測試、hook 或 gate 之前：</p>
+<ol>
+<li><strong>先問能不能在更上層消除它。</strong> 先從架構、再從型別，看能不能讓這個錯誤根本寫不出來；做不到才加檢查。</li>
+<li><strong>把真實發生過的那次錯誤做成 fixture。</strong> 不是想像中的錯誤，是那一次的檔案、那一行字、那個 commit。</li>
+<li><strong>附上它在 fixture 上失敗的證據</strong>：指令與非 0 的 exit code；再附它在修好的版本上通過的指令與 exit 0。</li>
+<li><strong>接進單一檢查入口。</strong> 沒接進去的檢查等於不存在。</li>
+</ol>
+<p>例子：ron-skills 加 <code>check-workflow-strings.mjs</code> 時，測試裡放了一份寫入專案名的 Markdown，證明守門在它上面 exit 1；同時放一份只含公開站網址的 Markdown，證明白名單放行而 exit 0。</p>
+<h2 id="誰來升級">誰來升級</h2>
+<ul>
+<li><strong><code>/retro</code></strong>：session 結束後輸入，它讀這次的紀錄提出改善項目（導覽、自動檢查、規範、無效規則、工具成本），依嚴重度排列。採用的項目放在 retro 分支實作，不開 Issue。</li>
+<li><strong><code>/retro-collect</code></strong>（L3）：退役 coordinator 的 <code>/retro</code> 只寫檔不實作，全部收齊後由它在一個 retro worktree 一次實作（見 <a href="05-level3.html#retro-collect">05</a>）。</li>
+<li><strong>你自己</strong>：同一句指示對 agent 說第二次時，就是該升級的訊號。</li>
+</ul>
+<h2 id="什麼不該寫">什麼不該寫</h2>
+<ul>
+<li>repo 已經記錄的事（程式結構、git 歷史、既有的 <code>CLAUDE.md</code>）不要再寫進 memory。</li>
+<li>只對這次對話有用的事不要寫進任何一層。</li>
+<li>不改變 agent 行為的規則（no-op）要刪掉：規則越多，每一條被讀到的機會越小。</li>
+</ul>
+</article>
+<footer class="source">本頁由 <code>node scripts/build-workflow-site.mjs</code> 自 <code>docs/workflow/07-rules.md</code> 產生；請改 Markdown 重產，不要手改 HTML。</footer>
+</main>
+</body>
+</html>

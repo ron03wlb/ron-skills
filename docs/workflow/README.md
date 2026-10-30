@@ -1,0 +1,54 @@
+# ron-skills 交付流程
+
+把一張 Issue 交給 agent、驗證到本機 candidate commit、再由人 push 與合併的流程導讀。流程建在三層 skill 上：Matt Pocock 的工程方法（`tdd`、`code-review`、`implement`…）、pstack 的編排原則，以及 ron-skills 自己的 `/issue-run`、`/issue-pilot` 編排；各專案只寫一份 **adapter** 說明自己的 tracker、檢查與交付指令。
+
+正式規則以 [`README.md`](../../README.md)、[`skills/engineering/issue-run/ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 與各 skill 的 `SKILL.md` 為準；本站只轉述，兩邊說法不同時以正式規則為準。
+
+## 給誰看
+
+- 想把同一套流程搬到自己 repo 的同事，以及我自己的其他 repo。
+- skills 放在 private 的 ron-skills repo：要照做，得先能 clone 它（向 repo 擁有者要讀取權限）。只看導讀不需要權限。
+- 預設你已經會用 Claude Code、git 與一個 Issue tracker（GitHub 或 GitLab）。本站的 tracker 指令都 `gh`（GitHub）與 `glab`（GitLab）並列。
+
+## 三級導入
+
+不必一次全上。每一級都是完整可用的流程，下一級只在上一級跑順、而且遇到它解決的問題時才加。
+
+| 級 | 你得到什麼 | 進入條件 | 怎麼開始 |
+| --- | --- | --- | --- |
+| **L1 基本** | 一張 `ready-for-agent` Issue 不中斷地跑到本機 candidate commit，附驗證證據；人 push、開 PR／MR、合併、結案 | 有 tracker、能裝 skills、repo 有（或願意做）一條能跑完所有檢查的指令 | [03 L1 導入](03-level1.md) |
+| **L2 守門** | 每張 Issue 一個 worktree、一條整合分支、合入有 lock、push 前 hook 重驗、兩段式結案、`/retro` 把失誤變成檢查 | L1 已交付過幾張；開始同時開好幾個 session，或已經發生過「繞過檢查」「合錯分支」「狀態對不上」 | [04 L2 導入](04-level2.md) |
+| **L3 常駐** | `/loop /issue-pilot` 常駐 coordinator 自己挑單、派 worker、整批回歸、合入整合分支；人只剩產品決策、共用環境操作與 push | L2 的入口都有固定 exit code；裝了 Orca；願意讓 agent 在無人值守時跑 git | [05 L3 導入](05-level3.md) |
+
+## 兩個實例
+
+- **L1：ron-skills 本身。** adapter 是 [`docs/agents/issue-run.md`](../agents/issue-run.md)，唯一檢查入口是 `bin/check`，本站的每一章也是用 `/issue-run` 交付的。
+- **L3：一個常駐交付的 Java 後端專案。** 它在 L2 的入口之外加了 SQL Issue、Docker 測試入口、自訂的分級 skill 等擴充；導讀站公開在 <https://spay2-workflow-docs.pages.dev>。那裡的專案專屬內容只當例子，不是本流程的規則。
+
+## 章節
+
+| 章 | 內容 |
+| --- | --- |
+| [01 工具與角色](01-tooling.md) | Operator、coordinator、worker、subagent、Codex 各負責什麼；Claude Code、skills、hooks、tracker、Orca 的關係 |
+| [02 Issue 生命週期](02-lifecycle.md) | 五個 triage label 加 `in-progress`／`completed` 的狀態機與看板；從開單到結案；批次 |
+| [03 L1 導入](03-level1.md) | checklist：label、adapter、單一檢查入口、`/triage`、`/issue-run`、PR／MR |
+| [04 L2 導入](04-level2.md) | worktree、整合分支與 lock、pre-push、兩段式結案、`/retro`、權限規則；每個入口的契約 |
+| [05 L3 導入](05-level3.md) | `/loop /issue-pilot`、adapter 的 Pilot 段、tick hooks、Orca、Codex 跨模型 review、`/retro-collect` |
+| [06 品質校驗時間軸](06-quality-gates.md) | 強度分級；從編輯到結案每道校驗的觸發點、能證明與不能證明什麼 |
+| [07 規則沉澱](07-rules.md) | memory → skill → repo 規範 → 腳本／gate；新檢查要先在歷史錯誤上失敗 |
+| [08 常見坑](08-pitfalls.md) | 換了專案也會踩的坑：症狀、原因、做法 |
+| [09 Skills 索引](09-skills.md) | 依階段列出 skill 與它所屬的導入等級 |
+
+## 本站怎麼產生
+
+Markdown 是唯一來源，`site/` 下的 HTML 全是產物。改完 Markdown 在 repo 根目錄重產，不要手改 HTML：
+
+```bash
+node scripts/build-workflow-site.mjs
+```
+
+`bin/check` 對本資料夾跑三道守門：
+
+- `node scripts/build-workflow-site.mjs --check`：`site/` 與 Markdown 不同步就失敗（忘了重產或手改 HTML）。
+- `node scripts/check-workflow-strings.mjs`：擋住從實例專案帶進來的專屬字串，讓本站維持通用。
+- `node scripts/check-workflow-sync.mjs`：`issue-run`、`issue-pilot`、`retro-collect` 的 `SKILL.md` 或 `ADAPTER.md` 一改就失敗，直到有人對照本站並執行 `node scripts/check-workflow-sync.mjs --restamp`。

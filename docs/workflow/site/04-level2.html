@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>04 L2 導入｜ron-skills 交付流程</title>
+<link rel="stylesheet" href="static/site.css">
+<script defer src="static/site.js"></script>
+</head>
+<body>
+<button class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">目錄</button>
+<aside class="sidebar" id="sidebar" aria-label="流程導讀目錄">
+<nav class="chapters" aria-label="章節"><h2>章節</h2><a href="index.html">ron-skills 交付流程</a><a href="01-tooling.html">01 工具與角色</a><a href="02-lifecycle.html">02 Issue 生命週期</a><a href="03-level1.html">03 L1 導入</a><a href="04-level2.html" aria-current="page">04 L2 導入</a><a href="05-level3.html">05 L3 導入</a><a href="06-quality-gates.html">06 品質校驗時間軸</a><a href="07-rules.html">07 規則沉澱</a><a href="08-pitfalls.html">08 常見坑</a><a href="09-skills.html">09 Skills 索引</a></nav>
+<nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2></nav>
+<nav class="rules" aria-label="正式規範"><h2>正式規範（原始 Markdown）</h2><a href="../../../README.md">README.md</a><a href="../../../skills/engineering/issue-run/ADAPTER.md">skills/engineering/issue-run/ADAPTER.md</a></nav>
+</aside>
+<main class="content">
+<article>
+<h1>04 L2 導入</h1>
+<p>L1 靠「agent 照 skill 做」維持秩序；只要同時有兩個以上的 session、或有人另開終端手動 commit，這份秩序就擋不住。L2 把幾個容易出事的動作收成<strong>入口</strong>：每個動作只有一條路，路上有檢查，失敗時印出修正指示。</p>
+<p>本章只寫每個入口的<strong>契約</strong>（必須做什麼、exit code、拒絕什麼），不提供腳本：入口用什麼語言、怎麼實作由各 repo 自己決定。唯二的範本是 pre-push hook 與 <code>pilot_git.py</code>。</p>
+<h2 id="什麼時候進-l2">什麼時候進 L2</h2>
+<ul>
+<li>同時開兩個以上的 session 交付不同 Issue，開始互相踩檔案或分支。</li>
+<li>發生過有人繞過檢查合入、合錯分支、或關了還沒進主線的 Issue。</li>
+<li>L1 的 <code>/issue-run</code> 已經穩定，Issue 本文和 adapter 不再頻繁改。</li>
+</ul>
+<h2 id="worktree-規則">worktree 規則</h2>
+<ul>
+<li><strong>一張 Issue 一個 worktree、一個寫入者。</strong> 改某張 Issue 的程式只在它的 worktree 裡做；臨時發現的 bug 先開 Issue，不順手改。</li>
+<li><strong>認領時才建。</strong> 狀態設成 <code>in-progress</code> 的那一刻建 worktree，不要開單就建，否則會留下一堆空 worktree。</li>
+<li><strong>從整合分支開出。</strong> 分支 <code>issue/&lt;n&gt;-&lt;slug&gt;</code>，base 是整合分支目前的 tip，不是 <code>main</code>。</li>
+<li><strong>有 Orca 就經 Orca。</strong> 設了 <code>ORCA_CLI_COMMAND</code> 時用 <code>orca worktree create</code>／<code>worktree rm</code>，Orca 才追蹤得到；沒有 Orca 用 <code>git worktree add</code>。</li>
+<li><strong>stash 是共用的。</strong> <code>git stash</code> 清單跨所有 worktree 共用，不要用它在 worktree 之間搬東西；用暫時的 WIP commit，或 <code>git show &lt;sha&gt;:&lt;path&gt;</code>。</li>
+<li><strong>刪之前先分類。</strong> 已合入且乾淨的可以刪；有未合入 commit、或還有 terminal 連著的留著。只刪自己的。</li>
+</ul>
+<h2 id="整合分支與-lock">整合分支與 lock</h2>
+<p>整合分支是本機與遠端共用的累積點（例如 <code>integration</code>，最後開 PR／MR 合進 <code>main</code>）。所有 Issue 分支都先合進它，push 也是 push 它。</p>
+<p><strong>合入入口契約</strong></p>
+<div class="table-wrap"><table><thead><tr><th>項目</th><th>契約</th></tr></thead><tbody><tr><td>必須做</td><td>取得整合分支的 lock；確認要合入的 SHA 已在<strong>自己的 SHA 上</strong>通過單一檢查入口；<code>git merge --no-ff</code> 合入；合入後在新 tip 再跑一次單一檢查入口；釋放 lock；印出合入後的 SHA</td></tr><tr><td>exit code</td><td><code>0</code> 合入且檢查通過；<code>1</code> 檢查失敗（已還原到合入前）；<code>2</code> 參數或前置條件不符；<code>75</code> lock 被別人持有（<code>INTEGRATION_BUSY</code>，稍後重試，不要自己寫等待迴圈）</td></tr><tr><td>拒絕</td><td>沒有 lock 的合入；整合分支有未 commit 的改動；要合入的 SHA 沒有通過紀錄；hold 旗標存在時</td></tr></tbody></table></div>
+<p>配套的 git <code>reference-transaction</code> hook 可以擋掉不經這個入口的合入與改寫整合分支歷史（<code>reset</code>、<code>rebase</code>、多 commit 的 fast-forward）；做不到就至少在 pre-push 檢查整合分支只往前走。</p>
+<h2 id="pre-push">pre-push</h2>
+<p>push 是最後一道本地關卡：hook 在<strong>要 push 的那個 SHA</strong> 上重跑單一檢查入口，而不是在你目前的工作樹上跑，所以別的 session 同時改了工作樹也不影響結果。</p>
+<p><strong>pre-push hook 契約</strong></p>
+<div class="table-wrap"><table><thead><tr><th>項目</th><th>契約</th></tr></thead><tbody><tr><td>必須做</td><td>對每個要 push 的 ref，在暫時的 detached worktree 檢出該 SHA，跑單一檢查入口</td></tr><tr><td>exit code</td><td><code>0</code> 全部通過才放行；非 0 擋下整次 push</td></tr><tr><td>拒絕</td><td>任何檢查失敗的 SHA；刪除 ref 不檢查</td></tr></tbody></table></div>
+<p>範本（存成 <code>.githooks/pre-push</code>，<code>chmod +x</code>，再 <code>git config core.hooksPath .githooks</code> 啟用；hook 印給 agent 看的訊息用英文）：</p>
+<pre><code class="language-bash">#!/usr/bin/env bash
+# pre-push: run the single check entry on the exact commit being pushed, not on the working tree.
+set -euo pipefail
+CHECK=${CHECK:-bin/check}   # the repo's single check entry
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [[ $local_sha =~ ^0+$ ]] &amp;&amp; continue   # deleting a ref: nothing to check
+  tmp=$(mktemp -d)
+  git worktree add --quiet --detach &quot;$tmp&quot; &quot;$local_sha&quot;
+  if ! (cd &quot;$tmp&quot; &amp;&amp; $CHECK); then
+    git worktree remove --force &quot;$tmp&quot;
+    echo &quot;pre-push: $CHECK failed at $local_sha ($local_ref). Fix the failure and push again; do not bypass with --no-verify.&quot; &gt;&amp;2
+    exit 1
+  fi
+  git worktree remove --force &quot;$tmp&quot;
+done</code></pre>
+<p>git hook 擋得住人，但 agent 可以加 <code>--no-verify</code> 跳過它；要連這個也擋，再加一個 Claude Code <code>PreToolUse</code> hook，拒絕含 <code>--no-verify</code>、<code>git commit -n</code>、<code>-c core.hooksPath=</code> 的 Bash 指令（見 <a href="06-quality-gates.html#1-編輯時">06 品質校驗時間軸</a>）。</p>
+<h2 id="兩段式結案">兩段式結案</h2>
+<p>L1 的結案是人看到 PR 合併後手動關單。L2 把它收成一個入口，分兩次執行，中間隔著 push：</p>
+<p><strong>結案入口契約</strong></p>
+<div class="table-wrap"><table><thead><tr><th>項目</th><th>第一次</th><th>第二次</th></tr></thead><tbody><tr><td>必須做</td><td>經合入入口把 candidate 合進整合分支；印出要 push 的 SHA 與 push 指令</td><td><code>git fetch</code> 後確認該 SHA 已在遠端整合分支（<code>git merge-base --is-ancestor &lt;sha&gt; origin/&lt;integration&gt;</code>）；貼證據留言；關單並設 <code>completed</code>；刪 worktree 與本機、遠端的工作分支</td></tr><tr><td>exit code</td><td><code>3</code> 停在 <code>PUSH_REQUIRED</code>（不是錯誤，是等人 push 的停點）；其他非 0 照合入入口</td><td><code>0</code> 已結案；<code>3</code> SHA 還不在遠端，仍是 <code>PUSH_REQUIRED</code></td></tr><tr><td>拒絕</td><td>Issue 不是 <code>in-progress</code>；還有開著的子單</td><td>SHA 不在遠端時關單</td></tr></tbody></table></div>
+<p>這樣「關了但還沒進主線」的 Issue 就不會出現：關單的前提由入口查，不靠人記得。</p>
+<h2 id="retro"><code>/retro</code></h2>
+<p>每次 session 結束、或同一種失誤出現第二次時，輸入 <code>/retro</code>。它讀這次 session 的紀錄，提出環境改善：缺的導覽指標、該加的自動檢查、該刪的無效規則。採用的改善放在 retro 分支，不開 Issue；只改工具與文件。</p>
+<p>新增的檢查要先證明自己：把真實發生過的那次錯誤做成 fixture，附指令與 exit code 證明檢查在它上面會失敗（見 <a href="07-rules.html">07 規則沉澱</a>）。</p>
+<h2 id="權限規則">權限規則</h2>
+<p>無人值守的 agent 需要 <code>.claude/settings.json</code> 的 allow 規則才不會每一步都停下來問。規則只由人改，只有一條原則：<strong><code>*</code> 只放在規則最後，放在 git 會當成選項解析的參數之後。</strong></p>
+<ul>
+<li>不要寫 <code>Bash(git -C * fetch origin)</code>：<code>-C</code> 後面的 <code>*</code> 也吞得下 <code>-c core.sshCommand=&lt;指令&gt;</code> 這類 git 全域選項，等於放行任意指令。Claude Code 每次啟動都會警告 <code>allows any option at its *</code>；把路徑寫死成前綴一樣會警告。</li>
+<li>已經把 git 寫入包進交付腳本的 repo（合入入口、結案入口），allow 只放行那幾支腳本，腳本裡面才跑 <code>git -C</code>。</li>
+<li>還沒有交付腳本的 repo，用範本 <a href="../../../skills/engineering/issue-run/templates/pilot_git.py"><code>pilot_git.py</code></a>：
+<ol>
+<li>複製成 repo 的 <code>scripts/pilot_git.py</code>，改四個常數（主 checkout、worktree 根目錄、分支前綴、base 分支）。它先驗證目標與參數再執行 <code>git -C</code>：主 checkout 只能 <code>fetch</code>、<code>rev</code>、<code>log</code>；寫入（<code>sync</code>、<code>stage</code>、<code>push</code>）只能到 <code>&lt;worktree 根目錄&gt;/&lt;前綴&gt;*</code>；參數不得以 <code>-</code> 開頭；<code>push</code> 只推 <code>&lt;前綴&gt;*</code> 分支。驗證失敗 exit 2。</li>
+<li>allow 換成一條 <code>Bash(python3 scripts/pilot_git.py:*)</code>，刪掉所有 <code>Bash(git -C …)</code>。</li>
+<li>adapter 裡的 git 步驟一律寫成 <code>python3 scripts/pilot_git.py &lt;子命令&gt; &lt;checkout&gt; …</code>，並加一個測試：adapter 每條指令都有對應的 allow 規則、沒有直接呼叫 <code>git -C</code> 的步驟。</li>
+<li>開一個新 session，確認啟動時沒有權限警告。</li>
+</ol></li>
+</ul>
+<h2 id="exit-code-慣例">exit code 慣例</h2>
+<p>所有入口用同一組 exit code，agent 與 hook 才能不讀說明就判斷下一步：</p>
+<div class="table-wrap"><table><thead><tr><th>exit</th><th>意思</th><th>呼叫者該做什麼</th></tr></thead><tbody><tr><td><code>0</code></td><td>完成</td><td>往下一步</td></tr><tr><td><code>1</code></td><td>檢查失敗</td><td>讀輸出修正，再跑一次</td></tr><tr><td><code>2</code></td><td>拒絕：參數、目標或前置條件不符</td><td>改呼叫方式；不要重試同一條指令</td></tr><tr><td><code>3</code></td><td>停點：需要人做一件事（例如 <code>PUSH_REQUIRED</code>）</td><td>把印出的指令交給人，做完再跑一次</td></tr><tr><td><code>75</code></td><td>共用資源忙碌（<code>INTEGRATION_BUSY</code>）</td><td>稍後重試</td></tr></tbody></table></div>
+<p>每個入口失敗時的最後一行，都要是一條能照抄執行的修正指示。</p>
+</article>
+<footer class="source">本頁由 <code>node scripts/build-workflow-site.mjs</code> 自 <code>docs/workflow/04-level2.md</code> 產生；請改 Markdown 重產，不要手改 HTML。</footer>
+</main>
+</body>
+</html>

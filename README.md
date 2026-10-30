@@ -23,7 +23,8 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 
 - `matt-skills.txt`：要連結的 Matt skill 清單（相對 `skills/`）；`-<path>` 表示刻意不連結。`--check` 列出的 `NEW` 行，二選一加入清單。
 - `pstack-skills.txt`：pstack 白名單，同樣格式；`# pin:` 記錄驗證過的上游 SHA，HEAD 不同時只警告。不連結的理由只有三種：與 Matt 或本 repo 的流程重疊（`tdd`、`teach`、`reflect`／`recall`／`correct` 已併入 `retro` 與 `issue-run`、`swarm` 由專案的分區掃描涵蓋）、與 repo 規範衝突（`no-comments` 的刪註解策略、`technical-writing` 的英文句式規則），或 Cursor 專屬。pstack 的方法沒有一個需要兩家以上模型，Claude 加 Codex 即可；`arena` 以 overlay 接本機 worktree 與 Codex judge，`poteto-mode` 的 Eval playbook 經由它執行。`create-formal-verification-skill`／`maintain-formal-verification-skill` 用於金流與並發屬性的形式驗證（TLA+ 等），`statechart` 是前者讀 TLA+ 結果的依賴，一併連結。
-- `bin/check`：唯一的檢查入口，依序跑 `bin/sync-skills --check`、連結檢查與 `tests/`；`bin/check --upstream` 改對 Matt 與 pstack 上游最新 main 檢查（與 CI 相同）。
+- `bin/check`：唯一的檢查入口，依序跑 `bin/sync-skills --check`、連結檢查、流程站三道守門與 `tests/`；`bin/check --upstream` 改對 Matt 與 pstack 上游最新 main 檢查（與 CI 相同）。
+- 流程站（`docs/workflow/`，產出在 `site/`）：`bin/check` 跑三道守門。`node scripts/build-workflow-site.mjs --check` 擋手改 HTML 或忘了重產；`node scripts/check-workflow-strings.mjs` 擋 spay2 專屬字串（專案名、`192.168.`、`feature/ron/#`，只放行 spay2 公開站網址）；`node scripts/check-workflow-sync.mjs` 在 `issue-run`／`issue-pilot`／`retro-collect` 的 `SKILL.md` 或 `ADAPTER.md` 變動時失敗，對照 `docs/workflow/` 後執行 `--restamp`。
 - 本機 pre-commit（`.githooks/pre-commit`，clone 後執行一次 `ln -s ../../.githooks/pre-commit .git/hooks/pre-commit` 啟用）：跑 `bin/check`。
 - CI（`.github/workflows/checks.yml`）：每次 push 與每週一跑 `bin/check --upstream`；上游改到補丁位置時會先在這裡變紅。
 - `overlays/<name>.patch`：對 Matt 或 pstack skill 的最小改動，同步時套在 `~/.local/share/ron-skills/overlay/<name>` 的副本上，上游 checkout 本身不變。
@@ -43,7 +44,9 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 
 `/issue-run <ref> [<ref>...]`：把已 ready 的 Issue 不中斷地跑到本機 candidate commit。方法照 Matt 的 `implement` / `implement-spec`，專案事實全部讀 repo 的 adapter；沒有 adapter 時用 Matt setup 文件與 [ADAPTER.md](skills/engineering/issue-run/ADAPTER.md) 的預設值。push、合併到共用分支、產品決策仍由人負責。
 
-新專案導入：把 `ADAPTER.md` 複製成該 repo 的 `docs/agents/issue-run.md`，填入實際指令。pilot 要在其他 worktree 跑 git 時，照 ADAPTER.md 的 **Permissions** 段複製 [templates/pilot_git.py](skills/engineering/issue-run/templates/pilot_git.py)，allow 只放行該腳本，不寫 `git -C *`（中間的 `*` 能夾帶 git 選項，Claude Code 每次啟動都會警告）。
+新專案導入：照 [ron-skills 交付流程](https://ron-skills-workflow.pages.dev/site/) 分 L1 基本、L2 守門、L3 常駐三級導入（來源 [docs/workflow/](docs/workflow/README.md)）；起點是把 `ADAPTER.md` 複製成該 repo 的 `docs/agents/issue-run.md`，填入實際指令。pilot 要在其他 worktree 跑 git 時，照 ADAPTER.md 的 **Permissions** 段複製 [templates/pilot_git.py](skills/engineering/issue-run/templates/pilot_git.py)，allow 只放行該腳本，不寫 `git -C *`（中間的 `*` 能夾帶 git 選項，Claude Code 每次啟動都會警告）。
+
+流程站由 [workflow-site.yml](.github/workflows/workflow-site.yml) 在合入 `main` 後重跑 `bin/check --upstream`（含機密與私有網址掃描）、以 wrangler 部署 `docs/workflow/` 到 Cloudflare Pages，再逐檔比對公開網址；PR 只跑檢查。第一次設定由 Operator 執行 [scripts/setup-workflow-site.sh](scripts/setup-workflow-site.sh)，建立 Pages 專案、只有 Pages 編輯權限的 token 與 GitHub secret。
 
 新增或改動 skill 的入口時，在新 session 實際觸發一次才算完成。被 `/loop` 驅動的 skill 必須可由 Skill tool 呼叫（不設 `disable-model-invocation`），`bin/sync-skills --check` 以 `scripts/check-loop-invocable.mjs` 檢查。skill 引用的每一行 adapter Pilot 設定，都必須是 ADAPTER.md Pilot 段的條目，`--check` 以 `scripts/check-pilot-lines.mjs` 檢查。
 

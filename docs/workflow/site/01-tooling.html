@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>01 工具與角色｜ron-skills 交付流程</title>
+<link rel="stylesheet" href="static/site.css">
+<script defer src="static/site.js"></script>
+</head>
+<body>
+<button class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">目錄</button>
+<aside class="sidebar" id="sidebar" aria-label="流程導讀目錄">
+<nav class="chapters" aria-label="章節"><h2>章節</h2><a href="index.html">ron-skills 交付流程</a><a href="01-tooling.html" aria-current="page">01 工具與角色</a><a href="02-lifecycle.html">02 Issue 生命週期</a><a href="03-level1.html">03 L1 導入</a><a href="04-level2.html">04 L2 導入</a><a href="05-level3.html">05 L3 導入</a><a href="06-quality-gates.html">06 品質校驗時間軸</a><a href="07-rules.html">07 規則沉澱</a><a href="08-pitfalls.html">08 常見坑</a><a href="09-skills.html">09 Skills 索引</a></nav>
+<nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2></nav>
+<nav class="rules" aria-label="正式規範"><h2>正式規範（原始 Markdown）</h2><a href="../../../README.md">README.md</a><a href="../../../skills/engineering/issue-run/ADAPTER.md">skills/engineering/issue-run/ADAPTER.md</a></nav>
+</aside>
+<main class="content">
+<article>
+<h1>01 工具與角色</h1>
+<p>流程裡有五種角色，靠五類工具串起來。先記住一條邊界：<strong>agent 做到本機 candidate commit 為止；push、合進共用分支、產品決策，以及對共用環境（資料庫、正式站）的操作，都留給人。</strong> 到 L3 這條邊界也只放寬到「adapter 明文允許的 push」。</p>
+<h2 id="角色">角色</h2>
+<div class="table-wrap"><table><thead><tr><th>角色</th><th>在哪裡跑</th><th>負責</th><th>不做</th><th>從哪一級出現</th></tr></thead><tbody><tr><td><strong>Operator</strong>（人）</td><td>自己的終端與對話</td><td>提需求、回答釐清問題、產品決策、對共用環境執行 artifact 並讀回、push、合併 PR／MR</td><td>不手動把分支合進整合分支（L2 起一律經入口腳本）</td><td>L1</td></tr><tr><td><strong>controller</strong></td><td>輸入 <code>/issue-run &lt;n&gt;</code> 的那個 session</td><td>單張或一組 Issue 的 Gate → Graph → Claim → Build → Candidate → Report；做到 candidate 停下來報告</td><td>不 push、不合進共用分支、不結案</td><td>L1</td></tr><tr><td><strong>subagent</strong>（Claude）</td><td>controller 以 Agent 工具派出</td><td>多張 ticket 時的 implementer（<code>implement-spec</code>）、<code>code-review</code> 的 Standards／Spec 兩軸審查</td><td>不跨出指派的 worktree；結論交回 controller 判讀</td><td>L1</td></tr><tr><td><strong>coordinator</strong></td><td>主 checkout 的 <code>/loop /issue-pilot</code></td><td>對帳、挑單、組批次、派 worker、整批回歸、合入整合分支、交出 push 指令、結案；決定記在 <code>.scratch/pilot/decisions.md</code></td><td>不寫產品程式碼；同一個 repo 同時只有一個 coordinator</td><td>L3</td></tr><tr><td><strong>worker</strong></td><td>每張 Issue 自己的 worktree，跑 <code>/issue-run &lt;n&gt; --worker &lt;checkpoint&gt;</code></td><td>單張 Issue 的實作、本單檢查、review，做到 candidate，最後一行印 <code>DONE &lt;n&gt; &lt;SHA&gt;</code> 或 <code>STOP &lt;n&gt; &lt;原因&gt;</code></td><td>不問人（產品問題留言到 Issue 後 <code>STOP</code>）；不合入、不 push、不結案</td><td>L3</td></tr><tr><td><strong>Codex</strong></td><td>經 adapter 指定的 runner 腳本呼叫</td><td>跨模型 review、高風險 Issue 的獨立情境驗證、兩輪 review 後仍有爭議的 finding 的第二意見</td><td>不 commit；結果由 controller 判讀</td><td>L3（L1／L2 可選）</td></tr></tbody></table></div>
+<p>controller 與 worker 是同一個 <code>/issue-run</code> skill 的兩種模式：沒有 coordinator 時你自己打 <code>/issue-run &lt;n&gt;</code>，它就是 controller；在 L3 由 coordinator 派出時加 <code>--worker</code>，它就只做到 candidate、用最後一行回報。</p>
+<h2 id="工具">工具</h2>
+<div class="table-wrap"><table><thead><tr><th>工具</th><th>角色</th><th>邊界</th></tr></thead><tbody><tr><td><strong>Claude Code</strong></td><td>跑 skills、呼叫 scripts、讀寫 memory</td><td>權限由 repo 的 <code>.claude/settings.json</code> 決定，只有人能改（見 <a href="04-level2.html#權限規則">04 權限規則</a>）</td></tr><tr><td><strong>skills</strong>（<code>~/.claude/skills/</code>）</td><td>定義「怎麼做」</td><td>使用者層由 ron-skills 的 <code>bin/sync-skills</code> 連結 Matt、pstack 與 ron-skills 三層；專案層放在 repo 的 <code>.claude/skills/</code>。上游原始檔不改，個人調整用 <code>overlays/*.patch</code></td></tr><tr><td><strong>adapter</strong>（<code>docs/agents/issue-run.md</code>）</td><td>定義「在這個 repo 用哪些指令」</td><td>專案事實只寫在這裡；skill 本身不含任何專案路徑。範本是 <a href="../../../skills/engineering/issue-run/ADAPTER.md"><code>ADAPTER.md</code></a></td></tr><tr><td><strong>hooks</strong></td><td>git hooks（pre-commit、pre-push）與 Claude Code hooks（<code>PreToolUse</code> 等）把規則變成擋得住的檢查</td><td>git hook 擋所有人，Claude Code hook 只擋 agent；兩者都要由人安裝</td></tr><tr><td><strong>tracker</strong></td><td>Issue、狀態 label、看板、依賴關係</td><td>GitHub 用 <code>gh</code>，GitLab 用 <code>glab</code>；讀寫指令寫在 <code>docs/agents/issue-tracker.md</code></td></tr><tr><td><strong>Orca</strong></td><td>建立與移除 worktree、開 terminal 派 worker、交棒</td><td>可用性看環境變數 <code>ORCA_CLI_COMMAND</code>，不要用 <code>which orca</code>（那是 GNOME 螢幕閱讀器）。L1／L2 可不用；L3 的派工與監看靠它</td></tr></tbody></table></div>
+<h2 id="三層-skill-怎麼疊">三層 skill 怎麼疊</h2>
+<div class="table-wrap"><table><thead><tr><th>層</th><th>來源</th><th>內容</th><th>誰改</th></tr></thead><tbody><tr><td>Matt 原版</td><td><code>mattpocock/skills</code> 的 fork</td><td>工程方法：<code>tdd</code>、<code>code-review</code>、<code>implement</code>、<code>implement-spec</code>、<code>triage</code>、<code>retro</code>…</td><td>只同步上游</td></tr><tr><td>pstack 原版</td><td><code>backnotprop/pstack</code></td><td>編排原則：<code>poteto-mode</code> 的 Autopilot playbook、<code>principle-*</code></td><td>只同步上游</td></tr><tr><td>ron-skills</td><td>本 repo</td><td><code>issue-run</code>、<code>issue-pilot</code>、<code>retro-collect</code> 編排，以及對上兩層的 overlay</td><td>自己</td></tr><tr><td>專案 adapter</td><td>各 repo 的 <code>docs/agents/issue-run.md</code></td><td>tracker、檢查、candidate、結案指令</td><td>各專案</td></tr></tbody></table></div>
+<p>Matt 的方法和 adapter 說法不同時，以 adapter 為準；<code>/issue-run</code> 會在報告裡列出這次用到的每一條覆寫。</p>
+<h2 id="常見的線">常見的線</h2>
+<div class="table-wrap"><table><thead><tr><th>線</th><th>實際動作</th></tr></thead><tbody><tr><td>Operator → Claude Code</td><td><code>/triage &lt;n&gt;</code>、<code>/issue-run &lt;n&gt;</code>、<code>/loop /issue-pilot</code>、回答 gate</td></tr><tr><td>Claude Code → tracker</td><td>adapter 的 Tracker 段指令（<code>gh issue …</code>／<code>glab issue …</code>）</td></tr><tr><td>Claude Code → 檢查</td><td>adapter 的 Checks 段：一條單一檢查入口（例如 <code>bin/check</code>）</td></tr><tr><td>Claude Code → Codex</td><td>adapter 指定的 runner；沒有 runner 時改用 <code>code-review</code> skill</td></tr><tr><td>coordinator → Orca</td><td>adapter Pilot 段的 Dispatch、Watch 指令</td></tr><tr><td>Operator → remote</td><td><code>git push</code>、開 PR／MR、合併</td></tr></tbody></table></div>
+</article>
+<footer class="source">本頁由 <code>node scripts/build-workflow-site.mjs</code> 自 <code>docs/workflow/01-tooling.md</code> 產生；請改 Markdown 重產，不要手改 HTML。</footer>
+</main>
+</body>
+</html>

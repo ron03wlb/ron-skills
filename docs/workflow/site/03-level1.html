@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>03 L1 導入｜ron-skills 交付流程</title>
+<link rel="stylesheet" href="static/site.css">
+<script defer src="static/site.js"></script>
+</head>
+<body>
+<button class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">目錄</button>
+<aside class="sidebar" id="sidebar" aria-label="流程導讀目錄">
+<nav class="chapters" aria-label="章節"><h2>章節</h2><a href="index.html">ron-skills 交付流程</a><a href="01-tooling.html">01 工具與角色</a><a href="02-lifecycle.html">02 Issue 生命週期</a><a href="03-level1.html" aria-current="page">03 L1 導入</a><a href="04-level2.html">04 L2 導入</a><a href="05-level3.html">05 L3 導入</a><a href="06-quality-gates.html">06 品質校驗時間軸</a><a href="07-rules.html">07 規則沉澱</a><a href="08-pitfalls.html">08 常見坑</a><a href="09-skills.html">09 Skills 索引</a></nav>
+<nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2></nav>
+<nav class="rules" aria-label="正式規範"><h2>正式規範（原始 Markdown）</h2><a href="../../../README.md">README.md</a><a href="../../../skills/engineering/issue-run/ADAPTER.md">skills/engineering/issue-run/ADAPTER.md</a></nav>
+</aside>
+<main class="content">
+<article>
+<h1>03 L1 導入</h1>
+<p>L1 的目標：在一個還沒有 adapter 的 repo 裡，把第一張 Issue 用 <code>/issue-run</code> 跑到本機 candidate commit。照下面的 checklist 由上往下做，每一步都有「做完的樣子」，對不上就停在那一步。</p>
+<p>實例是 ron-skills 本身：它的 adapter 是 <a href="../../agents/issue-run.md"><code>docs/agents/issue-run.md</code></a>，唯一檢查入口是 <code>bin/check</code>。</p>
+<h2 id="checklist">Checklist</h2>
+<h3 id="1-裝-skills每台機器一次">1. 裝 skills（每台機器一次）</h3>
+<pre><code class="language-bash">git clone https://github.com/ron03wlb/ron-skills ~/code/ron-skills   # private：先取得讀取權限
+git clone https://github.com/ron03wlb/skills ~/code/skills           # Matt skills 的 fork
+git clone https://github.com/backnotprop/pstack ~/code/pstack
+~/code/ron-skills/bin/sync-skills --check   # overlay 能套用、沒有 OVERLAY_FAILED
+~/code/ron-skills/bin/sync-skills           # 連結到 ~/.claude/skills/</code></pre>
+<p>做完的樣子：新開的 Claude Code session 打 <code>/</code> 看得到 <code>issue-run</code>、<code>triage</code>、<code>setup-matt-pocock-skills</code>。Matt 或 pstack 放在別的路徑時，用 <code>MATT_SKILLS</code>、<code>PSTACK_SKILLS</code> 環境變數指定。</p>
+<h3 id="2-設定-tracker-與-label每個-repo-一次">2. 設定 tracker 與 label（每個 repo 一次）</h3>
+<p>在目標 repo 開 Claude Code，輸入 <code>/setup-matt-pocock-skills</code>，依序回答 tracker、triage label、domain docs 三段。它會寫出：</p>
+<ul>
+<li><code>docs/agents/issue-tracker.md</code>：讀單、開單、留言、改 label、依賴關係的指令</li>
+<li><code>docs/agents/triage-labels.md</code>：五個角色對應的 label 字串</li>
+<li><code>docs/agents/domain.md</code>，以及 <code>CLAUDE.md</code>（或 <code>AGENTS.md</code>）的 <code>## Agent skills</code> 段</li>
+</ul>
+<p>再在 tracker 上建出 label（已存在的會報錯，略過即可）：</p>
+<pre><code class="language-bash"># GitHub
+for l in needs-triage needs-info ready-for-agent ready-for-human wontfix; do gh label create &quot;$l&quot;; done
+# GitLab
+for l in needs-triage needs-info ready-for-agent ready-for-human wontfix; do glab label create --name &quot;$l&quot;; done</code></pre>
+<p>做完的樣子：<code>gh label list</code>（或 <code>glab label list</code>）列得出五個 label；<code>docs/agents/issue-tracker.md</code> 的讀單指令在 agent 的 Bash 工具裡跑得出內容（GitHub 用 <code>--json</code>，見 <a href="02-lifecycle.html#tracker-指令對照">02</a>）。</p>
+<h3 id="3-單一檢查入口">3. 單一檢查入口</h3>
+<p>做一條指令，跑完這個 repo 所有該跑的檢查（lint、型別、測試、文件守門），全過才 exit 0。pre-commit、CI 和 adapter 都只呼叫它，檢查清單只寫在這一個地方。</p>
+<ul>
+<li>已經有的就沿用：<code>npm test</code>、<code>make check</code>、<code>./gradlew check</code>、<code>pytest</code>。</li>
+<li>沒有的就建一個 <code>bin/check</code>，把現有的指令依序串起來，開頭 <code>set -euo pipefail</code>。</li>
+</ul>
+<p>做完的樣子：在乾淨的 <code>main</code> 上跑它是 exit 0；故意弄壞一個測試再跑是非 0。這兩個 exit code 記下來，第 5 步要用。</p>
+<h3 id="4-adapter">4. adapter</h3>
+<p>把 <a href="../../../skills/engineering/issue-run/ADAPTER.md"><code>ADAPTER.md</code></a> 複製成目標 repo 的 <code>docs/agents/issue-run.md</code>，每段填這個 repo 真的有的指令；沒寫的段落採範本裡的 Default。L1 至少填下面五段。adapter 是給 agent 讀的，用英文寫：</p>
+<pre><code class="language-markdown"># issue-run adapter: &lt;repo&gt;
+
+Sections not written here take the defaults in ADAPTER.md.
+
+## Tracker
+
+docs/agents/issue-tracker.md. Read Issues with `gh issue view &lt;n&gt; --json number,title,body,labels,comments`.
+
+## Readiness
+
+Ready state: the `ready-for-agent` label (docs/agents/triage-labels.md). No preflight. Refine with `/triage &lt;n&gt;`.
+
+## Checks
+
+One command: `bin/check`. Cite only this command while building and in acceptance criteria.
+
+## Candidate and acceptance
+
+The candidate is the branch tip. Acceptance is `bin/check` at the candidate SHA on a clean worktree.
+
+## Evidence and closing
+
+Post evidence as an Issue comment (candidate SHA, commands with exit codes, findings). The human pushes and merges the PR; close the Issue only after the candidate is on `origin/main`.</code></pre>
+<p>做完的樣子：每一段提到的指令都能在 repo 根目錄照抄執行。</p>
+<h3 id="5-第一張-issue">5. 第一張 Issue</h3>
+<p>開一張小而確定的單，本文寫清楚「要做的事」與可檢查的「驗收」，驗收裡的檢查只引用第 3 步的那條指令。然後分級：</p>
+<pre><code class="language-text">/triage &lt;n&gt;</code></pre>
+<p>做完的樣子：Issue 帶 <code>ready-for-agent</code>，本文有 <code>/triage</code> 寫的 agent brief。<code>/triage</code> 留下產品問題時它會設 <code>needs-info</code>，回答完再跑一次。</p>
+<h3 id="6-issue-run">6. <code>/issue-run</code></h3>
+<p>在 repo 的主 checkout 開新 session：</p>
+<pre><code class="language-text">/issue-run &lt;n&gt;</code></pre>
+<p>它依序做 Gate、Graph、Claim、Build、Candidate、Report，中間不停下來問；只在<a href="#什麼時候會停">停點</a>停。分支與 worktree 照 adapter 的 Worktrees and checkpoint 段；沒寫就照 <code>implement-spec</code> 的預設。ron-skills 的寫法是：只有一張 ticket 時直接在主 checkout 開 <code>issue/&lt;n&gt;-&lt;slug&gt;</code> 分支，多張才開 worktree。</p>
+<p>做完的樣子：報告列出 candidate 的完整 SHA、每條指令與 exit code、review findings（Standards 與 Spec 分開列）、沒跑的檢查，以及你接下來要做的事；Issue 上有一則證據留言。</p>
+<h3 id="7-pushprmr合併結案">7. push、PR／MR、合併、結案</h3>
+<p>報告最後的「下一步」照順序做：</p>
+<pre><code class="language-bash">git push -u origin issue/&lt;n&gt;-&lt;slug&gt;
+gh pr create --base main --fill            # GitLab：glab mr create --target-branch main --fill
+# 合併之後
+gh issue close &lt;n&gt; --comment &quot;已合進 main：&lt;merge commit&gt;&quot;   # GitLab：glab issue close &lt;n&gt;
+git branch -d issue/&lt;n&gt;-&lt;slug&gt; &amp;&amp; git push origin --delete issue/&lt;n&gt;-&lt;slug&gt;</code></pre>
+<p>做完的樣子：Issue 關閉，candidate 在 <code>origin/main</code> 上，本機與遠端都沒有工作分支。</p>
+<h2 id="什麼時候會停">什麼時候會停</h2>
+<p><code>/issue-run</code> 只在這些情況停下來交回給你，同時把其他不受影響的 ticket 繼續做完：</p>
+<ul>
+<li>Issue 留了產品決策，或 spec 和程式碼矛盾。</li>
+<li>缺前置條件、帳密、資料庫或 fixture 的授權。</li>
+<li>worktree 裡有不屬於這張單的改動。</li>
+<li>合併衝突需要設計判斷。</li>
+<li>兩輪 review 修正後仍有 finding。</li>
+<li>工具壞掉擋住某一步（它會回報，不會自己修共用工具）。</li>
+</ul>
+<p>停下來的訊息會寫已確認的事實、卡在哪一步、證據在哪、需要你做什麼決定。</p>
+<h2 id="l1-之後">L1 之後</h2>
+<p>L1 跑順的訊號：連續幾張單不用你插手就到 candidate，你只做 review 與 push。開始同時開好幾個 session、或已經發生過狀態對不上與繞過檢查時，往 <a href="04-level2.html">04 L2 導入</a> 走。</p>
+</article>
+<footer class="source">本頁由 <code>node scripts/build-workflow-site.mjs</code> 自 <code>docs/workflow/03-level1.md</code> 產生；請改 Markdown 重產，不要手改 HTML。</footer>
+</main>
+</body>
+</html>
