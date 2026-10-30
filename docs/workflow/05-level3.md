@@ -48,7 +48,7 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 
 ## adapter 的 Pilot 段
 
-L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目。範本與每條的 Default 見 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 的 Pilot 段；實例見 ron-skills 的 [`docs/agents/issue-run.md`](../agents/issue-run.md)。整合分支上的 adapter 與 coordinator checkout 的不同時（例如主線好幾個小時沒 push），coordinator 改讀整合分支上的 Pilot 段，因為下一批就在那個分支上 stage。
+L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目。範本與每條的 Default 見 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 的 Pilot 段；實例見 ron-skills 的 [`docs/agents/pilot.md`](../agents/pilot.md)：Pilot 段只留一行指向它，條目之間空一行，讓改不同條目的修改落在不同的 hunk。整合分支上的 adapter 與 coordinator checkout 的不同時（例如主線好幾個小時沒 push），coordinator 改讀整合分支上的 Pilot 段（以及它指向的檔案），因為下一批就在那個分支上 stage。
 
 | 條目 | 寫什麼 |
 | --- | --- |
@@ -88,7 +88,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | 結案 | `orca worktree rm` 移除 worktree，Orca 不會留下孤兒紀錄；rm 之後確認主 checkout 沒有被設成 bare（見 [08 常見坑](08-pitfalls.md)） |
 | 每個 tick | coordinator 每次被叫醒先確認主 checkout 沒有被設成 bare：Orca 的 worktree 操作可能稍後才改動 `core.bare`（見 [08 常見坑](08-pitfalls.md)） |
 
-確切的子命令與旗標以專案 adapter 的 Dispatch、Watch、Close 行為準（ron-skills 用 `orca-ide`）。從 WSL 呼叫 Orca 時，`worktree create` 常先回 `runtime_unavailable` 但其實已經建好：只呼叫一次，用 `git worktree list` 確認，不要重試（見 [08 常見坑](08-pitfalls.md)）。
+確切的子命令與旗標以專案 adapter 的 Dispatch、Watch、Close 行為準（ron-skills 用 `orca-ide`）。從 WSL 呼叫 Orca 時，`worktree create` 常先回 `runtime_unavailable` 或 `runtime_timeout` 但其實已經建好：只呼叫一次，用 `git worktree list` 確認，不要重試（見 [08 常見坑](08-pitfalls.md)）。
 
 ## Codex 跨模型 review
 

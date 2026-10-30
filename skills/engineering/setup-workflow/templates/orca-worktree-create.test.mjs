@@ -8,7 +8,7 @@ const script = join(source, 'orca-worktree-create.mjs');
 const NAME = 'issue-9';
 
 // 假 orca：每次呼叫記一行；FAKE_ORCA_MODE 決定 ok（立即建立）、late（回 runtime_unavailable，1 秒後才建好）、
-// never（回 runtime_unavailable 且不建立）、other（其他錯誤）。比照 Orca 把名稱的 / 換成 -（dir）：
+// timeout（回 runtime_timeout，1 秒後才建好）、never（回 runtime_unavailable 且不建立）、other（其他錯誤）。比照 Orca 把名稱的 / 換成 -（dir）：
 // worktree 建在 <temp>/workspaces/<dir>，分支 user/<dir>。
 const FAKE_ORCA = `#!/usr/bin/env node
 const fs = require('node:fs'); const { execFileSync, spawn } = require('node:child_process');
@@ -19,6 +19,7 @@ const fail = code => { process.stdout.write(JSON.stringify({ ok: false, error: {
 const mode = process.env.FAKE_ORCA_MODE;
 if (mode === 'ok') { execFileSync('git', add); process.stdout.write(JSON.stringify({ ok: true, result: { worktree: { id: 'w1', path } } })); process.exit(0); }
 if (mode === 'late') { spawn('sh', ['-c', 'sleep 1; exec git "$@"', 'sh', ...add], { detached: true, stdio: 'ignore' }).unref(); fail('runtime_unavailable'); }
+if (mode === 'timeout') { spawn('sh', ['-c', 'sleep 1; exec git "$@"', 'sh', ...add], { detached: true, stdio: 'ignore' }).unref(); fail('runtime_timeout'); }
 if (mode === 'never') fail('runtime_unavailable');
 fail('invalid_argument');
 `;
@@ -58,6 +59,15 @@ test('名稱含 /：比照 Orca 以 - 取代後的目錄名比對，回 CREATED 
 
 test('runtime_unavailable 但背景稍後建好：不重試，輪詢到後回 CREATED_LATE', t => {
   const f = fixture(t, 'late');
+  const r = f.create();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(r.json, { status: 'CREATED_LATE', path: f.path, branch: `user/${NAME}` });
+  assert.equal(f.calls().length, 1);
+});
+
+// Orca 回 runtime_timeout 後仍可能在背景建好 worktree，本腳本卻立即回 FAILED。
+test('runtime_timeout 但背景稍後建好：同 runtime_unavailable，不重試，輪詢到後回 CREATED_LATE', t => {
+  const f = fixture(t, 'timeout');
   const r = f.create();
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.deepEqual(r.json, { status: 'CREATED_LATE', path: f.path, branch: `user/${NAME}` });

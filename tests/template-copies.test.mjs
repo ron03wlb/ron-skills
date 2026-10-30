@@ -17,11 +17,11 @@ for (const [path, entry] of Object.entries(copies)) {
   });
 }
 
-// L3 必接：主 checkout 的未提交改動與新檔會讓 pilot 的 Probe 停止合併（#30）。
-test('.claude/settings.json 以 PreToolUse（Edit|Write）接上主 checkout 防護', () => {
+// L3 必接：主 checkout 的未提交改動與新檔會讓 pilot 的 Probe 停止合併（#30）；Bash 的 sed -i、重導向也會寫檔（#47）。
+test('.claude/settings.json 以 PreToolUse（Edit|Write|Bash）接上主 checkout 防護', () => {
   assert.ok(copies['scripts/claude-hook-main-checkout.mjs'], '清單沒有 scripts/claude-hook-main-checkout.mjs');
   const { hooks } = JSON.parse(read('.claude/settings.json'));
-  const wired = hooks.PreToolUse.some(({ matcher, hooks: list }) => /\bEdit\b/.test(matcher) && /\bWrite\b/.test(matcher)
+  const wired = hooks.PreToolUse.some(({ matcher, hooks: list }) => /\bEdit\b/.test(matcher) && /\bWrite\b/.test(matcher) && /\bBash\b/.test(matcher)
     && list.some(({ command }) => command.includes('scripts/claude-hook-main-checkout.mjs')));
-  assert.ok(wired, '.claude/settings.json 的 PreToolUse 沒有以 Edit|Write 呼叫 scripts/claude-hook-main-checkout.mjs');
+  assert.ok(wired, '.claude/settings.json 的 PreToolUse 沒有以 Edit|Write|Bash 呼叫 scripts/claude-hook-main-checkout.mjs');
 });
