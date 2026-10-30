@@ -13,7 +13,7 @@ import { isField, isOpenRequest, now, storeDir, usage } from './lib/pilot-store.
 
 const USAGE = '用法：node scripts/pilot-request.mjs <checkout> list | apply <行號> [--note <text>] | decline <行號> --reason <text> [--note <text>]';
 const [checkout, command, lineArg, ...rest] = process.argv.slice(2);
-if (!checkout) usage(USAGE);
+if (!checkout || checkout.startsWith('--')) usage(USAGE);
 const file = join(storeDir(checkout), 'requests.md');
 const lines = existsSync(file) ? readFileSync(file, 'utf8').split('\n') : [];
 
@@ -35,6 +35,8 @@ if (command === 'decline' && !options.reason) usage(USAGE, '缺少 --reason');
 const index = Number(lineArg) - 1;
 if (!isOpenRequest(lines[index] ?? '')) { console.log(`NOT_OPEN ${lineArg}`); process.exit(1); }
 const mark = command === 'apply' ? `applied ${now()}` : `declined ${options.reason}`;
-lines[index] = [lines[index].trimEnd(), mark, ...(options.note ? [options.note] : [])].join('   ');
-writeFileSync(file, lines.join('\n'));
+// 標記必須改寫同一行：寫入前重讀，其他 session 在這之間附加的 request 才不會被舊內容蓋掉（附加式檔案，行號不變）。
+const fresh = readFileSync(file, 'utf8').split('\n');
+fresh[index] = [fresh[index].trimEnd(), mark, ...(options.note ? [options.note] : [])].join('   ');
+writeFileSync(file, fresh.join('\n'));
 console.log(`${command === 'apply' ? 'APPLIED' : 'DECLINED'} ${lineArg}`);
