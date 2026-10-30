@@ -23,10 +23,8 @@ Read from the note, quoting only what is there:
 - 晨間意圖: the intended feeling, the most urgent responsibility, the smallest long-term step.
 - 工作目標: checked `[x]` items are done; unchecked `[ ]` items with text are open; empty `- [ ]` lines are ignored. The checkboxes already say done or open, so they are context for matching, never content to restate.
 - 工作紀錄 and 💡 靈感與反思: what was actually worked on or thought about.
-- Agent sessions of that day, the main source for what work actually happened. The date is local time (UTC+8); session timestamps are UTC.
-  - Claude Code: `~/.claude/projects/*/*.jsonl` and `/mnt/c/Users/ron.chang/.claude/projects/*/*.jsonl`, entries timestamped that day.
-  - Codex: `~/.codex/sessions/YYYY/MM/DD/*.jsonl`.
-  - Per session take the project (directory name or `cwd`), the user's prompts, and outcomes such as PRs opened or merged, Issues closed, commits. Group sessions by project and task; skip sessions that did nothing.
+- Agent sessions of that day, the main source for what work actually happened: run `node <skill dir>/scripts/day-sessions.mjs <YYYY-MM-DD>`. It prints each Claude Code session's prompts by project for that local (UTC+8) day, and Codex runs grouped by kind with counts (mostly worker runs a coordinator session already shows). Group sessions into work items by project and task; skip sessions that did nothing. Outcomes (Issues closed, PRs merged, commits) come from the project's tracker or git, not the prompts.
+- Work-repo Issue status, when sessions or goals touch `spay2`: `node scripts/issue-queue.mjs --all-tsv` from `~/code/spay2` (GitLab, not `gh`) lists every Issue with state and label; `glab issue view <n>` reads one Issue's spec and 驗收條件.
 - `git -C <vault> log --since=<date> --until=<date+1>` subjects: vault edits made that day (trip planning, finance updates…), as supporting signals only.
 
 Done when the day's sessions are grouped into work items and each of the three morning intentions is matched to done, partial, open or no evidence.
@@ -42,7 +40,7 @@ When ### English Practice has text, give brief corrections in chat; the note kee
 
 ## 3. Propose, then wait
 
-Show the filled 晚間回顧 section exactly as it will be written, then wait for an explicit yes (edits allowed). Also offer, as a separate yes/no: copy the open 工作目標 items into the next day's note (create it from the template if absent).
+Show the filled 晚間回顧 section exactly as it will be written, then wait for an explicit yes (edits allowed). Also offer, as a separate yes/no, the next day's 工作目標 (create the note from the template if absent): the open 工作目標 items, plus whatever the user asked to have ready for tomorrow, drafted from evidence as checkboxes that each name their Issue (a `ready-for-human` Issue's spec steps, an in-flight Issue's 驗收條件 that only a deployed environment can confirm).
 
 ## 4. Write and read back
 
