@@ -11,7 +11,8 @@ const script = new URL('../scripts/orca-session-send.mjs', import.meta.url).path
 // 記錄呼叫的假 Orca CLI（回應由 helpers/fake-orca.mjs 的真實樣本長出）；`swallow` 次送出不出現在畫面上，`busy` 次 wait 不成立；
 // `draft` 為第一次送出前 composer 已有的文字（undefined 沿用樣本值、null 回應不帶 `draft` 欄位，如 composer 為空的真實輸出），
 // 送出 Enter 後連同送出的文字一起出現在畫面上。
-function fixture(t, { busy = 0, sendRejected = false, swallow = 0, stale = false, draft } = {}) {
+// `stuck` 次送出的文字進了輸入框卻沒提交：畫面最後一行是輸入框裡的 prompt，draft 也還是它。
+function fixture(t, { busy = 0, sendRejected = false, swallow = 0, stale = false, draft, stuck = 0 } = {}) {
   const temp = mkdtempSync(join(tmpdir(), 'orca-session-send-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const log = join(temp, 'orca.log');
@@ -19,15 +20,16 @@ function fixture(t, { busy = 0, sendRejected = false, swallow = 0, stale = false
   const cli = join(temp, 'orca');
   writeFileSync(cli, `#!/usr/bin/env node
 const fs = require('fs'); const [, b] = process.argv.slice(2); const arg = k => process.argv[process.argv.indexOf(k) + 1];
-const sentFile = ${JSON.stringify(log)} + '.sent'; const sent = () => fs.existsSync(sentFile) ? fs.readFileSync(sentFile, 'utf8').trim().split('\\n') : [];
+const sentFile = ${JSON.stringify(log)} + '.sent'; const sent = () => fs.existsSync(sentFile) ? fs.readFileSync(sentFile, 'utf8').split('\\n').slice(0, -1) : [];
 fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 ${orcaReplySource()}
 if (${stale}) { fail('terminal_handle_stale'); process.exit(1); }
 if (b === 'wait') reply('wait', { wait: { satisfied: (fs.readFileSync(${JSON.stringify(log)}, 'utf8').match(/terminal wait/g) || []).length > ${busy} } });
 else if (b === 'send') { fs.appendFileSync(sentFile, arg('--text') + '\\n'); reply('send', { send: { accepted: ${!sendRejected} } }); }
+else if (b === 'read' && sent().length && sent().length <= ${stuck}) reply('read', { terminal: { tail: ['● 先前的報告', '> ' + sent()[0]], draft: sent()[0] } });
 else if (b === 'read') {
   const draft = ${JSON.stringify(draft ?? '')};
-  const typed = sent().length ? draft + sent().pop() : '';
+  const typed = sent().length ? draft + (sent().filter(Boolean).pop() ?? '') : '';
   const terminal = { tail: ['● 先前的報告', sent().length > ${swallow} ? '> ' + typed : '❯'] };
   if (${draft === null}) {
     const result = mergeSample(ORCA_SAMPLES.read, { terminal }, 'read');
@@ -94,6 +96,15 @@ test('draft 為空、缺省或與 prompt 無關：送整段 prompt，不印 DRAF
     assert.ok(readFileSync(log, 'utf8').includes(`terminal send --terminal term_w --text ${PROMPT} --enter --json\n`));
     assert.doesNotMatch(result.stderr, /DRAFT_SUBMIT/);
   }
+});
+
+// adapter Dispatch 第 3 步記的失敗模式：文字停在輸入框沒提交。畫面上輸入框那一行含 prompt，不能當成已送達。
+test('文字進了輸入框卻沒提交：不算送達，只補 Enter 一次後才 SENT', t => {
+  const { log, send } = fixture(t, { stuck: 1 });
+  const result = send(['--terminal', 'term_w', '--prompt', PROMPT]);
+  assert.equal(result.stdout.trim(), 'SENT term_w');
+  const sends = readFileSync(log, 'utf8').split('\n').filter(line => line.startsWith('terminal send '));
+  assert.deepEqual(sends, [`terminal send --terminal term_w --text ${PROMPT} --enter --json`, 'terminal send --terminal term_w --text  --enter --json']);
 });
 
 test('send 被拒：STOP send；handle 失效：STOP orca <錯誤碼>', t => {

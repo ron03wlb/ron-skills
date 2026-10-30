@@ -56,8 +56,9 @@ export function sendPrompt(cli, handle, text) {
     for (let poll = 0; poll < CONFIRM_POLLS; poll++) {
       sleep(CONFIRM_MS);
       const screen = orca(cli, 'terminal', 'read', '--terminal', handle).terminal ?? {};
-      if (landed(screen.tail ?? [])) return true;
       draft = screen.draft ?? '';
+      // 文字還在輸入框（draft 含 prompt 開頭）時，畫面上那一行只是輸入框，不算送達。
+      if (landed(screen.tail ?? []) && resendInput(draft, text)[1] !== '') return true;
     }
   }
   return false;

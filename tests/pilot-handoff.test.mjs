@@ -76,6 +76,14 @@ test('交接：改寫為 handoff 行、在主 checkout 開分頁並送出 /loop 
   assert.match(readFileSync(coordinator, 'utf8'), /^pid 99 /);
 });
 
+test('coordinator 檔有多行：STOP not-coordinator 仍是單獨的最後一行', t => {
+  const { coordinator, handoff } = fixture(t);
+  writeFileSync(coordinator, 'pid 7   loop yes\nname other\n');
+  const lines = handoff().stdout.trim().split('\n');
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^STOP not-coordinator pid 7   loop yes \/ name other$/);
+});
+
 test('沒有 coordinator 檔：STOP not-coordinator，不建檔、不呼叫 Orca', t => {
   const { coordinator, log, handoff } = fixture(t);
   rmSync(coordinator);

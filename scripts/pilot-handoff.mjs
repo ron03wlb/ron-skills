@@ -37,7 +37,7 @@ function mainCheckout() {
 function waitNewCoordinator(file, pid) {
   const deadline = Date.now() + WAIT_MS;
   for (;;) {
-    const owner = readFileSync(file, 'utf8').match(/^pid (\d+)\b/m)?.[1];
+    const owner = (existsSync(file) ? readFileSync(file, 'utf8') : '').match(/^pid (\d+)\b/m)?.[1];
     if (owner && owner !== pid) return true;
     if (Date.now() >= deadline) return false;
     sleep(POLL_MS);
@@ -47,7 +47,7 @@ function waitNewCoordinator(file, pid) {
 function handoff(cli, main, { session, pid, reason }) {
   const file = join(main, '.scratch/pilot/coordinator');
   const original = existsSync(file) ? readFileSync(file, 'utf8') : '';
-  if (!new RegExp(`^pid ${pid}\\b`, 'm').test(original)) return `STOP not-coordinator ${original.trim()}`;
+  if (!new RegExp(`^pid ${pid}\\b`, 'm').test(original)) return `STOP not-coordinator ${original.trim().split('\n').join(' / ')}`;
   const line = `handoff   from-session ${session}   from-pid ${pid}   at ${new Date().toISOString()}   reason ${reason}\n`;
   writeFileSync(file, line);
   // 新 session 可能已寫入自己的 pid 行；只在檔案仍是本次 handoff 行時還原，不蓋掉別人。
@@ -56,7 +56,7 @@ function handoff(cli, main, { session, pid, reason }) {
     if (handle) {
       try { orca(cli, 'terminal', 'close', '--terminal', handle); } catch (error) { cause += `（關閉 ${handle} 失敗：${error.message}，請手動關掉）`; }
     }
-    if (readFileSync(file, 'utf8') === line) writeFileSync(file, original);
+    if (!existsSync(file) || readFileSync(file, 'utf8') === line) writeFileSync(file, original);
     return `STOP ${cause}`;
   };
   try {
