@@ -7,8 +7,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 if [[ ${1:-} == --upstream ]]; then
-  up=$(mktemp -d); trap 'rm -rf "$up"' EXIT
+  up=$tmp
   git clone -q --depth 1 https://github.com/mattpocock/skills.git "$up/matt"
   git clone -q --depth 1 https://github.com/backnotprop/pstack.git "$up/pstack"
   export MATT_SKILLS=$up/matt PSTACK_SKILLS=$up/pstack
@@ -21,8 +22,10 @@ node scripts/build-workflow-site.mjs --check
 node scripts/check-workflow-strings.mjs
 node scripts/check-workflow-secrets.mjs
 node scripts/check-workflow-sync.mjs
-node --test --test-force-exit tests/*.test.mjs
+# 兩組測試各印一行 `ℹ tests <n>`，只看尾段會漏掉第一組（retro a6：PR #63、#64 只記到第二組的 120），所以最後彙總成一行。
+node --test --test-reporter=spec --test-force-exit tests/*.test.mjs | tee "$tmp/tests.log"
 # setup-workflow 的 script 正本與測試：先列出檔名（node --test 的輸出不帶檔名），再以正本的 node-test-guarded 跑，它會補跑靜默遺失的測試。
 templates=(skills/engineering/setup-workflow/templates/*.test.mjs)
 echo "TEMPLATE_TESTS ${#templates[@]}: ${templates[*]##*/}"
-node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-force-exit "${templates[@]}"
+node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-force-exit "${templates[@]}" | tee -a "$tmp/tests.log"
+echo "CHECK_PASS tests $(sed -n 's/^ℹ tests \([0-9]*\)$/\1/p' "$tmp/tests.log" | paste -sd+)"

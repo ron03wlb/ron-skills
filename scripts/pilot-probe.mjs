@@ -6,7 +6,7 @@
 // stdout 每行一項，沒事的項目不印（全部正常且沒有 batch 時不輸出）：
 //   主 checkout：UNBARE <checkout>（Bare guard 剛還原 core.bare）｜NOT_MAIN <分支>｜HOLD｜DIRTY <git status --short 的一行>
 //   adapter：ADAPTER_AHEAD <檔案>（pilot/integration 上的 docs/agents/issue-run.md 或 pilot.md 比 main 新，#52）
-//   開著的列：REQUEST <requests.md 原文>｜GATE <id> <Issue> <question 或段落標題>
+//   開著的列：REQUEST <requests.md 原文>｜GATE <id> <Issue> <question 或段落標題>｜GATE_MALFORMED <id> <把 resolved 寫進別的欄位的那一行>
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
 //                 WORKER <n> STUCK exited|stuck-after <分鐘>|orca <錯誤碼>|no-orca|checkpoint <欄位> <值>
 //                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）
@@ -96,7 +96,11 @@ export function openRows(pilot) {
     if (/^G\d+$/.test(cells[0] ?? '') && !/^resolved\b/.test(cells.at(-1))) out.push(`GATE ${cells[0]} ${cells[1]} ${cells[2]}`);
   }
   for (const [, title, body] of read('gates.md').matchAll(/^## (G\d+\b.*)\n([\s\S]*?)(?=^## |(?![\s\S]))/gm)) {
-    if (!/^- (?:G\d+ )?resolved\b/m.test(body)) out.push(`GATE ${title.trim()}`);
+    if (/^- (?:G\d+ )?resolved\b/m.test(body)) continue;
+    out.push(`GATE ${title.trim()}`);
+    // resolved 寫進別的欄位（`- status：resolved …`）不算解除；指出那一行（retro a6）。
+    const malformed = body.match(/^- [^：:\n]+[：:]\s*resolved\s+\d{4}-\d\d-\d\dT.*$/m);
+    if (malformed) out.push(`GATE_MALFORMED ${title.match(/^G\d+/)[0]} ${malformed[0].trim()}`);
   }
   return out;
 }
