@@ -30,6 +30,10 @@ _Avoid_: drift、不同步
 對已導入的專案比對 adapter、文件與實際使用，找出等級標示錯誤、分歧與隱性跨 repo 依賴。
 _Avoid_: audit、健檢、檢查
 
+**pilot 存檔**:
+coordinator 跨 session 保存進度的一組狀態檔，例如批次 checkpoint、決策紀錄、hold、session 紀錄；格式由契約固定，正本 script 只依這份契約讀寫。
+_Avoid_: Program store、scratch、狀態檔
+
 ## Issue 組織
 
 **母單**:
