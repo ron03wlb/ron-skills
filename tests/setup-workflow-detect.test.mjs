@@ -83,11 +83,14 @@ test('有 adapter 與檢查入口但沒有 tracker 設定時仍是 L0', t => {
   assert.deepEqual(result.levels.L1.missing, ['tracker']);
 });
 
-test('檢查入口是 PATH 上的指令（node、bash 等）時算數；repo 內路徑才要求檔案存在', t => {
+test('檢查入口：PATH 上的指令加上存在的 repo 內路徑才算；不存在的指令或路徑不算', t => {
   const adapter = command => `# a\n\n## Checks\n\nOne command: \`${command}\`.\n`;
-  for (const command of ['node --test tests/', 'bash bin/run-all', 'npx vitest run']) {
-    const result = detect(repo(t, { ...L1_FILES, 'bin/check': undefined, 'docs/agents/issue-run.md': adapter(command) }));
-    assert.equal(result.level, 'L1', command);
+  const files = { ...L1_FILES, 'bin/check': undefined, 'tests/a.test.mjs': '\n' };
+  for (const command of ['node --test tests/', 'bash tests/a.test.mjs', 'git status']) {
+    assert.equal(detect(repo(t, { ...files, 'docs/agents/issue-run.md': adapter(command) })).level, 'L1', command);
+  }
+  for (const command of ['bash bin/run-all', 'no-such-check-command', 'pilot']) {
+    assert.equal(detect(repo(t, { ...files, 'docs/agents/issue-run.md': adapter(command) })).level, 'L0', command);
   }
 });
 

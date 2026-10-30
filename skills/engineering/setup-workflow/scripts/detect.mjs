@@ -32,15 +32,19 @@ function section(adapter, heading) {
 }
 
 const adapterPath = 'docs/agents/issue-run.md';
+const trackerDoc = 'docs/agents/issue-tracker.md';
 const adapter = read(adapterPath);
 
-// 單一檢查入口：adapter Checks 段的第一個指令；第一段是 repo 內路徑（含 `/`）時檔案必須存在，PATH 上的指令（npm、node、bash…）直接採用。
+// 單一檢查入口：adapter Checks 段的第一個指令；第一段要是 PATH 上的指令或 repo 內的檔案，後面含 `/` 的參數（repo 內路徑）也必須存在。
+const onPath = name => spawnSync('sh', ['-c', 'command -v "$1"', 'sh', name], { stdio: 'ignore' }).status === 0;
 function checkEntry() {
   const command = section(adapter, 'Checks')?.match(/`([^`]+)`/)?.[1];
   if (!command) return signal(null, [`${adapterPath} 沒有 Checks 段或其中沒有指令`]);
-  const head = command.trim().split(/\s+/)[0];
-  if (!head.includes('/') || existsSync(join(root, head))) return signal(command, [`${adapterPath} ## Checks`]);
-  return signal(null, [`${adapterPath} ## Checks 寫的 ${head} 不存在`]);
+  const [head, ...rest] = command.trim().split(/\s+/);
+  const absent = [head.includes('/') || !onPath(head) ? head : null, ...rest.filter(arg => arg.includes('/') && !arg.startsWith('-'))]
+    .filter(path => path && !existsSync(join(root, path)));
+  if (!absent.length) return signal(command, [`${adapterPath} ## Checks`]);
+  return signal(null, [`${adapterPath} ## Checks 寫的 ${absent.join('、')} 不存在`]);
 }
 
 // 跑檢查入口的 git hook：優先 pre-push，只有 pre-commit 也算（L2 的本地強制），並註明缺 pre-push。
@@ -83,7 +87,6 @@ function pilotCommits() {
 }
 
 const check = checkEntry();
-const trackerDoc = 'docs/agents/issue-tracker.md';
 const signals = {
   tracker: existsSync(join(root, trackerDoc)) ? signal(trackerDoc, [trackerDoc]) : signal(null, [`${trackerDoc} 不存在`]),
   adapter: adapter !== null ? signal(adapterPath, [adapterPath]) : signal(null, [`${adapterPath} 不存在`]),
@@ -112,10 +115,10 @@ const matching = pattern => files.filter(file => pattern.test(file));
 const extension = (evidence, adapterSection, templates, value) => ({ detected: evidence.length > 0, value: value ?? (evidence.length > 0), evidence, section: adapterSection, templates });
 
 function tracker() {
-  const doc = read('docs/agents/issue-tracker.md');
+  const doc = read(trackerDoc);
   const value = doc === null ? 'none' : /\bglab\b/.test(doc) ? 'gitlab' : /\bgh\b/.test(doc) ? 'github' : 'local';
   const remote = git('remote', 'get-url', 'origin');
-  const evidence = doc === null ? [] : ['docs/agents/issue-tracker.md'];
+  const evidence = doc === null ? [] : [trackerDoc];
   if (doc === null && remote) evidence.push(`origin ${/gitlab/.test(remote) ? 'GitLab' : /github\.com/.test(remote) ? 'GitHub' : remote}（尚未設定 tracker）`);
   return { ...extension(evidence, 'Tracker', [], value), detected: doc !== null };
 }
