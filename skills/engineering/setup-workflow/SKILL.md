@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Bring the target repo (the cwd, or the path in `$ARGUMENTS`) one **level** up the ron-skills delivery workflow: L1 basic, L2 gates, L3 resident pilot, as the guide at `docs/workflow/` in ron-skills defines them. Everything is **present first, write after the human confirms**: steps 1–3 only read; step 4 asks once; steps 5–7 write.
 
-`<skill>` below is this skill's directory (`readlink -f ~/.claude/skills/setup-workflow`); `<ron-skills>` is the repo that holds it (`git -C <skill> rev-parse --show-toplevel`). Both scripts print their usage in the header comment.
+`<skill>` below is this skill's directory (`readlink -f ~/.claude/skills/setup-workflow`); `<ron-skills>` is the repo that holds it (`git -C <skill> rev-parse --show-toplevel`). Both scripts document their usage and output lines in their header comment.
 
 ## Steps
 
@@ -17,7 +17,7 @@ Bring the target repo (the cwd, or the path in `$ARGUMENTS`) one **level** up th
    | Level | Signals (all of the previous level, plus) |
    | --- | --- |
    | L0 | no tracker setup, or no Issue delivery (`docs/agents/issue-run.md` missing) |
-   | L1 | `adapter`: `docs/agents/issue-run.md`; `check`: its `## Checks` names one command that exists |
+   | L1 | `tracker`: `docs/agents/issue-tracker.md`; `adapter`: `docs/agents/issue-run.md`; `check`: its `## Checks` names one command that exists |
    | L2 | `integration`: an `integration` branch; `hook`: a pre-push (or, second best, pre-commit) hook that runs the check entry; `worktrees`: Issue-numbered branches in worktrees or merges |
    | L3 | `pilot`: the adapter has `## Pilot`; `pilotCommits`: a `pilot/stage-*` or `stage batch-*` commit in the last 90 days |
 
@@ -32,7 +32,7 @@ Bring the target repo (the cwd, or the path in `$ARGUMENTS`) one **level** up th
    | `externalEnv` | a compose file, or `testcontainers` in a build manifest | Checks (the env the suite needs) and Stops (the stop code when the env is unreachable) | — |
    | `multiModule` | build manifests in two or more directories | Checks: which tests to run per touched module | — |
    | `customTriage` | a project skill under `.claude/skills/` named for triage, grading or refining | Readiness: that skill replaces `/triage` | — |
-   | `codex` | `AGENTS.md`, `.codex/`, or Codex named in the adapter | Review, and the implementer when Codex builds tickets | `run-codex-review.mjs` |
+   | `codex` | `.codex/`, or Codex named in `AGENTS.md` or the adapter | Review, and the implementer when Codex builds tickets | `run-codex-review.mjs` |
 
    Done when every extension is confirmed present or absent, each with its evidence.
 
@@ -44,7 +44,7 @@ Bring the target repo (the cwd, or the path in `$ARGUMENTS`) one **level** up th
 
 6. **Adapter.** Write `docs/agents/issue-run.md` from `<ron-skills>/skills/engineering/issue-run/ADAPTER.md` as the skeleton: fill the sections the target level needs (L1: Tracker, Readiness, Checks, Candidate and acceptance, Evidence and closing; L2: Worktrees and checkpoint and Review too; L3: Pilot and Permissions) plus each confirmed extension's section, in English, with commands that exist in this repo. Keep an existing adapter's sections and fill only the gaps. Done when every command the adapter names runs from the repo root, and every Pilot command was run once here.
 
-7. **Copy templates.** Run `node <skill>/scripts/copy-templates.mjs <repo> <template>...`. It copies each template with its runtime dependencies and tests into `scripts/` and records each copy's template path, ron-skills commit and sha256 in `docs/agents/workflow-templates.json`. Exit 3 (`CONFIRM_OVERWRITE`) means an existing file differs: show the human the printed diff, and rerun with `--yes` only after they confirm. Wire each copy as its row in [Templates](#templates) says, and add the copied tests to the repo's check entry. Done when `copy-templates.mjs <repo> --verify` prints `VERIFIED <n>` and the check entry exits 0.
+7. **Copy templates.** Run `node <skill>/scripts/copy-templates.mjs <repo> <template>...`. It copies each template with its runtime dependencies and tests into `scripts/` and records each copy's template path, the last ron-skills commit that changed that template, and the copy's sha256 in `docs/agents/workflow-templates.json`; it refuses a template with uncommitted changes, since the recorded commit would not match the content. Exit 3 (`CONFIRM_OVERWRITE`) means an existing file differs: show the human the printed diff, and rerun with `--yes` only after they confirm. Wire each copy as its row in [Templates](#templates) says, and add the copied tests to the repo's check entry. Done when `copy-templates.mjs <repo> --verify` prints `VERIFIED <n>` and the check entry exits 0.
 
 8. **Report.** Report the detected and new level, every file written, the commands with exit codes, and the gaps left: unmet signals of the target level and declined extensions.
 

@@ -34,13 +34,12 @@ function section(adapter, heading) {
 const adapterPath = 'docs/agents/issue-run.md';
 const adapter = read(adapterPath);
 
-// 單一檢查入口：adapter Checks 段的第一個指令；第一段是 repo 內路徑時檔案必須存在，是常見的建置工具時直接採用。
-const RUNNERS = /^(npm|pnpm|yarn|make|gradle|mvn|pytest|tox|cargo|go|just|uv|poetry|bundle|rake)$/;
+// 單一檢查入口：adapter Checks 段的第一個指令；第一段是 repo 內路徑（含 `/`）時檔案必須存在，PATH 上的指令（npm、node、bash…）直接採用。
 function checkEntry() {
   const command = section(adapter, 'Checks')?.match(/`([^`]+)`/)?.[1];
   if (!command) return signal(null, [`${adapterPath} 沒有 Checks 段或其中沒有指令`]);
   const head = command.trim().split(/\s+/)[0];
-  if (RUNNERS.test(head) || existsSync(join(root, head))) return signal(command, [`${adapterPath} ## Checks`]);
+  if (!head.includes('/') || existsSync(join(root, head))) return signal(command, [`${adapterPath} ## Checks`]);
   return signal(null, [`${adapterPath} ## Checks 寫的 ${head} 不存在`]);
 }
 
@@ -68,7 +67,7 @@ function integration() {
 }
 
 // 每張 Issue 一個 worktree 的紀錄：現有 worktree 或合入紀錄裡帶 Issue 號碼的分支（issue/12-x、feature/ron/#12）。
-const ISSUE_BRANCH = /\b(?:issue|feature|fix|bug)s?\/[^\s'"]*?#?\d+[^\s'"]*/;
+const ISSUE_BRANCH = /\b(?:issue|feature|fix|bug)s?\/(?:[\w.-]+\/)*#?\d+\b[^\s'"]*/;
 function worktrees() {
   const branches = lines(git('worktree', 'list', '--porcelain')).filter(line => line.startsWith('branch ')).map(line => line.slice(7).replace('refs/heads/', ''));
   const merges = lines(git('log', '--all', '--merges', '-n', '300', '--format=%s'));
@@ -84,17 +83,19 @@ function pilotCommits() {
 }
 
 const check = checkEntry();
+const trackerDoc = 'docs/agents/issue-tracker.md';
 const signals = {
-  adapter: signal(adapter !== null && adapterPath, [adapter !== null ? adapterPath : `${adapterPath} 不存在`]),
+  tracker: existsSync(join(root, trackerDoc)) ? signal(trackerDoc, [trackerDoc]) : signal(null, [`${trackerDoc} 不存在`]),
+  adapter: adapter !== null ? signal(adapterPath, [adapterPath]) : signal(null, [`${adapterPath} 不存在`]),
   check,
   integration: integration(),
   hook: hook(check),
   worktrees: worktrees(),
-  pilot: signal(section(adapter, 'Pilot') !== null && '## Pilot', [section(adapter, 'Pilot') !== null ? `${adapterPath} ## Pilot` : `${adapterPath} 沒有 ## Pilot 段`]),
+  pilot: section(adapter, 'Pilot') !== null ? signal('## Pilot', [`${adapterPath} ## Pilot`]) : signal(null, [`${adapterPath} 沒有 ## Pilot 段`]),
   pilotCommits: pilotCommits(),
 };
 
-const LEVEL_SIGNALS = { L1: ['adapter', 'check'], L2: ['integration', 'hook', 'worktrees'], L3: ['pilot', 'pilotCommits'] };
+const LEVEL_SIGNALS = { L1: ['tracker', 'adapter', 'check'], L2: ['integration', 'hook', 'worktrees'], L3: ['pilot', 'pilotCommits'] };
 const levels = {};
 let level = 'L0';
 let reached = true;
@@ -108,7 +109,7 @@ const recommend = { L0: 'L1', L1: 'L2', L2: 'L3', L3: null }[level];
 
 // 擴充：每項附偵測訊號（evidence）、要填的 adapter 段落與要帶入的正本。
 const matching = pattern => files.filter(file => pattern.test(file));
-const extension = (evidence, section, templates, value) => ({ detected: evidence.length > 0, value: value ?? (evidence.length > 0), evidence, section, templates });
+const extension = (evidence, adapterSection, templates, value) => ({ detected: evidence.length > 0, value: value ?? (evidence.length > 0), evidence, section: adapterSection, templates });
 
 function tracker() {
   const doc = read('docs/agents/issue-tracker.md');
@@ -133,7 +134,8 @@ const extensions = {
   multiModule: extension(manifestDirs.size >= 2 ? manifests : [], 'Checks', []),
   customTriage: extension([...new Set(matching(/^\.claude\/skills\/[^/]*(triage|grade|refine|分級)[^/]*\//i).map(file => file.split('/').slice(0, 3).join('/')))], 'Readiness', []),
   codex: extension([
-    ...matching(/^AGENTS\.md$|^\.codex\//).slice(0, 1),
+    ...matching(/^\.codex\//).slice(0, 1),
+    ...(/\bcodex\b/i.test(read('AGENTS.md') ?? '') ? ['AGENTS.md'] : []),
     ...(/\bcodex\b/i.test(adapter ?? '') ? [adapterPath] : []),
   ], 'Review', ['run-codex-review.mjs']),
 };

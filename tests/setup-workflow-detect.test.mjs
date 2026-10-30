@@ -64,7 +64,7 @@ test('沒有 adapter 的 repo 是 L0，建議 L1，並列出 L1 缺的條件', t
   const result = detect(repo(t));
   assert.equal(result.level, 'L0');
   assert.equal(result.recommend, 'L1');
-  assert.deepEqual(result.levels.L1.missing, ['adapter', 'check']);
+  assert.deepEqual(result.levels.L1.missing, ['tracker', 'adapter', 'check']);
   assert.equal(result.extensions.tracker.value, 'none');
 });
 
@@ -75,6 +75,33 @@ test('有 adapter 與單一檢查入口是 L1；tracker 從 issue-tracker.md 認
   assert.equal(result.signals.check.value, 'bin/check');
   assert.deepEqual(result.levels.L2.missing, ['integration', 'hook', 'worktrees']);
   assert.equal(result.extensions.tracker.value, 'github');
+});
+
+test('有 adapter 與檢查入口但沒有 tracker 設定時仍是 L0', t => {
+  const result = detect(repo(t, { ...L1_FILES, 'docs/agents/issue-tracker.md': undefined }));
+  assert.equal(result.level, 'L0');
+  assert.deepEqual(result.levels.L1.missing, ['tracker']);
+});
+
+test('檢查入口是 PATH 上的指令（node、bash 等）時算數；repo 內路徑才要求檔案存在', t => {
+  const adapter = command => `# a\n\n## Checks\n\nOne command: \`${command}\`.\n`;
+  for (const command of ['node --test tests/', 'bash bin/run-all', 'npx vitest run']) {
+    const result = detect(repo(t, { ...L1_FILES, 'bin/check': undefined, 'docs/agents/issue-run.md': adapter(command) }));
+    assert.equal(result.level, 'L1', command);
+  }
+});
+
+test('分支名有數字但沒有 Issue 號碼時不算每張 Issue 一個 worktree 的紀錄', t => {
+  const root = repo(t, L1_FILES);
+  git(root, 'switch', '-q', '-c', 'feature/oauth2');
+  git(root, 'commit', '-q', '--allow-empty', '-m', 'x');
+  git(root, 'switch', '-q', 'main');
+  git(root, 'merge', '-q', '--no-ff', '-m', "Merge branch 'feature/oauth2'", 'feature/oauth2');
+  assert.equal(detect(root).signals.worktrees.met, false);
+});
+
+test('AGENTS.md 沒提到 Codex 時不算 Codex 擴充', t => {
+  assert.equal(detect(repo(t, { 'AGENTS.md': '## Agent skills\n' })).extensions.codex.detected, false);
 });
 
 test('adapter 寫的檢查入口不存在時不算 L1', t => {

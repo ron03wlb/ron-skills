@@ -100,7 +100,7 @@ Post evidence as an Issue comment (candidate SHA, commands with exit codes, find
 /issue-run <n>
 ```
 
-它依序做 Gate、Graph、Claim、Build、Candidate、Report，中間不停下來問；只在[停點](#什麼時候會停)停。分支與 worktree 照 adapter 的 Worktrees and checkpoint 段；沒寫就照 `implement-spec` 的預設。ron-skills 的寫法是：只有一張 ticket 時直接在主 checkout 開 `issue/<n>-<slug>` 分支，多張才開 worktree。
+它依序做 Gate、Graph、Claim、Build、Candidate、Report，中間不停下來問；只在[停點](#什麼時候會停)停。分支與 worktree 照 adapter 的 Worktrees and checkpoint 段；沒寫就照 `implement-spec` 的預設。ron-skills 的寫法是：每張 ticket 都從 `main` 開一個 `issue/<n>-<slug>` 的 worktree，因為它的主 checkout 有 hook 擋寫入（L3 才接，見 [06](06-quality-gates.md#1-編輯時)）；L1 的 repo 沒有這個 hook，一張 ticket 可以直接在主 checkout 開分支。
 
 做完的樣子：報告列出 candidate 的完整 SHA、每條指令與 exit code、review findings（Standards 與 Spec 分開列）、沒跑的檢查，以及你接下來要做的事；Issue 上有一則證據留言。
 

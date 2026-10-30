@@ -83,7 +83,7 @@ Post evidence as an Issue comment (candidate SHA, commands with exit codes, find
 <h3 id="6-issue-run">6. <code>/issue-run</code></h3>
 <p>在 repo 的主 checkout 開新 session：</p>
 <pre><code class="language-text">/issue-run &lt;n&gt;</code></pre>
-<p>它依序做 Gate、Graph、Claim、Build、Candidate、Report，中間不停下來問；只在<a href="#什麼時候會停">停點</a>停。分支與 worktree 照 adapter 的 Worktrees and checkpoint 段；沒寫就照 <code>implement-spec</code> 的預設。ron-skills 的寫法是：只有一張 ticket 時直接在主 checkout 開 <code>issue/&lt;n&gt;-&lt;slug&gt;</code> 分支，多張才開 worktree。</p>
+<p>它依序做 Gate、Graph、Claim、Build、Candidate、Report，中間不停下來問；只在<a href="#什麼時候會停">停點</a>停。分支與 worktree 照 adapter 的 Worktrees and checkpoint 段；沒寫就照 <code>implement-spec</code> 的預設。ron-skills 的寫法是：每張 ticket 都從 <code>main</code> 開一個 <code>issue/&lt;n&gt;-&lt;slug&gt;</code> 的 worktree，因為它的主 checkout 有 hook 擋寫入（L3 才接，見 <a href="06-quality-gates.html#1-編輯時">06</a>）；L1 的 repo 沒有這個 hook，一張 ticket 可以直接在主 checkout 開分支。</p>
 <p>做完的樣子：報告列出 candidate 的完整 SHA、每條指令與 exit code、review findings（Standards 與 Spec 分開列）、沒跑的檢查，以及你接下來要做的事；Issue 上有一則證據留言。</p>
 <h3 id="7-pushprmr合併結案">7. push、PR／MR、合併、結案</h3>
 <p>報告最後的「下一步」照順序做：</p>

@@ -121,6 +121,21 @@ test('正本有未提交改動時 exit 2：記錄的 commit 會對不上內容',
   assert.equal(run(copier, target, 'missing').status, 2, '不存在的正本');
 });
 
+test('不認得的旗標 exit 2，不寫任何檔（打錯 --dry-run 不能變成真的複製）', t => {
+  const { target, copier } = fixture(t);
+  const result = run(copier, target, '--dryrun', 'a');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--dryrun/);
+  assert.equal(existsSync(join(target, 'scripts')), false);
+});
+
+test('--verify 沒有清單時 exit 1，不算驗證通過', t => {
+  const { target, copier } = fixture(t);
+  const result = run(copier, target, '--verify');
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /^MISSING docs\/agents\/workflow-templates\.json$/m);
+});
+
 test('--verify：每一筆 hash 與實際檔案一致時 VERIFIED，有一筆不同就 exit 1 並列出', t => {
   const { target, copier } = fixture(t);
   assert.equal(run(copier, target, 'a').status, 0);

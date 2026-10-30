@@ -5,7 +5,7 @@
 //       node copy-templates.mjs <repo> --verify
 // 輸出每檔一行 `COPY|SAME|DIFF <副本路徑>`（DIFF 後接 unified diff），最後一行：
 //   PLANNED <n>（--dry-run）、COPIED <n>、CONFIRM_OVERWRITE <路徑...>（exit 3：既有檔內容不同，人確認後加 --yes 重跑）、
-//   VERIFIED <n>（--verify 全部一致；有 MISMATCH／MISSING 時 exit 1）。參數錯誤、正本不存在或有未提交改動時 exit 2。
+//   VERIFIED <n>（--verify 全部一致；有 MISMATCH／MISSING 或沒有清單時 exit 1）。參數或旗標錯誤、正本不存在或有未提交改動時 exit 2。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
@@ -19,6 +19,8 @@ const args = process.argv.slice(2);
 const flags = new Set(args.filter(arg => arg.startsWith('--')));
 const [repoArg, ...names] = args.filter(arg => !arg.startsWith('--'));
 const fail = message => { console.error(`copy-templates: ${message}`); process.exit(2); };
+const unknown = [...flags].filter(flag => !['--dry-run', '--no-tests', '--yes', '--verify'].includes(flag));
+if (unknown.length) fail(`不認得的旗標：${unknown.join(' ')}`);
 if (!repoArg) fail('用法：copy-templates.mjs <repo> [--dry-run] [--no-tests] [--yes] <template>... | <repo> --verify');
 const repo = resolve(repoArg);
 
@@ -27,6 +29,7 @@ const manifestPath = join(repo, MANIFEST);
 const manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')) : { source: 'ron03wlb/ron-skills', copies: {} };
 
 if (flags.has('--verify')) {
+  if (!existsSync(manifestPath)) { console.log(`MISSING ${MANIFEST}`); process.exit(1); }
   let bad = 0;
   for (const [path, entry] of Object.entries(manifest.copies)) {
     const file = join(repo, path);
