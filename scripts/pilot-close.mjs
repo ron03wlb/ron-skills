@@ -12,7 +12,7 @@
 //
 // 用法：node scripts/pilot-close.mjs <batch key> <pr> <merge sha>（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
 // stdout：每一步一行 `DONE <n> <step>` 或 `SKIP <n> <step>`；任何一步失敗都印 `STOP <n> <step> <原因>` 並停下
-//   （開頭 checkpoint、main 兩步的 <n> 是 batch key）。Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。
+//   （開頭 main 那步的 <n> 是 batch key；checkpoint 讀不到或沒有 done 成員只印 STOP <key> checkpoint）。Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。
 //   全部成員做完，checkpoint 的 `current:` 寫成 `closed`，最後一行 `CLOSED <key>`。
 // exit：0 CLOSED；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND。
 import { spawnSync } from 'node:child_process';
