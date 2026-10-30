@@ -1,2 +1,4 @@
+# pilot 與 issue-run 的 checkpoint（docs/agents/issue-run.md：不 commit）
+.scratch/
 node_modules/
 .idea/

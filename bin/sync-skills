@@ -8,6 +8,8 @@
 # 清單檔：matt-skills.txt（相對 skills/，兩層 <類別>/<名稱>）、pstack-skills.txt（相對 skills/，一層 <名稱>）。
 # 清單內 `# pin: <SHA>` 註明驗證過的上游版本；checkout 的 HEAD 不同時只警告。
 set -euo pipefail
+# git hook（pre-commit 跑 bin/check）會匯出這些變數，`git -C <上游 checkout>` 繼承後讀到的是本 repo。
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 MATT=${MATT_SKILLS:-$HOME/code/skills}
