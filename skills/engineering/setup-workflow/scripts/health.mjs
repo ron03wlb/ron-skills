@@ -23,7 +23,8 @@ if (git('rev-parse', '--show-toplevel') === null) fail(`${root} 不是 git repo`
 
 const lines = text => (text ? text.split('\n').filter(Boolean) : []);
 // 已追蹤與未追蹤（不含 gitignore）的檔案；工作樹裡刪掉的，以及其實是目錄的（指向目錄的 symlink、submodule）都不算。
-const files = lines(git('ls-files', '--cached', '--others', '--exclude-standard')).filter(file => statSync(join(root, file), { throwIfNoEntry: false })?.isFile());
+const isFile = path => statSync(path, { throwIfNoEntry: false })?.isFile() ?? false;
+const files = lines(git('ls-files', '--cached', '--others', '--exclude-standard')).filter(file => isFile(join(root, file)));
 const read = path => readFileSync(join(root, path), 'utf8');
 
 // 本 repo 的名稱：主 checkout 的目錄名（worktree 的目錄名不算），以及 origin 的 repo 名。
@@ -66,7 +67,7 @@ let copies = {};
 try {
   if (existsSync(join(root, MANIFEST))) {
     const manifest = JSON.parse(read(MANIFEST));
-    if (!isObject(manifest) || !isObject(manifest.copies ?? {})) finding('divergence', `invalid-manifest ${MANIFEST} 要是物件，copies 也要是物件`, MANIFEST);
+    if (!isObject(manifest) || ('copies' in manifest && !isObject(manifest.copies))) finding('divergence', `invalid-manifest ${MANIFEST} 要是物件，copies 也要是物件`, MANIFEST);
     else copies = manifest.copies ?? {};
   }
 } catch (error) { finding('divergence', `invalid-manifest ${MANIFEST} 不是合法 JSON：${error.message}`, MANIFEST); }
@@ -74,32 +75,33 @@ for (const [path, entry] of Object.entries(copies)) {
   if (typeof entry?.sha256 !== 'string' || typeof entry?.template !== 'string') { finding('divergence', `invalid-entry ${path} 清單項目缺 template 或 sha256`, MANIFEST); continue; }
   const copy = join(root, path);
   const template = join(sourceRoot, entry.template);
-  if (!existsSync(copy)) { finding('divergence', `missing-copy ${path} 清單有記錄但副本不存在`, MANIFEST); continue; }
-  if (!existsSync(template)) { finding('divergence', `missing-canonical ${path} 正本 ${entry.template} 已不存在`, MANIFEST); continue; }
+  if (!isFile(copy)) { finding('divergence', `missing-copy ${path} 清單有記錄但副本不存在`, MANIFEST); continue; }
+  if (!isFile(template)) { finding('divergence', `missing-canonical ${path} 正本 ${entry.template} 已不存在`, MANIFEST); continue; }
   const [copySha, canonicalSha] = [sha256(copy), sha256(template)];
   const copyChanged = copySha !== entry.sha256;
   const canonicalChanged = canonicalSha !== entry.sha256;
   if (!copyChanged && !canonicalChanged) continue;
   const kind = copyChanged && canonicalChanged ? 'both-modified' : copyChanged ? 'local-modified' : 'canonical-newer';
   const diff = kind === 'both-modified' ? lines(spawnSync('git', ['diff', '--no-index', '--', copy, template], { encoding: 'utf8' }).stdout) : [];
-  finding('divergence', `${kind} ${path} ${ADVICE[kind]}`, `${MANIFEST} commit ${entry.commit ?? '(未記錄)'} sha256 ${entry.sha256.slice(0, 12)}、副本 ${copySha.slice(0, 12)}、正本 ${entry.template} ${canonicalSha.slice(0, 12)}`, diff);
+  finding('divergence', `${kind} ${path} ${ADVICE[kind]}`, `${MANIFEST} commit ${typeof entry.commit === 'string' && entry.commit ? entry.commit : '(未記錄)'} sha256 ${entry.sha256.slice(0, 12)}、副本 ${copySha.slice(0, 12)}、正本 ${entry.template} ${canonicalSha.slice(0, 12)}`, diff);
 }
 
 // 隱性跨 repo 依賴：adapter、.claude/settings.json 與 scripts/、bin/、git hook 目錄裡家目錄下的絕對路徑，路徑中沒有本 repo 的名稱就是指向別的 repo。
 // 家目錄下的設定目錄（~/.claude）與只到某個目錄本身（~/code/<repo>）的提及不算：依賴的是那個 repo 裡的檔案，
 // 所以路徑要指到檔案（最後一段有副檔名，如 ~/spay2/send.mjs），或在家目錄下至少三段（~/code/spay2/scripts）。
-// bash 常把家目錄單獨加引號（"$HOME"/code/x、"~"/code/x），所以家目錄後可以接一個引號。
-const HOME_PATH = /(?:~|\$\{?HOME\}?|\/home\/[\w.-]+|\/Users\/[\w.-]+)["']?((?:\/[\w.@+-]+)+)/g;
+// bash 常在路徑中間開關雙引號（"$HOME"/code/x、"$HOME/code/x"/y），所以每個 / 前後可以接一個雙引號，比對前去掉；單引號裡的 $HOME 不會展開，不算。
+const HOME_PATH = /(?:~|\$\{?HOME\}?|\/home\/[\w.-]+|\/Users\/[\w.-]+)((?:"?\/"?[\w.@+-]+)+)/g;
 const hooksPath = git('config', 'core.hooksPath');
 const scriptDirs = ['scripts/', 'bin/', '.githooks/', '.husky/', ...(hooksPath && !hooksPath.startsWith('/') ? [`${hooksPath.replace(/\/?$/, '/')}`] : [])];
 const scanned = files.filter(file => file === adapterPath || file === '.claude/settings.json' || scriptDirs.some(dir => file.startsWith(dir)));
-for (const path of scanned) {
-  read(path).split('\n').forEach((text, i) => {
+for (const file of scanned) {
+  read(file).split('\n').forEach((text, i) => {
     for (const match of text.matchAll(HOME_PATH)) {
-      const segments = match[1].replace(/\.+$/, '').split('/').filter(Boolean);
+      const path = match[0].replaceAll('"', '').replace(/\.+$/, '');
+      const segments = match[1].replaceAll('"', '').replace(/\.+$/, '').split('/').filter(Boolean);
       const toFile = /\.\w+$/.test(segments.at(-1));
       if (segments.length < (toFile ? 2 : 3) || segments[0].startsWith('.') || segments.some(segment => names.has(segment))) continue;
-      finding('cross-repo', `${match[0].replace(/\.+$/, '')} 指向本 repo 以外的檔案`, `${path}:${i + 1}`);
+      finding('cross-repo', `${path} 指向本 repo 以外的檔案`, `${file}:${i + 1}`);
     }
   });
 }

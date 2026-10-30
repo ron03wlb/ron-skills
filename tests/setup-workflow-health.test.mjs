@@ -175,7 +175,7 @@ test('清單不是合法 JSON 時回報 invalid-manifest', t => {
 });
 
 test('清單是合法 JSON 但不是物件（null、copies 是陣列）時回報 invalid-manifest 而不中斷', t => {
-  for (const content of ['null', '[]', JSON.stringify({ copies: [{ template: TEMPLATE, sha256: 'ab' }] })]) {
+  for (const content of ['null', '[]', '{"copies":null}', JSON.stringify({ copies: [{ template: TEMPLATE, sha256: 'ab' }] })]) {
     const { status, stderr, lines } = health(repo(t, { 'docs/agents/workflow-templates.json': content }));
     assert.equal(status, 1, `${content}\n${stderr}`);
     assert.match(lines.at(-2), /^FINDING divergence invalid-manifest /, content);
@@ -194,11 +194,26 @@ test('掃到的路徑是目錄（指向目錄的 symlink）時略過而不中斷
   assert.equal(lines.at(-1), 'HEALTHY');
 });
 
+test('清單項目的副本或正本是目錄時回報而不中斷', t => {
+  const manifest = { copies: {
+    lib: { template: TEMPLATE, commit: 'a', sha256: 'ab' },
+    'scripts/x.mjs': { template: 'skills', commit: 'a', sha256: 'ab' },
+  } };
+  const { status, stderr, lines } = health(repo(t, { 'lib/a.mjs': 'x\n', 'scripts/x.mjs': 'x\n', 'docs/agents/workflow-templates.json': JSON.stringify(manifest) }));
+  assert.equal(status, 1, stderr);
+  assert.match(lines.join('\n'), /missing-copy lib /);
+  assert.match(lines.join('\n'), /missing-canonical scripts\/x\.mjs /);
+  assert.equal(lines.at(-1), 'FINDINGS 2');
+});
+
 test('隱性跨 repo 依賴：bash 把 $HOME 或 ~ 單獨加引號的寫法也算', t => {
   const { lines } = health(repo(t, {
-    'scripts/run.sh': '#!/usr/bin/env bash\nnode "$HOME"/code/spay2/scripts/a.mjs\nnode "${HOME}"/code/spay2/scripts/b.mjs\nnode "~"/code/spay2/scripts/c.mjs\n',
+    'scripts/run.sh': '#!/usr/bin/env bash\nnode "$HOME"/code/spay2/scripts/a.mjs\nnode "${HOME}"/code/spay2/scripts/b.mjs\nnode "~"/code/spay2/scripts/c.mjs\nnode "$HOME/code/spay2"/scripts/d.mjs\nnode \'$HOME\'/code/spay2/scripts/e.mjs\n',
   }));
   const crossRepo = lines.filter(line => line.startsWith('FINDING cross-repo')).join('\n');
+  assert.equal(crossRepo.split('\n').length, 4, crossRepo);
+  assert.doesNotMatch(crossRepo, /"/, '證據不留半個引號');
+  assert.match(crossRepo, /\$HOME\/code\/spay2\/scripts\/d\.mjs .*# scripts\/run\.sh:5/);
   assert.match(crossRepo, /spay2\/scripts\/a\.mjs .*# scripts\/run\.sh:2/);
   assert.match(crossRepo, /spay2\/scripts\/b\.mjs .*# scripts\/run\.sh:3/);
   assert.match(crossRepo, /spay2\/scripts\/c\.mjs .*# scripts\/run\.sh:4/);
