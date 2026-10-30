@@ -14,8 +14,9 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !ke
 
 // 主 checkout 的 coordinator 檔（pid 42），以及記錄呼叫的假 Orca CLI（回應由 helpers/fake-orca.mjs 的真實樣本長出）。
 // `takeover` 為真時，假 Orca 收到送出就像新 session 跑了 /issue-pilot 的 Entry：把自己的 `pid ` 行寫進 coordinator 檔。
-// `waitHangs` 為真時 `terminal wait` 永遠不回；`createDelayMs` 讓 `terminal create` 晚回（分頁已開、handle 還沒回來）。
-function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true, waitHangs = false, createDelayMs = 0 } = {}) {
+// `waitHangs` 為真時 `terminal wait` 永遠不回；`createDelayMs` 讓 `terminal create` 晚回（分頁已開、handle 還沒回來）；
+// `orphanLate` 為真時 `terminal list` 看不到 create 開的分頁（create 被殺時 Orca 還沒建好）。
+function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true, waitHangs = false, createDelayMs = 0, orphanLate = false } = {}) {
   const temp = mkdtempSync(join(tmpdir(), 'pilot-handoff-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
@@ -44,6 +45,12 @@ else if (b === 'send') {
   reply('send', { send: { accepted: ${!sendRejected} } });
 }
 else if (b === 'close') reply('close', { close: { handle: arg('--terminal') } });
+else if (b === 'list') {
+  // 主 checkout 原有現任 coordinator 的分頁（標題同名，還沒被 Claude 改名）；create 開出分頁後，另有一個人剛開、標題不同的分頁。
+  const opened = ${!createError && !orphanLate} && /^terminal create /m.test(fs.readFileSync(${JSON.stringify(log)}, 'utf8'));
+  const terminals = [{ handle: 'term_current', title: 'issue-pilot coordinator' }, ...(opened ? [{ handle: 'term_pilot', title: 'issue-pilot coordinator' }, { handle: 'term_other', title: 'ron@Ron-NB: ~/code/ron-skills' }] : [])];
+  reply('list', { terminals, totalCount: terminals.length });
+}
 else if (b === 'read') {
   const sent = ${JSON.stringify(log)} + '.sent';
   reply('read', { terminal: { tail: [fs.existsSync(sent) ? fs.readFileSync(sent, 'utf8').trim().split('\\n').pop() : '❯'], draft: '' } });
@@ -52,7 +59,7 @@ else if (b === 'read') {
   chmodSync(cli, 0o755);
   const args = pid => [script, '--session', SESSION, '--pid', pid, '--reason', '已合入 2 批'];
   const options = extra => ({ cwd: repo, encoding: 'utf8', env: { ...env, ORCA_CLI_COMMAND: cli, ...FAST, PILOT_HANDOFF_WAIT_MS: '300', PILOT_HANDOFF_POLL_MS: '10', ...extra } });
-  const handoff = (pid = '42', extra = {}) => spawnSync('node', args(pid), { ...options(extra), timeout: 20000 });
+  const handoff = (pid = '42', extra = {}) => spawnSync('node', args(pid), { ...options(extra), timeout: 30000 });
   // 背景執行，給要在中途送訊號的測試用。
   const start = (extra = {}) => spawn('node', args('42'), options(extra));
   return { repo, coordinator, original, log, handoff, start };
@@ -74,7 +81,7 @@ test('交接：改寫為 handoff 行、在主 checkout 開分頁並送出 /loop 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), 'HANDED_OFF term_pilot');
   const calls = readFileSync(log, 'utf8');
-  assert.ok(calls.startsWith(`terminal create --worktree path:${repo} --title issue-pilot coordinator --command claude --json\n`), calls);
+  assert.ok(calls.startsWith(`terminal list --worktree path:${repo} --json\nterminal create --worktree path:${repo} --title issue-pilot coordinator --command claude --json\n`), calls);
   assert.match(calls, /^terminal wait --terminal term_pilot --for tui-idle /m);
   assert.match(calls, /^terminal send --terminal term_pilot --text \/loop \/issue-pilot --enter --json$/m);
   assert.doesNotMatch(calls, /terminal split/);
@@ -150,6 +157,40 @@ test('預算在 terminal create 進行中用完：等 create 回來再關掉分�
   assert.equal(result.stdout.trim().split('\n').pop(), 'STOP timeout');
   assert.equal(readFileSync(coordinator, 'utf8'), original);
   assert.match(readFileSync(log, 'utf8'), /^terminal close --terminal term_pilot --json$/m);
+});
+
+// 真實發生過的錯：每步寫死 10 秒，WSL 上 `terminal create` 常超過 10 秒，handoff 第一步就 STOP create The operation was aborted。
+test('terminal create 花 15 秒：預設上限內，照常 HANDED_OFF', t => {
+  const { handoff } = fixture(t, { createDelayMs: 15000 });
+  const result = handoff();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout.trim(), 'HANDED_OFF term_pilot');
+});
+
+// #22 審查 P3：create 逾時被殺時 Orca 可能已開好分頁卻沒回 handle；從 `terminal list` 找回來關掉。
+// 只關 create 之後才出現、標題相符的分頁：同名的既有分頁（現任 coordinator）和標題不同的新分頁都不碰，後者列在 STOP 原因裡。
+test('terminal create 超過上限：STOP create、還原 coordinator 檔、關掉用標題找到的新分頁', t => {
+  const { repo, coordinator, original, log, handoff } = fixture(t, { createDelayMs: 2000 });
+  const result = handoff('42', { PILOT_HANDOFF_CREATE_MS: '300' });
+  assert.equal(result.status, 4, result.stderr);
+  const last = result.stdout.trim().split('\n').pop();
+  assert.match(last, /^STOP create /);
+  assert.match(last, /term_other/);
+  assert.equal(readFileSync(coordinator, 'utf8'), original);
+  const calls = readFileSync(log, 'utf8');
+  assert.ok(calls.startsWith(`terminal list --worktree path:${repo} --json\nterminal create `), calls);
+  assert.match(calls, /^terminal close --terminal term_pilot --json$/m);
+  assert.doesNotMatch(calls, /^terminal close --terminal term_(current|other) /m);
+});
+
+// 審查 P2：create 被殺時 Orca 可能還在建分頁，list 看不到；什麼都沒關時 STOP 原因仍要提醒人去確認，分頁才不會無聲地留著。
+test('terminal create 超過上限、list 還看不到分頁：STOP create 附上請人確認的提醒', t => {
+  const { coordinator, original, log, handoff } = fixture(t, { createDelayMs: 2000, orphanLate: true });
+  const result = handoff('42', { PILOT_HANDOFF_CREATE_MS: '300' });
+  assert.equal(result.status, 4, result.stderr);
+  assert.match(result.stdout.trim().split('\n').pop(), /^STOP create .*請確認有沒有留下標題 issue-pilot coordinator 或剛由 create 開出的分頁/);
+  assert.equal(readFileSync(coordinator, 'utf8'), original);
+  assert.doesNotMatch(readFileSync(log, 'utf8'), /^terminal close /m);
 });
 
 for (const name of ['SIGTERM', 'SIGINT']) {
