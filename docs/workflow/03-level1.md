@@ -16,17 +16,19 @@ git clone https://github.com/backnotprop/pstack ~/code/pstack
 ~/code/ron-skills/bin/sync-skills           # 連結到 ~/.claude/skills/
 ```
 
-做完的樣子：新開的 Claude Code session 打 `/` 看得到 `issue-run`、`triage`、`setup-matt-pocock-skills`。Matt 或 pstack 放在別的路徑時，用 `MATT_SKILLS`、`PSTACK_SKILLS` 環境變數指定。
+做完的樣子：新開的 Claude Code session 打 `/` 看得到 `issue-run`、`triage`、`setup-workflow`、`setup-matt-pocock-skills`。Matt 或 pstack 放在別的路徑時，用 `MATT_SKILLS`、`PSTACK_SKILLS` 環境變數指定。
 
 ### 2. 設定 tracker 與 label（每個 repo 一次）
 
-在目標 repo 開 Claude Code，輸入 `/setup-matt-pocock-skills`，依序回答 tracker、triage label、domain docs 三段。它會寫出：
+在目標 repo 開 Claude Code，輸入 `/setup-workflow`。它先偵測現況（等級、tracker 種類等擴充）並列出要寫的檔案，你確認後才寫入；tracker、triage label、domain docs 三段會在同一個流程裡照 `setup-matt-pocock-skills` 的步驟問完，不必另外執行。第 4 步的 adapter 也在同一次流程裡完成。
+
+手動備用：不用 `/setup-workflow` 時，輸入 `/setup-matt-pocock-skills`，依序回答 tracker、triage label、domain docs 三段。兩種做法都會寫出：
 
 - `docs/agents/issue-tracker.md`：讀單、開單、留言、改 label、依賴關係的指令
 - `docs/agents/triage-labels.md`：五個角色對應的 label 字串
 - `docs/agents/domain.md`，以及 `CLAUDE.md`（或 `AGENTS.md`）的 `## Agent skills` 段
 
-再在 tracker 上建出 label（已存在的會報錯，略過即可）：
+手動時再在 tracker 上建出 label（`/setup-workflow` 會自己建；已存在的會報錯，略過即可）：
 
 ```bash
 # GitHub
@@ -48,7 +50,9 @@ for l in needs-triage needs-info ready-for-agent ready-for-human wontfix; do gla
 
 ### 4. adapter
 
-把 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 複製成目標 repo 的 `docs/agents/issue-run.md`，每段填這個 repo 真的有的指令；沒寫的段落採範本裡的 Default。L1 至少填下面五段。adapter 是給 agent 讀的，用英文寫：
+用 `/setup-workflow` 時，它在第 2 步的同一次流程裡以 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 為骨架寫出 `docs/agents/issue-run.md`，填入第 3 步的檢查入口，並把該等級用得到的 script 正本複製到 `scripts/`、記錄在 `docs/agents/workflow-templates.json`。寫完照下面的「做完的樣子」核對。
+
+手動備用：把 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 複製成目標 repo 的 `docs/agents/issue-run.md`，每段填這個 repo 真的有的指令；沒寫的段落採範本裡的 Default。L1 至少填下面五段。adapter 是給 agent 讀的，用英文寫：
 
 ```markdown
 # issue-run adapter: <repo>

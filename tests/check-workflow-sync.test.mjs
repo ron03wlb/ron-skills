@@ -10,10 +10,11 @@ const SOURCES = [
   'skills/engineering/issue-run/SKILL.md',
   'skills/engineering/issue-pilot/SKILL.md',
   'skills/engineering/retro-collect/SKILL.md',
+  'skills/engineering/setup-workflow/SKILL.md',
   'skills/engineering/issue-run/ADAPTER.md',
 ];
 
-// docs/workflow/ 轉述這四份規範；規範改了而沒對照，導讀會默默說法不一（#8，R3-Q5）。
+// docs/workflow/ 轉述這些規範；規範改了而沒對照，導讀會默默說法不一（#8，R3-Q5）。
 function fixture(t) {
   const repo = mkdtempSync(join(tmpdir(), 'workflow-sync-'));
   t.after(() => rmSync(repo, { recursive: true, force: true }));
@@ -27,7 +28,7 @@ function fixture(t) {
   return { repo, run };
 }
 
-test('沒有記錄時失敗並列出全部來源；--restamp 後通過，記錄四份來源的 sha256', t => {
+test('沒有記錄時失敗並列出全部來源；--restamp 後通過，記錄每份來源的 sha256', t => {
   const f = fixture(t);
   const first = f.run();
   assert.equal(first.status, 1);
