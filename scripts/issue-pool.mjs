@@ -14,7 +14,7 @@
 // - 已被指派時，最近一則認領留言必須是這個 session、作者還在指派名單裡，才再認領一次（重派；新留言順便更新 stale 的時間），否則不改 Issue。
 // - 還沒人指派、但最近一則認領是別的 session 在 5 分鐘內留的：對方正在認領，不改 Issue。
 // - 寫入後重讀：這次讀到之後新增的認領留言裡，最早一則不是自己就是別台搶先了，收回自己的留言（指派到這裡一定是同一個帳號，不動）。
-// 被擋時印 `STOP <n> claimed <機器>／<session>`（沒有認領留言時是指派者登入名），exit 4。
+// 被擋時印 `STOP <n> claimed <機器>／<session>`（沒有認領留言、或最近一則認領的作者已不在指派名單時，是指派者登入名），exit 4。
 import { spawnSync } from 'node:child_process';
 import { hostname } from 'node:os';
 import { pathToFileURL } from 'node:url';
