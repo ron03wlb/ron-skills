@@ -195,8 +195,8 @@ test('合併後收尾中斷，重跑：不重開 PR、不重複合併，只補�
   assert.equal(sh(main, 'rev-parse', 'HEAD'), prs()[0].mergeCommit.oid);
 });
 
-// #37：pilot 的 batch 已 push、PR 還開著就中斷（如 CI 等到逾時），Probe 印 NOT_IN_MAIN 或 RESUME_PUSH 後重跑 Push gate：
-// 沿用開著的 PR 從等 CI、合併那步接著做，不重開 PR。
+// #37：pilot 的 batch 已 push、PR 還開著就中斷（如 CI 等到逾時），checkpoint 還是 `merged <sha>`（LANDED 之後才設 pushed），
+// Probe 印 RESUME_PUSH 後重跑 Push gate：沿用開著的 PR 從等 CI、合併那步接著做，不重開 PR。
 test('--keep-branch：PR 開著時中斷，重跑沿用同一個 PR 接著合併', t => {
   const { main, wt, body, sh, land, calls, prs, last, temp } = fixture(t, { checks: [PENDING] });
   sh(main, 'worktree', 'remove', wt);

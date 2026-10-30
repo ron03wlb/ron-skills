@@ -12,7 +12,7 @@
 //   batch：STAGEABLE <key>（dispatched 且每個成員都 done 或 stop；moved 的成員已移到別的 batch，不算）；
 //          current 是 merged／pushed 的 batch 在 git fetch 後印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
 //          還沒進 origin/main 的 merged batch 改印 RESUME_PUSH <key>（pilot/integration 的 tip 等於最後一次 regression SHA，#37），
-//          不符合時印 NOT_IN_MAIN <key> no-regression｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
+//          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
 // exit：0 印完；2 用法錯誤；1 其他失敗（Bare guard 或 git status 失敗等）。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -127,11 +127,12 @@ export async function workerState(ctx, member, now = Date.now()) {
  * 還沒進 origin/main 的 `merged` batch：Push gate 的前提是 pilot/integration 的 tip 等於最後一次 Regression SHA（#37）。
  * 符合時 coordinator 從 Push gate 第 1 步接著做；Integrate 之後又有 commit、或沒有 regression 行時，直接推會送出沒驗過的內容。
  */
-function resumePush(checkout, key, regression) {
-  if (!regression) return `NOT_IN_MAIN ${key} no-regression`;
+function mergedNotInMain(checkout, key, regression) {
   const rev = ref => git(checkout, 'rev-parse', '--verify', '-q', ref).stdout.trim();
+  const passed = regression && rev(`${regression}^{commit}`);
+  if (!passed) return `NOT_IN_MAIN ${key} no-regression`;
   const tip = rev('refs/heads/pilot/integration');
-  return tip && tip === rev(`${regression}^{commit}`) ? `RESUME_PUSH ${key}` : `NOT_IN_MAIN ${key} tip ${tip.slice(0, 7) || 'none'}`;
+  return tip === passed ? `RESUME_PUSH ${key}` : `NOT_IN_MAIN ${key} tip ${tip.slice(0, 7) || 'none'}`;
 }
 
 export async function probe(ctx, checkout) {
@@ -159,7 +160,7 @@ export async function probe(ctx, checkout) {
     else for (const { key, sha, regression, merged } of landing) {
       if (!sha) out.push(`NOT_IN_MAIN ${key} no-sha`);
       else if (git(checkout, 'merge-base', '--is-ancestor', sha, 'origin/main').status === 0) out.push(`IN_MAIN ${key}`);
-      else out.push(merged ? resumePush(checkout, key, regression) : `NOT_IN_MAIN ${key}`);
+      else out.push(merged ? mergedNotInMain(checkout, key, regression) : `NOT_IN_MAIN ${key}`);
     }
   }
   return out;

@@ -176,6 +176,11 @@ test('merged 的 batch 還沒進 origin/main：tip 等於 Regression SHA 印 RES
   assert.ok(out.includes('RESUME_PUSH 11'), out.join('\n'));
   assert.ok(out.includes('NOT_IN_MAIN 12 no-regression'), out.join('\n'));
 
+  // 合入、還沒設成 pushed 就中斷：已經進 origin/main 的 merged batch 直接做 Close。
+  git('push', '-q', 'origin', `${staged}:main`);
+  assert.ok(lines(probe()).includes('IN_MAIN 11'));
+  git('push', '-q', '-f', 'origin', `${staged}~1:main`);
+
   const moved = commit('after integrate');
   git('switch', '-q', 'main');
   out = lines(probe());
