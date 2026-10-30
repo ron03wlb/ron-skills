@@ -18,6 +18,12 @@ test('ref 本身包在 code span 裡仍是對應單', () => {
   assert.equal(result.stdout, 'COUNTERPART acme/app#7\n');
 });
 
+test('對應單兩側各有一個 code span 時，只剝掉 code span 本身', () => {
+  const result = run('依賴 `foo.mjs`。app 對應單：acme/app#7，見 `bar`、「說明」。\n');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'COUNTERPART acme/app#7\n');
+});
+
 test('沒有「對應單」字樣的跨 repo 引用不算', () => {
   const result = run('來源：acme/app#7 refine。Blocked by #45。\n');
   assert.equal(result.status, 0, result.stderr);
@@ -26,7 +32,7 @@ test('沒有「對應單」字樣的跨 repo 引用不算', () => {
 
 // 一張 Issue 用「」或 code 引用另一張的對應單時，Close 不能到那張單留下假的交接。
 test('整句包在「」、code span 或 code block 裡的對應單是引用，不算', () => {
-  const result = run('#30 本文寫明「app 對應單：acme/app#7」。\n\n- 測試：本文含 `app 對應單：acme/app#7` 的 fixture。\n\n```\n對應單：acme/web#1\n```\n');
+  const result = run('#N 本文寫明「app 對應單：acme/app#7」。\n\n- 測試：本文含 `app 對應單：acme/app#7` 的 fixture。\n\n```\n對應單：acme/web#1\n```\n');
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, '');
 });

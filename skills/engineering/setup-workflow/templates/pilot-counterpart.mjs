@@ -6,6 +6,6 @@ import { readFileSync } from 'node:fs';
 
 // 整句「對應單：ref」在 code block、code span 或「」裡是引用（如引用別張 Issue 的原文或測試 fixture），不是這張 Issue 的對應單；
 // 只有 ref 包在 code span 裡（對應單：`acme/app#7`）仍算。
-const body = readFileSync(0, 'utf8').replace(/^```[\s\S]*?^```/gm, '').replace(/`[^`\n]*對應單[^`\n]*`/g, '').replace(/「[^」\n]*對應單[^」\n]*」/g, '');
+const body = readFileSync(0, 'utf8').replace(/^```[\s\S]*?^```/gm, '').replace(/`[^`\n]*`|「[^」\n]*」/g, quote => (quote.includes('對應單') ? '' : quote));
 const refs = [...body.matchAll(/對應單[：:]\s*`?([\w.-]+\/[\w.-]+#\d+)/g)].map(([, ref]) => ref);
 for (const ref of new Set(refs)) console.log(`COUNTERPART ${ref}`);
