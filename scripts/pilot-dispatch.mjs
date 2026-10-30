@@ -51,7 +51,7 @@ function now() {
   return `${local}${offset < 0 ? '-' : '+'}${pad(offset / 60)}:${pad(offset % 60)}`;
 }
 
-/** 沒有 batch checkpoint 時寫表頭（Batch 段的格式）；已有時不動，重跑同一個 batch 只換成員行。 */
+/** 沒有 batch checkpoint 時寫表頭（格式見 skills/engineering/issue-pilot/PILOT-STORE.md）；已有時不動，重跑同一個 batch 只換成員行。 */
 function writeHeader(main, checkpoint, key) {
   if (existsSync(checkpoint)) return;
   const sha = run('git', ['-C', main, 'rev-parse', '--short', 'pilot/integration']).stdout.trim();

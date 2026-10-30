@@ -208,6 +208,17 @@ test('主 checkout 被設成 bare、不在 main、有 hold、有改動時各印�
   assert.match(readFileSync(join(pilot, 'decisions.md'), 'utf8'), /還原 core\.bare \| [^|]*probe/);
 });
 
+// hold 檔是一行 JSON（PILOT-STORE.md）；舊的空檔仍然合法，代表「有 hold、沒有原因」（#55）。
+for (const [name, content] of [['空檔', ''], ['JSON 行', '{"since":"2026-10-30T21:00:00+08:00","reason":"等 #27 合入","session":"1d6719b0-c957-4d42-84bc-8474ba2fa7c7"}\n']]) {
+  test(`hold 檔是${name}時判定為 hold`, t => {
+    const { pilot, probe } = fixture(t);
+    writeFileSync(join(pilot, 'hold'), content);
+    const result = probe();
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(lines(result), ['HOLD']);
+  });
+}
+
 // 開著的列：requests.md 沒標 `applied`／`declined` 的行；gates.md 表格 status 不是 `resolved` 的列，
 // 以及 `## G<n>` 段落裡沒有 `resolved` 那一行的 gate。只印開著的，applied 的請求動輒數 KB（retro 7b74eb0b#2）。
 test('requests.md 與 gates.md 只印還開著的列', t => {
