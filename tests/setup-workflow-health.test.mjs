@@ -213,15 +213,91 @@ test('隱性跨 repo 依賴：settings.json 裡跳脫的雙引號（\\"$HOME\\"/
   assert.match(lines.find(line => line.startsWith('FINDING cross-repo')) ?? '', /^FINDING cross-repo \$HOME\/code\/spay2\/a\.mjs .*# \.claude\/settings\.json:1/);
 });
 
-test('隱性跨 repo 依賴：bash 把 $HOME 或 ~ 單獨加引號的寫法也算', t => {
+test('隱性跨 repo 依賴：bash 把 $HOME 單獨加引號的寫法也算；"~" 與 \'$HOME\' 不會展開，不算', t => {
   const { lines } = health(repo(t, {
     'scripts/run.sh': '#!/usr/bin/env bash\nnode "$HOME"/code/spay2/scripts/a.mjs\nnode "${HOME}"/code/spay2/scripts/b.mjs\nnode "~"/code/spay2/scripts/c.mjs\nnode "$HOME/code/spay2"/scripts/d.mjs\nnode \'$HOME\'/code/spay2/scripts/e.mjs\n',
   }));
   const crossRepo = lines.filter(line => line.startsWith('FINDING cross-repo')).join('\n');
-  assert.equal(crossRepo.split('\n').length, 4, crossRepo);
+  assert.equal(crossRepo.split('\n').length, 3, crossRepo);
   assert.doesNotMatch(crossRepo, /"/, '證據不留半個引號');
   assert.match(crossRepo, /\$HOME\/code\/spay2\/scripts\/d\.mjs .*# scripts\/run\.sh:5/);
   assert.match(crossRepo, /spay2\/scripts\/a\.mjs .*# scripts\/run\.sh:2/);
   assert.match(crossRepo, /spay2\/scripts\/b\.mjs .*# scripts\/run\.sh:3/);
-  assert.match(crossRepo, /spay2\/scripts\/c\.mjs .*# scripts\/run\.sh:4/);
+  assert.doesNotMatch(crossRepo, /c\.mjs|e\.mjs/);
+});
+
+test('非 ASCII 檔名（core.quotePath 會加引號跳脫）也掃到，不只回報 ASCII 那份', t => {
+  const { lines } = health(repo(t, {
+    'scripts/部署.sh': '#!/usr/bin/env bash\ncat ~/code/other/x.sh\n',
+    'scripts/deploy.sh': '#!/usr/bin/env bash\ncat ~/code/other/x.sh\n',
+    'docs/說明.md': 'acme 是 L2\n',
+  }));
+  const text = lines.join('\n');
+  assert.match(text, /# scripts\/部署\.sh:2/);
+  assert.match(text, /# scripts\/deploy\.sh:2/);
+  assert.match(text, /claimed L2 detected L0 .*# docs\/說明\.md:1/);
+  assert.equal(lines.at(-1), 'FINDINGS 3');
+});
+
+test('讀不到的檔案（EACCES）不讓體檢中斷：掃描時警告略過，清單的副本讀不到時回報 unreadable', { skip: process.getuid?.() === 0 && 'root 讀得到 000 的檔案' }, t => {
+  const manifest = { copies: { 'scripts/copy.mjs': { template: TEMPLATE, commit: 'a', sha256: sha256(canonical) } } };
+  const root = repo(t, { 'scripts/secret.sh': 'cat ~/code/other/x.sh\n', 'notes.md': 'acme 是 L1\n', 'scripts/copy.mjs': canonical, 'docs/agents/workflow-templates.json': JSON.stringify(manifest) });
+  for (const file of ['scripts/secret.sh', 'notes.md', 'scripts/copy.mjs']) chmodSync(join(root, file), 0o000);
+  const { status, stderr, lines } = health(root);
+  assert.equal(status, 1, stderr);
+  assert.match(stderr, /scripts\/secret\.sh/);
+  assert.match(stderr, /notes\.md/);
+  assert.match(lines.join('\n'), /^FINDING divergence unreadable scripts\/copy\.mjs /m);
+  assert.equal(lines.at(-1), 'FINDINGS 1');
+});
+
+test('隱性跨 repo 依賴：regex 字面值裡跳脫的斜線（\\/）不是路徑', t => {
+  const { status, lines } = health(repo(t, {
+    'scripts/check.mjs': 'const pattern = /\\$HOME\\/code\\/spay2\\/x\\.mjs/;\nconst other = /~\\/code\\/spay2\\/scripts/;\n',
+  }));
+  assert.equal(status, 0, lines.join('\n'));
+  assert.equal(lines.at(-1), 'HEALTHY');
+});
+
+test('分歧：副本與正本一致、只有清單記錄的 sha256 過時時回報 stale-record，不當成兩邊都改', t => {
+  const { status, lines } = health(withCopies(t, { 'scripts/x.mjs': [canonical, '// 舊版正本\n'] }));
+  assert.equal(status, 1);
+  assert.match(lines.find(line => line.startsWith('FINDING divergence')), /^FINDING divergence stale-record scripts\/x\.mjs .*記錄過時/);
+  assert.doesNotMatch(lines.join('\n'), /both-modified/);
+  assert.equal(lines.at(-1), 'FINDINGS 1');
+});
+
+test('SKILL.md 的 Health check 寫明 exit 2 的情況，並列出體檢會印的每個 divergence 類別', () => {
+  const skill = readFileSync(new URL('../skills/engineering/setup-workflow/SKILL.md', import.meta.url), 'utf8');
+  const section = skill.slice(skill.indexOf('## Health check'), skill.indexOf('## Templates'));
+  assert.match(section, /exit 2/);
+  for (const kind of ['canonical-newer', 'local-modified', 'both-modified', 'stale-record', 'missing-copy', 'missing-canonical', 'invalid-entry', 'invalid-manifest', 'unreadable']) {
+    assert.match(section, new RegExp(`\`(divergence )?${kind}\``), kind);
+  }
+});
+
+test('隱性跨 repo 依賴：JSON 字串值開頭的 ~ 會展開，要回報；~ 後面緊接雙引號（~"/x"）不展開，不算', t => {
+  const { lines } = health(repo(t, {
+    '.claude/settings.json': '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"~/code/spay2/scripts/hook.mjs"}]}]}}\n',
+    'scripts/run.sh': '#!/usr/bin/env bash\ncat ~"/code/spay2/x.sh"\n',
+  }));
+  const crossRepo = lines.filter(line => line.startsWith('FINDING cross-repo'));
+  assert.equal(crossRepo.length, 1, lines.join('\n'));
+  assert.match(crossRepo[0], /~\/code\/spay2\/scripts\/hook\.mjs .*# \.claude\/settings\.json:1/);
+});
+
+test('清單本身讀不到時回報 unreadable，不說成不是合法 JSON', { skip: process.getuid?.() === 0 && 'root 讀得到 000 的檔案' }, t => {
+  const root = repo(t, { 'docs/agents/workflow-templates.json': '{"copies":{}}' });
+  chmodSync(join(root, 'docs/agents/workflow-templates.json'), 0o000);
+  const { status, stderr, lines } = health(root);
+  assert.equal(status, 1, stderr);
+  assert.match(lines.at(-2), /^FINDING divergence unreadable docs\/agents\/workflow-templates\.json /);
+  assert.doesNotMatch(lines.join('\n'), /合法 JSON/);
+});
+
+test('清單路徑是目錄時回報 invalid-manifest，不說成讀不到', t => {
+  const root = repo(t, { 'docs/agents/workflow-templates.json/x': '{}' });
+  const { status, stderr, lines } = health(root);
+  assert.equal(status, 1, stderr);
+  assert.match(lines.at(-2), /^FINDING divergence invalid-manifest docs\/agents\/workflow-templates\.json /);
 });
