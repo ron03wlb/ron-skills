@@ -8,7 +8,7 @@ import { repoFixture, run, source } from './test/repo-fixture.mjs';
 const script = join(source, 'orca-session-split.mjs');
 
 // 記錄呼叫的假 Orca CLI（回應由 test/fake-orca.mjs 的真實樣本長出）。
-function fixture(t, { self, sendRejected = false, swallow = 0 } = {}) {
+function fixture(t, { self, sendRejected = false, swallow = 0, waitError = false } = {}) {
   const { temp, repo } = repoFixture(t);
   const log = join(temp, 'orca.log');
   writeFileSync(log, '');
@@ -21,7 +21,7 @@ ${orcaReplySource()}
 if (b === 'split') reply('split', { split: { handle: 'term_split' } });
 else if (b === 'rename') reply('rename', { rename: { handle: process.argv[4] } });
 else if (b === 'create') reply('create', { terminal: { handle: 'term_new' } });
-else if (b === 'wait') reply('wait', { wait: { satisfied: true } });
+else if (b === 'wait') ${waitError ? `fail('runtime_unavailable')` : `reply('wait', { wait: { satisfied: true } })`};
 else if (b === 'send') { fs.appendFileSync(sentFile, arg('--text') + '\\n'); reply('send', { send: { accepted: ${!sendRejected} } }); }
 else if (b === 'read') reply('read', { terminal: { tail: sent().length > ${swallow} ? [sent().pop()] : ['❯'] } });
 `);
@@ -92,6 +92,20 @@ test('--worktree 而 STOP：只印 STOP', t => {
   const result = open(['--title', 'x', '--prompt', 'y', '--worktree', '/w/fix-x']);
   assert.equal(result.status, 4);
   assert.equal(result.stdout, 'STOP send term_new\n');
+});
+
+// 開好分頁之後 Orca 出錯：呼叫者（如 pilot-handoff）要拿到 handle 才關得掉這個分頁，所以回 STOP 而不是丟出例外。
+test('開好分頁後 Orca 出錯：STOP orca <錯誤碼>，exit 4；openSession 的 STOP 帶 handle', async t => {
+  const { repo, log, open } = fixture(t, { waitError: true });
+  const result = open(['--title', 'x', '--prompt', 'y']);
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(result.stdout, 'STOP orca runtime_unavailable\n');
+  const cli = join(log, '../orca');
+  const { openSession } = await import(script);
+  assert.deepEqual(await openSession({ cli }, { title: 'x', prompt: 'y', main: repo, newTab: true }), { stop: 'orca runtime_unavailable', handle: 'term_new' });
+  const sent = await openSession({ cli }, { title: 'x', prompt: 'y', main: repo, newTab: true, createSignal: AbortSignal.abort('gone') });
+  assert.match(sent.stop, /^create /);
+  assert.equal(sent.handle, undefined);
 });
 
 test('用法錯誤 exit 2', t => {
