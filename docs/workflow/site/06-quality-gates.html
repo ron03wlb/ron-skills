@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>06 品質校驗時間軸｜ron-skills 交付流程</title>
+<link rel="stylesheet" href="static/site.css">
+<script defer src="static/site.js"></script>
+</head>
+<body>
+<button class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">目錄</button>
+<aside class="sidebar" id="sidebar" aria-label="流程導讀目錄">
+<nav class="chapters" aria-label="章節"><h2>章節</h2><a href="index.html">ron-skills 交付流程</a><a href="01-tooling.html">01 工具與角色</a><a href="02-lifecycle.html">02 Issue 生命週期</a><a href="03-level1.html">03 L1 導入</a><a href="04-level2.html">04 L2 導入</a><a href="05-level3.html">05 L3 導入</a><a href="06-quality-gates.html" aria-current="page">06 品質校驗時間軸</a><a href="07-rules.html">07 規則沉澱</a><a href="08-pitfalls.html">08 常見坑</a><a href="09-skills.html">09 Skills 索引</a></nav>
+<nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2></nav>
+<nav class="rules" aria-label="正式規範"><h2>正式規範（原始 Markdown）</h2><a href="../../../README.md">README.md</a><a href="../../../skills/engineering/issue-run/ADAPTER.md">skills/engineering/issue-run/ADAPTER.md</a></nav>
+</aside>
+<main class="content">
+<article>
+<h1>06 品質校驗時間軸</h1>
+<p>從改第一行到結案，每一道維持品質的校驗都列在這裡：它什麼時候跑、檢查什麼、<strong>不能證明什麼</strong>。最後一欄比前面幾欄重要：知道一道校驗證明不了什麼，才知道後面還需要哪一道。</p>
+<p>具體指令以各 repo 的 adapter 與單一檢查入口為準；本章的例子取自 ron-skills，L3 實例的例子只當參考。</p>
+<h2 id="強度分級">強度分級</h2>
+<div class="table-wrap"><table><thead><tr><th>強度</th><th>意思</th><th>例子</th></tr></thead><tbody><tr><td><strong>本地強制</strong></td><td>git hook 或 Claude Code hook 擋下；agent 繞不過，人在自己的終端也要刻意繞</td><td>pre-commit、pre-push、<code>PreToolUse</code> hook、<code>.claude/settings.json</code> 的 deny</td></tr><tr><td><strong>流程內</strong></td><td>skill 或入口腳本在固定步驟呼叫，失敗就停；但沒有 hook 強制，另開終端手動操作可以跳過</td><td><code>/issue-run</code> 的 focused 測試、review、acceptance</td></tr><tr><td><strong>遠端</strong></td><td>CI 或 tracker 端跑；擋得住合併，但要 push 之後才看得到結果</td><td>GitHub Actions、GitLab pipeline、branch protection</td></tr></tbody></table></div>
+<p>同一個檢查可以同時出現在好幾個強度：ron-skills 的 <code>bin/check</code> 在 <code>/issue-run</code> 裡是流程內、在 pre-commit 是本地強制、在 CI 是遠端。檢查本身只寫在單一入口裡，強度由誰呼叫它決定。</p>
+<h2 id="1-編輯時">1. 編輯時</h2>
+<div class="table-wrap"><table><thead><tr><th>校驗</th><th>強度</th><th>檢查什麼</th><th>不能證明什麼</th></tr></thead><tbody><tr><td><code>.claude/settings.json</code> 的 allow／deny</td><td>本地強制</td><td>agent 的每次工具呼叫是否在放行範圍內；deny 的指令（例如直接開 MR、連資料庫）一律拒絕</td><td>人在自己的終端做同樣的事不受限；包在放行腳本裡的動作也看不到</td></tr><tr><td><code>PreToolUse</code> hook：擋繞過 git hook</td><td>本地強制</td><td>Bash 指令含 <code>--no-verify</code>、<code>git commit -n</code>、<code>-c core.hooksPath=</code> 即拒絕</td><td>只比對字串；寫進腳本檔再執行的繞過抓不到</td></tr><tr><td><code>PreToolUse</code> hook：擋改主 checkout</td><td>本地強制</td><td>Edit／Write 的目標是主 checkout 裡被 git 追蹤的檔就拒絕，要求改在 worktree</td><td>Bash 寫檔（<code>sed -i</code>、heredoc）擋不到</td></tr></tbody></table></div>
+<p>L1 通常一個 hook 都沒有；L2 開始多 session 並行時再加。</p>
+<h2 id="2-commit-時">2. commit 時</h2>
+<div class="table-wrap"><table><thead><tr><th>校驗</th><th>強度</th><th>檢查什麼</th><th>不能證明什麼</th></tr></thead><tbody><tr><td>pre-commit 跑單一檢查入口</td><td>本地強制</td><td>工作樹目前的內容通過所有檢查（ron-skills：<code>.githooks/pre-commit</code> 跑 <code>bin/check</code>）</td><td>檢查的是工作樹，不是 commit 本身；<code>git add -p</code> 留在工作樹的改動也一起被檢查到</td></tr></tbody></table></div>
+<p>沒有 pre-commit 的 repo，錯誤會留到 push 或 CI 才被抓到。</p>
+<h2 id="3-實作中">3. 實作中</h2>
+<div class="table-wrap"><table><thead><tr><th>校驗</th><th>強度</th><th>檢查什麼</th><th>不能證明什麼</th></tr></thead><tbody><tr><td>紅燈測試（<code>tdd</code>）</td><td>流程內</td><td>第一個產品改動之前，先有一個會失敗的測試，失敗的指令與 exit code 記進 checkpoint</td><td>測試斷言的是對的行為；只證明「改之前它會紅」</td></tr><tr><td>行為不變的重構先綠</td><td>流程內</td><td>重構前 baseline 套件（ron-skills：<code>bin/check</code> 在 base 上）是綠的</td><td>baseline 沒涵蓋的行為；需要時補 characterization test</td></tr><tr><td>focused 測試</td><td>流程內</td><td>本單動到的測試檔（ron-skills：<code>node --test tests/&lt;name&gt;.test.mjs</code>）</td><td>其他模組、沒跑到的測試</td></tr></tbody></table></div>
+<h2 id="4-candidate-前">4. candidate 前</h2>
+<div class="table-wrap"><table><thead><tr><th>校驗</th><th>強度</th><th>檢查什麼</th><th>不能證明什麼</th></tr></thead><tbody><tr><td>單一檢查入口</td><td>流程內</td><td>整個 repo 的檢查在 run 的分支上全過</td><td>只在跑的那個 SHA 有效；之後合入別的東西要重跑</td></tr><tr><td><code>code-review</code> 兩軸</td><td>流程內</td><td><strong>Standards</strong>：是否符合 repo 的規範；<strong>Spec</strong>：是否做了 Issue 要的事。兩軸分開列，最多兩輪修正與重審</td><td>finding 只有在有失敗的執行、失敗的 gate、或這次改動讓文件某行變錯時才擋；「看起來怪」不擋，記成 follow-up</td></tr><tr><td>安全事實</td><td>流程內</td><td>動到 wire format、共用契約、會解析原始碼的工具時，review 要點名這個改動「因為哪一兩個事實而安全」，並各附一次證明它的執行</td><td>呼叫端搜尋只證明「找到的呼叫端」沒壞</td></tr><tr><td>獨立情境驗證（L3）</td><td>流程內</td><td>高風險 Issue 由沒寫程式的全新 verifier 在 candidate SHA 跑至少一個情境（見 <a href="05-level3.html#codex-跨模型-review">05</a>）</td><td>candidate 自己加的測試不算獨立；只證明被跑的那幾個情境</td></tr></tbody></table></div>
+<p>只改文件或註解、不改行為的 diff 略過 review 指令，文件檢查照跑。adapter 釘 hash 的檔案（ron-skills：所有 <code>SKILL.md</code>、<code>ADAPTER.md</code>、<code>overlays/*.patch</code>）永遠不算只改文字，因為它們會改變 agent 的行為。</p>
+<h2 id="5-合入整合分支">5. 合入整合分支</h2>
+<div class="table-wrap"><table><thead><tr><th>校驗</th><th>強度</th><th>檢查什麼</th><th>不能證明什麼</th></tr></thead><tbody><tr><td>acceptance</td><td>流程內</td><td>在 candidate 的完整 SHA、工作樹乾淨時跑 adapter 的 acceptance（ron-skills：<code>bin/check --upstream</code>，對上游最新版重跑 overlay 檢查）</td><td>只對那個 SHA 有效</td></tr><tr><td>批次回歸（L3）</td><td>流程內</td><td>整批合進批次分支後，在 staged SHA 跑一次回歸，過了才合入整合分支</td><td>整合分支在 stage 之後又有新 commit 時就失效，要重新 stage、重跑</td></tr><tr><td>合入入口（L2）</td><td>流程內</td><td>lock、合入前後各跑一次檢查（見 <a href="04-level2.html#整合分支與-lock">04</a>）</td><td>沒有 <code>reference-transaction</code> hook 時擋不住繞過入口的 <code>git merge</code></td></tr></tbody></table></div>
+<h2 id="6-push-時">6. push 時</h2>
+<div class="table-wrap"><table><thead><tr><th>校驗</th><th>強度</th><th>檢查什麼</th><th>不能證明什麼</th></tr></thead><tbody><tr><td>pre-push hook</td><td>本地強制</td><td>在要 push 的 SHA 上重跑單一檢查入口（範本見 <a href="04-level2.html#pre-push">04</a>）</td><td><code>--no-verify</code> 跳得過，要靠 <code>PreToolUse</code> hook 補</td></tr><tr><td>CI</td><td>遠端</td><td>乾淨環境、乾淨 clone 上重跑；ron-skills 每次 push 與每週一跑 <code>bin/check --upstream</code>，上游改到 overlay 補丁位置時先在這裡變紅</td><td>只有 push 之後才知道；沒設 branch protection 時紅了也合得進去</td></tr></tbody></table></div>
+<h2 id="7-結案時">7. 結案時</h2>
+<div class="table-wrap"><table><thead><tr><th>校驗</th><th>強度</th><th>檢查什麼</th><th>不能證明什麼</th></tr></thead><tbody><tr><td>可結案檢查（L2 兩段式結案）</td><td>流程內</td><td>candidate SHA 已在遠端主線或整合分支</td><td>合進主線之後的部署與實際運作</td></tr><tr><td>文件同步守門</td><td>流程內</td><td>規範（skill、adapter 範本）改了，導讀也有人對照過（ron-skills：<code>check-workflow-sync.mjs</code>）</td><td>對照的品質；restamp 只代表有人看過</td></tr></tbody></table></div>
+<h2 id="l3-實例的-check-">L3 實例的 <code>check-*</code></h2>
+<p>L3 實例在 push 前跑一組專案專屬的 <code>check-*</code>：例如 DDL 不承載業務規則、每個資料表欄位都有寫入者、各環境設定檔的 secret 欄位在 repo 中留白、每個測試檔都接進檢查入口。它們都是同一個模式的例子：<strong>一個真實發生過的失誤 → 一個在那次失誤上會失敗的檢查 → 接進單一檢查入口。</strong> 你的 repo 需要的是你自己的那一組，不是這一組（見 <a href="07-rules.html">07 規則沉澱</a>）。</p>
+<h2 id="整體邊界">整體邊界</h2>
+<ul>
+<li>每一道校驗只證明它跑的那個 SHA；合入、rebase、re-stage 之後都要重跑。</li>
+<li>本地強制擋得住 agent，擋不住刻意繞過的人；遠端擋得住合併，但回饋最慢。</li>
+<li>沒有任何一道校驗證明「需求本身是對的」：那是 <code>/triage</code> 與 Spec 軸 review 的工作，最後由人決定。</li>
+</ul>
+</article>
+<footer class="source">本頁由 <code>node scripts/build-workflow-site.mjs</code> 自 <code>docs/workflow/06-quality-gates.md</code> 產生；請改 Markdown 重產，不要手改 HTML。</footer>
+</main>
+</body>
+</html>

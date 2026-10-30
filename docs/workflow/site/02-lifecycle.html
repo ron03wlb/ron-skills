@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>02 Issue 生命週期｜ron-skills 交付流程</title>
+<link rel="stylesheet" href="static/site.css">
+<script defer src="static/site.js"></script>
+</head>
+<body>
+<button class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">目錄</button>
+<aside class="sidebar" id="sidebar" aria-label="流程導讀目錄">
+<nav class="chapters" aria-label="章節"><h2>章節</h2><a href="index.html">ron-skills 交付流程</a><a href="01-tooling.html">01 工具與角色</a><a href="02-lifecycle.html" aria-current="page">02 Issue 生命週期</a><a href="03-level1.html">03 L1 導入</a><a href="04-level2.html">04 L2 導入</a><a href="05-level3.html">05 L3 導入</a><a href="06-quality-gates.html">06 品質校驗時間軸</a><a href="07-rules.html">07 規則沉澱</a><a href="08-pitfalls.html">08 常見坑</a><a href="09-skills.html">09 Skills 索引</a></nav>
+<nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2></nav>
+<nav class="rules" aria-label="正式規範"><h2>正式規範（原始 Markdown）</h2><a href="../../../README.md">README.md</a><a href="../../../skills/engineering/issue-run/ADAPTER.md">skills/engineering/issue-run/ADAPTER.md</a></nav>
+</aside>
+<main class="content">
+<article>
+<h1>02 Issue 生命週期</h1>
+<h2 id="狀態-label">狀態 label</h2>
+<p>Matt 的 <code>triage</code> skill 定義五個分級角色；本流程再加兩個交付狀態。每個角色對應到 tracker 上的哪個 label 字串，寫在 repo 的 <code>docs/agents/triage-labels.md</code>（<code>/setup-matt-pocock-skills</code> 產生），換字串只改那張表。</p>
+<div class="table-wrap"><table><thead><tr><th>label</th><th>意思</th><th>誰設</th><th>下一步</th></tr></thead><tbody><tr><td><code>needs-triage</code></td><td>剛開、還沒人評估</td><td>開單時預設</td><td><code>/triage &lt;n&gt;</code></td></tr><tr><td><code>needs-info</code></td><td>等開單的人補資訊</td><td><code>/triage</code></td><td>補完後再 <code>/triage &lt;n&gt;</code></td></tr><tr><td><code>ready-for-agent</code></td><td>規格完整，agent 可以無人值守做完</td><td><code>/triage</code></td><td><code>/issue-run &lt;n&gt;</code>；L3 由 coordinator 從池中挑</td></tr><tr><td><code>ready-for-human</code></td><td>需要人做（產品判斷、無法自動驗證、共用環境操作）</td><td><code>/triage</code></td><td>人做完後結案</td></tr><tr><td><code>wontfix</code></td><td>不處理</td><td><code>/triage</code></td><td>結案</td></tr><tr><td><code>in-progress</code></td><td>已被認領，有人或 agent 正在做</td><td>adapter 的 Claim 指令</td><td>等 candidate 或 STOP</td></tr><tr><td><code>completed</code></td><td>已合進主線並結案</td><td>結案時</td><td>無</td></tr></tbody></table></div>
+<p>狀態 label 互斥：一張 Issue 同時只有一個。<code>in-progress</code> 與 <code>completed</code> 是選配：L1 可以不設 Claim（adapter 的 Claim 段預設 none），結案靠 Issue 的 closed 狀態；開始多 session 並行（L2）之後，<code>in-progress</code> 才是防止兩個人搶同一張的訊號。</p>
+<pre><code class="language-text">            ┌──────────────── needs-info ◄──┐
+            ▼                               │
+needs-triage ──/triage──► ready-for-agent ──claim──► in-progress ──candidate+merge──► completed
+            │                                 ▲             │
+            ├──► ready-for-human ─────────────┘(人做)        └──STOP──► 留言、等人決定
+            └──► wontfix</code></pre>
+<h2 id="看板就是-label">看板就是 label</h2>
+<p>看板的欄位直接用狀態 label 篩選，改 label 就是移卡，不另外維護一份狀態。</p>
+<div class="table-wrap"><table><thead><tr><th>看板欄位</th><th>label</th></tr></thead><tbody><tr><td>待討論</td><td><code>needs-triage</code>、<code>needs-info</code>，或沒有狀態 label</td></tr><tr><td>可開工</td><td><code>ready-for-agent</code>、<code>ready-for-human</code></td></tr><tr><td>處理中</td><td><code>in-progress</code></td></tr><tr><td>完成／不處理</td><td><code>completed</code>、<code>wontfix</code>、已關閉</td></tr></tbody></table></div>
+<ul>
+<li>GitHub：Projects 的 board view，以 label 欄位分組；或直接用 <code>gh issue list --label &lt;label&gt;</code> 當看板。</li>
+<li>GitLab：Issue board 的每個 list 設成一個 label。</li>
+</ul>
+<h2 id="從開單到結案">從開單到結案</h2>
+<div class="table-wrap"><table><thead><tr><th>階段</th><th>入口</th><th>結果</th></tr></thead><tbody><tr><td>需求</td><td>對話、spec、bug 回報；要釐清時先 <code>/grilling</code> 或 <code>/to-spec</code>，要拆票時 <code>/to-tickets</code></td><td>範圍與驗收條件</td></tr><tr><td>開單</td><td>下方的開單指令</td><td><code>needs-triage</code></td></tr><tr><td>分級</td><td><code>/triage &lt;n&gt;</code></td><td><code>ready-for-agent</code>／<code>ready-for-human</code>／<code>needs-info</code>／<code>wontfix</code>；ready 的單附上 agent brief</td></tr><tr><td>認領</td><td>adapter 的 Claim 指令（<code>/issue-run</code> 自己跑）</td><td><code>in-progress</code>；L2 起此時才開 worktree</td></tr><tr><td>實作</td><td><code>/issue-run &lt;n&gt;</code>：單張照 <code>implement</code>，多張照 <code>implement-spec</code>；先寫會紅的測試（<code>tdd</code>）</td><td>本機 commit</td></tr><tr><td>驗證</td><td>adapter 的 Checks 指令，再跑 <code>code-review</code>（Standards／Spec 兩軸，最多兩輪修正）</td><td>candidate commit，證據貼成 Issue 留言</td></tr><tr><td>交付</td><td>人 push、開 PR／MR、合併</td><td>candidate 進到主線</td></tr><tr><td>結案</td><td>確認 candidate 已在遠端主線後關單</td><td><code>completed</code>；刪掉工作分支與 worktree</td></tr></tbody></table></div>
+<p><code>/issue-run</code> 在 Gate 一步就會擋下不合格的單：狀態不是 adapter 的 ready 狀態、preflight 不是 exit 0、或有還沒合入的 blocker。它不會自己跑 <code>/triage</code> 補規格，只告訴你缺什麼、該跑哪個入口。</p>
+<h2 id="tracker-指令對照">tracker 指令對照</h2>
+<div class="table-wrap"><table><thead><tr><th>動作</th><th>GitHub（<code>gh</code>）</th><th>GitLab（<code>glab</code>）</th></tr></thead><tbody><tr><td>開單</td><td><code>gh issue create --title &quot;…&quot; --body-file body.md</code></td><td><code>glab issue create --title &quot;…&quot; --description &quot;$(cat body.md)&quot;</code></td></tr><tr><td>讀單（含留言）</td><td><code>gh issue view &lt;n&gt; --json number,title,body,labels,comments</code></td><td><code>glab issue view &lt;n&gt; --comments</code></td></tr><tr><td>列出可開工</td><td><code>gh issue list --state open --label ready-for-agent</code></td><td><code>glab issue list --label ready-for-agent</code></td></tr><tr><td>改狀態</td><td><code>gh issue edit &lt;n&gt; --add-label in-progress --remove-label ready-for-agent</code></td><td><code>glab issue update &lt;n&gt; --label in-progress --unlabel ready-for-agent</code></td></tr><tr><td>留言</td><td><code>gh issue comment &lt;n&gt; --body-file note.md</code></td><td><code>glab issue note &lt;n&gt; --message &quot;$(cat note.md)&quot;</code></td></tr><tr><td>結案</td><td><code>gh issue close &lt;n&gt; --comment &quot;…&quot;</code></td><td><code>glab issue close &lt;n&gt;</code></td></tr><tr><td>建 label</td><td><code>gh label create ready-for-agent</code></td><td><code>glab label create --name ready-for-agent</code></td></tr><tr><td>開 PR／MR</td><td><code>gh pr create --base main --head &lt;branch&gt;</code></td><td><code>glab mr create --target-branch main --source-branch &lt;branch&gt;</code></td></tr></tbody></table></div>
+<p>依賴關係（A 被 B 擋住）：GitHub 用原生的 issue dependencies（<code>gh api repos/&lt;owner&gt;/&lt;repo&gt;/issues/&lt;n&gt;/dependencies/blocked_by</code>）；GitLab 用 issue links 的 <code>blocks</code>／<code>is_blocked_by</code>，沒有這個功能的方案就在本文寫一行 <code>Blocked by: #&lt;n&gt;</code>。不論哪種，blocker 關閉才算解除。</p>
+<blockquote><p><code>gh issue view &lt;n&gt; --comments</code> 在非 tty 環境（agent 的 Bash 工具）不會輸出任何東西；agent 讀單一律用 <code>--json</code>。</p></blockquote>
+<h2 id="批次">批次</h2>
+<p>幾張相關的 Issue 一起交付時：</p>
+<ul>
+<li><strong>手動（L1／L2）</strong>：<code>/issue-run &lt;n&gt; &lt;m&gt; …</code>。controller 依 tracker 的依賴建 task graph，照 <code>implement-spec</code> 每張一個 worktree、各自做到綠燈後合進本次的整合分支，最後在整合分支 tip 跑一次 acceptance。</li>
+<li><strong>常駐（L3）</strong>：coordinator 每批挑幾張，每張派一個 worker；全部 <code>DONE</code> 或 <code>STOP</code> 之後，在批次分支依號碼合入、在 staged SHA 跑一次回歸、過了才合進整合分支（見 <a href="05-level3.html">05 L3 導入</a>）。</li>
+</ul>
+<p>一張 Issue 被另一張 STOP 的單擋住時，只有它停；其他獨立的單照常前進。</p>
+</article>
+<footer class="source">本頁由 <code>node scripts/build-workflow-site.mjs</code> 自 <code>docs/workflow/02-lifecycle.md</code> 產生；請改 Markdown 重產，不要手改 HTML。</footer>
+</main>
+</body>
+</html>
