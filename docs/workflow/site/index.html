@@ -12,7 +12,7 @@
 <button class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">目錄</button>
 <aside class="sidebar" id="sidebar" aria-label="流程導讀目錄">
 <nav class="chapters" aria-label="章節"><h2>章節</h2><a href="index.html" aria-current="page">ron-skills 交付流程</a><a href="01-tooling.html">01 工具與角色</a><a href="02-lifecycle.html">02 Issue 生命週期</a><a href="03-level1.html">03 L1 導入</a><a href="04-level2.html">04 L2 導入</a><a href="05-level3.html">05 L3 導入</a><a href="06-quality-gates.html">06 品質校驗時間軸</a><a href="07-rules.html">07 規則沉澱</a><a href="08-pitfalls.html">08 常見坑</a><a href="09-skills.html">09 Skills 索引</a></nav>
-<nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2></nav>
+<nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2><a href="../diagrams/01-tooling.html" target="_blank" rel="noopener">交付流程工具版圖</a><a href="../diagrams/02-issue-labels.html" target="_blank" rel="noopener">Issue 狀態 label 生命週期</a><a href="../diagrams/02-main-flow.html" target="_blank" rel="noopener">單張 Issue 交付主流程</a><a href="../diagrams/04-worktree.html" target="_blank" rel="noopener">Issue worktree 生命週期</a><a href="../diagrams/05-pilot-loop.html" target="_blank" rel="noopener">/loop /issue-pilot 常駐循環</a><a href="../diagrams/07-retro-loop.html" target="_blank" rel="noopener">/retro 回饋迴圈</a></nav>
 <nav class="rules" aria-label="正式規範"><h2>正式規範（原始 Markdown）</h2><a href="../../../README.md">README.md</a><a href="../../../skills/engineering/issue-run/ADAPTER.md">skills/engineering/issue-run/ADAPTER.md</a></nav>
 </aside>
 <main class="content">
@@ -44,6 +44,23 @@
 <li><code>node scripts/build-workflow-site.mjs --check</code>：<code>site/</code> 與 Markdown 不同步就失敗（忘了重產或手改 HTML）。</li>
 <li><code>node scripts/check-workflow-strings.mjs</code>：擋住從實例專案帶進來的專屬字串，讓本站維持通用。</li>
 <li><code>node scripts/check-workflow-sync.mjs</code>：<code>issue-run</code>、<code>issue-pilot</code>、<code>retro-collect</code> 的 <code>SKILL.md</code> 或 <code>ADAPTER.md</code> 一改就失敗，直到有人對照本站並執行 <code>node scripts/check-workflow-sync.mjs --restamp</code>。</li>
+</ul>
+<h2 id="圖怎麼看怎麼改">圖怎麼看、怎麼改</h2>
+<ul>
+<li>章內的 PNG 是靜態預覽；圖下方的「互動版」連到 archify 產出的 HTML（可切換主題、搜尋節點、匯出圖片）。站上各章直接內嵌互動版。</li>
+<li>圖以 <a href="https://github.com/tt-a1i/archify" rel="noopener" target="_blank">archify</a> 製作。來源是 <code>diagrams/src/*.json</code>，<code>diagrams/</code> 下的 HTML 與 PNG 都是產物；要改圖就改 JSON 重產，不要手改 HTML。CI 不跑 archify，改了 JSON 要在本機重產並一起 commit。</li>
+<li>來源 JSON 維持一個節點一行：用文字編輯修改，不要整檔重新序列化（例如 <code>json.dump</code>），否則一個小改動會變成數百行 diff。<code>tests/workflow-diagrams.test.mjs</code> 會擋。</li>
+<li>重產一張圖（在 repo 根目錄；<code>&lt;archify&gt;</code> 是 skill 安裝路徑，例如 <code>~/.claude/skills/archify</code>；<code>--quality</code> 照來源 <code>meta.quality_profile</code>）：</li>
+</ul>
+<pre><code class="language-bash">node &lt;archify&gt;/bin/archify.mjs validate workflow docs/workflow/diagrams/src/02-main-flow.workflow.json
+node &lt;archify&gt;/bin/archify.mjs finalize workflow docs/workflow/diagrams/src/02-main-flow.workflow.json docs/workflow/diagrams/02-main-flow.html --quality showcase --out-dir /tmp/archify-evidence/02-main-flow --json
+node &lt;archify&gt;/bin/archify.mjs visual-check docs/workflow/diagrams/02-main-flow.html --summary --require-provenance --out-dir /tmp/archify-evidence/02-main-flow
+cp /tmp/archify-evidence/02-main-flow/02-main-flow.visual-check.1440x900.light.png docs/workflow/diagrams/02-main-flow.png
+node scripts/build-workflow-site.mjs</code></pre>
+<ul>
+<li><code>finalize</code> 會在 HTML 旁留下 <code>*.delivery.json</code> 收據，<code>visual-check --require-provenance</code> 靠它確認 HTML 是由 <code>finalize</code> 產生；收據含本機絕對路徑，已列在 <code>.gitignore</code>，不 commit。</li>
+<li><code>finalize</code> 會驗證版面，不過就失敗。一次過的限制：workflow 圖最多 6 欄（col 0–5）；畫布寬度上限 1240px，節點標籤要短（約 12 個中文字內，副標更短）；邊不能跨越泳道的垂直邊，跨欄回頭的邊改用虛線另畫或拆成兩個節點；跨泳道的垂直邊不要掛標籤（會把欄撐寬），狀態改寫在節點的 <code>tag</code>；先 <code>validate</code> 再 <code>finalize</code>，每次只改一處再重跑。</li>
+<li><code>finalize</code> 需要 Chrome／Chromium：<code>export ARCHIFY_CHROME=&lt;chrome 路徑&gt;</code>（例如 Playwright 快取裡的 <code>chromium-*/chrome-linux/chrome</code>）。WSL 預設沒有中文字型，截圖時中文會變方框；不需要 sudo 的做法見 <a href="08-pitfalls.html">08 常見坑</a>：把 Windows 的 <code>NotoSansTC-VF.ttf</code> 複製到 <code>~/.local/share/fonts/</code>，在 <code>~/.config/fontconfig/fonts.conf</code> 把 <code>monospace</code>、<code>sans-serif</code> 的 fallback 加上 <code>Noto Sans TC</code>，再 <code>fc-cache -f</code>。</li>
 </ul>
 </article>
 <footer class="source">本頁由 <code>node scripts/build-workflow-site.mjs</code> 自 <code>docs/workflow/README.md</code> 產生；請改 Markdown 重產，不要手改 HTML。</footer>

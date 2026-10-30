@@ -17,6 +17,10 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 /loop /issue-pilot
 ```
 
+![/loop /issue-pilot 常駐循環](diagrams/05-pilot-loop.png)
+
+互動版：[diagrams/05-pilot-loop.html](diagrams/05-pilot-loop.html)（來源 [`diagrams/src/05-pilot-loop.workflow.json`](diagrams/src/05-pilot-loop.workflow.json)）
+
 `/loop` 讓它自己排下一次喚醒；每次醒來跑一輪（tick）：
 
 1. **Reconcile 對帳**：讀 `.scratch/pilot/` 的狀態檔、其他 session 轉來的請求、還開著的 gate，用 Watch 指令唯讀查看每個 worker。

@@ -19,6 +19,10 @@ L1 靠「agent 照 skill 做」維持秩序；只要同時有兩個以上的 ses
 - **stash 是共用的。** `git stash` 清單跨所有 worktree 共用，不要用它在 worktree 之間搬東西；用暫時的 WIP commit，或 `git show <sha>:<path>`。
 - **刪之前先分類。** 已合入且乾淨的可以刪；有未合入 commit、或還有 terminal 連著的留著。只刪自己的。
 
+![Issue worktree 生命週期](diagrams/04-worktree.png)
+
+互動版：[diagrams/04-worktree.html](diagrams/04-worktree.html)（來源 [`diagrams/src/04-worktree.lifecycle.json`](diagrams/src/04-worktree.lifecycle.json)）
+
 ## 整合分支與 lock
 
 整合分支是本機與遠端共用的累積點（例如 `integration`，最後開 PR／MR 合進 `main`）。所有 Issue 分支都先合進它，push 也是 push 它。

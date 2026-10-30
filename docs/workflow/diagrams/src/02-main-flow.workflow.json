@@ -1,0 +1,63 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "單張 Issue 交付主流程",
+    "locale": "zh-TW",
+    "quality_profile": "showcase",
+    "output": "docs/workflow/diagrams/02-main-flow.html"
+  },
+  "lanes": [
+    { "id": "operator", "label": "Operator（人）" },
+    { "id": "claude", "label": "Claude Code" },
+    { "id": "tracker", "label": "Tracker" },
+    { "id": "local", "label": "本機（worktree／檢查）" }
+  ],
+  "phases": [
+    { "id": "intake", "label": "需求、開單、分級", "fromCol": 0, "toCol": 1 },
+    { "id": "build", "label": "認領、實作與驗證", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "deliver", "label": "candidate、push、結案", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["req", "create", "triage", "run", "impl", "verify", "review", "candidate", "push", "close"],
+  "nodes": [
+    { "id": "req", "lane": "operator", "col": 0, "type": "external", "label": "需求討論", "sublabel": "對話／spec／bug 回報" },
+    { "id": "push", "lane": "operator", "col": 4, "type": "external", "label": "push、PR／MR", "sublabel": "人 push 並合併", "tag": "agent 不 push" },
+    { "id": "create", "lane": "claude", "col": 0, "type": "backend", "label": "開單", "sublabel": "adapter 的 Tracker 指令" },
+    { "id": "triage", "lane": "claude", "col": 1, "type": "backend", "label": "/triage n", "sublabel": "分級與 agent brief" },
+    { "id": "run", "lane": "claude", "col": 2, "type": "backend", "label": "/issue-run n", "sublabel": "Gate → Claim", "tag": "L2 起此時建 worktree" },
+    { "id": "impl", "lane": "claude", "col": 3, "type": "backend", "label": "實作", "sublabel": "tdd／implement" },
+    { "id": "candidate", "lane": "claude", "col": 4, "type": "backend", "label": "candidate 報告", "sublabel": "證據留言後停下", "tag": "完整 SHA" },
+    { "id": "close", "lane": "claude", "col": 5, "type": "backend", "label": "結案", "sublabel": "確認進主線後關單" },
+    { "id": "issue", "lane": "tracker", "col": 0, "type": "cloud", "label": "Issue", "sublabel": "needs-triage" },
+    { "id": "ready", "lane": "tracker", "col": 1, "type": "cloud", "label": "Issue", "sublabel": "ready-for-agent" },
+    { "id": "inprog", "lane": "tracker", "col": 2, "type": "cloud", "label": "Issue", "sublabel": "in-progress" },
+    { "id": "done", "lane": "tracker", "col": 5, "type": "cloud", "label": "Issue", "sublabel": "completed，已關閉" },
+    { "id": "wt", "lane": "local", "col": 2, "type": "database", "label": "Issue worktree", "sublabel": "issue/<n>-<slug>" },
+    { "id": "verify", "lane": "local", "col": 3, "type": "backend", "label": "單一檢查入口", "sublabel": "adapter 的 Checks" },
+    { "id": "review", "lane": "local", "col": 4, "type": "security", "label": "code-review", "sublabel": "Standards／Spec 兩軸" },
+    { "id": "main", "lane": "local", "col": 5, "type": "database", "label": "主線", "sublabel": "main（L2 經整合分支）" }
+  ],
+  "edges": [
+    { "id": "req-create", "from": "req", "to": "create", "label": "確認範圍與驗收", "variant": "default" },
+    { "id": "create-issue", "from": "create", "to": "issue", "label": "建立", "variant": "default", "role": "branch" },
+    { "id": "create-triage", "from": "create", "to": "triage", "variant": "emphasis" },
+    { "id": "triage-ready", "from": "triage", "to": "ready", "label": "設 label", "variant": "default", "role": "branch" },
+    { "id": "triage-run", "from": "triage", "to": "run", "variant": "emphasis" },
+    { "id": "run-inprog", "from": "run", "to": "inprog", "label": "Claim", "variant": "default", "role": "branch" },
+    { "id": "run-wt", "from": "run", "to": "wt", "label": "開分支／worktree", "variant": "dashed", "role": "branch" },
+    { "id": "run-impl", "from": "run", "to": "impl", "variant": "emphasis" },
+    { "id": "impl-verify", "from": "impl", "to": "verify", "label": "先紅後綠", "variant": "emphasis" },
+    { "id": "verify-review", "from": "verify", "to": "review", "variant": "emphasis" },
+    { "id": "review-impl", "from": "review", "to": "impl", "label": "未通過則修正", "variant": "security", "role": "error" },
+    { "id": "review-candidate", "from": "review", "to": "candidate", "label": "acceptance", "variant": "emphasis" },
+    { "id": "candidate-push", "from": "candidate", "to": "push", "variant": "security", "role": "main" },
+    { "id": "push-main", "from": "push", "to": "main", "label": "合併", "variant": "default", "role": "branch" },
+    { "id": "push-close", "from": "push", "to": "close", "label": "合併後", "variant": "emphasis" },
+    { "id": "close-done", "from": "close", "to": "done", "label": "completed", "variant": "default", "role": "branch" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "人做的事", "items": ["確認需求與驗收條件", "回答釐清問題、做產品決策", "push、開 PR／MR、合併"] },
+    { "dot": "emerald", "title": "Claude 的邊界", "items": ["tracker、檢查、結案指令都照 adapter，不自己拼", "做到本機 candidate commit 就停下報告", "L2 起一張 Issue 一個 worktree、一個寫入者"] },
+    { "dot": "rose", "title": "停點", "items": ["review 未通過回到實作，最多兩輪修正", "產品決策、缺授權、工具壞掉時停下，其他獨立的單照常前進"] }
+  ]
+}

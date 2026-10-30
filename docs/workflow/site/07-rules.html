@@ -12,7 +12,7 @@
 <button class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">目錄</button>
 <aside class="sidebar" id="sidebar" aria-label="流程導讀目錄">
 <nav class="chapters" aria-label="章節"><h2>章節</h2><a href="index.html">ron-skills 交付流程</a><a href="01-tooling.html">01 工具與角色</a><a href="02-lifecycle.html">02 Issue 生命週期</a><a href="03-level1.html">03 L1 導入</a><a href="04-level2.html">04 L2 導入</a><a href="05-level3.html">05 L3 導入</a><a href="06-quality-gates.html">06 品質校驗時間軸</a><a href="07-rules.html" aria-current="page">07 規則沉澱</a><a href="08-pitfalls.html">08 常見坑</a><a href="09-skills.html">09 Skills 索引</a></nav>
-<nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2></nav>
+<nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2><a href="../diagrams/01-tooling.html" target="_blank" rel="noopener">交付流程工具版圖</a><a href="../diagrams/02-issue-labels.html" target="_blank" rel="noopener">Issue 狀態 label 生命週期</a><a href="../diagrams/02-main-flow.html" target="_blank" rel="noopener">單張 Issue 交付主流程</a><a href="../diagrams/04-worktree.html" target="_blank" rel="noopener">Issue worktree 生命週期</a><a href="../diagrams/05-pilot-loop.html" target="_blank" rel="noopener">/loop /issue-pilot 常駐循環</a><a href="../diagrams/07-retro-loop.html" target="_blank" rel="noopener">/retro 回饋迴圈</a></nav>
 <nav class="rules" aria-label="正式規範"><h2>正式規範（原始 Markdown）</h2><a href="../../../README.md">README.md</a><a href="../../../skills/engineering/issue-run/ADAPTER.md">skills/engineering/issue-run/ADAPTER.md</a></nav>
 </aside>
 <main class="content">
@@ -35,6 +35,8 @@
 </ol>
 <p>例子：ron-skills 加 <code>check-workflow-strings.mjs</code> 時，測試裡放了一份寫入專案名的 Markdown，證明守門在它上面 exit 1；同時放一份只含公開站網址的 Markdown，證明白名單放行而 exit 0。</p>
 <h2 id="誰來升級">誰來升級</h2>
+<figure class="diagram" id="diagram-07-retro-loop"><iframe src="../diagrams/07-retro-loop.html" title="/retro 回饋迴圈" loading="lazy"></iframe><figcaption>/retro 回饋迴圈（互動圖：可切換主題、搜尋節點；<a href="../diagrams/07-retro-loop.html" target="_blank" rel="noopener">全頁開啟</a>）</figcaption></figure>
+<p>互動版：<a href="../diagrams/07-retro-loop.html">diagrams/07-retro-loop.html</a>（來源 <a href="../diagrams/src/07-retro-loop.dataflow.json"><code>diagrams/src/07-retro-loop.dataflow.json</code></a>）</p>
 <ul>
 <li><strong><code>/retro</code></strong>：session 結束後輸入，它讀這次的紀錄提出改善項目（導覽、自動檢查、規範、無效規則、工具成本），依嚴重度排列。採用的項目放在 retro 分支實作，不開 Issue。</li>
 <li><strong><code>/retro-collect</code></strong>（L3）：退役 coordinator 的 <code>/retro</code> 只寫檔不實作，全部收齊後由它在一個 retro worktree 一次實作（見 <a href="05-level3.html#retro-collect">05</a>）。</li>

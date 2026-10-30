@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "/retro 回饋迴圈",
+    "locale": "zh-TW",
+    "quality_profile": "standard",
+    "output": "docs/workflow/diagrams/07-retro-loop.html"
+  },
+  "stages": [
+    { "label": "問題" },
+    { "label": "回顧" },
+    { "label": "記錄" },
+    { "label": "固化" },
+    { "label": "合入" }
+  ],
+  "nodes": [
+    { "id": "incident", "type": "external", "label": "交付中的問題", "sublabel": "flaky、誤操作、重複失誤", "stage": 0, "row": 1, "tag": "session 內" },
+    { "id": "retro", "type": "backend", "label": "/retro", "sublabel": "session 回顧", "stage": 1, "row": 1, "tag": "交付後" },
+    { "id": "memory", "type": "database", "label": "Memory", "sublabel": "一檔一事實", "stage": 2, "row": 0, "tag": "提醒" },
+    { "id": "skill", "type": "backend", "label": "Skill／repo 規範", "sublabel": "skill／CLAUDE.md", "stage": 2, "row": 2, "tag": "規則" },
+    { "id": "script", "type": "security", "label": "檢查／gate", "sublabel": "接進單一檢查入口", "stage": 3, "row": 1, "tag": "可執行" },
+    { "id": "branch", "type": "database", "label": "retro 分支", "sublabel": "不開 Issue", "stage": 4, "row": 0, "tag": "只改工具與文件" },
+    { "id": "main", "type": "database", "label": "主線", "sublabel": "下一個 session 生效", "stage": 4, "row": 2, "tag": "生效" }
+  ],
+  "flows": [
+    { "id": "f1", "from": "incident", "to": "retro", "label": "症狀與原因", "classification": "觀察", "variant": "emphasis" },
+    { "id": "f2", "from": "retro", "to": "memory", "label": "教訓", "classification": "文字", "variant": "default" },
+    { "id": "f3", "from": "retro", "to": "skill", "label": "流程改法", "classification": "文字", "variant": "default" },
+    { "id": "f4", "from": "memory", "to": "script", "label": "重複失誤→檢查", "classification": "升級", "variant": "dashed" },
+    { "id": "f5", "from": "skill", "to": "script", "label": "規則→gate", "classification": "升級", "variant": "emphasis" },
+    { "id": "f6", "from": "script", "to": "branch", "label": "commit", "classification": "tooling", "variant": "default" },
+    { "id": "f7", "from": "branch", "to": "main", "label": "照常檢查後合入", "classification": "合入", "variant": "emphasis" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "為什麼要固化", "items": ["寫在 memory 或 skill 裡的規則仍會被忽略；同一個失誤出現第二次就升級成檢查或 gate", "gate 失敗時印出修正指示，而不是靠人記得"] },
+    { "dot": "emerald", "title": "新檢查要先證明自己", "items": ["把真實發生過的那次錯誤做成 fixture，附它失敗的指令與 exit code", "接進單一檢查入口；沒接進去的檢查等於不存在"] }
+  ]
+}

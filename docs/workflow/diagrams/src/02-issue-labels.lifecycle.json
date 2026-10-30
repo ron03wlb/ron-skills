@@ -1,0 +1,36 @@
+{
+  "schema_version": 3,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Issue 狀態 label 生命週期",
+    "locale": "zh-TW",
+    "quality_profile": "standard",
+    "output": "docs/workflow/diagrams/02-issue-labels.html"
+  },
+  "mainPath": ["needs_triage", "ready_for_agent", "in_progress", "completed"],
+  "states": [
+    { "id": "needs_triage", "type": "start", "label": "needs-triage", "sublabel": "開單時預設", "tag": "待討論", "step": "01" },
+    { "id": "ready_for_agent", "type": "active", "label": "ready-for-agent", "sublabel": "/triage 分級完成", "tag": "可開工", "step": "02" },
+    { "id": "in_progress", "type": "active", "label": "in-progress", "sublabel": "adapter 的 Claim", "tag": "處理中", "step": "03" },
+    { "id": "completed", "type": "success", "label": "completed", "sublabel": "進主線後結案", "tag": "已關閉", "step": "04" },
+    { "id": "ready_for_human", "type": "waiting", "label": "ready-for-human", "sublabel": "人做", "tag": "可開工" },
+    { "id": "needs_info", "type": "waiting", "label": "needs-info", "sublabel": "等補資訊", "tag": "待討論" },
+    { "id": "wontfix", "type": "neutral", "label": "wontfix", "sublabel": "/triage 判定不處理", "tag": "已關閉" }
+  ],
+  "transitions": [
+    { "id": "t1", "from": "needs_triage", "to": "ready_for_agent", "label": "/triage" },
+    { "id": "t2", "from": "ready_for_agent", "to": "in_progress", "label": "/issue-run n" },
+    { "id": "t3", "from": "in_progress", "to": "completed", "label": "candidate → 合併 → 結案", "variant": "emphasis" },
+    { "id": "t4", "from": "needs_triage", "to": "ready_for_human", "label": "/triage" },
+    { "id": "t5", "from": "needs_triage", "to": "needs_info", "label": "/triage" },
+    { "id": "t6", "from": "needs_triage", "to": "wontfix", "label": "/triage" },
+    { "id": "t7", "from": "needs_info", "to": "ready_for_agent", "label": "補完後重跑" },
+    { "id": "t8", "from": "needs_info", "to": "ready_for_human", "label": "補完後重跑" },
+    { "id": "t9", "from": "needs_info", "to": "wontfix", "label": "補完後重跑" },
+    { "id": "t10", "from": "ready_for_human", "to": "in_progress", "label": "人認領" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "看板就是 label", "items": ["看板欄位直接用狀態 label 篩選，改 label 就是移卡", "狀態 label 互斥：一張 Issue 同時只有一個", "待討論＝needs-triage／needs-info；可開工＝ready-for-*；處理中＝in-progress；完成＝completed／wontfix"] },
+    { "dot": "amber", "title": "兩個選配狀態", "items": ["in-progress 與 completed 是本流程加的交付狀態", "L1 可以不設 Claim，結案靠 Issue 的 closed 狀態；多 session 並行（L2）起才需要 in-progress"] }
+  ]
+}

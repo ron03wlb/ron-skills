@@ -1,2 +1,4 @@
 node_modules/
 .idea/
+# archify 的 delivery 收據含本機絕對路徑，只供 visual-check --require-provenance 在本機使用（#10）
+docs/workflow/diagrams/*.delivery.json
