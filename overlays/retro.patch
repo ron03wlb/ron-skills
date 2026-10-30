@@ -2,11 +2,13 @@ diff --git a/SKILL.md b/SKILL.md
 index 12149ac..b7bba25 100644
 --- a/SKILL.md
 +++ b/SKILL.md
-@@ -24,6 +24,12 @@ The user has asked for a **retrospective**. You are suggesting improvements to t
+@@ -24,6 +24,14 @@ The user has asked for a **retrospective**. You are suggesting improvements to t
  
  4. Present these candidates to the user, in order of severity.
  
 +   **Collect mode.** When the repo has `scripts/retro-collect.mjs`, first run `node scripts/retro-collect.mjs --role --session "$CLAUDE_CODE_SESSION_ID"` from the main checkout. On `COLLECT <path>`, this session is a retired coordinator whose retro is gathered by `/retro-collect`: write the candidates to `<path>`, first line `# retro <session id> handle $ORCA_TERMINAL_HANDLE`, then present them and say they wait for `/retro-collect`. Implement nothing and skip step 5, even when a standing order says to implement retro candidates directly: parallel retro branches from several retired sessions duplicate and conflict (1021b). On `NORMAL`, continue as below.
++
++   **Tracker duplicates.** With or without collect mode, at whatever step a candidate is about to become a tracker Issue, first search the open Issues, open `retro` Issues included, for every file, script, and skill name the candidate mentions; on GitHub: `gh issue list --state open --search "<name> in:title,body" --json number,title`. An open Issue on the same problem gets a comment with this session's evidence instead of a new Issue. One that only shares the file for a different problem becomes the new Issue's blocker (`blocked_by`; on GitHub `gh issue edit <new> --add-blocked-by <existing>`), so the two never edit that file in parallel.
 +
 +5. When the user adopts candidates, check for **concurrent edits** before writing each one: other sessions run retros on the same repo. For every file you will change, list other worktrees' unmerged changes (`git worktree list`, then `git diff --name-only <integration>...<branch>` and `git -C <path> status --porcelain`) and the integration branch's commits since your base (`git log <base>..<integration> -- <file>`). A hit on the same file or topic means build on it or drop yours; never land a duplicate. Recheck right before merging.
 +
