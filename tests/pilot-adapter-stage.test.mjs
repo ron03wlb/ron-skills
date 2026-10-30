@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { env } from './helpers/git-fixture.mjs';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 // coordinator 照 adapter Pilot 段逐行執行；這裡驗的是它讀到的那幾行。Pilot 段只指向 pilot.md，內容都在那裡（#45）。
 const adapter = readFileSync(new URL('../docs/agents/issue-run.md', import.meta.url), 'utf8');
@@ -23,7 +23,7 @@ test('issue-run.md 的 Pilot 段只留一行指向 pilot.md', () => {
 // 重現真實歷史：#20 改 Close、#22 改 Handoff，兩條相鄰沒空行，git 併成同一個 hunk 判成衝突（gate G2）。
 // 回傳 A 改 Close、B 改 Handoff 後 merge 的結果；每一步都要成功，免得 edit 沒改到時 merge 空轉通過。
 function mergeAdjacentEdits(t, content) {
-  const repo = mkdtempSync(join(tmpdir(), 'pilot-md-merge-'));
+  const repo = mkdtempSync(join(realTmpdir(), 'pilot-md-merge-'));
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   const git = (...args) => {
     const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', env });

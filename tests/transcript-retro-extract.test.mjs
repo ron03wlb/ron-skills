@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { digestSession, findSkillInvocation } from '../tools/transcript-retro/extract.mjs';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 function session(t, entries) {
-  const dir = mkdtempSync(join(tmpdir(), 'transcript-retro-'));
+  const dir = mkdtempSync(join(realTmpdir(), 'transcript-retro-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, 'session.jsonl');
   writeFileSync(file, entries.map((e) => JSON.stringify({ timestamp: '2026-10-20T01:00:00.000Z', ...e })).join('\n'));

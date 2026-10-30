@@ -1,10 +1,10 @@
 import './isolate-git-env.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { realTmpdir } from './real-tmpdir.mjs';
 
 /** 被測 script 所在的目錄（本 helper 的上一層）。 */
 export const source = fileURLToPath(new URL('../', import.meta.url));
@@ -17,7 +17,7 @@ export function git(cwd, ...args) {
   const result = run(cwd, ['git', ...args]); assert.equal(result.status, 0, result.stderr); return result.stdout.trim();
 }
 export function repoFixture(t) {
-  const temp = mkdtempSync(join(tmpdir(), 'workflow-scripts-'));
+  const temp = mkdtempSync(join(realTmpdir(), 'workflow-scripts-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo'); const remote = join(temp, 'remote.git'); mkdirSync(repo);
   git(repo, 'init', '-q', '--initial-branch=main');

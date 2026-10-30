@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { orcaReplySource } from './helpers/fake-orca.mjs';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../scripts/pilot-probe.mjs', import.meta.url).pathname;
 // pre-commit hook 匯出的 GIT_DIR 等會讓暫存 repo 的 git 指令寫到本 repo（見 pilot-unbare.test.mjs）。
@@ -17,7 +17,7 @@ const SHA = 'a'.repeat(40);
 // `screens` 是 handle → `terminal read --screen` 的 `{ status, tail }`；不在表裡的 handle 回 terminal_handle_stale。
 // 假 Orca 會把 stdin 讀光並記錄讀到的內容：真實 orca-ide 會吃掉 stdin，逐一讀成員時後面的成員就讀不到（#23 retro）。
 function fixture(t, { screens = {} } = {}) {
-  const temp = mkdtempSync(join(tmpdir(), 'pilot-probe-'));
+  const temp = mkdtempSync(join(realTmpdir(), 'pilot-probe-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const origin = join(temp, 'origin.git');
   const repo = join(temp, 'checkout');

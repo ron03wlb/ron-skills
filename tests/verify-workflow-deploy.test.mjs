@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { verifyDeployment } from '../scripts/verify-workflow-deploy.mjs';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 // 部署後以匿名 GET 逐檔比對固定網址；CDN 可能還沒一致，所以有上限地重試（#11，spay2 實測 6 次 × 20 秒內一致）。
 function site(t, files) {
-  const dir = mkdtempSync(join(tmpdir(), 'workflow-deploy-'));
+  const dir = mkdtempSync(join(realTmpdir(), 'workflow-deploy-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const [path, content] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, path)), { recursive: true });

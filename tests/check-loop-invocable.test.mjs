@@ -1,14 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../scripts/check-loop-invocable.mjs', import.meta.url).pathname;
 
 function fixture(t, flag) {
-  const temp = mkdtempSync(join(tmpdir(), 'loop-invocable-'));
+  const temp = mkdtempSync(join(realTmpdir(), 'loop-invocable-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
   mkdirSync(join(repo, 'scripts'), { recursive: true });

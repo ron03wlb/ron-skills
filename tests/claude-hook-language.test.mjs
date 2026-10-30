@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isHarnessText, isMostlyEnglish, isSyntheticEntry, lastTurnTexts, textsBeforeTool } from '../scripts/claude-hook-language.mjs';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = fileURLToPath(new URL('../scripts/claude-hook-language.mjs', import.meta.url));
 const hook = input => spawnSync('node', [script], { input, encoding: 'utf8' });
@@ -58,7 +58,7 @@ test('textsBeforeTool：取緊接在該 tool_use 之前的文字段；平行呼�
 });
 
 test('hook：本輪有英文段落時 exit 2；已續跑一次、中文、輸入不合法時 exit 0 無輸出', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'claude-hook-language-'));
+  const dir = mkdtempSync(join(realTmpdir(), 'claude-hook-language-'));
   const english = join(dir, 'english.jsonl');
   writeFileSync(english, [user('進度？'), assistant('Both batches are in. Generating the two reports in parallel now.')].join('\n'));
   const chinese = join(dir, 'chinese.jsonl');
@@ -80,7 +80,7 @@ test('hook：本輪有英文段落時 exit 2；已續跑一次、中文、輸入
 });
 
 test('hook PostToolUse：工具呼叫前的英文進度行 exit 2；中文、平行呼叫第二個、找不到 tool_use 時 exit 0', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'claude-hook-language-'));
+  const dir = mkdtempSync(join(realTmpdir(), 'claude-hook-language-'));
   const transcript = join(dir, 'transcript.jsonl');
   writeFileSync(transcript, [
     user('進度？'), assistant('兩個 worker 都完成了，接著合入。'), toolUse('zh'), toolResult(),
@@ -146,7 +146,7 @@ test('lastTurnTexts：本 hook 提示過（Stop feedback 或 PostToolUse blockin
 });
 
 test('hook Stop：只有用量上限訊息、或英文段落已提示過一次時 exit 0', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'claude-hook-language-'));
+  const dir = mkdtempSync(join(realTmpdir(), 'claude-hook-language-'));
   const limit = join(dir, 'limit.jsonl');
   writeFileSync(limit, [user('/loop /issue-pilot'), synthetic(), continuation(), toolUse('t1'), toolResult(), assistant('額度恢復，繼續協調。')].join('\n'));
   const again = join(dir, 'again.jsonl');

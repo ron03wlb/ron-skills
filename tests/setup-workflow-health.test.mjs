@@ -2,16 +2,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { env, git, write } from './helpers/git-fixture.mjs';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../skills/engineering/setup-workflow/scripts/health.mjs', import.meta.url).pathname;
 
 /** 暫存 repo，目錄名為 acme（體檢以目錄名認出「本 repo」）；files 為 { 相對路徑: 內容 }，寫入後 commit。 */
 function repo(t, files = {}) {
-  const parent = mkdtempSync(join(tmpdir(), 'setup-workflow-health-'));
+  const parent = mkdtempSync(join(realTmpdir(), 'setup-workflow-health-'));
   t.after(() => rmSync(parent, { recursive: true, force: true }));
   const root = join(parent, 'acme');
   mkdirSync(root);
@@ -162,7 +162,7 @@ test('隱性跨 repo 依賴：bin/ 與 git hook 也掃；家目錄下直接放 r
 });
 
 test('不是 git repo 時 exit 2；不認得的旗標 exit 2', t => {
-  const dir = mkdtempSync(join(tmpdir(), 'setup-workflow-health-'));
+  const dir = mkdtempSync(join(realTmpdir(), 'setup-workflow-health-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   assert.equal(health(dir).status, 2);
   assert.equal(spawnSync('node', [script, repo(t), '--fix'], { encoding: 'utf8', env }).status, 2);

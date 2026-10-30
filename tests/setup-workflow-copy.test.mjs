@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { env, git, write } from './helpers/git-fixture.mjs';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../skills/engineering/setup-workflow/scripts/copy-templates.mjs', import.meta.url).pathname;
 const MANIFEST = 'docs/agents/workflow-templates.json';
@@ -13,7 +13,7 @@ const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('h
 
 /** 假的 ron-skills（帶 copy-templates.mjs 與幾支正本）與一個空的目標 repo。 */
 function fixture(t) {
-  const temp = mkdtempSync(join(tmpdir(), 'setup-workflow-copy-'));
+  const temp = mkdtempSync(join(realTmpdir(), 'setup-workflow-copy-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const source = join(temp, 'ron-skills');
   const skill = join(source, 'skills/engineering/setup-workflow');

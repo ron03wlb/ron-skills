@@ -2,16 +2,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lostFiles, parseRan, reportedTotal, untraced } from './node-test-guarded.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./node-test-guarded.mjs', import.meta.url));
 
 /** 暫存目錄放 fixture 測試檔，以 wrapper 執行。 */
 function fixture(t, files, extraEnv = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'node-test-guarded-test-'));
+  const dir = mkdtempSync(join(realTmpdir(), 'node-test-guarded-test-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
   const env = { ...process.env };

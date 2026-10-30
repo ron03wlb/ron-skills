@@ -3,9 +3,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./integration-status.mjs', import.meta.url));
 const git = (cwd, ...args) => {
@@ -22,7 +22,7 @@ const status = (cwd, ...iids) => {
 
 /** 主 worktree 在整合分支 integration：#7 已合入並推送，#8 只合入本機，#9 分支未合入。 */
 const fixture = t => {
-  const root = mkdtempSync(join(tmpdir(), 'integration-status-'));
+  const root = mkdtempSync(join(realTmpdir(), 'integration-status-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const main = join(root, 'main'); const origin = join(root, 'origin.git');
   git(root, 'init', '-q', '--bare', origin);
