@@ -126,6 +126,7 @@ test('Bash：主 checkout 切換或新開分支 exit 2；切回預設分支、�
     'git checkout other',
     `git -C ${main} switch --detach HEAD`,
     `cd /tmp && cd ${main} && git switch -C x`,
+    'R=$(git rev-parse --show-toplevel); git -C "$R" switch -c x', // -C 解析不了時照原本的目錄判斷
   ]) {
     const denied = bash(command, command.startsWith('cd /tmp') ? '/tmp' : main);
     assert.equal(denied.status, 2, command);
@@ -157,6 +158,7 @@ test('Bash：無法解析的 $變數 不當成主 checkout 路徑；同一條指
     "echo hi > '$f'.md", // 單引號裡的 $ 是字面
     'declare F=docs/a.md; sed -i "s/a/b/" $F',
     'cd docs && echo hi > $PWD/new.md', // $PWD 是指令當下的目錄，不是 hook 行程的
+    'D=$PWD; echo hi > $D/new.md',
     // cd 到解析不了的目錄時，後面的相對路徑仍依原本的目錄判斷：在主 checkout 常見這種寫法
     'cd "$(git rev-parse --show-toplevel)" && sed -i "s/a/b/" docs/a.md',
     'cd $D && echo hi > GLOSSARY.md',
