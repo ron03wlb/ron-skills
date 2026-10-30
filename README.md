@@ -26,6 +26,7 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 - `bin/check`：唯一的檢查入口，依序跑 `bin/sync-skills --check`、連結檢查、流程站三道守門與 `tests/`；`bin/check --upstream` 改對 Matt 與 pstack 上游最新 main 檢查（與 CI 相同）。
 - 流程站（`docs/workflow/`，產出在 `site/`）：`bin/check` 跑三道守門。`node scripts/build-workflow-site.mjs --check` 擋手改 HTML 或忘了重產；`node scripts/check-workflow-strings.mjs` 擋 spay2 專屬字串（專案名、`192.168.`、`feature/ron/#`，只放行 spay2 公開站網址）；`node scripts/check-workflow-sync.mjs` 在 `issue-run`／`issue-pilot`／`retro-collect` 的 `SKILL.md` 或 `ADAPTER.md` 變動時失敗，對照 `docs/workflow/` 後執行 `--restamp`。
 - 語言 hook（`.claude/settings.json` 掛 `scripts/claude-hook-language.mjs`）：在 `Stop`、`PostToolUse`、`PostToolUseFailure` 檢查使用者可見文字，以英文為主時 exit 2，要求 agent 改用繁體中文重新說明；規則見 `CLAUDE.md`。
+- bare 防護 hook（`.claude/settings.json` 的 `PreToolUse`（Bash）掛 `scripts/claude-hook-unbare.sh`）：Orca 從 WSL 操作 worktree 時，可能在任何 session 進行中把主 checkout 的 `core.bare` 設成 true；hook 從 git common dir 找到主 checkout，呼叫 `scripts/pilot-unbare.sh` 還原並記入 `.scratch/pilot/decisions.md`。
 - 本機 pre-commit（`.githooks/pre-commit`，clone 後執行一次 `ln -s ../../.githooks/pre-commit .git/hooks/pre-commit` 啟用）：跑 `bin/check`。
 - CI（`.github/workflows/checks.yml`）：每次 push 與每週一跑 `bin/check --upstream`；上游改到補丁位置時會先在這裡變紅。
 - `overlays/<name>.patch`：對 Matt 或 pstack skill 的最小改動，同步時套在 `~/.local/share/ron-skills/overlay/<name>` 的副本上，上游 checkout 本身不變。
@@ -35,7 +36,7 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 
 | 補丁 | 內容 |
 | --- | --- |
-| `grilling`、`grill-me`、`grill-with-docs` | `effort: high`；`grilling` 另把「派子代理查事實」改為自己用工具查、範圍大才派 |
+| `grilling`、`grill-me`、`grill-with-docs` | `effort: high`；`grilling` 另把「派子代理查事實」改為自己用工具查、範圍大才派，並在第一輪前列出與主題相關、還開著的 Issue |
 | `domain-modeling` | repo 自訂的 ADR 版面與索引編號優先 |
 | `retro` | 寫入前檢查其他 session 的並行修改；repo 有 `scripts/retro-collect.mjs` 且本 session 是退役 coordinator 時改為收集模式：只寫 retro 檔、不實作，等 `/retro-collect` |
 | `poteto-mode` | 本機 harness：先讀上游 `docs/harness/claude-code.md` 做名稱對照；repo 規則與語言優先、無 GitHub PR（對應 candidate／整合分支）、無 cloud（Orca terminal）、Claude 加 Codex 兩家、未連結 skill 改用 Matt 對應 |

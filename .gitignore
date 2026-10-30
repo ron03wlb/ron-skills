@@ -4,3 +4,5 @@ node_modules/
 .idea/
 # archify 的 delivery 收據含本機絕對路徑，只供 visual-check --require-provenance 在本機使用（#10）
 docs/workflow/diagrams/*.delivery.json
+# wrangler 本機快取（setup-workflow-site.sh 部署後留下）；不忽略的話主 checkout 的 git status 永遠不空，pilot Probe 分不出真改動
+.wrangler/
