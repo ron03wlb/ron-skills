@@ -1,0 +1,9 @@
+{
+  "wait": {
+    "handle": "term_sample",
+    "condition": "tui-idle",
+    "satisfied": true,
+    "status": "running",
+    "exitCode": null
+  }
+}

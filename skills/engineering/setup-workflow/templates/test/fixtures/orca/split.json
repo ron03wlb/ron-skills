@@ -1,0 +1,8 @@
+{
+  "split": {
+    "handle": "term_sample",
+    "tabId": "sample",
+    "paneRuntimeId": 1,
+    "leafId": "sample"
+  }
+}

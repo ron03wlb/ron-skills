@@ -1,0 +1,14 @@
+{
+  "terminal": {
+    "handle": "term_sample",
+    "tabId": "sample",
+    "paneKey": "sample",
+    "ptyId": "sample",
+    "worktreeId": "sample",
+    "title": "sample",
+    "executionHostId": "sample",
+    "incarnationId": "sample",
+    "hostPlatform": "sample",
+    "surface": "sample"
+  }
+}

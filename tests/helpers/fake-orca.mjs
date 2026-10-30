@@ -1,5 +1,5 @@
 // 假 Orca CLI 的回應一律從真實樣本長出來，測試替身才不會和真實輸出形狀分家
-// （spay2 #336：假 Orca 回 `{ satisfied }`、真實是 `{ wait: { satisfied } }`，測試全綠、派工兩次都誤報 tui-timeout）。移植自 spay2。
+// （曾發生：假 Orca 回 `{ satisfied }`、真實是 `{ wait: { satisfied } }`，測試全綠、派工兩次都誤報 tui-timeout）。
 // 樣本在 fixtures/orca/<名稱>.json，是 `orca-ide terminal <子指令> --json` 的 `result`（字串已去識別化）；Orca 改版時重錄樣本：
 //   orca-ide terminal wait --terminal <h> --for tui-idle --timeout-ms 3000 --json → wait.json，其餘依檔名類推。
 // 用法：在假 CLI 的原始碼裡放 `${orcaReplySource()}`，之後 `reply('wait', { wait: { satisfied } })` 印出 `{ ok: true, result }`。
