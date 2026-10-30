@@ -59,6 +59,10 @@ What `/issue-pilot` needs on top of the sections above: pool query, worker cap a
 - **Hold flag.** How the coordinator sets and clears a hold, and which landing commands check it right before they merge.
 - **Brief check.** A command that refuses a brief missing goal, scope, acceptance, verify, timebox, forbidden, report, or the standing orders path.
 - **Agent rows.** Where the checkpoint records each spawned agent (parent, handle, start time, stuck-after), and which probe line reports a parent still waiting past its child's stuck-after.
+- **Sessions.** The command that registers a coordinator session in `.scratch/pilot/sessions.md`. Default: the coordinator appends the row itself.
+- **Coordinator checkout.** The checkout the coordinator runs in and keeps `.scratch/pilot/` under, for a project whose coordinator does not live in the main checkout. Default: the repo's main checkout.
+- **Project tick hooks.** Scripts the coordinator runs each tick after Drain and before Pick, in order, from the coordinator checkout, for project checks ron-skills does not model (a daily collection dispatch, a quota check). Exit 0 continues; any other exit opens a gate with the script's output and skips Pick and Dispatch for that tick. Default: none; the step is skipped.
+- **Retro collect.** What `/retro-collect` needs: the collector script, retro worktree naming, checks, merge, and push. Default: none; `/retro-collect` stops and says so.
 
 Default: no Pilot section; `/issue-pilot` stops and says so.
 
