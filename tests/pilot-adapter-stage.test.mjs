@@ -21,6 +21,8 @@ test('Stage、Regression、Integrate、Integration branch 寫明在 stage worktr
   }
 });
 
-test('Probe 檢查主 checkout 停在 main', () => {
-  assert.match(line('Probe'), /git -C \/home\/ron\/code\/ron-skills branch --show-current/);
+// 主 checkout 不在 main 的偵測在 pilot-probe.mjs 裡（tests/pilot-probe.test.mjs 驗 NOT_MAIN）；這裡驗 Probe 跑它並處理 NOT_MAIN。
+test('Probe 在主 checkout 跑 pilot-probe.mjs，並處理 NOT_MAIN', () => {
+  assert.match(line('Probe'), /node scripts\/pilot-probe\.mjs \/home\/ron\/code\/ron-skills/);
+  assert.match(line('Probe'), /`NOT_MAIN <分支>` 回報人，不 stage、不 merge/);
 });
