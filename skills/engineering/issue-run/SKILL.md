@@ -40,7 +40,7 @@ A worker has no human at its screen, so it never calls `AskUserQuestion`, includ
 Worker mode replaces step 3's review bound:
 
 1. After two fix → re-review cycles, take each remaining finding's options. When exactly one option satisfies the Issue's acceptance criteria and confirmed decisions (`## 驗收條件`, `## 已確認決策`), adopt it and record it in the checkpoint's rulings. When every option fits the Issue's text, the finding is a genuine product trade-off: comment and `STOP` as above.
-2. Then run one review-only verifier round (the adapter's review command, no fixes) on the final candidate. A P2 or higher finding ends with `STOP <iid> findings after two review cycles`, which the coordinator handles per its Stops; P3 findings only go into the rulings and the run ends with `DONE`.
+2. Then run one review-only verifier round (the adapter's review command, no fixes) on the final candidate. When every P2 or higher finding left is a product trade-off already commented under step 1, end with `STOP <iid> decision <summary>`; when any one is not, end with `STOP <iid> findings after two review cycles`. The coordinator handles either per its Stops: a `decision` cause opens a gate, while a findings cause redispatches a fresh worker that would hit the same trade-off (#30). P3 findings only go into the rulings and the run ends with `DONE`.
 
 ## Gated tickets
 

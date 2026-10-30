@@ -13,7 +13,7 @@ You are the **coordinator** of a standing delivery program, running in the coord
 
 Read these at the first tick, after compaction, and whenever the adapter's source check reports one changed; when they disagree, the earlier one wins.
 
-1. The repo's `AGENTS.md` and its adapter `docs/agents/issue-run.md`, section **Pilot** only (Read it with an offset, or the line a `grep -n '^## '` locates); when that section points to its own file, read that file whole as part of the adapter, and open other `issue-run.md` sections only when a tick reaches them through a link (a coordinator read all 52 KB at Entry for a one-line pointer, retro e14c3f6f#3). The adapter owns every project fact: pool query, readiness, dispatch, watch, stage, regression, integrate, push gate, close, gated tickets, and SQL discovery. With no Pilot section, stop and say so.
+1. The repo's `AGENTS.md` and its adapter `docs/agents/issue-run.md`, section **Pilot** only (Read it with an offset, or the line a `grep -n '^## '` locates); when that section points to its own file, read that file whole as part of the adapter, and open other `issue-run.md` sections only when a tick reaches them through a link (a coordinator read all 52 KB at Entry for a one-line pointer, retro e14c3f6f#3). The adapter owns every project fact: pool query, readiness, dispatch, watch, stage, regression, integrate, push gate, close, gated tickets, and SQL discovery. With no Pilot section, stop and say so. When the integration branch (the Pilot section's **Integration branch** line) carries a different adapter than the coordinator checkout (`git diff --quiet <checkout branch> <integration branch> -- docs/agents/issue-run.md` exits 1), read the Pilot section from `git show <integration branch>:docs/agents/issue-run.md` instead: the next batch stages on that branch, and a `main` left unpushed for hours kept an older Pilot section that would have staged in the main checkout (retro ron-skills-1f#1a).
 2. `~/.claude/skills/poteto-mode/SKILL.md`, its **Local harness** section (it maps PRs, cloud, and models onto this machine). The [Playbook digest](#playbook-digest) below carries the parts of `playbooks/autopilot-stack.md`, `playbooks/autopilot-full.md`, and `playbooks/orchestrate.md` that survive the Local harness; read those playbooks only for a situation the digest does not cover (a short-lived coordinator re-read about 60 KB of mostly overridden gh, cloud, `orch`, and swarm text every session, retro 5cf76505#4).
 3. This file.
 
@@ -66,7 +66,7 @@ A worker's STOP blocks only its dependents; keep everything else moving.
 
 | Cause | Your action |
 | --- | --- |
-| Product decision open, or spec contradicts code | Gate it; set the Issue to the adapter's human-ready state. |
+| Product decision open (including a worker's `decision <summary>` cause), or spec contradicts code | Gate it; set the Issue to the adapter's human-ready state. |
 | Missing prerequisite, credential, or fixture authorization | Gate it with the exact missing item. |
 | SQL turns out to be needed | Follow the adapter's SQL discovery for the pilot: split the SQL Issue, dispatch its preparation to handoff, mark the feature waiting. The human only executes and reads back. |
 | Delivery tooling failure | Open a **tooling fix unit**: a fresh worker in its own worktree with a full brief ([Playbook digest](#playbook-digest) fields), landed as tooling-only per the adapter, then redispatch the affected Issues. The same tool failing twice after a fix becomes a gate. |
