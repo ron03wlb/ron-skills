@@ -2,21 +2,24 @@
 // 把開著的 Issue 逐張分桶，pilot 的 Pool 從 ready 桶依序挑；第一版只支援 GitHub（gh CLI）。
 // 用法：node scripts/issue-pool.mjs [--repo <owner>/<name>] [--stale-hours <h>]
 //       node scripts/issue-pool.mjs claim <n> [--repo <owner>/<name>] [--session <id>]
-// 一張只歸一個桶，依序取第一個符合的：parent（有 sub-issue）、stale（已指派，超過 --stale-hours（預設 24）沒有新留言）、claimed（已指派）、
-// retro（`retro` label）、blocked（有開著的 blocked_by）、human（`ready-for-human`）、needs-info、needs-triage、ready（`ready-for-agent`）、unlabeled。
-// 過期的認領只歸到 stale，不自動釋放。
+// 一張只歸一個桶，依序取第一個符合的：parent（有 sub-issue）、human（`ready-for-human`，指派給人不算認領）、
+// stale（已指派，超過 --stale-hours（預設 24）沒有新留言或新指派）、claimed（已指派）、retro（`retro` label）、blocked（有開著的 blocked_by）、
+// needs-info、needs-triage、ready（`ready-for-agent`）、unlabeled。所以 ready 桶就是池子。過期的認領只歸到 stale，不自動釋放。
 // 輸出順序：ready 桶先印，依 `priority` label 的先、直接或間接 block 最多開著的單的先（關鍵路徑）、號碼小的先；
 // 其餘依上面的桶順序、桶內號碼小的先。
 // stdout：每張一行 `<桶> #<n> <標題>`；exit 0。gh 失敗時 stderr 印原因、exit 1；用法錯誤 exit 2。
-// claim 是 session 開始處理一張 Issue 前的認領：`--add-assignee @me`，再留「認領：<機器>／<session>」（session 預設
-// $CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE），印 `CLAIMED <n>`。同一個帳號會在好幾台機器上跑，所以已被指派就看最近一則認領留言：
-// 是這台機器（同機器的重派由 batch checkpoint 擋）印 `CLAIMED <n> already`、不再留言；其他情況印 `STOP <n> claimed <認領者>`、exit 4，不改 Issue。
+// claim 是 session 開始處理一張 Issue 前的認領：先留「認領：<機器>／<session>」（整則留言只有這一行；session 預設
+// $CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE），再 `--add-assignee @me`，印 `CLAIMED <n>`。同一個帳號會在好幾台機器上跑，
+// 指派分不出是誰，所以看認領留言：
+// - 已被指派時，最近一則認領留言必須是這個 session、作者還在指派名單裡，才再認領一次（重派；新留言順便更新 stale 的時間），否則不改 Issue。
+// - 寫入後重讀：這次讀到之後新增的認領留言裡，最早一則不是自己就是別台搶先了，收回自己的留言（指派是同一個帳號，不動）。
+// 被擋時印 `STOP <n> claimed <機器>／<session>`（沒有認領留言時是指派者登入名），exit 4。
 import { spawnSync } from 'node:child_process';
 import { hostname } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
 const USAGE = '用法：node scripts/issue-pool.mjs [--repo <owner>/<name>] [--stale-hours <h>] | claim <n> [--repo <owner>/<name>] [--session <id>]';
-const QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{number title labels(first:20){nodes{name}} assignees(first:10){nodes{login}} subIssuesSummary{total} blockedBy(first:20){nodes{number state}} blocking(first:20){nodes{number state}} comments(last:1){nodes{createdAt}} timelineItems(last:1,itemTypes:[ASSIGNED_EVENT]){nodes{... on AssignedEvent{createdAt}}}}}}}`;
+const QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{number title labels(first:50){nodes{name}} assignees(first:20){nodes{login}} subIssuesSummary{total} blockedBy(first:50){nodes{number state repository{nameWithOwner}}} blocking(first:50){nodes{number state repository{nameWithOwner}}} comments(last:1){nodes{createdAt}} timelineItems(last:1,itemTypes:[ASSIGNED_EVENT]){nodes{... on AssignedEvent{createdAt}}}}}}}`;
 
 class GhError extends Error {}
 function gh(...args) {
@@ -36,7 +39,7 @@ function openIssues(repo) {
   return issues;
 }
 
-const open = ({ nodes }) => nodes.filter(({ state }) => state === 'OPEN');
+const openNodes = ({ nodes }) => nodes.filter(({ state }) => state === 'OPEN');
 
 /** 認領之後最後一次動靜：最近一則留言或最近一次指派，取較晚的；都沒有時是 0（視為過期）。 */
 const lastActivity = issue => Math.max(0, ...[...issue.comments.nodes, ...issue.timelineItems.nodes].map(({ createdAt }) => Date.parse(createdAt)));
@@ -45,40 +48,40 @@ const lastActivity = issue => Math.max(0, ...[...issue.comments.nodes, ...issue.
 export function bucketOf(issue, { staleHours = 24, now = Date.now() } = {}) {
   const labels = new Set(issue.labels.nodes.map(({ name }) => name));
   if (issue.subIssuesSummary.total > 0) return 'parent';
+  if (labels.has('ready-for-human')) return 'human';
   if (issue.assignees.nodes.length) return now - lastActivity(issue) > staleHours * 3600_000 ? 'stale' : 'claimed';
   if (labels.has('retro')) return 'retro';
-  if (open(issue.blockedBy).length) return 'blocked';
-  if (labels.has('ready-for-human')) return 'human';
+  if (openNodes(issue.blockedBy).length) return 'blocked';
   if (labels.has('needs-info')) return 'needs-info';
   if (labels.has('needs-triage')) return 'needs-triage';
   if (labels.has('ready-for-agent')) return 'ready';
   return 'unlabeled';
 }
 
-const BUCKETS = ['ready', 'parent', 'stale', 'claimed', 'retro', 'blocked', 'human', 'needs-info', 'needs-triage', 'unlabeled'];
+const BUCKETS = ['ready', 'parent', 'human', 'stale', 'claimed', 'retro', 'blocked', 'needs-info', 'needs-triage', 'unlabeled'];
 
-/** 直接或間接被這張 block、而且還開著的 Issue 數；沿列表裡的 blocking 邊走，不在列表裡的開著的單只算一張。 */
-function blockedCount(issue, byNumber) {
-  const seen = new Set();
+/** 直接或間接被這張 block、而且還開著的 Issue 數；沿本 repo 列表裡的 blocking 邊走，別的 repo 或不在列表裡的開著的單只算一張。 */
+function blockedCount(issue, byNumber, repo) {
+  const seen = new Set([`${repo}#${issue.number}`]);
   const walk = node => {
-    for (const { number } of open(node.blocking)) {
-      if (seen.has(number)) continue;
-      seen.add(number);
-      if (byNumber.has(number)) walk(byNumber.get(number));
+    for (const { number, repository: { nameWithOwner } } of openNodes(node.blocking)) {
+      const key = `${nameWithOwner}#${number}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (nameWithOwner === repo && byNumber.has(number)) walk(byNumber.get(number));
     }
   };
   walk(issue);
-  seen.delete(issue.number);
-  return seen.size;
+  return seen.size - 1;
 }
 
-/** 分好桶、排好序的 Issue 列表（順序見檔頭）。 */
-export function pool(issues, options) {
+/** 分好桶、排好序的 Issue 列表（順序見檔頭）；repo 是 `<owner>/<name>`，用來分辨 blocking 邊是不是本 repo 的單。 */
+export function pool(issues, { repo, ...options }) {
   const byNumber = new Map(issues.map(issue => [issue.number, issue]));
   const rows = issues.map(issue => ({
     issue, bucket: bucketOf(issue, options),
     priority: issue.labels.nodes.some(({ name }) => name === 'priority') ? 1 : 0,
-    blocks: blockedCount(issue, byNumber),
+    blocks: blockedCount(issue, byNumber, repo),
   }));
   const rank = row => BUCKETS.indexOf(row.bucket);
   return rows.sort((a, b) => rank(a) - rank(b)
@@ -86,17 +89,30 @@ export function pool(issues, options) {
     || a.issue.number - b.issue.number);
 }
 
+/** 整則留言只有「認領：<機器>／<session>」一行時回傳認領者；引用或夾在其他文字裡的不算。 */
+const claimerOf = ({ body }) => body.trim().match(/^認領：([^\n]+)$/)?.[1];
+
 function claim(n, repo, session) {
   const target = [n, ...(repo ? ['--repo', repo] : [])];
-  const { assignees, comments } = JSON.parse(gh('issue', 'view', ...target, '--json', 'assignees,comments'));
-  if (assignees.length) {
-    const claimer = comments.map(({ body }) => body.match(/^認領：(.+)$/m)?.[1]).filter(Boolean).at(-1);
-    if (claimer?.split('／')[0] === hostname()) { console.log(`CLAIMED ${n} already`); return 0; }
-    console.log(`STOP ${n} claimed ${claimer ?? assignees.map(({ login }) => login).join(',')}`);
-    return 4;
+  const read = () => JSON.parse(gh('issue', 'view', ...target, '--json', 'assignees,comments'));
+  const stop = claimer => { console.log(`STOP ${n} claimed ${claimer}`); return 4; };
+  const mine = `${hostname()}／${session}`;
+  const before = read();
+  if (before.assignees.length) {
+    const logins = before.assignees.map(({ login }) => login);
+    const last = before.comments.filter(claimerOf).at(-1);
+    if (!last || !logins.includes(last.author.login)) return stop(logins.join(','));
+    if (claimerOf(last) !== mine) return stop(claimerOf(last));
   }
+  // 先留言再指派：指派成功、留言失敗時，重跑會被自己沒有留言的指派擋住。
+  gh('issue', 'comment', ...target, '--body', `認領：${mine}`);
   gh('issue', 'edit', ...target, '--add-assignee', '@me');
-  gh('issue', 'comment', ...target, '--body', `認領：${hostname()}／${session}`);
+  const first = read().comments.slice(before.comments.length).find(claimerOf);
+  if (first && claimerOf(first) !== mine) {
+    // 收回搶輸的留言，不然贏家重派時最近一則認領是自己的，會被擋下；輸家的留言在贏家的認領之後，`--delete-last` 刪的是這個帳號最新一則，所以前提是贏家這幾秒內沒有再留言。
+    gh('issue', 'comment', ...target, '--delete-last', '--yes');
+    return stop(claimerOf(first));
+  }
   console.log(`CLAIMED ${n}`);
   return 0;
 }
@@ -116,7 +132,7 @@ function main(argv) {
   try {
     if (command === 'claim') return claim(n, repo, session);
     repo ??= gh('repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim();
-    for (const { issue, bucket } of pool(openIssues(repo), { staleHours })) console.log(`${bucket} #${issue.number} ${issue.title}`);
+    for (const { issue, bucket } of pool(openIssues(repo), { repo, staleHours })) console.log(`${bucket} #${issue.number} ${issue.title}`);
     return 0;
   } catch (error) {
     if (!(error instanceof GhError)) throw error;
