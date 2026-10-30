@@ -5,7 +5,7 @@
 // 用法：node scripts/pilot-probe.mjs <主 checkout>（讀 running 成員要 ORCA_CLI_COMMAND；沒有時其他檢查照跑）
 // stdout 每行一項，沒事的項目不印（全部正常且沒有 batch 時不輸出）：
 //   主 checkout：UNBARE <checkout>（Bare guard 剛還原 core.bare）｜NOT_MAIN <分支>｜HOLD｜DIRTY <git status --short 的一行>
-//   adapter：ADAPTER_AHEAD <檔案>（pilot/integration 上的 docs/agents/issue-run.md 或 pilot.md 與 main 不同，#52）
+//   adapter：ADAPTER_AHEAD <檔案>（pilot/integration 上的 docs/agents/issue-run.md 或 pilot.md 比 main 新，#52）
 //   開著的列：REQUEST <requests.md 原文>｜GATE <id> <Issue> <question 或段落標題>
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
 //                 WORKER <n> STUCK exited|stuck-after <分鐘>|orca <錯誤碼>|no-orca|checkpoint <欄位> <值>
@@ -55,11 +55,26 @@ export function checkoutState(checkout) {
 /** 下一批在 pilot/integration 上 stage，主 checkout 的 adapter 卻是 main 的版本（#52）。 */
 const ADAPTERS = ['docs/agents/issue-run.md', 'docs/agents/pilot.md'];
 
-/** main 與 pilot/integration 上內容不同的 adapter 檔（只有一邊有也算）；沒有 pilot/integration 時不比。 */
+/** `rev-parse --verify -q`：不存在時回空字串（exit 1、沒有 stderr），其他失敗 throw。 */
+function rev(checkout, ref) {
+  const result = git(checkout, 'rev-parse', '--verify', '-q', ref);
+  if (result.status !== 0 && result.status !== 1) throw new Error(`git rev-parse ${ref} exit ${result.status}：${result.stderr.trim()}`);
+  return result.stdout.trim();
+}
+
+/**
+ * pilot/integration 上比 main 新的 adapter 檔：內容不同，而且 main 最後一次改這個檔的 commit 已經在 integration 裡
+ * （main 從沒有這個檔也算）。main 自己改過、integration 還沒跟上時，integration 那份比較舊，不印。沒有 pilot/integration 時不比。
+ */
 export function adapterAhead(checkout) {
-  const blob = (branch, path) => git(checkout, 'rev-parse', '--verify', '-q', `refs/heads/${branch}:${path}`).stdout.trim();
-  if (!git(checkout, 'rev-parse', '--verify', '-q', 'refs/heads/pilot/integration').stdout.trim()) return [];
-  return ADAPTERS.filter(path => blob('main', path) !== blob('pilot/integration', path)).map(path => `ADAPTER_AHEAD ${path}`);
+  if (!rev(checkout, 'refs/heads/pilot/integration')) return [];
+  return ADAPTERS.filter(path => {
+    if (rev(checkout, `refs/heads/main:${path}`) === rev(checkout, `refs/heads/pilot/integration:${path}`)) return false;
+    const touched = git(checkout, 'log', '-1', '--format=%H', 'refs/heads/main', '--', path);
+    if (touched.status !== 0) throw new Error(`git log main -- ${path} exit ${touched.status}：${touched.stderr.trim()}`);
+    const last = touched.stdout.trim();
+    return !last || git(checkout, 'merge-base', '--is-ancestor', last, 'refs/heads/pilot/integration').status === 0;
+  }).map(path => `ADAPTER_AHEAD ${path}`);
 }
 
 /**
@@ -139,10 +154,9 @@ export async function workerState(ctx, member, now = Date.now()) {
  * 符合時 coordinator 從 Push gate 第 1 步接著做；Integrate 之後又有 commit、或沒有 regression 行時，直接推會送出沒驗過的內容。
  */
 function mergedNotInMain(checkout, key, regression) {
-  const rev = ref => git(checkout, 'rev-parse', '--verify', '-q', ref).stdout.trim();
-  const passed = regression && rev(`${regression}^{commit}`);
+  const passed = regression && rev(checkout, `${regression}^{commit}`);
   if (!passed) return `NOT_IN_MAIN ${key} no-regression`;
-  const tip = rev('refs/heads/pilot/integration');
+  const tip = rev(checkout, 'refs/heads/pilot/integration');
   return tip === passed ? `RESUME_PUSH ${key}` : `NOT_IN_MAIN ${key} tip ${tip.slice(0, 7) || 'none'}`;
 }
 
