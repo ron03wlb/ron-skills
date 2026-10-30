@@ -44,11 +44,11 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 
 新專案導入：把 `ADAPTER.md` 複製成該 repo 的 `docs/agents/issue-run.md`，填入實際指令。pilot 要在其他 worktree 跑 git 時，照 ADAPTER.md 的 **Permissions** 段複製 [templates/pilot_git.py](skills/engineering/issue-run/templates/pilot_git.py)，allow 只放行該腳本，不寫 `git -C *`（中間的 `*` 能夾帶 git 選項，Claude Code 每次啟動都會警告）。
 
-新增或改動 skill 的入口時，在新 session 實際觸發一次才算完成。被 `/loop` 驅動的 skill 必須可由 Skill tool 呼叫（不設 `disable-model-invocation`），`bin/sync-skills --check` 以 `scripts/check-loop-invocable.mjs` 檢查。
+新增或改動 skill 的入口時，在新 session 實際觸發一次才算完成。被 `/loop` 驅動的 skill 必須可由 Skill tool 呼叫（不設 `disable-model-invocation`），`bin/sync-skills --check` 以 `scripts/check-loop-invocable.mjs` 檢查。skill 引用的每一行 adapter Pilot 設定，都必須是 ADAPTER.md Pilot 段的條目，`--check` 以 `scripts/check-pilot-lines.mjs` 檢查。
 
 ## issue-pilot
 
-`/loop /issue-pilot`：在專案主 checkout 常駐的 coordinator，採 pstack Autopilot-stack 語意。它自己從 tracker 池子挑 Issue、每張派一個 `/issue-run <iid> --worker <checkpoint>` 的 Orca terminal、整批 regression 後合入本機整合分支，再通知人 push。人只做產品決策、共用環境 SQL 執行與讀回、`git push`。專案事實讀 adapter 的 **Pilot** 段落。
+`/loop /issue-pilot`：在專案主 checkout（或 adapter Pilot 段 **Coordinator checkout** 指定的 checkout）常駐的 coordinator，採 pstack Autopilot-stack 語意。它自己從 tracker 池子挑 Issue、每張派一個 `/issue-run <iid> --worker <checkpoint>` 的 Orca terminal、整批 regression 後合入本機整合分支，再通知人 push。人只做產品決策、共用環境 SQL 執行與讀回、`git push`。專案事實讀 adapter 的 **Pilot** 段落。專案自己的每 tick 檢查（例如 investing 的每日採集派發與額度檢查）寫在 Pilot 段的 **Project tick hooks**：每個 tick 在 Drain 之後、Pick 之前執行，exit 0 繼續，非 0 開 gate 並跳過該 tick 的 Pick 與 Dispatch；沒寫就略過。
 
 pilot 已達標，2026-10-21 起是唯一編排：`deliver-batch`、`deliver-spec`、`project-batch` 已下架。`/issue-run` 單獨使用是手動入口，不是備援。
 
