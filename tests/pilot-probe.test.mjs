@@ -209,11 +209,16 @@ test('requests.md 與 gates.md 只印還開著的列', t => {
   ]);
 });
 
-// review 第一輪：標記只認 `source` 欄之後的 `applied`／`declined`，請求內文提到這兩個字不算已處理。
+// review 第一、二輪：標記只認最後一個 `source` 欄之後的 `applied`／`declined`，請求內文提到這兩個字（連同 source）不算已處理。
 test('請求內文出現 applied 但沒有標記時仍是開著的', t => {
   const { pilot, probe } = fixture(t);
-  writeFileSync(join(pilot, 'requests.md'), '2026-10-30T18:00:00+08:00  request: 撤回昨天 applied 的 preferences   source ad\n');
-  assert.deepEqual(lines(probe()), ['REQUEST 2026-10-30T18:00:00+08:00  request: 撤回昨天 applied 的 preferences   source ad']);
+  writeFileSync(join(pilot, 'requests.md'), `2026-10-30T18:00:00+08:00  request: 撤回昨天 applied 的 preferences   source ad
+2026-10-30T18:01:00+08:00  request: 刪掉 source 表裡 declined 的那幾列  source ae
+`);
+  assert.deepEqual(lines(probe()), [
+    'REQUEST 2026-10-30T18:00:00+08:00  request: 撤回昨天 applied 的 preferences   source ad',
+    'REQUEST 2026-10-30T18:01:00+08:00  request: 刪掉 source 表裡 declined 的那幾列  source ae',
+  ]);
 });
 
 // checkpoint 的 started、stuck-after 寫壞時算不出是否卡住，不能默默印 RUNNING NaN 或退回 90 分鐘。

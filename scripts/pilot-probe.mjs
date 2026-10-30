@@ -38,7 +38,9 @@ export function checkoutState(checkout) {
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   if (unbare.status !== 0) throw new Error(`pilot-unbare.sh exit ${unbare.status}：${unbare.stderr.trim()}`);
   const out = unbare.stdout.split('\n').filter(Boolean);
-  const branch = git(checkout, 'branch', '--show-current').stdout.trim();
+  const current = git(checkout, 'branch', '--show-current');
+  if (current.status !== 0) throw new Error(`git branch --show-current exit ${current.status}：${current.stderr.trim()}`);
+  const branch = current.stdout.trim();
   if (branch !== 'main') out.push(`NOT_MAIN ${branch || '(detached)'}`);
   if (existsSync(join(checkout, '.scratch/pilot/hold'))) out.push('HOLD');
   const status = git(checkout, 'status', '--short');
@@ -48,13 +50,13 @@ export function checkoutState(checkout) {
 }
 
 /**
- * requests.md 與 gates.md 還開著的列。請求是 `source` 欄之後沒標 `applied`／`declined` 的行（請求內文提到這兩個字不算）；
+ * requests.md 與 gates.md 還開著的列。請求是最後一個 `source` 欄之後沒標 `applied`／`declined` 的行（請求內文提到這兩個字或 source 都不算）；
  * gate 是表格 status 欄不以 `resolved` 開頭的列，或 `## G<n>` 段落裡沒有 `resolved` 那一行的 gate。
  */
 export function openRows(pilot) {
   const read = name => (existsSync(join(pilot, name)) ? readFileSync(join(pilot, name), 'utf8') : '');
   const out = read('requests.md').split('\n')
-    .filter(line => line.trim() && !line.startsWith('#') && !/\ssource\s.*\s(?:applied|declined)\s+\S/.test(line))
+    .filter(line => line.trim() && !line.startsWith('#') && !/\s(?:applied|declined)\s+\S/.test(line.split(/\ssource\s/).slice(1).at(-1) ?? ''))
     .map(line => `REQUEST ${line.trim()}`);
   for (const line of read('gates.md').split('\n')) {
     const cells = tableCells(line);
@@ -137,7 +139,7 @@ export async function probe(ctx, checkout) {
   }
   if (landing.length) {
     const fetch = git(checkout, 'fetch', '-q', 'origin');
-    if (fetch.status !== 0) out.push(`FETCH_FAILED ${fetch.stderr.trim().split('\n').pop()}`);
+    if (fetch.status !== 0) out.push(`FETCH_FAILED ${fetch.stderr.trim().split('\n').find(line => line.startsWith('fatal:')) ?? fetch.stderr.trim().split('\n')[0]}`);
     else for (const { key, sha } of landing) {
       if (!sha) out.push(`NOT_IN_MAIN ${key} no-sha`);
       else out.push(`${git(checkout, 'merge-base', '--is-ancestor', sha, 'origin/main').status === 0 ? 'IN_MAIN' : 'NOT_IN_MAIN'} ${key}`);
