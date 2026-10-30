@@ -44,7 +44,7 @@ The file's existence is the hold; deleting it clears the hold.
 {"since":"2026-10-30T21:00:00+08:00","reason":"等 #27 合入","session":"1d6719b0-c957-4d42-84bc-8474ba2fa7c7"}
 ```
 
-- Content: one JSON line with `since` (time the hold was set), `reason` (string), and `session` (the setting session's `$CLAUDE_CODE_SESSION_ID`). Write it with a JSON encoder so the reason is escaped: `node -e 'console.log(JSON.stringify({since: process.argv[1], reason: process.argv[2], session: process.env.CLAUDE_CODE_SESSION_ID}))' "$(date -Iseconds)" '<reason>' > .scratch/pilot/hold`.
+- Content: one JSON line with `since` (time the hold was set), `reason` (string), and `session` (the setting session's `$CLAUDE_CODE_SESSION_ID`). Write it with `pilot-hold set` ([Canonical scripts](#canonical-scripts)), or any JSON encoder, so the reason is escaped.
 - An empty file (the old `touch` form) is a hold with no reason. Content that does not parse is still a hold: readers decide on existence, and read the JSON only for display.
 
 ## `.scratch/pilot/decisions.md`
@@ -68,6 +68,17 @@ Requests other sessions hand to the live coordinator, one per line, appended; li
 Older lines separate the fields with two spaces; readers accept both.
 
 The coordinator closes a request by appending `   applied <time>` or `   declined <reason>` to the same line, optionally followed by a note. A request is open while the text after its last ` source ` holds no ` applied <word>` or ` declined <word>`; so neither the request text nor the source contains ` source `, and the source contains neither word.
+
+## `.scratch/pilot/sources`
+
+The source check's record: one line per rule file the coordinator reads at its first tick (the adapter's Pilot **Sources** line names them), rewritten in full by `pilot-sources --record`:
+
+```
+<sha256>   <path>
+```
+
+- `<path>` is relative to the coordinator checkout, or absolute for a file outside it (a user-level skill). A file that did not exist when recorded has `missing` in place of the hash.
+- No file means nothing is recorded yet: every source counts as changed.
 
 ## `.scratch/pilot/gates.md`
 
@@ -108,3 +119,19 @@ integration: pilot/integration @ 202f8ec
 - `integration:` names the integration branch and its SHA when the batch was dispatched: `<branch> @ <sha>`.
 - One table row per member: Issue number, branch `issue/<n>-<slug>`, absolute worktree path, terminal handle, start time, stuck-after as `<minutes>m`, state, and candidate SHA (empty until `done`). A state is `running`, `done`, or `stop`; `moved` marks a member moved to another batch, which no longer counts toward this one.
 - Below the table, each regression run appends `regression: <sha> exit <code>`, optionally followed by a note; the last `regression:` line is the one in force.
+
+## Canonical scripts
+
+The setup-workflow templates that write this store, copied into a project's `scripts/` (ADR 0001). Each takes the coordinator checkout as its first argument and writes only under its `.scratch/pilot/`; every project value (checkout, source list, session name) comes in as an argument, never as a constant. Exit 2 is always a usage error.
+
+| Script | Command | stdout | exit |
+| --- | --- | --- | --- |
+| `pilot-register.mjs` | `<checkout> --name <session name> --loop yes\|no [--pid <pid>] [--session <id>] [<source>...]` (pid and session default to `$CLAUDE_PID`, `$CLAUDE_CODE_SESSION_ID`) | `REGISTERED pid <pid>   since <since>`; `SESSION_APPENDED` when it appended the start line; then `pilot-sources --record`'s lines for the sources given; `STOP retired` when `sessions.md` has a handoff from this session | 0; 4 `STOP` |
+| `pilot-decision.mjs` | `<checkout> --decision <text> --reason <text> --evidence <text> --result <text> [--time <time>]` | `DECISION <time>` (writes the heading and header row first when the file is missing or empty) | 0 |
+| `pilot-decision.mjs` | `<checkout> --repair` | `REPAIRED` (rewrote it as heading, header, every row: rows `pilot-unbare.sh` appended before the header, blank lines and repeated headers inside the table) or `OK`; `MALFORMED <line no> <line>` per line that is not a five-column row, and the file is left as is | 0; 1 `MALFORMED` |
+| `pilot-request.mjs` | `<checkout> list` | `REQUEST <line no>   <line>` per open request | 0 |
+| `pilot-request.mjs` | `<checkout> apply <line no> [--note <text>]`, `<checkout> decline <line no> --reason <text> [--note <text>]` | `APPLIED <line no>`, `DECLINED <line no>`; `NOT_OPEN <line no>` when that line is not an open request | 0; 1 `NOT_OPEN` |
+| `pilot-hold.mjs` | `<checkout> show`, `set <reason>`, `clear` | `HOLD <since>   <reason>`, `HOLD (no reason)`, `NO_HOLD`; `HOLD_SET`; `HOLD_CLEARED` or `NO_HOLD` | 0 |
+| `pilot-sources.mjs` | `<checkout> [--record] <source>...` | `SOURCE_CHANGED <path>` per source whose hash differs from the record (or has none), `SOURCE_MISSING <path>` per source that no longer exists; `--record` then rewrites the record and prints `RECORDED <n>` | 0 |
+
+A note, reason, or field is one line without three spaces in a row; a decisions cell also has no `|`, and a request mark has no `source` word, which would reopen the line.
