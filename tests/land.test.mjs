@@ -1,0 +1,254 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { mergeSample } from './helpers/fake-orca.mjs';
+import { checksVerdict, pickPr } from '../scripts/land.mjs';
+
+const script = new URL('../scripts/land.mjs', import.meta.url).pathname;
+// 同 pilot-unbare.test.mjs：清掉 pre-commit 匯出的 GIT_*，否則 fixture 的 git 指令會寫進本 repo。
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+const IDENTITY = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+
+// 假 gh 的輸出一律從 PR #39 的真實樣本長出來（同 helpers/fake-orca.mjs 的做法），替身不能自創 gh 沒有的欄位。
+const samplesDir = new URL('./helpers/fixtures/gh/', import.meta.url).pathname;
+const GH_SAMPLES = Object.fromEntries(readdirSync(samplesDir).map(file => [file.replace(/\.json$/, ''), JSON.parse(readFileSync(join(samplesDir, file), 'utf8'))]));
+
+const PASS = [{ bucket: 'pass', state: 'SUCCESS' }];
+const PENDING = [{ bucket: 'pending', state: 'IN_PROGRESS' }];
+const FAIL = [{ bucket: 'fail', state: 'FAILURE' }];
+
+/**
+ * bare remote、主 checkout（在 main）、feature 分支的 worktree，以及 PATH 上的假 gh、假 Orca。
+ * 假 gh 的狀態存在 gh-state.json：`checks` 依序回應每次 `pr checks`（`'none'` 是 CI 還沒登記），最後一筆重複使用。
+ * 假 gh 的 `pr merge` 真的在 remote 上做 --no-ff 合併；假 Orca 的 `worktree rm` 照真實行為把主 checkout 設成 bare。
+ */
+function fixture(t, { checks = [PASS], orcaFails = false, selfHosted = false } = {}) {
+  const temp = mkdtempSync(join(tmpdir(), 'land-'));
+  t.after(() => rmSync(temp, { recursive: true, force: true }));
+  const sh = (cwd, ...args) => {
+    const result = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', env: { ...env, ...IDENTITY } });
+    assert.equal(result.status, 0, `git ${args.join(' ')}：${result.stderr}`);
+    return result.stdout.trim();
+  };
+  const origin = join(temp, 'origin.git');
+  const main = join(temp, 'main');
+  const merger = join(temp, 'merger');
+  const wt = join(temp, 'wt');
+  sh(temp, 'init', '-q', '--bare', '-b', 'main', origin);
+  sh(temp, 'clone', '-q', origin, main);
+  writeFileSync(join(main, '.gitignore'), '.scratch/\n');
+  sh(main, 'add', '.gitignore');
+  // selfHosted：repo 自己帶 land.mjs 等腳本，從要被移除的 worktree 裡執行（land 合入自己的分支就是這樣）。
+  if (selfHosted) {
+    mkdirSync(join(main, 'scripts'));
+    for (const name of ['land.mjs', 'orca-session-send.mjs', 'pilot-unbare.sh']) cpSync(new URL(`../scripts/${name}`, import.meta.url).pathname, join(main, 'scripts', name));
+    sh(main, 'add', 'scripts');
+  }
+  sh(main, 'commit', '-q', '-m', 'init');
+  sh(main, 'push', '-q', 'origin', 'main');
+  sh(temp, 'clone', '-q', origin, merger);
+  sh(main, 'worktree', 'add', '-q', wt, '-b', 'feature');
+  writeFileSync(join(wt, 'a.txt'), 'a\n');
+  sh(wt, 'add', 'a.txt');
+  sh(wt, 'commit', '-q', '-m', 'feature: a');
+
+  const bin = join(temp, 'bin');
+  mkdirSync(bin);
+  const state = join(temp, 'gh-state.json');
+  writeFileSync(state, JSON.stringify({ prs: [], checks }));
+  const log = join(temp, 'calls.log');
+  writeFileSync(log, '');
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('fs'); const { execFileSync } = require('child_process');
+const SAMPLES = ${JSON.stringify(GH_SAMPLES)};
+const mergeSample = ${mergeSample.toString()};
+const args = process.argv.slice(2); const arg = k => args[args.indexOf(k) + 1];
+fs.appendFileSync(${JSON.stringify(log)}, 'gh ' + args.join(' ') + '\\n');
+const s = JSON.parse(fs.readFileSync(${JSON.stringify(state)}, 'utf8'));
+const save = () => fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
+const out = pr => { const { head, ...fields } = pr; return mergeSample(SAMPLES['pr-view'], fields, 'pr'); };
+const find = ref => s.prs.find(pr => pr.number === Number(String(ref).split('/').pop()));
+const git = (...a) => execFileSync('git', ['-C', ${JSON.stringify(merger)}, ...a], { encoding: 'utf8' }).trim();
+const [, sub] = args;
+if (sub === 'list') console.log(JSON.stringify(s.prs.filter(pr => pr.head === arg('--head')).map(out)));
+else if (sub === 'create') {
+  const head = arg('--head'); git('fetch', '-q', 'origin');
+  const pr = { head, number: 40 + s.prs.length, state: 'OPEN', url: 'https://github.com/o/r/pull/' + (40 + s.prs.length), headRefOid: git('rev-parse', 'origin/' + head), mergeCommit: null };
+  s.prs.push(pr); save(); console.log(pr.url);
+}
+else if (sub === 'view') console.log(JSON.stringify(out(find(args[2]))));
+else if (sub === 'checks') {
+  const next = s.checks.length > 1 ? s.checks.shift() : s.checks[0]; save();
+  if (next === 'none') { console.error("no checks reported on the 'x' branch"); process.exit(1); }
+  console.log(JSON.stringify(next.map(c => mergeSample(SAMPLES['pr-checks'][0], c, 'check'))));
+  if (next.some(c => c.bucket === 'pending')) process.exit(8);
+}
+else if (sub === 'merge') {
+  const pr = find(args[2]);
+  git('fetch', '-q', 'origin'); git('checkout', '-q', '-B', 'main', 'origin/main');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '-q', '--no-ff', '-m', 'Merge pull request #' + pr.number, 'origin/' + pr.head);
+  git('push', '-q', 'origin', 'main');
+  Object.assign(pr, { state: 'MERGED', mergeCommit: { oid: git('rev-parse', 'HEAD') } }); save();
+}
+else { console.error('fake gh：未支援 ' + args.join(' ')); process.exit(1); }
+`);
+  writeFileSync(join(bin, 'orca'), `#!/usr/bin/env node
+const fs = require('fs'); const { execFileSync } = require('child_process');
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(log)}, 'orca ' + args.join(' ') + '\\n');
+if (${orcaFails}) { console.log(JSON.stringify({ ok: false, error: { code: 'runtime_unavailable' } })); process.exit(0); }
+const branch = args[args.indexOf('--worktree') + 1].replace(/^branch:/, '');
+const list = execFileSync('git', ['-C', ${JSON.stringify(main)}, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' });
+const path = list.split('\\n\\n').find(b => b.includes('branch refs/heads/' + branch)).match(/^worktree (.+)$/m)[1];
+execFileSync('git', ['-C', ${JSON.stringify(main)}, 'worktree', 'remove', path]);
+execFileSync('git', ['-C', ${JSON.stringify(main)}, 'config', 'core.bare', 'true']);
+console.log(JSON.stringify({ ok: true, result: {} }));
+`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  chmodSync(join(bin, 'orca'), 0o755);
+  const body = join(temp, 'body.md');
+  writeFileSync(body, '## Summary\n');
+
+  const land = (args, cwd = wt) => spawnSync('node', [selfHosted ? join(wt, 'scripts/land.mjs') : script, ...args], {
+    cwd, encoding: 'utf8', timeout: 30000,
+    env: { ...env, ...IDENTITY, PATH: `${bin}:${env.PATH}`, ORCA_CLI_COMMAND: join(bin, 'orca'), LAND_CHECKS_POLL_MS: '1', LAND_CHECKS_TIMEOUT_MS: '2000' },
+  });
+  const calls = () => readFileSync(log, 'utf8');
+  const prs = () => JSON.parse(readFileSync(state, 'utf8')).prs;
+  const remoteHas = branch => spawnSync('git', ['-C', origin, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0;
+  const last = result => result.stdout.trim().split('\n').pop();
+  return { temp, main, wt, origin, body, sh, land, calls, prs, remoteHas, last };
+}
+
+test('手動分支：push、開 PR、等 CI 登記並通過、合併、收尾、main 跟上', t => {
+  const { main, wt, body, sh, land, calls, prs, remoteHas, last } = fixture(t, { checks: ['none', PENDING, PASS] });
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [pr] = prs();
+  assert.equal(pr.state, 'MERGED');
+  assert.equal(last(result), `LANDED ${pr.number} ${pr.mergeCommit.oid}`);
+  assert.equal((calls().match(/^gh pr checks /gm) || []).length, 3);
+  assert.equal(existsSync(wt), false);
+  assert.equal(sh(main, 'branch', '--list', 'feature'), '');
+  assert.equal(remoteHas('feature'), false);
+  assert.equal(sh(main, 'rev-parse', 'HEAD'), pr.mergeCommit.oid);
+});
+
+// 真實發生過的錯：Orca 從 WSL 移除 worktree 後主 checkout 變成 bare，之後的 git 全部失敗（memory、#20、retro 2026-10-30）。
+test('Orca 移除 worktree 把主 checkout 設成 bare：收尾後還原，main 照樣跟上', t => {
+  const { main, body, sh, land } = fixture(t);
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^UNBARE /m);
+  assert.equal(sh(main, 'rev-parse', '--is-bare-repository'), 'false');
+  assert.match(result.stdout, /^MAIN /m);
+});
+
+// 真實發生過的錯：land 合入自己的分支時，收尾移除了腳本所在的 worktree，之後才去跑同目錄的 pilot-unbare.sh（#40 實作時發現）。
+test('從要被移除的 worktree 執行：收尾仍能還原 bare 並 LANDED', t => {
+  const { main, wt, body, sh, land, prs, last } = fixture(t, { selfHosted: true });
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(last(result), `LANDED ${prs()[0].number} ${prs()[0].mergeCommit.oid}`);
+  assert.equal(existsSync(wt), false);
+  assert.equal(sh(main, 'rev-parse', '--is-bare-repository'), 'false');
+});
+
+test('CI 紅燈：STOP ci-failed，不合併、不收尾', t => {
+  const { wt, body, land, calls, prs, remoteHas, last } = fixture(t, { checks: [PENDING, FAIL] });
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 4);
+  assert.match(last(result), /^STOP ci-failed 40 /);
+  assert.doesNotMatch(calls(), /^gh pr merge /m);
+  assert.equal(prs()[0].state, 'OPEN');
+  assert.equal(existsSync(wt), true);
+  assert.equal(remoteHas('feature'), true);
+});
+
+// 真實發生過的錯：Push gate 中途斷掉，重跑時重開 PR 或重複合併（#27 commit 8dcea3d「Push gate 中斷可接回」）。
+test('合併後收尾中斷，重跑：不重開 PR、不重複合併，只補完收尾', t => {
+  const { main, wt, body, sh, land, calls, prs, temp, last } = fixture(t, { orcaFails: true });
+
+  const first = land(['feature', '--body-file', body]);
+  assert.equal(first.status, 4);
+  assert.match(last(first), /^STOP worktree-rm /);
+  assert.equal(prs()[0].state, 'MERGED');
+  assert.equal(existsSync(wt), true);
+
+  // Orca 恢復：換回會成功的假 Orca。
+  const orca = join(temp, 'bin/orca');
+  writeFileSync(orca, readFileSync(orca, 'utf8').replace('if (true)', 'if (false)'));
+  const second = land(['feature', '--body-file', body], main);
+  assert.equal(second.status, 0, second.stdout + second.stderr);
+  assert.equal(last(second), `LANDED ${prs()[0].number} ${prs()[0].mergeCommit.oid}`);
+  assert.equal(prs().length, 1);
+  assert.equal((calls().match(/^gh pr merge /gm) || []).length, 1);
+  assert.equal((calls().match(/^gh pr create /gm) || []).length, 1);
+  assert.equal(existsSync(wt), false);
+  assert.equal(sh(main, 'rev-parse', 'HEAD'), prs()[0].mergeCommit.oid);
+});
+
+// pilot/integration 每批都開新 PR，舊的已合入 PR 不能被誤認成「已經合過」；upstream 不能被改成 origin/main（#27）。
+test('--keep-branch：保留分支並跟上 origin/main；下一批有新 commit 時開新 PR', t => {
+  const { main, wt, body, sh, land, calls, prs, remoteHas, last } = fixture(t);
+  sh(main, 'worktree', 'remove', wt);
+  sh(main, 'branch', '-m', 'feature', 'integration');
+
+  const first = land(['integration', '--keep-branch', '--body-file', body], main);
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  assert.doesNotMatch(calls(), /^orca /m);
+  assert.equal(remoteHas('integration'), true);
+  assert.equal(sh(main, 'rev-parse', 'integration'), prs()[0].mergeCommit.oid);
+  assert.equal(sh(main, 'rev-parse', 'origin/integration'), prs()[0].mergeCommit.oid);
+  assert.equal(sh(main, 'rev-parse', '--abbrev-ref', 'integration@{upstream}'), 'origin/integration');
+
+  sh(main, 'worktree', 'add', '-q', wt, 'integration');
+  writeFileSync(join(wt, 'b.txt'), 'b\n');
+  sh(wt, 'add', 'b.txt');
+  sh(wt, 'commit', '-q', '-m', 'batch 2');
+  const second = land(['integration', '--keep-branch', '--body-file', body], main);
+  assert.equal(second.status, 0, second.stdout + second.stderr);
+  assert.equal(prs().length, 2);
+  assert.equal(last(second), `LANDED ${prs()[1].number} ${prs()[1].mergeCommit.oid}`);
+  assert.equal(existsSync(wt), true);
+});
+
+test('沒有 PR 也沒給 --body-file：STOP no-body，不開 PR', t => {
+  const { land, calls, last } = fixture(t);
+
+  const result = land(['feature']);
+  assert.equal(result.status, 4);
+  assert.match(last(result), /^STOP no-body/);
+  assert.doesNotMatch(calls(), /^gh pr create /m);
+});
+
+test('worktree 有未提交的改動：STOP dirty-worktree，連 push 都不做', t => {
+  const { wt, body, land, remoteHas, last } = fixture(t);
+  writeFileSync(join(wt, 'a.txt'), 'changed\n');
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 4);
+  assert.match(last(result), /^STOP dirty-worktree /);
+  assert.equal(remoteHas('feature'), false);
+});
+
+test('pickPr：開著的優先；已合入只在 head 等於 tip 時沿用', () => {
+  const merged = { state: 'MERGED', headRefOid: 'old' };
+  assert.equal(pickPr([merged, { state: 'OPEN', number: 2 }], 'new').number, 2);
+  assert.equal(pickPr([merged], 'old'), merged);
+  assert.equal(pickPr([merged], 'new'), null);
+});
+
+test('checksVerdict：空的是 pending；有失敗或取消是 fail；全部通過或略過是 pass', () => {
+  assert.equal(checksVerdict([]), 'pending');
+  assert.equal(checksVerdict([{ bucket: 'pass' }, { bucket: 'pending' }]), 'pending');
+  assert.equal(checksVerdict([{ bucket: 'pass' }, { bucket: 'cancel' }]), 'fail');
+  assert.equal(checksVerdict([{ bucket: 'pass' }, { bucket: 'skipping' }]), 'pass');
+});
