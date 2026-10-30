@@ -25,8 +25,10 @@ test('core.bare 被設成 true 時還原為 false，並在 decisions.md 記一�
   const result = spawnSync(unbare, [repo, 'dispatch #20'], { encoding: 'utf8', env });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(git('rev-parse', '--is-bare-repository').stdout.trim(), 'false');
-  assert.match(result.stdout, /^UNBARE /m);
-  assert.match(readFileSync(join(repo, '.scratch/pilot/decisions.md'), 'utf8'), /core\.bare.*dispatch #20/);
+  assert.equal(result.stdout, `UNBARE ${repo}\n`);
+  // decisions.md 是 issue-pilot 的五欄表格（time | decision | reason | evidence | result），追加的必須是同格式的一列。
+  const row = readFileSync(join(repo, '.scratch/pilot/decisions.md'), 'utf8').trim().split('\n').at(-1);
+  assert.match(row, /^\| \S+ \| 還原 core\.bare \| [^|]*dispatch #20[^|]* \| [^|]+ \| [^|]+ \|$/);
 });
 
 test('不是 bare 時不輸出、不寫 decisions.md', t => {
