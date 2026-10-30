@@ -1,0 +1,28 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
+
+const patch = new URL('../overlays/retro.patch', import.meta.url).pathname;
+const upstream = join(process.env.MATT_SKILLS ?? join(homedir(), 'code/skills'), 'skills/engineering/retro');
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+
+// #73／#76、#74／#75：兩個退役 coordinator 的 retro 各開一張重複單。查重要在開單前做，有沒有收集器都一樣（#95）。
+test('retro overlay 在開 tracker Issue 前依候選提到的名稱查開著的 Issue', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'retro-overlay-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(upstream, dir, { recursive: true });
+  const applied = spawnSync('git', ['apply', patch], { cwd: dir, encoding: 'utf8', env });
+  assert.equal(applied.status, 0, applied.stderr);
+
+  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
+  const step = skill.split('\n\n').find(paragraph => paragraph.includes('gh issue list --state open --search'));
+  assert.ok(step, 'overlay 沒有查開著 Issue 的段落');
+  assert.match(step, /in:title,body/);
+  assert.match(step, /comment/i);
+  assert.match(step, /blocked_by/);
+  assert.doesNotMatch(step, /retro-collect\.mjs/, '查重不能只在收集模式裡');
+});
