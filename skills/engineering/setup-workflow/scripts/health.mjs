@@ -5,7 +5,7 @@
 // 最後一行 `HEALTHY`（exit 0）或 `FINDINGS <n>`（exit 1）。帶旗標、不是 git repo 或 detect.mjs 失敗時 exit 2。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,8 +22,8 @@ const git = (...rest) => run('git', '-C', root, ...rest);
 if (git('rev-parse', '--show-toplevel') === null) fail(`${root} 不是 git repo`);
 
 const lines = text => (text ? text.split('\n').filter(Boolean) : []);
-// 已追蹤與未追蹤（不含 gitignore）的檔案；工作樹裡刪掉的不算。
-const files = lines(git('ls-files', '--cached', '--others', '--exclude-standard')).filter(file => existsSync(join(root, file)));
+// 已追蹤與未追蹤（不含 gitignore）的檔案；工作樹裡刪掉的，以及其實是目錄的（指向目錄的 symlink、submodule）都不算。
+const files = lines(git('ls-files', '--cached', '--others', '--exclude-standard')).filter(file => statSync(join(root, file), { throwIfNoEntry: false })?.isFile());
 const read = path => readFileSync(join(root, path), 'utf8');
 
 // 本 repo 的名稱：主 checkout 的目錄名（worktree 的目錄名不算），以及 origin 的 repo 名。
@@ -61,9 +61,16 @@ const ADVICE = {
   'local-modified': '專案本地改過：先把改動回饋到正本',
   'both-modified': '兩邊都改了：列出差異，交給人決定',
 };
-let manifest = { copies: {} };
-try { if (existsSync(join(root, MANIFEST))) manifest = JSON.parse(read(MANIFEST)); } catch (error) { finding('divergence', `invalid-manifest ${MANIFEST} 不是合法 JSON：${error.message}`, MANIFEST); }
-for (const [path, entry] of Object.entries(manifest.copies ?? {})) {
+const isObject = value => typeof value === 'object' && value !== null && !Array.isArray(value);
+let copies = {};
+try {
+  if (existsSync(join(root, MANIFEST))) {
+    const manifest = JSON.parse(read(MANIFEST));
+    if (!isObject(manifest) || !isObject(manifest.copies ?? {})) finding('divergence', `invalid-manifest ${MANIFEST} 要是物件，copies 也要是物件`, MANIFEST);
+    else copies = manifest.copies ?? {};
+  }
+} catch (error) { finding('divergence', `invalid-manifest ${MANIFEST} 不是合法 JSON：${error.message}`, MANIFEST); }
+for (const [path, entry] of Object.entries(copies)) {
   if (typeof entry?.sha256 !== 'string' || typeof entry?.template !== 'string') { finding('divergence', `invalid-entry ${path} 清單項目缺 template 或 sha256`, MANIFEST); continue; }
   const copy = join(root, path);
   const template = join(sourceRoot, entry.template);
@@ -75,13 +82,14 @@ for (const [path, entry] of Object.entries(manifest.copies ?? {})) {
   if (!copyChanged && !canonicalChanged) continue;
   const kind = copyChanged && canonicalChanged ? 'both-modified' : copyChanged ? 'local-modified' : 'canonical-newer';
   const diff = kind === 'both-modified' ? lines(spawnSync('git', ['diff', '--no-index', '--', copy, template], { encoding: 'utf8' }).stdout) : [];
-  finding('divergence', `${kind} ${path} ${ADVICE[kind]}`, `${MANIFEST} sha256 ${entry.sha256.slice(0, 12)}、副本 ${copySha.slice(0, 12)}、正本 ${entry.template} ${canonicalSha.slice(0, 12)}`, diff);
+  finding('divergence', `${kind} ${path} ${ADVICE[kind]}`, `${MANIFEST} commit ${entry.commit ?? '(未記錄)'} sha256 ${entry.sha256.slice(0, 12)}、副本 ${copySha.slice(0, 12)}、正本 ${entry.template} ${canonicalSha.slice(0, 12)}`, diff);
 }
 
 // 隱性跨 repo 依賴：adapter、.claude/settings.json 與 scripts/、bin/、git hook 目錄裡家目錄下的絕對路徑，路徑中沒有本 repo 的名稱就是指向別的 repo。
 // 家目錄下的設定目錄（~/.claude）與只到某個目錄本身（~/code/<repo>）的提及不算：依賴的是那個 repo 裡的檔案，
 // 所以路徑要指到檔案（最後一段有副檔名，如 ~/spay2/send.mjs），或在家目錄下至少三段（~/code/spay2/scripts）。
-const HOME_PATH = /(?:~|\$\{?HOME\}?|\/home\/[\w.-]+|\/Users\/[\w.-]+)((?:\/[\w.@+-]+)+)/g;
+// bash 常把家目錄單獨加引號（"$HOME"/code/x、"~"/code/x），所以家目錄後可以接一個引號。
+const HOME_PATH = /(?:~|\$\{?HOME\}?|\/home\/[\w.-]+|\/Users\/[\w.-]+)["']?((?:\/[\w.@+-]+)+)/g;
 const hooksPath = git('config', 'core.hooksPath');
 const scriptDirs = ['scripts/', 'bin/', '.githooks/', '.husky/', ...(hooksPath && !hooksPath.startsWith('/') ? [`${hooksPath.replace(/\/?$/, '/')}`] : [])];
 const scanned = files.filter(file => file === adapterPath || file === '.claude/settings.json' || scriptDirs.some(dir => file.startsWith(dir)));

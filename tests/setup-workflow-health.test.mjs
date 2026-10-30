@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -86,7 +86,7 @@ test('分歧：正本較新、專案本地改過（如語言 hook 移植後註�
   const divergence = lines.filter(line => line.startsWith('FINDING divergence'));
   assert.equal(divergence.length, 3, lines.join('\n'));
   assert.match(divergence.find(line => line.includes('scripts/canonical-newer.mjs')), /canonical-newer .*人確認後覆蓋/);
-  assert.match(divergence.find(line => line.includes('scripts/local.mjs')), /local-modified .*回饋到正本/);
+  assert.match(divergence.find(line => line.includes('scripts/local.mjs')), /local-modified .*回饋到正本.*# .*commit abc/);
   assert.match(divergence.find(line => line.includes('scripts/both.mjs')), /both-modified .*交給人決定/);
   assert.match(lines.join('\n'), /專案自己加的一行/, '兩邊都改了要列出差異');
   assert.equal(lines.at(-1), 'FINDINGS 3');
@@ -172,4 +172,34 @@ test('清單不是合法 JSON 時回報 invalid-manifest', t => {
   const { status, stderr, lines } = health(repo(t, { 'docs/agents/workflow-templates.json': '{bad' }));
   assert.equal(status, 1, stderr);
   assert.match(lines.at(-2), /^FINDING divergence invalid-manifest /);
+});
+
+test('清單是合法 JSON 但不是物件（null、copies 是陣列）時回報 invalid-manifest 而不中斷', t => {
+  for (const content of ['null', '[]', JSON.stringify({ copies: [{ template: TEMPLATE, sha256: 'ab' }] })]) {
+    const { status, stderr, lines } = health(repo(t, { 'docs/agents/workflow-templates.json': content }));
+    assert.equal(status, 1, `${content}\n${stderr}`);
+    assert.match(lines.at(-2), /^FINDING divergence invalid-manifest /, content);
+    assert.equal(lines.at(-1), 'FINDINGS 1', content);
+  }
+});
+
+test('掃到的路徑是目錄（指向目錄的 symlink）時略過而不中斷', t => {
+  const root = repo(t, { 'lib/a.mjs': 'x\n' });
+  symlinkSync('../lib', join(root, 'scripts'));
+  symlinkSync('lib', join(root, 'notes.md'));
+  git(root, 'add', '.');
+  git(root, 'commit', '-qm', 'links');
+  const { status, stderr, lines } = health(root);
+  assert.equal(status, 0, stderr);
+  assert.equal(lines.at(-1), 'HEALTHY');
+});
+
+test('隱性跨 repo 依賴：bash 把 $HOME 或 ~ 單獨加引號的寫法也算', t => {
+  const { lines } = health(repo(t, {
+    'scripts/run.sh': '#!/usr/bin/env bash\nnode "$HOME"/code/spay2/scripts/a.mjs\nnode "${HOME}"/code/spay2/scripts/b.mjs\nnode "~"/code/spay2/scripts/c.mjs\n',
+  }));
+  const crossRepo = lines.filter(line => line.startsWith('FINDING cross-repo')).join('\n');
+  assert.match(crossRepo, /spay2\/scripts\/a\.mjs .*# scripts\/run\.sh:2/);
+  assert.match(crossRepo, /spay2\/scripts\/b\.mjs .*# scripts\/run\.sh:3/);
+  assert.match(crossRepo, /spay2\/scripts\/c\.mjs .*# scripts\/run\.sh:4/);
 });
