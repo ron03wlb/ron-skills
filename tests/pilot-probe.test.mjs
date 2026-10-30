@@ -129,10 +129,10 @@ test('dispatched 的 batch 每個成員都 done 或 stop 時印 STAGEABLE <key>'
   assert.ok(!out.some(line => /^STAGEABLE (30-31|8)$/.test(line)), out.join('\n'));
 });
 
-// pushed 的 batch 在 checkpoint 只剩 `regression: <sha>` 指出合入的內容（Integrate 是 ff-only，staged SHA 就是 pilot/integration 的 tip）；
-// merged <sha> 的 batch 同樣要判斷（adapter 的 Probe 對兩者都決定做 Close 或重跑 Push gate）。
+// 舊格式 `pushed` 的 batch 在 checkpoint 只剩 `regression: <sha>` 指出合入的內容（Integrate 是 ff-only，staged SHA 就是 pilot/integration 的 tip）；
+// `pushed <sha>`（#37）帶著同一個 SHA，還沒進 origin/main（PR 還開著）時印 NOT_IN_MAIN，coordinator 重跑 Push gate 接著合併。
 // 判斷的是 fetch 之後的 origin/main：另一個 clone 推上去、本機還沒 fetch 的合入也要算 IN_MAIN。
-test('pushed、merged 的 batch fetch 後印 IN_MAIN 或 NOT_IN_MAIN', t => {
+test('pushed 的 batch fetch 後印 IN_MAIN 或 NOT_IN_MAIN', t => {
   const { batch, probe, git, origin, repo, pilot } = fixture(t);
   const commit = message => {
     git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', message);
@@ -148,12 +148,43 @@ test('pushed、merged 的 batch fetch 後印 IN_MAIN 或 NOT_IN_MAIN', t => {
   git('switch', '-q', 'main');
   batch('8', 'pushed', [{ n: 8, state: 'done', candidate: 'abc1234' }]);
   writeFileSync(join(pilot, 'batch-8.md'), readFileSync(join(pilot, 'batch-8.md'), 'utf8') + `regression: ${landed.slice(0, 7)} bin/check --upstream exit 0\n`);
-  batch('9', `merged ${pending}`, [{ n: 9, state: 'done', candidate: 'abc1234' }]);
+  batch('9', `pushed ${pending}`, [{ n: 9, state: 'done', candidate: 'abc1234' }]);
   batch('10', 'pushed', [{ n: 10, state: 'done', candidate: 'abc1234' }]);
   const out = lines(probe());
   assert.ok(out.includes('IN_MAIN 8'), out.join('\n'));
   assert.ok(out.includes('NOT_IN_MAIN 9'), out.join('\n'));
   assert.ok(out.includes('NOT_IN_MAIN 10 no-sha'), out.join('\n'));
+});
+
+// #37：Integrate 設成 `merged <sha>` 之後、Push gate 做完之前中斷的 batch 沒人接手。
+// pilot/integration 的 tip 等於最後一次 Regression SHA 才符合 Push gate 的前提，印 RESUME_PUSH 讓 coordinator 從第 1 步接著做；
+// tip 不等於（Integrate 之後又有 commit）或沒有 regression 行時不能直接推，印 NOT_IN_MAIN 帶出原因交給人。
+test('merged 的 batch 還沒進 origin/main：tip 等於 Regression SHA 印 RESUME_PUSH，否則印 NOT_IN_MAIN 與原因', t => {
+  const { batch, probe, git, pilot } = fixture(t);
+  const commit = message => {
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', message);
+    return git('rev-parse', 'HEAD');
+  };
+  git('switch', '-q', '-c', 'pilot/integration');
+  const staged = commit('staged');
+  const regression = key => writeFileSync(join(pilot, `batch-${key}.md`), readFileSync(join(pilot, `batch-${key}.md`), 'utf8')
+    + `regression: ${staged} bin/check --upstream exit 0\n`);
+  batch('11', `merged ${staged}`, [{ n: 11, state: 'done', candidate: 'abc1234' }]);
+  regression('11');
+  batch('12', `merged ${staged}`, [{ n: 12, state: 'done', candidate: 'abc1234' }]);
+  let out = lines(probe());
+  assert.ok(out.includes('RESUME_PUSH 11'), out.join('\n'));
+  assert.ok(out.includes('NOT_IN_MAIN 12 no-regression'), out.join('\n'));
+
+  // 合入、還沒設成 pushed 就中斷：已經進 origin/main 的 merged batch 直接做 Close。
+  git('push', '-q', 'origin', `${staged}:main`);
+  assert.ok(lines(probe()).includes('IN_MAIN 11'));
+  git('push', '-q', '-f', 'origin', `${staged}~1:main`);
+
+  const moved = commit('after integrate');
+  git('switch', '-q', 'main');
+  out = lines(probe());
+  assert.ok(out.includes(`NOT_IN_MAIN 11 tip ${moved.slice(0, 7)}`), out.join('\n'));
 });
 
 // 主 checkout 的狀態沒問題時不印任何一行，有問題才各印一行：被設成 bare（Bare guard 還原並印 UNBARE，#20）、
