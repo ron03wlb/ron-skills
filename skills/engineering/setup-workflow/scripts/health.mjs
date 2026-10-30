@@ -2,7 +2,8 @@
 // /setup-workflow 的體檢：比對已導入專案的 adapter、文件與實際使用，回報落差，不寫任何檔。
 // 用法：node health.mjs [<repo>]（repo 預設 cwd；不收任何旗標）
 // 每個落差一行 `FINDING <類別> <說明>  # <證據>`，類別為 level（等級標示錯誤）、divergence（副本與正本分歧，兩邊都改了時下接縮排的 diff）、cross-repo（隱性跨 repo 依賴）；
-// 最後一行 `HEALTHY`（exit 0）或 `FINDINGS <n>`（exit 1）。帶旗標、不是 git repo 或 detect.mjs 失敗時 exit 2。
+// 最後一行 `HEALTHY`（exit 0）或 `FINDINGS <n>`（exit 1）。掃描時讀不到的檔案在 stderr 印 `health: 略過讀不到的 <path>：<code>` 後略過。
+// 帶旗標、不是 git repo 或 detect.mjs 失敗時 exit 2，沒有最後一行。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -14,19 +15,24 @@ const args = process.argv.slice(2);
 if (args.some(arg => arg.startsWith('-')) || args.length > 1) fail('用法：health.mjs [<repo>]');
 const root = resolve(args[0] ?? '.');
 const here = dirname(fileURLToPath(import.meta.url));
-const run = (command, ...rest) => {
+const runRaw = (command, ...rest) => {
   const result = spawnSync(command, rest, { encoding: 'utf8', maxBuffer: 64 << 20 });
-  return result.status === 0 ? result.stdout.trim() : null;
+  return result.status === 0 ? result.stdout : null;
 };
+const run = (command, ...rest) => runRaw(command, ...rest)?.trim() ?? null;
 const git = (...rest) => run('git', '-C', root, ...rest);
 if (git('rev-parse', '--show-toplevel') === null) fail(`${root} 不是 git repo`);
 
 const lines = text => (text ? text.split('\n').filter(Boolean) : []);
 // 已追蹤與未追蹤（不含 gitignore）的檔案；工作樹裡刪掉的，以及其實是目錄的（指向目錄的 symlink、submodule）都不算。
-// stat 失敗（不存在、symlink 迴圈、路徑太長）都當成不是檔案。
+// stat 失敗（不存在、symlink 迴圈、路徑太長）都當成不是檔案。用 -z：不然 core.quotePath 會把非 ASCII 路徑輸出成加引號的跳脫字串。
 const isFile = path => { try { return statSync(path).isFile(); } catch { return false; } };
-const files = lines(git('ls-files', '--cached', '--others', '--exclude-standard')).filter(file => isFile(join(root, file)));
+const files = (runRaw('git', '-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard') ?? '').split('\0').filter(Boolean).filter(file => isFile(join(root, file)));
 const read = path => readFileSync(join(root, path), 'utf8');
+// 掃描用：讀不到（EACCES 等）的檔案在 stderr 警告後略過，回傳 null。
+const readOrWarn = path => {
+  try { return read(path); } catch (error) { console.error(`health: 略過讀不到的 ${path}：${error.code ?? error.message}`); return null; }
+};
 
 // 本 repo 的名稱：主 checkout 的目錄名（worktree 的目錄名不算），以及 origin 的 repo 名。
 const commonDir = git('rev-parse', '--path-format=absolute', '--git-common-dir');
@@ -45,7 +51,7 @@ if (detectOutput === null) fail('detect.mjs 失敗');
 const detected = JSON.parse(detectOutput);
 const namePattern = new RegExp(`(^|[^\\w-])(${[...names].map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![\\w-])`);
 for (const path of files.filter(file => file.endsWith('.md'))) {
-  read(path).split('\n').forEach((text, i) => {
+  readOrWarn(path)?.split('\n').forEach((text, i) => {
     if (text.trimStart().startsWith('|') || !(namePattern.test(text) || (path === adapterPath && /等級|\blevel\b/i.test(text)))) return;
     const claims = [...new Set(text.match(/\bL[0-3]\b/g) ?? [])];
     if (claims.length === 1 && claims[0] !== detected.level) {
@@ -62,27 +68,37 @@ const ADVICE = {
   'canonical-newer': '正本較新：經人確認後覆蓋（copy-templates.mjs --yes）',
   'local-modified': '專案本地改過：先把改動回饋到正本',
   'both-modified': '兩邊都改了：列出差異，交給人決定',
+  'stale-record': '副本與正本一致，只有清單記錄過時：重跑 copy-templates.mjs 更新記錄',
 };
 const isObject = value => typeof value === 'object' && value !== null && !Array.isArray(value);
 let copies = {};
-try {
-  if (existsSync(join(root, MANIFEST))) {
-    const manifest = JSON.parse(read(MANIFEST));
+let manifestText = null;
+if (existsSync(join(root, MANIFEST)) && !isFile(join(root, MANIFEST))) finding('divergence', `invalid-manifest ${MANIFEST} 不是檔案`, MANIFEST);
+else if (existsSync(join(root, MANIFEST))) {
+  try { manifestText = read(MANIFEST); } catch (error) { finding('divergence', `unreadable ${MANIFEST} 清單讀不到：${error.code ?? error.message}`, MANIFEST); }
+}
+if (manifestText !== null) {
+  try {
+    const manifest = JSON.parse(manifestText);
     if (!isObject(manifest) || ('copies' in manifest && !isObject(manifest.copies))) finding('divergence', `invalid-manifest ${MANIFEST} 要是物件，copies 也要是物件`, MANIFEST);
     else copies = manifest.copies ?? {};
-  }
-} catch (error) { finding('divergence', `invalid-manifest ${MANIFEST} 不是合法 JSON：${error.message}`, MANIFEST); }
+  } catch (error) { finding('divergence', `invalid-manifest ${MANIFEST} 不是合法 JSON：${error.message}`, MANIFEST); }
+}
 for (const [path, entry] of Object.entries(copies)) {
   if (typeof entry?.sha256 !== 'string' || typeof entry?.template !== 'string') { finding('divergence', `invalid-entry ${path} 清單項目缺 template 或 sha256`, MANIFEST); continue; }
   const copy = join(root, path);
   const template = join(sourceRoot, entry.template);
   if (!isFile(copy)) { finding('divergence', `missing-copy ${path} 清單有記錄但副本不存在`, MANIFEST); continue; }
   if (!isFile(template)) { finding('divergence', `missing-canonical ${path} 正本 ${entry.template} 已不存在`, MANIFEST); continue; }
-  const [copySha, canonicalSha] = [sha256(copy), sha256(template)];
+  let copySha, canonicalSha;
+  try { [copySha, canonicalSha] = [sha256(copy), sha256(template)]; } catch (error) {
+    finding('divergence', `unreadable ${path} ${error.path === copy ? '副本' : `正本 ${entry.template} `}讀不到：${error.code ?? error.message}`, MANIFEST);
+    continue;
+  }
   const copyChanged = copySha !== entry.sha256;
   const canonicalChanged = canonicalSha !== entry.sha256;
   if (!copyChanged && !canonicalChanged) continue;
-  const kind = copyChanged && canonicalChanged ? 'both-modified' : copyChanged ? 'local-modified' : 'canonical-newer';
+  const kind = copySha === canonicalSha ? 'stale-record' : copyChanged && canonicalChanged ? 'both-modified' : copyChanged ? 'local-modified' : 'canonical-newer';
   const diff = kind === 'both-modified' ? lines(spawnSync('git', ['diff', '--no-index', '--', copy, template], { encoding: 'utf8' }).stdout) : [];
   finding('divergence', `${kind} ${path} ${ADVICE[kind]}`, `${MANIFEST} commit ${typeof entry.commit === 'string' && entry.commit ? entry.commit : '(未記錄)'} sha256 ${entry.sha256.slice(0, 12)}、副本 ${copySha.slice(0, 12)}、正本 ${entry.template} ${canonicalSha.slice(0, 12)}`, diff);
 }
@@ -91,14 +107,16 @@ for (const [path, entry] of Object.entries(copies)) {
 // 家目錄下的設定目錄（~/.claude）與只到某個目錄本身（~/code/<repo>）的提及不算：依賴的是那個 repo 裡的檔案，
 // 所以路徑要指到檔案（最後一段有副檔名，如 ~/spay2/send.mjs），或在家目錄下至少三段（~/code/spay2/scripts）。
 // bash 常在路徑中間開關雙引號（"$HOME"/code/x、"$HOME/code/x"/y，JSON 裡寫成 \"$HOME\"/code/x），所以每個 / 前後可以接一個（跳脫的）雙引號，比對前去掉；
-// '$HOME'/code/x 這種只把家目錄單引號起來的寫法不會展開，不算。
-const HOME_PATH = /(?:~|\$\{?HOME\}?|\/home\/[\w.-]+|\/Users\/[\w.-]+)((?:\\?"?\/\\?"?[\w.@+-]+)+)/g;
+// 反斜線只在接著雙引號時才算，regex 字面值裡跳脫的斜線（\/）不是路徑；
+// '$HOME'/code/x 這種只把家目錄單引號起來的寫法，以及後面緊接雙引號的 ~（"~"/code/x、~"/code/x"）都不會展開，不算；
+// JSON 字串值開頭的 ~（"command":"~/code/x"）交給 shell 時會展開，照算。
+const HOME_PATH = /(?:~(?!\\?")|\$\{?HOME\}?|\/home\/[\w.-]+|\/Users\/[\w.-]+)((?:(?:\\?")?\/(?:\\?")?[\w.@+-]+)+)/g;
 const unquote = text => text.replace(/\\?"/g, '').replace(/\.+$/, '');
 const hooksPath = git('config', 'core.hooksPath');
 const scriptDirs = ['scripts/', 'bin/', '.githooks/', '.husky/', ...(hooksPath && !hooksPath.startsWith('/') ? [`${hooksPath.replace(/\/?$/, '/')}`] : [])];
 const scanned = files.filter(file => file === adapterPath || file === '.claude/settings.json' || scriptDirs.some(dir => file.startsWith(dir)));
 for (const file of scanned) {
-  read(file).split('\n').forEach((text, i) => {
+  readOrWarn(file)?.split('\n').forEach((text, i) => {
     for (const match of text.matchAll(HOME_PATH)) {
       const path = unquote(match[0]);
       const segments = unquote(match[1]).split('/').filter(Boolean);
