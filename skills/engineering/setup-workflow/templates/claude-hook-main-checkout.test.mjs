@@ -66,3 +66,42 @@ test('hook：主 checkout 追蹤檔與新檔 exit 2；其他情況與輸入不�
     assert.equal(allowed.stdout + allowed.stderr, '', input);
   }
 });
+
+// Bash 也擋：曾有 session 在主 checkout 用 sed -i 改了三支追蹤 SQL 與 README，Edit|Write hook 擋不到。
+test('Bash：sed -i／perl -i／重導向／tee 寫主 checkout 追蹤檔或新檔 exit 2；worktree、gitignored、唯讀指令、heredoc 內文放行', () => {
+  const { main, worktree } = fixture();
+  for (const name of ['seed', 'teardown', 'check']) writeFileSync(join(main, 'docs', `${name}-flow.sql`), 'x\n');
+  git(main, 'add', '.');
+  git(main, 'commit', '-q', '-m', 'sql');
+  const bash = (command, cwd = main) => hook(JSON.stringify({ tool_name: 'Bash', cwd, tool_input: { command } }));
+  // 當時的指令形狀：cd 進主 checkout、sed -i 搭 brace expansion 改三支追蹤檔
+  const real = `cd ${main} && sed -i "s|^  -- dev：執行 SELECT @@hostname; 後|  UNION ALL SELECT 'dev', 'HOST01'|" docs/{seed,teardown,check}-flow.sql && git diff --stat`;
+  for (const command of [
+    real,
+    'sed -i "183s|.*|- dev 的 hostname|" docs/a.md',
+    `perl -pi -e 's/a/b/' ${join(main, 'docs', 'a.md')}`,
+    'echo hi > docs/a.md',
+    'printf x >>docs/a.md',
+    'echo hi | tee -a docs/a.md',
+    `cd /tmp && cd ${main} && sed -i.bak 's/a/b/' docs/a.md`,
+    'echo hi > docs/new.md 2>/dev/null',
+    'echo hi > GLOSSARY.md',
+  ]) {
+    const denied = bash(command, command === real ? '/tmp' : main);
+    assert.equal(denied.status, 2, command);
+    assert.match(denied.stderr, /主 checkout 防護/, command);
+  }
+  for (const [command, cwd] of [
+    ['sed -i "s/a/b/" docs/a.md', worktree],
+    ['echo hi > GLOSSARY.md', worktree],
+    ['sed -n "1,5p" docs/a.md && grep -n x docs/*.sql', main],
+    ['echo plan > .scratch/plan.md && tee .scratch/{a,b}.md < /dev/null', main],
+    ["cat > /tmp/x.md <<'EOF'\nsed -i 's/a/b/' docs/a.md\necho y > docs/a.md\nEOF", main],
+    ['git diff > /tmp/d.patch', main],
+    ["echo 'a > docs/a.md'", main],
+  ]) {
+    const allowed = bash(command, cwd);
+    assert.equal(allowed.status, 0, command);
+    assert.equal(allowed.stdout + allowed.stderr, '', command);
+  }
+});

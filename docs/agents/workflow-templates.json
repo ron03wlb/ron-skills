@@ -9,7 +9,7 @@
     "scripts/claude-hook-main-checkout.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-main-checkout.mjs",
       "commit": "14c7abf6a53b9f3400c30eadb8de54192b3798af",
-      "sha256": "1c8cb23581dff3e09f95fa2e990945491f6055774ad7f72260c4caccd67ee3ac"
+      "sha256": "37a4ccdf95a827253a956e6ed1092ffd70b06f4c57c10eefc95ec5f98db89758"
     },
     "scripts/orca-session-send.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-send.mjs",
@@ -19,7 +19,7 @@
     "scripts/orca-worktree-create.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-worktree-create.mjs",
       "commit": "ada628ad8ff233f859b6e1cd3cdb9965b4629871",
-      "sha256": "913ce9d0ca9b0b6bbf7dc8848ffa11e9a2e95535667a3c7aca8730e7a67b112e"
+      "sha256": "c9bfcf8bd3ef0b47724dabe979f50b2038b4d78b7b09dc31b72c6a5208fe5469"
     }
   }
 }

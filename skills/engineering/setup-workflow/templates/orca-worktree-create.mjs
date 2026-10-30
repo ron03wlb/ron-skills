@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 以 Orca 建立 worktree 的唯一入口：`orca worktree create` 只呼叫一次，再以 git worktree list 確認新出現的 worktree。
-// Orca 從 WSL 建立時常先回 runtime_unavailable，卻仍在背景完成 checkout；重試會多出 `<name>-2`，所以一律不重試、改為輪詢。
+// Orca 從 WSL 建立時常先回 runtime_unavailable 或 runtime_timeout，卻仍在背景完成 checkout；重試會多出 `<name>-2`，所以一律不重試、改為輪詢。
 //
 // 用法：node scripts/orca-worktree-create.mjs <orca worktree create 的參數…>（須含 --name；--json 由本腳本補上）
 // stdout 一行 JSON：{"status":"CREATED"|"CREATED_LATE","path","branch"}；失敗為 {"status":"NOT_FOUND"|"FAILED","error"}。
@@ -43,7 +43,8 @@ const result = spawnSync(ORCA, ['worktree', 'create', ...args, '--json'], { enco
 let out = null;
 try { out = JSON.parse(result.stdout); } catch { /* 非 JSON 輸出視為失敗 */ }
 const code = out?.error?.code ?? null;
-if (!out?.ok && code !== 'runtime_unavailable') {
+const PENDING = ['runtime_unavailable', 'runtime_timeout'];
+if (!out?.ok && !PENDING.includes(code)) {
   print({ status: 'FAILED', error: `orca worktree create：${code ?? (result.stderr || result.stdout || '').trim()}` }, 1);
 }
 const deadline = Date.now() + POLL_SECONDS * 1000;
