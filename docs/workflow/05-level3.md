@@ -48,7 +48,7 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 
 ## adapter 的 Pilot 段
 
-L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目。範本與每條的 Default 見 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 的 Pilot 段；實例見 ron-skills 的 [`docs/agents/issue-run.md`](../agents/issue-run.md)。
+L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目。範本與每條的 Default 見 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 的 Pilot 段；實例見 ron-skills 的 [`docs/agents/issue-run.md`](../agents/issue-run.md)。整合分支上的 adapter 與 coordinator checkout 的不同時（例如主線好幾個小時沒 push），coordinator 改讀整合分支上的 Pilot 段，因為下一批就在那個分支上 stage。
 
 | 條目 | 寫什麼 |
 | --- | --- |
@@ -73,7 +73,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Project tick hooks | 每輪要跑的專案檢查 |
 | Retro collect | `/retro-collect` 需要的事實 |
 
-沒有專用腳本也能起步：Probe、Watch 可以先寫成手動指令序列，等真的跑出摩擦再做成腳本。ron-skills 就是這樣：手拼 probe 漏過 terminal 已結束卻沒有結果行的 worker，之後才把 Probe 做成 `scripts/pilot-probe.mjs`，一次印出主 checkout、開著的請求與 gate、各 worker 與 batch 的狀態。
+沒有專用腳本也能起步：Probe、Watch 可以先寫成手動指令序列，等真的跑出摩擦再做成腳本。ron-skills 就是這樣：手拼 probe 漏過 terminal 已結束卻沒有結果行的 worker，之後才把 Probe 做成 `scripts/pilot-probe.mjs`，一次印出主 checkout、開著的請求與 gate、各 worker 與 batch 的狀態。Push gate 也一樣：先在 adapter 寫成 push、開 PR、等 CI、合併、跟上主線的指令序列，實際跑過之後才收斂成 `scripts/land.mjs`。pilot 帶 `--keep-branch`，保留整合分支並讓它以 `--ff-only` 跟上主線；手動分支（retro、單獨跑的 `/issue-run`）不帶，合入後一併移除 worktree 與分支。兩者共用同一個結果行：`LANDED <pr> <merge sha>` 或 `STOP <原因>`，每一步都能從中斷處重跑。
 
 ## tick hooks
 
@@ -96,7 +96,7 @@ L1／L2 的 review 是 Claude 的 `code-review` skill。L3 在 adapter 的 Revie
 
 - **高風險 Issue 的獨立情境驗證**：adapter 列的高風險類別（權限、金流寫入、跨模組路徑之類）在 candidate 產生後，由沒寫程式的全新 Codex 在 candidate SHA 用 adapter 的 driver 跑至少一個情境，記下 SHA、指令、觀察結果。這筆紀錄是合入證據，diff review 不能取代。
 - **跨模型挑戰**：兩輪 review 後仍有爭議的 finding，或高風險 Issue 上的 finding，同一個問題分別問 Claude 與 Codex，報告兩邊同意與分歧之處再決定。
-- **worker 的最後一輪**：兩輪修正後，在最終 candidate 上用 adapter 的 review 指令（有 Codex runner 時就是它）跑一輪只審不修；有 P2 以上就 `STOP`，只剩 P3 記進 rulings 後照常 `DONE`。
+- **worker 的最後一輪**：兩輪修正後，在最終 candidate 上用 adapter 的 review 指令（有 Codex runner 時就是它）跑一輪只審不修；P2 以上只要有一項不是兩輪修正時已經在 Issue 留言的產品取捨，就 `STOP`，原因寫 `findings after two review cycles`，coordinator 重派一個 worker；否則只要兩輪修正時留言過產品取捨，就算這一輪沒再列出，也 `STOP`，原因寫 `decision <摘要>`，coordinator 開 gate。兩者都沒有時，只剩 P3 記進 rulings 後照常 `DONE`。
 
 Codex 呼叫失敗時改用 `code-review` skill，並在報告註明 Codex 不可用。
 
