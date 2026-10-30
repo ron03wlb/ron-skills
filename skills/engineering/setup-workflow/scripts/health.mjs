@@ -2,7 +2,7 @@
 // /setup-workflow 的體檢：比對已導入專案的 adapter、文件與實際使用，回報落差，不寫任何檔。
 // 用法：node health.mjs [<repo>]（repo 預設 cwd；不收任何旗標）
 // 每個落差一行 `FINDING <類別> <說明>  # <證據>`，類別為 level（等級標示錯誤）、divergence（副本與正本分歧，兩邊都改了時下接縮排的 diff）、cross-repo（隱性跨 repo 依賴）；
-// 最後一行 `HEALTHY`（exit 0）或 `FINDINGS <n>`（exit 1）。掃描時讀不到的檔案在 stderr 印 `health: 略過讀不到的 <path>` 後略過。
+// 最後一行 `HEALTHY`（exit 0）或 `FINDINGS <n>`（exit 1）。掃描時讀不到的檔案在 stderr 印 `health: 略過讀不到的 <path>：<code>` 後略過。
 // 帶旗標、不是 git repo 或 detect.mjs 失敗時 exit 2，沒有最後一行。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -72,13 +72,17 @@ const ADVICE = {
 };
 const isObject = value => typeof value === 'object' && value !== null && !Array.isArray(value);
 let copies = {};
-try {
-  if (existsSync(join(root, MANIFEST))) {
-    const manifest = JSON.parse(read(MANIFEST));
+let manifestText = null;
+if (existsSync(join(root, MANIFEST))) {
+  try { manifestText = read(MANIFEST); } catch (error) { finding('divergence', `unreadable ${MANIFEST} 清單讀不到：${error.code ?? error.message}`, MANIFEST); }
+}
+if (manifestText !== null) {
+  try {
+    const manifest = JSON.parse(manifestText);
     if (!isObject(manifest) || ('copies' in manifest && !isObject(manifest.copies))) finding('divergence', `invalid-manifest ${MANIFEST} 要是物件，copies 也要是物件`, MANIFEST);
     else copies = manifest.copies ?? {};
-  }
-} catch (error) { finding('divergence', `invalid-manifest ${MANIFEST} 不是合法 JSON：${error.message}`, MANIFEST); }
+  } catch (error) { finding('divergence', `invalid-manifest ${MANIFEST} 不是合法 JSON：${error.message}`, MANIFEST); }
+}
 for (const [path, entry] of Object.entries(copies)) {
   if (typeof entry?.sha256 !== 'string' || typeof entry?.template !== 'string') { finding('divergence', `invalid-entry ${path} 清單項目缺 template 或 sha256`, MANIFEST); continue; }
   const copy = join(root, path);
@@ -103,8 +107,9 @@ for (const [path, entry] of Object.entries(copies)) {
 // 所以路徑要指到檔案（最後一段有副檔名，如 ~/spay2/send.mjs），或在家目錄下至少三段（~/code/spay2/scripts）。
 // bash 常在路徑中間開關雙引號（"$HOME"/code/x、"$HOME/code/x"/y，JSON 裡寫成 \"$HOME\"/code/x），所以每個 / 前後可以接一個（跳脫的）雙引號，比對前去掉；
 // 反斜線只在接著雙引號時才算，regex 字面值裡跳脫的斜線（\/）不是路徑；
-// '$HOME'/code/x 這種只把家目錄單引號起來的寫法，以及緊接在雙引號後的 ~（"~"/code/x）都不會展開，不算。
-const HOME_PATH = /(?:(?<!")~|\$\{?HOME\}?|\/home\/[\w.-]+|\/Users\/[\w.-]+)((?:(?:\\?")?\/(?:\\?")?[\w.@+-]+)+)/g;
+// '$HOME'/code/x 這種只把家目錄單引號起來的寫法，以及後面緊接雙引號的 ~（"~"/code/x、~"/code/x"）都不會展開，不算；
+// JSON 字串值開頭的 ~（"command":"~/code/x"）交給 shell 時會展開，照算。
+const HOME_PATH = /(?:~(?!\\?")|\$\{?HOME\}?|\/home\/[\w.-]+|\/Users\/[\w.-]+)((?:(?:\\?")?\/(?:\\?")?[\w.@+-]+)+)/g;
 const unquote = text => text.replace(/\\?"/g, '').replace(/\.+$/, '');
 const hooksPath = git('config', 'core.hooksPath');
 const scriptDirs = ['scripts/', 'bin/', '.githooks/', '.husky/', ...(hooksPath && !hooksPath.startsWith('/') ? [`${hooksPath.replace(/\/?$/, '/')}`] : [])];

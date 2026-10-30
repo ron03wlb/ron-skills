@@ -275,3 +275,22 @@ test('SKILL.md 的 Health check 寫明 exit 2 的情況，並列出體檢會印�
     assert.match(section, new RegExp(`\`(divergence )?${kind}\``), kind);
   }
 });
+
+test('隱性跨 repo 依賴：JSON 字串值開頭的 ~ 會展開，要回報；~ 後面緊接雙引號（~"/x"）不展開，不算', t => {
+  const { lines } = health(repo(t, {
+    '.claude/settings.json': '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"~/code/spay2/scripts/hook.mjs"}]}]}}\n',
+    'scripts/run.sh': '#!/usr/bin/env bash\ncat ~"/code/spay2/x.sh"\n',
+  }));
+  const crossRepo = lines.filter(line => line.startsWith('FINDING cross-repo'));
+  assert.equal(crossRepo.length, 1, lines.join('\n'));
+  assert.match(crossRepo[0], /~\/code\/spay2\/scripts\/hook\.mjs .*# \.claude\/settings\.json:1/);
+});
+
+test('清單本身讀不到時回報 unreadable，不說成不是合法 JSON', { skip: process.getuid?.() === 0 && 'root 讀得到 000 的檔案' }, t => {
+  const root = repo(t, { 'docs/agents/workflow-templates.json': '{"copies":{}}' });
+  chmodSync(join(root, 'docs/agents/workflow-templates.json'), 0o000);
+  const { status, stderr, lines } = health(root);
+  assert.equal(status, 1, stderr);
+  assert.match(lines.at(-2), /^FINDING divergence unreadable docs\/agents\/workflow-templates\.json /);
+  assert.doesNotMatch(lines.join('\n'), /合法 JSON/);
+});

@@ -54,7 +54,7 @@ With `health` as the first word of `$ARGUMENTS`, run only the [Health check](#he
 
 For a repo already imported: compare its adapter, docs and copies with what it actually runs, and report the gaps. It only reads; write nothing, even for a gap with an obvious fix.
 
-1. Run `node <skill>/scripts/health.mjs <repo>`. Each gap is one `FINDING <kind> ...  # <evidence>` line (file:line, or the manifest with its recorded commit and the sha256s); the last line is `HEALTHY` (exit 0) or `FINDINGS <n>` (exit 1). A file it cannot read while scanning is skipped with a `health: 略過讀不到的 <path>` line on stderr. On exit 2, with no last line, the check did not run: a flag was passed, the target is not a git repo, or `detect.mjs` failed; report its stderr and stop.
+1. Run `node <skill>/scripts/health.mjs <repo>`. Each gap is one `FINDING <kind> ...  # <evidence>` line (file:line, or the manifest with its recorded commit and the sha256s); the last line is `HEALTHY` (exit 0) or `FINDINGS <n>` (exit 1). A file it cannot read while scanning is skipped with a `health: 略過讀不到的 <path>：<code>` line on stderr. On exit 2, with no last line, the check did not run: a flag was passed, the target is not a git repo, or `detect.mjs` failed; report its stderr and stop.
 
    | Kind | Gap | Handling to recommend |
    | --- | --- | --- |
@@ -63,7 +63,7 @@ For a repo already imported: compare its adapter, docs and copies with what it a
    | `divergence local-modified` | the copy no longer matches the recorded sha256 | carry the change back to the canonical script in ron-skills first |
    | `divergence both-modified` | both of the above; the indented diff (copy → canonical) follows the line | show the diff and leave the decision to the human |
    | `divergence stale-record` | the copy and the canonical script are identical, but neither matches the recorded sha256 | rerun `copy-templates.mjs <repo> <template>` to refresh the record |
-   | `divergence unreadable` | the copy or the canonical script a manifest entry names cannot be read (permissions) | fix the permissions and rerun the check |
+   | `divergence unreadable` | the manifest itself, or the copy or canonical script an entry names, cannot be read (permissions) | fix the permissions and rerun the check |
    | `divergence missing-copy`, `missing-canonical`, `invalid-entry`, `invalid-manifest` | the manifest records a copy or canonical path that no longer exists or is not a file, has an entry without `template` or `sha256`, or is not a valid JSON object with an object `copies` | recopy, or drop the entry, as the human decides |
    | `cross-repo` | the adapter, `.claude/settings.json`, `scripts/`, `bin/` or the git hooks use an absolute home path into another repo | copy the file into this repo (as a template when it is generic), or pass the path in through an env var |
 
