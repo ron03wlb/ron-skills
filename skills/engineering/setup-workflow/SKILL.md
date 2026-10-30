@@ -1,12 +1,14 @@
 ---
 name: setup-workflow
-description: "Import the ron-skills delivery workflow into a repo: detect its level (L0–L3) and extensions, recommend the next level, then write the tracker, label, domain-doc and adapter setup and copy the canonical scripts after the human confirms."
+description: "Import the ron-skills delivery workflow into a repo: detect its level (L0–L3) and extensions, recommend the next level, then write the tracker, label, domain-doc and adapter setup and copy the canonical scripts after the human confirms. `/setup-workflow health` runs the health check on an imported repo instead: it reports mislabelled levels, copies that diverge from the canonical scripts, and hidden cross-repo paths, and writes nothing."
 disable-model-invocation: true
 ---
 
 # Setup workflow
 
 Bring the target repo (the cwd, or the path in `$ARGUMENTS`) one **level** up the ron-skills delivery workflow: L1 basic, L2 gates, L3 resident pilot, as the guide at `docs/workflow/` in ron-skills defines them. Everything is **present first, write after the human confirms**: steps 1–3 only read; step 4 asks once; steps 5–7 write.
+
+With `health` as the first word of `$ARGUMENTS`, run only the [Health check](#health-check) on the target repo (the path after it, or the cwd) and skip the steps below.
 
 `<skill>` below is this skill's directory (`readlink -f ~/.claude/skills/setup-workflow`); `<ron-skills>` is the repo that holds it (`git -C <skill> rev-parse --show-toplevel`). Both scripts document their usage and output lines in their header comment.
 
@@ -47,6 +49,23 @@ Bring the target repo (the cwd, or the path in `$ARGUMENTS`) one **level** up th
 7. **Copy templates.** Run `node <skill>/scripts/copy-templates.mjs <repo> <template>...`. It copies each template with its runtime dependencies and tests into `scripts/` and records each copy's template path, the last ron-skills commit that changed that template, and the copy's sha256 in `docs/agents/workflow-templates.json`; it refuses a template with uncommitted changes, since the recorded commit would not match the content. Exit 3 (`CONFIRM_OVERWRITE`) means an existing file differs: show the human the printed diff, and rerun with `--yes` only after they confirm. Wire each copy as its row in [Templates](#templates) says, and add the copied tests to the repo's check entry. Done when `copy-templates.mjs <repo> --verify` prints `VERIFIED <n>` and the check entry exits 0.
 
 8. **Report.** Report the detected and new level, every file written, the commands with exit codes, and the gaps left: unmet signals of the target level and declined extensions.
+
+## Health check
+
+For a repo already imported: compare its adapter, docs and copies with what it actually runs, and report the gaps. It only reads; write nothing, even for a gap with an obvious fix.
+
+1. Run `node <skill>/scripts/health.mjs <repo>`. Each gap is one `FINDING <kind> ...  # <evidence>` line (file:line, or the manifest and sha256s); the last line is `HEALTHY` (exit 0) or `FINDINGS <n>` (exit 1).
+
+   | Kind | Gap | Handling to recommend |
+   | --- | --- | --- |
+   | `level` | a non-table doc line names this repo with exactly one level, and it differs from the level `detect.mjs` finds | correct the doc to the detected level, citing the `SIGNAL` evidence |
+   | `divergence canonical-newer` | the copy still matches `workflow-templates.json`, but the canonical script has changed since | overwrite with `copy-templates.mjs <repo> --yes <template>` once the human confirms |
+   | `divergence local-modified` | the copy no longer matches the recorded sha256 | carry the change back to the canonical script in ron-skills first |
+   | `divergence both-modified` | both of the above; the indented diff (copy → canonical) follows the line | show the diff and leave the decision to the human |
+   | `divergence missing-copy`, `missing-canonical` | the manifest records a copy or canonical path that no longer exists | recopy, or drop the entry, as the human decides |
+   | `cross-repo` | the adapter, `.claude/settings.json` or `scripts/` uses an absolute home path into another repo | copy the file into this repo (as a template when it is generic), or pass the path in through an env var |
+
+2. **Report.** List each finding with its evidence and the handling above, then the last line verbatim. Done when every finding is listed or the run printed `HEALTHY`.
 
 ## Templates
 
