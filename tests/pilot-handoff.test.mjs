@@ -14,8 +14,8 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !ke
 
 // 主 checkout 的 coordinator 檔（pid 42），以及記錄呼叫的假 Orca CLI（回應由 helpers/fake-orca.mjs 的真實樣本長出）。
 // `takeover` 為真時，假 Orca 收到送出就像新 session 跑了 /issue-pilot 的 Entry：把自己的 `pid ` 行寫進 coordinator 檔。
-// `waitHangs` 為真時 `terminal wait` 永遠不回。
-function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true, waitHangs = false } = {}) {
+// `waitHangs` 為真時 `terminal wait` 永遠不回；`createDelayMs` 讓 `terminal create` 晚回（分頁已開、handle 還沒回來）。
+function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true, waitHangs = false, createDelayMs = 0 } = {}) {
   const temp = mkdtempSync(join(tmpdir(), 'pilot-handoff-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
@@ -33,6 +33,7 @@ function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = fa
 const fs = require('fs'); const [, b] = process.argv.slice(2); const arg = k => process.argv[process.argv.indexOf(k) + 1];
 fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 ${orcaReplySource()}
+if (b === 'create') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${createDelayMs});
 if (b === 'create') ${createError ? `fail('create_failed')` : `reply('create', { terminal: { handle: 'term_pilot' } })`};
 else if (b === 'wait' && ${waitHangs}) setInterval(() => {}, 1000);
 else if (b === 'wait') reply('wait', { wait: { satisfied: (fs.readFileSync(${JSON.stringify(log)}, 'utf8').match(/terminal wait/g) || []).length > ${tuiUnsatisfied} } });
@@ -141,13 +142,27 @@ test('等 TUI 時 Orca 卡住：預算到了殺掉它、STOP timeout、還原並
   assert.match(readFileSync(log, 'utf8'), /^terminal close --terminal term_pilot --json$/m);
 });
 
+// 中止若殺掉進行中的 create，Orca 可能已開好分頁卻沒回 handle，分頁就關不掉、一直跑著 claude。
+test('預算在 terminal create 進行中用完：等 create 回來再關掉分頁、STOP timeout', t => {
+  const { coordinator, original, log, handoff } = fixture(t, { createDelayMs: 1000 });
+  const result = handoff('42', { PILOT_HANDOFF_BUDGET_MS: '300' });
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(result.stdout.trim().split('\n').pop(), 'STOP timeout');
+  assert.equal(readFileSync(coordinator, 'utf8'), original);
+  assert.match(readFileSync(log, 'utf8'), /^terminal close --terminal term_pilot --json$/m);
+});
+
 for (const name of ['SIGTERM', 'SIGINT']) {
   test(`等新 session 時收到 ${name}：STOP signal ${name}、還原 coordinator 檔、關掉新開的分頁`, async t => {
     const { coordinator, original, log, start } = fixture(t, { takeover: false });
     const child = start({ PILOT_HANDOFF_WAIT_MS: '600000' });
     let stdout = '';
     child.stdout.on('data', chunk => { stdout += chunk; });
-    while (!existsSync(log + '.sent')) await new Promise(resolve => setTimeout(resolve, 20));
+    const deadline = Date.now() + 10000;
+    while (!existsSync(log + '.sent')) {
+      assert.ok(Date.now() < deadline, '10 秒內沒有送出');
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
     await new Promise(resolve => setTimeout(resolve, 200));
     child.kill(name);
     const [status] = await once(child, 'exit');

@@ -27,9 +27,12 @@ export const TITLE = 'issue-pilot coordinator';
 const WAIT_MS = Number(process.env.PILOT_HANDOFF_WAIT_MS || 300000);
 const POLL_MS = Number(process.env.PILOT_HANDOFF_POLL_MS || 5000);
 
-/** 總預算 520 秒，到了就中止；還原時關分頁最多再等 10 秒，合計低於 540 秒。 */
-const BUDGET_MS = Number(process.env.PILOT_HANDOFF_BUDGET_MS || 520000);
-const CLOSE_MS = 10000;
+/**
+ * 總預算 510 秒，到了就中止。create 不中止（殺掉它，Orca 可能已開好分頁卻沒回 handle，就關不掉），
+ * 自己最多 10 秒；還原時關分頁最多再 10 秒，合計低於 540 秒。
+ */
+const BUDGET_MS = Number(process.env.PILOT_HANDOFF_BUDGET_MS || 510000);
+const ORCA_STEP_MS = 10000;
 
 /** 主 checkout：`git worktree list` 的第一列，從任何 worktree 呼叫都指回同一處。 */
 function mainCheckout() {
@@ -62,13 +65,13 @@ async function handoff(cli, main, { session, pid, reason }, signal) {
   const stop = async cause => {
     if (signal.aborted) cause = signal.reason;
     if (handle) {
-      try { await orca({ cli, signal: AbortSignal.timeout(CLOSE_MS) }, 'terminal', 'close', '--terminal', handle); } catch (error) { cause += `（關閉 ${handle} 失敗：${error.message}，請手動關掉）`; }
+      try { await orca({ cli, signal: AbortSignal.timeout(ORCA_STEP_MS) }, 'terminal', 'close', '--terminal', handle); } catch (error) { cause += `（關閉 ${handle} 失敗：${error.message}，請手動關掉）`; }
     }
     if (!existsSync(file) || readFileSync(file, 'utf8') === line) writeFileSync(file, original);
     return `STOP ${cause}`;
   };
   try {
-    handle = (await orca(ctx, 'terminal', 'create', '--worktree', `path:${main}`, '--title', TITLE, '--command', 'claude')).terminal.handle;
+    handle = (await orca({ cli, signal: AbortSignal.timeout(ORCA_STEP_MS) }, 'terminal', 'create', '--worktree', `path:${main}`, '--title', TITLE, '--command', 'claude')).terminal.handle;
   } catch (error) {
     return stop(`create ${error.message}`);
   }
