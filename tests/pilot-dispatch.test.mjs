@@ -114,7 +114,7 @@ test('create 把主 checkout 設成 bare：Bare guard 還原、記一列 decisio
 
 const ISO = '\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d[+-]\\d\\d:\\d\\d';
 
-// state 只能是 Batch 段的 running／done／stop：pilot-probe.mjs 只把 `stop` 算成結束，寫成別的字 batch 就永遠不會 STAGEABLE。
+// state 只能是 PILOT-STORE.md 的 running／done／stop：pilot-probe.mjs 只把 `stop` 算成結束，寫成別的字 batch 就永遠不會 STAGEABLE。
 test('batch checkpoint：寫表頭（current dispatched、pilot/integration 的 SHA）與每個成員一行，STOP 的成員記 stop', t => {
   const { repo, root, dispatch, checkpoint } = fixture(t, { modes: { 46: 'fail' } });
   const result = dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']);

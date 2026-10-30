@@ -6,7 +6,7 @@ Every file lives under the coordinator checkout's `.scratch/pilot/` (the adapter
 
 Conventions for every file:
 
-- A time is ISO 8601 with its offset, as `date -Iseconds` prints it: `2026-10-30T21:12:24+08:00`.
+- A time is ISO 8601 with its offset, as `date -Iseconds` prints it (`2026-10-30T21:12:24+08:00`) or as JavaScript's `toISOString()` does (`2026-10-30T13:12:24.000Z`).
 - In a line format, fields are separated by three spaces; a field's value never contains three spaces in a row.
 - A table cell never contains `|`.
 - Append-only files keep their history: mark a line or row as done instead of deleting it.
@@ -19,7 +19,7 @@ One line naming who holds the coordinator role, rewritten in place:
 pid <pid>   loop <yes|no>   since <time>   name <session name>
 ```
 
-- `pid` is the coordinator's `$CLAUDE_PID`; readers find the owner with `^pid (\d+)\b`. `loop` is `yes` only when `/loop` runs the coordinator. `since` is when this session became coordinator and stays the same on every rewrite. `name` is the session name `ListAgents` prints.
+- `pid` is the coordinator's `$CLAUDE_PID`; readers find the owner with `^pid (\d+)\b`. `loop` is `yes` only when `/loop` runs the coordinator. `since` is when this session became coordinator and stays the same on every rewrite. `name` is the name `ListAgents` prints as "This session is <name>", which other sessions address with SendMessage.
 - During a handoff, `pilot-handoff` replaces it with `handoff   from-session <uuid>   from-pid <pid>   at <time>   reason <reason>`, which names no live coordinator; the next session overwrites it with its own `pid` line.
 - No file means no coordinator.
 
@@ -49,7 +49,7 @@ The file's existence is the hold; deleting it clears the hold.
 
 ## `.scratch/pilot/decisions.md`
 
-The decision trail: a `# Decisions` heading, then one Markdown table with five columns, one row per decision, appended:
+The decision trail: a `# Decisions` heading, then one Markdown table with five columns, one row per decision, appended. Readers do not require the heading or the header row: `pilot-unbare.sh` appends a row even when the file does not exist yet.
 
 ```
 | time | decision | reason | evidence | result |
@@ -67,7 +67,9 @@ Requests other sessions hand to the live coordinator, one per line, appended; li
 <time>   <request>   source <session name or id>
 ```
 
-The coordinator closes a request by appending `   applied <time>` or `   declined <reason>` to the same line, optionally followed by a note. A request is open while nothing after its last ` source ` field starts with `applied` or `declined`; so the request text itself never contains ` source `.
+Older lines separate the fields with two spaces; readers accept both.
+
+The coordinator closes a request by appending `   applied <time>` or `   declined <reason>` to the same line, optionally followed by a note. A request is open while the text after its last ` source ` holds no ` applied <word>` or ` declined <word>`; so neither the request text nor the source contains ` source `, and the source contains neither word.
 
 ## `.scratch/pilot/gates.md`
 
@@ -80,7 +82,7 @@ A gate is open until its `resolved` mark; never delete one.
 
 ## `.scratch/pilot/preferences.md`
 
-The standing orders: a heading line, then a numbered list, one constraint per item (`<n>. <constraint>`). A number stays with its order for good: removing an order leaves a gap, and a new order takes the next unused number. An item overriding an adapter default names who overrode it and when, in parentheses at its start.
+The standing orders: a heading line, then a numbered list, one constraint per item (`<n>. <constraint>`). Orders keep their numbers, so removing one leaves a gap. An item overriding an adapter default names who overrode it and when, in parentheses at its start.
 
 ## `.scratch/pilot/status.md`
 
@@ -88,7 +90,7 @@ Regenerated from the checkpoints at each drain, never edited by hand: a heading 
 
 ## `.scratch/pilot/briefs/`
 
-One brief per tooling fix unit, `briefs/<name>.md`, where `<name>` is a short kebab-case slug. It has one `##` section per brief field: goal, scope, context, acceptance, verify, timebox, forbidden, report, and the path of `preferences.md`. A brief missing a section is not dispatched.
+One brief per tooling fix unit, `briefs/<name>.md`, where `<name>` is a short slug. It is Markdown with one `##` section per field that [SKILL.md](SKILL.md)'s **Briefs** rule lists.
 
 ## `.scratch/pilot/batch-<key>.md`
 

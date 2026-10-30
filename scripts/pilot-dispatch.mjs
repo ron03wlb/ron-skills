@@ -9,7 +9,7 @@
 // 用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>...（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
 // stdout：每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
-//   state 只寫 running 或 stop（pilot-probe.mjs 只認 Batch 段的 running／done／stop），STOP 原因只在 stdout。
+//   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop），STOP 原因只在 stdout。
 // exit：0 全部派出；4 有成員 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
