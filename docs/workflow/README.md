@@ -27,7 +27,7 @@
 
 兩個都是 L3，差在擴充：
 
-- **輕量 L3：ron-skills 本身。** tracker 是 GitHub，唯一檢查入口是 `bin/check`；adapter [`docs/agents/issue-run.md`](../agents/issue-run.md) 有完整的 `## Pilot` 段，由 `/loop /issue-pilot` 把 Issue 整批合進 `pilot/integration`。本站的每一章也是這樣交付的。
+- **輕量 L3：ron-skills 本身。** tracker 是 GitHub，唯一檢查入口是 `bin/check`；adapter [`docs/agents/issue-run.md`](../agents/issue-run.md) 的 `## Pilot` 段指向 [`docs/agents/pilot.md`](../agents/pilot.md)，由 `/loop /issue-pilot` 把 Issue 整批合進 `pilot/integration`。本站的每一章也是這樣交付的。
 - **帶多項擴充的 L3：一個常駐交付的 Java 後端專案。** 它在 L2 的入口之外加了 SQL Issue、Docker 測試入口、自訂的分級 skill 等擴充；導讀站公開在 <https://spay2-workflow-docs.pages.dev>。那裡的專案專屬內容只當例子，不是本流程的規則。
 
 ## 章節
