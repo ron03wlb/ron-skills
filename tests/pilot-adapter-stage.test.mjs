@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { env } from './helpers/git-fixture.mjs';
 
 // coordinator 照 adapter Pilot 段逐行執行；這裡驗的是它讀到的那幾行。Pilot 段只指向 pilot.md，內容都在那裡（#45）。
 const adapter = readFileSync(new URL('../docs/agents/issue-run.md', import.meta.url), 'utf8');
@@ -23,7 +24,7 @@ function mergeAdjacentEdits(t, content) {
   const repo = mkdtempSync(join(tmpdir(), 'pilot-md-merge-'));
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   const git = (...args) => {
-    const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+    const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', env });
     if (args[0] !== 'merge') assert.equal(result.status, 0, `git ${args.join(' ')}：${result.stderr}`);
     return result;
   };
