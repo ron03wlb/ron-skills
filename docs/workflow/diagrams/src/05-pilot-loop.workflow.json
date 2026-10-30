@@ -1,0 +1,39 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "/loop /issue-pilot 常駐循環",
+    "locale": "zh-TW",
+    "quality_profile": "standard",
+    "output": "docs/workflow/diagrams/05-pilot-loop.html"
+  },
+  "lanes": [
+    { "id": "operator", "label": "Operator（人）" },
+    { "id": "coord", "label": "coordinator（主 checkout）" },
+    { "id": "worker", "label": "worker（Issue worktree）" },
+    { "id": "local", "label": "Tracker＋本機" }
+  ],
+  "mainPath": ["probe", "pick", "dispatch", "work", "regress", "land"],
+  "nodes": [
+    { "id": "probe", "lane": "coord", "col": 0, "type": "backend", "label": "對帳", "sublabel": "Reconcile／Drain" },
+    { "id": "pick", "lane": "coord", "col": 1, "type": "backend", "label": "挑單", "sublabel": "adapter 的 Pool" },
+    { "id": "gate", "lane": "operator", "col": 1, "type": "external", "label": "回覆 gate", "sublabel": "產品決策、共用環境", "tag": "gates.md" },
+    { "id": "dispatch", "lane": "coord", "col": 2, "type": "backend", "label": "組批次派工", "sublabel": "adapter 的 Dispatch" },
+    { "id": "work", "lane": "worker", "col": 3, "type": "backend", "label": "/issue-run --worker", "sublabel": "實作、review、候選", "tag": "DONE／STOP" },
+    { "id": "regress", "lane": "local", "col": 4, "type": "security", "label": "批次回歸＋合入", "sublabel": "Stage／Regression", "tag": "staged SHA" },
+    { "id": "land", "lane": "local", "col": 5, "type": "database", "label": "push＋結案", "sublabel": "Push gate／Close", "tag": "人 push" }
+  ],
+  "edges": [
+    { "id": "p1", "from": "probe", "to": "pick", "variant": "emphasis" },
+    { "id": "p2", "from": "pick", "to": "gate", "variant": "dashed" },
+    { "id": "p3", "from": "pick", "to": "dispatch", "variant": "emphasis" },
+    { "id": "p4", "from": "dispatch", "to": "work", "variant": "emphasis" },
+    { "id": "p5", "from": "work", "to": "regress", "variant": "emphasis" },
+    { "id": "p6", "from": "regress", "to": "land", "label": "通過", "variant": "emphasis" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "每一輪 tick", "items": ["對帳 → 收件 → tick hooks → 挑單 → 派工 → 落地，做完排下一輪", "有 worker 在跑時 1200 秒後醒來，閒置時 1800 到 3600 秒"] },
+    { "dot": "amber", "title": "分工", "items": ["worker 只做到候選 commit，不回歸、不合入、不 push", "人只回覆 gate：產品決策、共用環境操作、push"] },
+    { "dot": "rose", "title": "交棒", "items": ["合入幾批或遇到 compaction 後交棒", "在新的 session 接手 /loop /issue-pilot，舊 session 退役做 /retro"] }
+  ]
+}

@@ -2,6 +2,10 @@
 
 流程裡有五種角色，靠五類工具串起來。先記住一條邊界：**agent 做到本機 candidate commit 為止；push、合進共用分支、產品決策，以及對共用環境（資料庫、正式站）的操作，都留給人。** 到 L3 這條邊界也只放寬到「adapter 明文允許的 push」。
 
+![交付流程工具版圖](diagrams/01-tooling.png)
+
+互動版：[diagrams/01-tooling.html](diagrams/01-tooling.html)（來源 [`diagrams/src/01-tooling.architecture.json`](diagrams/src/01-tooling.architecture.json)）
+
 ## 角色
 
 | 角色 | 在哪裡跑 | 負責 | 不做 | 從哪一級出現 |

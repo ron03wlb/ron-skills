@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "交付流程工具版圖",
+    "locale": "zh-TW",
+    "quality_profile": "showcase",
+    "output": "docs/workflow/diagrams/01-tooling.html"
+  },
+  "components": [
+    { "id": "operator", "type": "external", "label": "Operator（人）", "sublabel": "需求、決策、push", "pos": [40, 200], "size": [150, 64] },
+    { "id": "claude", "type": "backend", "label": "Claude Code", "sublabel": "controller／worker", "pos": [270, 200], "size": [150, 64], "tag": "auto mode" },
+    { "id": "skills", "type": "backend", "label": "Skills", "sublabel": "Matt／pstack／ron-skills", "pos": [270, 60], "size": [150, 64] },
+    { "id": "memory", "type": "database", "label": "Memory／CLAUDE.md", "sublabel": "規則與教訓", "pos": [270, 340], "size": [150, 64] },
+    { "id": "adapter", "type": "backend", "label": "adapter", "sublabel": "docs/agents/issue-run.md", "pos": [500, 200], "size": [150, 64], "tag": "專案事實" },
+    { "id": "orca", "type": "cloud", "label": "Orca CLI", "sublabel": "worktree 與 terminal", "pos": [500, 60], "size": [150, 64], "tag": "L3" },
+    { "id": "check", "type": "messagebus", "label": "單一檢查入口", "sublabel": "例如 bin/check", "pos": [500, 340], "size": [150, 64] },
+    { "id": "tracker", "type": "cloud", "label": "Tracker", "sublabel": "GitHub／GitLab Issues", "pos": [730, 200], "size": [150, 64], "tag": "唯一看板" },
+    { "id": "worktree", "type": "database", "label": "Issue worktree", "sublabel": "issue/<n>-<slug>", "pos": [730, 60], "size": [150, 64], "tag": "L2" },
+    { "id": "integ", "type": "database", "label": "整合分支", "sublabel": "主 checkout", "pos": [960, 60], "size": [150, 64], "tag": "L2" },
+    { "id": "hooks", "type": "security", "label": "hooks", "sublabel": "git／Claude Code", "pos": [960, 200], "size": [150, 64] },
+    { "id": "codex", "type": "backend", "label": "Codex CLI", "sublabel": "跨模型 review", "pos": [40, 340], "size": [150, 64], "tag": "L3" }
+  ],
+  "connections": [
+    { "id": "op-claude", "from": "operator", "to": "claude", "label": "指令", "variant": "emphasis" },
+    { "id": "claude-skills", "from": "claude", "to": "skills", "label": "載入", "fromSide": "top", "toSide": "bottom" },
+    { "id": "claude-memory", "from": "claude", "to": "memory", "label": "讀寫", "variant": "dashed", "fromSide": "bottom", "toSide": "top" },
+    { "id": "claude-adapter", "from": "claude", "to": "adapter", "label": "照它執行", "variant": "emphasis" },
+    { "id": "adapter-tracker", "from": "adapter", "to": "tracker", "label": "gh／glab", "variant": "emphasis" },
+    { "id": "adapter-orca", "from": "adapter", "to": "orca", "label": "Dispatch", "fromSide": "top", "toSide": "bottom" },
+    { "id": "adapter-check", "from": "adapter", "to": "check", "label": "Checks", "variant": "dashed", "fromSide": "bottom", "toSide": "top" },
+    { "id": "orca-worktree", "from": "orca", "to": "worktree", "label": "建立" },
+    { "id": "worktree-integ", "from": "worktree", "to": "integ", "label": "合入" },
+    { "id": "hooks-integ", "from": "hooks", "to": "integ", "label": "守護", "variant": "security", "fromSide": "top", "toSide": "bottom" },
+    { "id": "claude-codex", "from": "claude", "to": "codex", "label": "委派", "variant": "dashed", "fromSide": "left", "toSide": "top" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Claude Code 這一側", "items": ["skills 定義「怎麼做」，memory 與 CLAUDE.md 記「不要再犯」", "專案事實只寫在 adapter：tracker、檢查、candidate、結案指令", "Codex 經 adapter 指定的 runner 呼叫：跨模型 review 與獨立情境驗證"] },
+    { "dot": "emerald", "title": "外部系統", "items": ["Tracker：Issue、狀態 label、看板、依賴關係", "Orca：L3 建立與移除 worktree、開 terminal 派 worker", "單一檢查入口：pre-commit、CI 與 acceptance 都只呼叫它"] },
+    { "dot": "rose", "title": "守門", "items": ["git hook 擋所有人，Claude Code hook 只擋 agent；兩者都由人安裝", "push、合進主線、產品決策都留給人"] }
+  ]
+}
