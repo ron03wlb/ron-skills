@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const COPIES = ['orca-session-send.mjs', 'claude-hook-language.mjs'];
+const COPIES = ['orca-session-send.mjs', 'claude-hook-language.mjs', 'orca-worktree-create.mjs'];
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url));
 
 for (const name of COPIES) {
