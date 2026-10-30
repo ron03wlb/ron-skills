@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { env, git } from './helpers/git-fixture.mjs';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 // pilot_git.py 正本不寫死某台機器的路徑（#93）：主 checkout 從 script 所在 repo 的 git common dir 推，
 // worktree root 是 ~/orca/workspaces/<主 checkout 名稱>（WSL、macOS 的 Orca 都放這裡），兩者都可用環境變數覆寫；
@@ -12,7 +12,7 @@ import { env, git } from './helpers/git-fixture.mjs';
 const TEMPLATE = new URL('../skills/engineering/issue-run/templates/pilot_git.py', import.meta.url);
 
 function fixture(t) {
-  const base = mkdtempSync(join(realpathSync(tmpdir()), 'pilot-git-'));
+  const base = mkdtempSync(join(realTmpdir(), 'pilot-git-'));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const home = join(base, 'home');
   const main = join(home, 'code', 'acme');
