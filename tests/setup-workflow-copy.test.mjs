@@ -1,29 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { env, git, write } from './helpers/git-fixture.mjs';
 
 const script = new URL('../skills/engineering/setup-workflow/scripts/copy-templates.mjs', import.meta.url).pathname;
-const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
-const env = { ...clean, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };
 const MANIFEST = 'docs/agents/workflow-templates.json';
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
-
-function git(cwd, ...args) {
-  const result = spawnSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8', env });
-  assert.equal(result.status, 0, result.stderr);
-  return result.stdout.trim();
-}
-
-function write(root, files) {
-  for (const [path, content] of Object.entries(files)) {
-    mkdirSync(dirname(join(root, path)), { recursive: true });
-    writeFileSync(join(root, path), content);
-  }
-}
 
 /** 假的 ron-skills（帶 copy-templates.mjs 與幾支正本）與一個空的目標 repo。 */
 function fixture(t) {

@@ -17,11 +17,11 @@ Bring the target repo (the cwd, or the path in `$ARGUMENTS`) one **level** up th
    | Level | Signals (all of the previous level, plus) |
    | --- | --- |
    | L0 | no tracker setup, or no Issue delivery (`docs/agents/issue-run.md` missing) |
-   | L1 | `tracker`: `docs/agents/issue-tracker.md`; `adapter`: `docs/agents/issue-run.md`; `check`: its `## Checks` names one command that exists |
+   | L1 | `tracker`: `docs/agents/issue-tracker.md`; `adapter`: `docs/agents/issue-run.md`; `check`: its `## Checks` names one command that exists (before the adapter exists: `bin/check`, `npm run check` or `make check`) |
    | L2 | `integration`: an `integration` branch; `hook`: a pre-push (or, second best, pre-commit) hook that runs the check entry; `worktrees`: Issue-numbered branches in worktrees or merges |
    | L3 | `pilot`: the adapter has `## Pilot`; `pilotCommits`: a `pilot/stage-*` or `stage batch-*` commit in the last 90 days |
 
-   Done when you hold the level and every signal's evidence. A `hook` met by pre-commit carries a note: keep it in the findings as a gap, since only pre-push checks the SHA being pushed.
+   When `check` is missing, stop here and write nothing: the single check entry comes first, built by the human (`docs/workflow/03-level1.md` step 2); rerun `/setup-workflow` once it exists. Otherwise done when you hold the level and every signal's evidence. A `hook` met by pre-commit carries a note: keep it in the findings as a gap, since only pre-push checks the SHA being pushed.
 
 2. **Extensions.** The same run prints one `EXTENSION` line per extension: the detection evidence, the adapter section to fill, and the templates to bring. Confirm each against the repo (read the evidence files) and drop false positives.
 
@@ -42,7 +42,7 @@ Bring the target repo (the cwd, or the path in `$ARGUMENTS`) one **level** up th
 
 5. **Tracker, labels, domain docs.** Read `setup-matt-pocock-skills`'s SKILL.md (`readlink -f ~/.claude/skills/setup-matt-pocock-skills`) and carry out its sections yourself within this run, skipping any whose output already exists and matches; the human answers its questions here, never in a second command. Then create the five triage labels on the tracker (`docs/workflow/03-level1.md` step 2 has the commands). Done when `docs/agents/issue-tracker.md`, `triage-labels.md` and `domain.md` exist and the tracker's read command prints an Issue from the agent's Bash.
 
-6. **Adapter.** Write `docs/agents/issue-run.md` from `<ron-skills>/skills/engineering/issue-run/ADAPTER.md` as the skeleton: fill the sections the target level needs (L1: Tracker, Readiness, Checks, Candidate and acceptance, Evidence and closing; L2: Worktrees and checkpoint and Review too; L3: Pilot and Permissions) plus each confirmed extension's section, in English, with commands that exist in this repo. Keep an existing adapter's sections and fill only the gaps. Done when every command the adapter names runs from the repo root, and every Pilot command was run once here.
+6. **Adapter.** Write `docs/agents/issue-run.md` from `<ron-skills>/skills/engineering/issue-run/ADAPTER.md` as the skeleton: fill the sections the target level needs (L1: Tracker, Readiness, Checks, Candidate and acceptance, Evidence and closing; L2: Worktrees and checkpoint and Review too; L3: Pilot and Permissions) plus each confirmed extension's section, in English, with commands that exist in this repo. Keep an existing adapter's sections and fill only the gaps. Its `## Checks` names the check entry step 1 found. Done when every command the adapter names runs from the repo root, and every Pilot command was run once here.
 
 7. **Copy templates.** Run `node <skill>/scripts/copy-templates.mjs <repo> <template>...`. It copies each template with its runtime dependencies and tests into `scripts/` and records each copy's template path, the last ron-skills commit that changed that template, and the copy's sha256 in `docs/agents/workflow-templates.json`; it refuses a template with uncommitted changes, since the recorded commit would not match the content. Exit 3 (`CONFIRM_OVERWRITE`) means an existing file differs: show the human the printed diff, and rerun with `--yes` only after they confirm. Wire each copy as its row in [Templates](#templates) says, and add the copied tests to the repo's check entry. Done when `copy-templates.mjs <repo> --verify` prints `VERIFIED <n>` and the check entry exits 0.
 

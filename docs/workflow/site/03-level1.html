@@ -28,8 +28,15 @@ git clone https://github.com/backnotprop/pstack ~/code/pstack
 ~/code/ron-skills/bin/sync-skills --check   # overlay 能套用、沒有 OVERLAY_FAILED
 ~/code/ron-skills/bin/sync-skills           # 連結到 ~/.claude/skills/</code></pre>
 <p>做完的樣子：新開的 Claude Code session 打 <code>/</code> 看得到 <code>issue-run</code>、<code>triage</code>、<code>setup-workflow</code>、<code>setup-matt-pocock-skills</code>。Matt 或 pstack 放在別的路徑時，用 <code>MATT_SKILLS</code>、<code>PSTACK_SKILLS</code> 環境變數指定。</p>
-<h3 id="2-設定-tracker-與-label每個-repo-一次">2. 設定 tracker 與 label（每個 repo 一次）</h3>
-<p>在目標 repo 開 Claude Code，輸入 <code>/setup-workflow</code>。它先偵測現況（等級、tracker 種類等擴充）並列出要寫的檔案，你確認後才寫入；tracker、triage label、domain docs 三段會在同一個流程裡照 <code>setup-matt-pocock-skills</code> 的步驟問完，不必另外執行。第 4 步的 adapter 也在同一次流程裡完成。</p>
+<h3 id="2-單一檢查入口">2. 單一檢查入口</h3>
+<p>做一條指令，跑完這個 repo 所有該跑的檢查（lint、型別、測試、文件守門），全過才 exit 0。pre-commit、CI 和 adapter 都只呼叫它，檢查清單只寫在這一個地方。</p>
+<ul>
+<li>已經有的就沿用：<code>npm test</code>、<code>make check</code>、<code>./gradlew check</code>、<code>pytest</code>。</li>
+<li>沒有的就建一個 <code>bin/check</code>，把現有的指令依序串起來，開頭 <code>set -euo pipefail</code>。</li>
+</ul>
+<p>做完的樣子：在乾淨的 <code>main</code> 上跑它是 exit 0；故意弄壞一個測試再跑是非 0。這兩個 exit code 記下來，第 5 步要用。下一步的 <code>/setup-workflow</code> 會先找這條指令（<code>bin/check</code>、<code>npm run check</code>、<code>make check</code>，或 adapter 已寫的 Checks），找不到就停下、不寫任何檔。</p>
+<h3 id="3-設定-tracker-與-label每個-repo-一次">3. 設定 tracker 與 label（每個 repo 一次）</h3>
+<p>第 2 步的檢查入口做好之後，在目標 repo 開 Claude Code，輸入 <code>/setup-workflow</code>。它先偵測現況（等級、tracker 種類等擴充）並列出要寫的檔案，你確認後才寫入；tracker、triage label、domain docs 三段會在同一個流程裡照 <code>setup-matt-pocock-skills</code> 的步驟問完，不必另外執行。第 4 步的 adapter 也在同一次流程裡完成。</p>
 <p>手動備用：不用 <code>/setup-workflow</code> 時，輸入 <code>/setup-matt-pocock-skills</code>，依序回答 tracker、triage label、domain docs 三段。兩種做法都會寫出：</p>
 <ul>
 <li><code>docs/agents/issue-tracker.md</code>：讀單、開單、留言、改 label、依賴關係的指令</li>
@@ -42,15 +49,8 @@ for l in needs-triage needs-info ready-for-agent ready-for-human wontfix; do gh 
 # GitLab
 for l in needs-triage needs-info ready-for-agent ready-for-human wontfix; do glab label create --name &quot;$l&quot;; done</code></pre>
 <p>做完的樣子：<code>gh label list</code>（或 <code>glab label list</code>）列得出五個 label；<code>docs/agents/issue-tracker.md</code> 的讀單指令在 agent 的 Bash 工具裡跑得出內容（GitHub 用 <code>--json</code>，見 <a href="02-lifecycle.html#tracker-指令對照">02</a>）。</p>
-<h3 id="3-單一檢查入口">3. 單一檢查入口</h3>
-<p>做一條指令，跑完這個 repo 所有該跑的檢查（lint、型別、測試、文件守門），全過才 exit 0。pre-commit、CI 和 adapter 都只呼叫它，檢查清單只寫在這一個地方。</p>
-<ul>
-<li>已經有的就沿用：<code>npm test</code>、<code>make check</code>、<code>./gradlew check</code>、<code>pytest</code>。</li>
-<li>沒有的就建一個 <code>bin/check</code>，把現有的指令依序串起來，開頭 <code>set -euo pipefail</code>。</li>
-</ul>
-<p>做完的樣子：在乾淨的 <code>main</code> 上跑它是 exit 0；故意弄壞一個測試再跑是非 0。這兩個 exit code 記下來，第 5 步要用。</p>
 <h3 id="4-adapter">4. adapter</h3>
-<p>用 <code>/setup-workflow</code> 時，它在第 2 步的同一次流程裡以 <a href="../../../skills/engineering/issue-run/ADAPTER.md"><code>ADAPTER.md</code></a> 為骨架寫出 <code>docs/agents/issue-run.md</code>，填入第 3 步的檢查入口，並把該等級用得到的 script 正本複製到 <code>scripts/</code>、記錄在 <code>docs/agents/workflow-templates.json</code>。寫完照下面的「做完的樣子」核對。</p>
+<p>用 <code>/setup-workflow</code> 時，它在第 3 步的同一次流程裡以 <a href="../../../skills/engineering/issue-run/ADAPTER.md"><code>ADAPTER.md</code></a> 為骨架寫出 <code>docs/agents/issue-run.md</code>，填入第 2 步的檢查入口，並把該等級用得到的 script 正本複製到 <code>scripts/</code>、記錄在 <code>docs/agents/workflow-templates.json</code>。寫完照下面的「做完的樣子」核對。</p>
 <p>手動備用：把 <a href="../../../skills/engineering/issue-run/ADAPTER.md"><code>ADAPTER.md</code></a> 複製成目標 repo 的 <code>docs/agents/issue-run.md</code>，每段填這個 repo 真的有的指令；沒寫的段落採範本裡的 Default。L1 至少填下面五段。adapter 是給 agent 讀的，用英文寫：</p>
 <pre><code class="language-markdown"># issue-run adapter: &lt;repo&gt;
 
@@ -77,7 +77,7 @@ The candidate is the branch tip. Acceptance is `bin/check` at the candidate SHA 
 Post evidence as an Issue comment (candidate SHA, commands with exit codes, findings). The human pushes and merges the PR; close the Issue only after the candidate is on `origin/main`.</code></pre>
 <p>做完的樣子：每一段提到的指令都能在 repo 根目錄照抄執行。</p>
 <h3 id="5-第一張-issue">5. 第一張 Issue</h3>
-<p>開一張小而確定的單，本文寫清楚「要做的事」與可檢查的「驗收」，驗收裡的檢查只引用第 3 步的那條指令。然後分級：</p>
+<p>開一張小而確定的單，本文寫清楚「要做的事」與可檢查的「驗收」，驗收裡的檢查只引用第 2 步的那條指令。然後分級：</p>
 <pre><code class="language-text">/triage &lt;n&gt;</code></pre>
 <p>做完的樣子：Issue 帶 <code>ready-for-agent</code>，本文有 <code>/triage</code> 寫的 agent brief。<code>/triage</code> 留下產品問題時它會設 <code>needs-info</code>，回答完再跑一次。</p>
 <h3 id="6-issue-run">6. <code>/issue-run</code></h3>

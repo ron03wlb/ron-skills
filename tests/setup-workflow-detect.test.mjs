@@ -1,19 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { env, git, write } from './helpers/git-fixture.mjs';
 
 const script = new URL('../skills/engineering/setup-workflow/scripts/detect.mjs', import.meta.url).pathname;
-const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
-const env = { ...clean, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };
-
-function git(cwd, ...args) {
-  const result = spawnSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8', env });
-  assert.equal(result.status, 0, result.stderr);
-  return result.stdout.trim();
-}
 
 /** 暫存 repo；files 為 { 相對路徑: 內容 }，寫入後 commit。 */
 function repo(t, files = {}) {
@@ -24,14 +17,6 @@ function repo(t, files = {}) {
   git(root, 'add', '.');
   git(root, 'commit', '-qm', 'init');
   return root;
-}
-
-function write(root, files) {
-  for (const [path, content] of Object.entries(files)) {
-    if (content === undefined) continue;
-    mkdirSync(dirname(join(root, path)), { recursive: true });
-    writeFileSync(join(root, path), content);
-  }
 }
 
 function detect(root) {
@@ -66,6 +51,20 @@ test('沒有 adapter 的 repo 是 L0，建議 L1，並列出 L1 缺的條件', t
   assert.equal(result.recommend, 'L1');
   assert.deepEqual(result.levels.L1.missing, ['tracker', 'adapter', 'check']);
   assert.equal(result.extensions.tracker.value, 'none');
+});
+
+test('還沒有 adapter 時，現成的檢查入口（bin/check、npm run check、make check）也認得出來', t => {
+  assert.equal(detect(repo(t, { 'bin/check': '#!/usr/bin/env bash\n' })).signals.check.value, 'bin/check');
+  assert.equal(detect(repo(t, { 'package.json': '{"scripts":{"check":"eslint ."}}\n' })).signals.check.value, 'npm run check');
+  assert.equal(detect(repo(t, { 'Makefile': 'check:\n\ttrue\n' })).signals.check.value, 'make check');
+  const none = detect(repo(t, { 'package.json': '{"scripts":{"build":"tsc"}}\n' }));
+  assert.equal(none.signals.check.met, false);
+  assert.equal(none.level, 'L0');
+});
+
+test('檢查指令中選項的值（--base origin/main）不當成 repo 內路徑', t => {
+  const adapter = '# a\n\n## Checks\n\nOne command: `bin/check --base origin/main`.\n';
+  assert.equal(detect(repo(t, { ...L1_FILES, 'docs/agents/issue-run.md': adapter })).level, 'L1');
 });
 
 test('有 adapter 與單一檢查入口是 L1；tracker 從 issue-tracker.md 認出 GitHub', t => {

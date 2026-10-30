@@ -35,14 +35,24 @@ const adapterPath = 'docs/agents/issue-run.md';
 const trackerDoc = 'docs/agents/issue-tracker.md';
 const adapter = read(adapterPath);
 
-// 單一檢查入口：adapter Checks 段的第一個指令；第一段要是 PATH 上的指令或 repo 內的檔案，後面含 `/` 的參數（repo 內路徑）也必須存在。
+// 單一檢查入口：adapter Checks 段的第一個指令；第一段要是 PATH 上的指令或 repo 內的檔案，後面含 `/` 的參數（repo 內路徑）也必須存在，
+// 選項的值（`--base origin/main`）不算路徑。adapter 還沒寫 Checks 時，改找現成的入口：bin/check、npm run check、make check。
 const onPath = name => spawnSync('sh', ['-c', 'command -v "$1"', 'sh', name], { stdio: 'ignore' }).status === 0;
+function existingEntry() {
+  if (existsSync(join(root, 'bin/check'))) return 'bin/check';
+  try { if (JSON.parse(read('package.json') ?? '{}').scripts?.check) return 'npm run check'; } catch { /* package.json 不合法視為沒有 */ }
+  if (/^check:/m.test(read('Makefile') ?? '')) return 'make check';
+  return null;
+}
 function checkEntry() {
   const command = section(adapter, 'Checks')?.match(/`([^`]+)`/)?.[1];
-  if (!command) return signal(null, [`${adapterPath} 沒有 Checks 段或其中沒有指令`]);
+  if (!command) {
+    const entry = existingEntry();
+    return entry ? signal(entry, [`${entry}（adapter 尚未寫 Checks）`]) : signal(null, [`${adapterPath} 沒有 Checks 指令，repo 也沒有 bin/check、npm run check 或 make check`]);
+  }
   const [head, ...rest] = command.trim().split(/\s+/);
-  const absent = [head.includes('/') || !onPath(head) ? head : null, ...rest.filter(arg => arg.includes('/') && !arg.startsWith('-'))]
-    .filter(path => path && !existsSync(join(root, path)));
+  const paths = rest.filter((arg, i) => arg.includes('/') && !arg.startsWith('-') && !/^--[^=]+$/.test(rest[i - 1] ?? ''));
+  const absent = [head.includes('/') || !onPath(head) ? head : null, ...paths].filter(path => path && !existsSync(join(root, path)));
   if (!absent.length) return signal(command, [`${adapterPath} ## Checks`]);
   return signal(null, [`${adapterPath} ## Checks 寫的 ${absent.join('、')} 不存在`]);
 }
