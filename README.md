@@ -76,4 +76,4 @@ pilot 已達標，2026-10-21 起是唯一編排：`deliver-batch`、`deliver-spe
 
 ## daily-summary
 
-`/daily-summary [YYYY-MM-DD]`：把 Personal Life vault 某天的 Daily 整理進「🌙 晚間回顧」。推進與可解決的問題從晨間意圖、工作目標、工作紀錄、當天 agent session（`scripts/day-sessions.mjs` 摘要）與 vault commit 起草；情緒、肯定自己、感恩、擔憂這類只有本人知道的欄位一次問完。確認後只改晚間回顧段，可選擇把未完成的工作目標，連同使用者要求的隔天待辦（例如 `ready-for-human` Issue 的驗收步驟），寫進隔天的工作目標。段落結構以 `.obsidian/daily-notes.json` 指向的 template 為準；在 vault 內執行，或設定 `PERSONAL_LIFE_ROOT`。
+`/daily-summary [YYYY-MM-DD]`：把 Personal Life vault 某天的 Daily 整理進「🌙 晚間回顧」。推進與可解決的問題從晨間意圖、工作目標、工作紀錄、當天 agent session（`scripts/day-sessions.mjs` 摘要）與 vault commit 起草；情緒、肯定自己、感恩、擔憂這類只有本人知道的欄位一次問完。確認後只改晚間回顧段，可選擇把未完成的工作目標，連同使用者要求的待辦（例如 `ready-for-human` Issue 的驗收步驟），寫進下一個工作日（週五→週一）的工作目標；使用者要求時只 commit 這些筆記與其引用的圖片，vault 的 pre-commit 擋帳密。段落結構以 `.obsidian/daily-notes.json` 指向的 template 為準；在 vault 內執行，或設定 `PERSONAL_LIFE_ROOT`。

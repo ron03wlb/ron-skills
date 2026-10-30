@@ -34,20 +34,24 @@ Done when the day's sessions are grouped into work items and each of the three m
 Split the 晚間回顧 prompt lines into two kinds:
 
 - **Drafted** from evidence: 今日實際推進了什麼 (session work items and record highlights, morning intentions met); 可解決的問題 (concrete next steps from the records and sessions). Never copy 工作目標 items or annotate them with done/open wording; mention a goal only when sessions add what the checkbox does not, such as what was concretely delivered.
-- **Asked**, since only the user knows them: 困難、挑戰與情緒, 可以肯定自己的是, 值得感恩的事情, 尚未處理的煩惱, 目前無法控制的擔憂. Ask all of them in one message, each with a one-line hint drawn from the evidence (for example, an open goal as a possible 困難). The user may answer, skip, or say 你寫; for 你寫, draft from evidence and mark the draft as yours in the proposal.
+- **Asked**, since only the user knows them: 困難、挑戰與情緒, 可以肯定自己的是, 值得感恩的事情, 尚未處理的煩惱, 目前無法控制的擔憂. Ask all of them in one message, each with a one-line hint drawn from the evidence (for example, an open goal as a possible 困難). The user may answer, skip, or say 你寫 (採用建議 means the same); for those, draft from the hint and evidence and mark the draft as yours in the proposal.
 
 When ### English Practice has text, give brief corrections in chat; the note keeps the user's original unless they ask otherwise.
 
 ## 3. Propose, then wait
 
-Show the filled 晚間回顧 section exactly as it will be written, then wait for an explicit yes (edits allowed). Also offer, as a separate yes/no, the next day's 工作目標 (create the note from the template if absent): the open 工作目標 items, plus whatever the user asked to have ready for tomorrow, drafted from evidence as checkboxes that each name their Issue (a `ready-for-human` Issue's spec steps, an in-flight Issue's 驗收條件 that only a deployed environment can confirm).
+Show the filled 晚間回顧 section exactly as it will be written, then wait for an explicit yes (edits allowed). Also offer, as a separate yes/no, the next workday's 工作目標 (Friday → Monday; create the note from the template if absent): the open 工作目標 items, plus whatever the user asked to have ready for that day, drafted from evidence as checkboxes that each name their Issue (a `ready-for-human` Issue's spec steps, an in-flight Issue's 驗收條件 that only a deployed environment can confirm).
 
 ## 4. Write and read back
 
-- Edit only the 晚間回顧 section, plus the next-day 工作目標 when accepted. Every other section stays byte-for-byte.
+- Edit only the 晚間回顧 section, plus the next-workday 工作目標 when accepted. Every other section stays byte-for-byte.
 - Fill each prompt line after its `：`; several items go as nested bullets under it, using the indentation already in the note.
 - A prompt line that already has text keeps it; append new items below it.
 - When the note predates the template and lacks the section, insert the template's 晚間回顧 block at the template's position relative to the headings present.
-- Write nothing else: no frontmatter changes, no git staging or commits.
+- Write nothing else: no frontmatter changes.
 
 Re-read the note and confirm the section matches the approved proposal. Finish by naming each file written.
+
+## 5. Commit, when asked
+
+When the user asks to commit or push, stage exactly the files written in step 4 plus the images they embed with `![[…]]`; other dirty files stay unstaged. Message: `docs(daily): <date> 晚間回顧…`, naming the next-workday note when one was written. The vault's `.githooks/pre-commit` blocks credentials and prints `SECRET <file>:<line> <kind>`; show those lines to the user and offer `<redacted>` for each value before committing again. When `git config core.hooksPath` is not `.githooks`, the hook is off: say so and offer to set it. Push only when asked.
