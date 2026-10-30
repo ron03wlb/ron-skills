@@ -79,7 +79,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條是一行。�
 
 | 用途 | 做法 |
 | --- | --- |
-| 派工 | `orca worktree create … --agent claude --prompt "/issue-run <n> --worker <checkpoint>"`，回傳的 worktree 路徑與 terminal handle 記進批次 checkpoint |
+| 派工 | 三步：`orca worktree create`（不帶 `--repo`、不帶 `--agent`）→ `orca terminal create --command claude` → 用會確認送達的送出腳本送 `/issue-run <n> --worker <checkpoint>`；worktree 路徑與 terminal handle 記進批次 checkpoint |
 | 監看 | `orca terminal read --terminal <handle>`：畫面最後一行是 `DONE <n> <sha>` 或 `STOP <n> <原因>` 就是做完；terminal 已結束但沒有這行就是卡住 |
 | 結案 | `orca worktree rm` 移除 worktree，Orca 不會留下孤兒紀錄 |
 
