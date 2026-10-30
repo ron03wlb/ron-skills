@@ -3,7 +3,8 @@
 // 樣本在 fixtures/orca/<名稱>.json，是 `"$ORCA_CLI_COMMAND" terminal <子指令> --json` 的 `result`（字串已去識別化）；Orca 改版時重錄樣本：
 //   "$ORCA_CLI_COMMAND" terminal wait --terminal <h> --for tui-idle --timeout-ms 3000 --json → wait.json，其餘依檔名類推。
 // 平台：fixtures/orca/ 是 WSL 上錄的，fixtures/orca/macos/ 是 macOS Orca 1.4.245 重錄的（create、list、read、send 多出欄位，
-// 其餘相同，WSL 的欄位都在且型別相同）。`FAKE_ORCA_PLATFORM=macos` 換成 macOS 樣本，兩份都要跑（本 repo 由 bin/check 跑）。
+// 其餘相同，WSL 的欄位都在且型別相同）。`FAKE_ORCA_PLATFORM=macos` 換成 macOS 樣本，兩份都要跑：檢查入口要以它再跑一次
+// 呼叫 `orcaReplySource` 的測試檔（ron-skills 的 bin/check 以 `grep -l orcaReplySource` 挑檔；採用的 repo 自行接進自己的檢查入口）。
 // 用法：在假 CLI 的原始碼裡放 `${orcaReplySource()}`，之後 `reply('wait', { wait: { satisfied } })` 印出 `{ ok: true, result }`。
 // patch 只能覆寫樣本已有的欄位；寫了樣本沒有的欄位會丟錯，替身因此無法自創真實 Orca 沒有的形狀。陣列整個取代，每個元素以樣本第一個元素為底。
 import { readdirSync, readFileSync } from 'node:fs';
