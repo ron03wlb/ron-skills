@@ -31,7 +31,7 @@ test('沒有記錄時失敗並列出全部來源；--restamp 後通過，記錄�
   const f = fixture(t);
   const first = f.run();
   assert.equal(first.status, 1);
-  for (const path of SOURCES) assert.match(first.stderr, new RegExp(`^WORKFLOW_SYNC_STALE ${path}$`, 'm'));
+  for (const path of SOURCES) assert.match(first.stdout, new RegExp(`^WORKFLOW_SYNC_STALE ${path}$`, 'm'));
   assert.equal(f.run('--restamp').status, 0);
   assert.equal(f.run().status, 0);
   const { sources } = JSON.parse(readFileSync(join(f.repo, 'scripts/workflow-doc-sync.json'), 'utf8'));
@@ -45,7 +45,7 @@ test('改 issue-run/SKILL.md 一行不 restamp：只列那份來源並提示對�
   writeFileSync(join(f.repo, SOURCES[0]), '# changed\n');
   const r = f.run();
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /^WORKFLOW_SYNC_STALE skills\/engineering\/issue-run\/SKILL\.md$/m);
-  assert.doesNotMatch(r.stderr, /ADAPTER\.md|issue-pilot|retro-collect/);
-  assert.match(r.stderr, /對照 `docs\/workflow\/` 後執行 `--restamp`/);
+  assert.match(r.stdout, /^WORKFLOW_SYNC_STALE skills\/engineering\/issue-run\/SKILL\.md$/m);
+  assert.doesNotMatch(r.stdout, /ADAPTER\.md|issue-pilot|retro-collect/);
+  assert.match(r.stdout, /對照 `docs\/workflow\/` 後執行 `--restamp`/);
 });

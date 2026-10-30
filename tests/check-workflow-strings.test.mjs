@@ -45,7 +45,8 @@ test('spay2 公開站網址是唯一白名單：通過；同一行另有 spay �
   assert.equal(ok.status, 0, ok.stdout);
   const mixed = fixture(t, { 'README.md': 'https://spay2-workflow-docs.pages.dev 是 spay2 的站\n' });
   assert.equal(mixed.status, 1);
-  assert.match(mixed.stdout, /^WORKFLOW_SPECIFIC_STRING README\.md:1 spay$/m);
+  assert.match(mixed.stdout, /^WORKFLOW_SPECIFIC_STRING README\.md:1 spay$/m);  const lookalike = fixture(t, { 'README.md': '見 https://spay2-workflow-docs.pages.dev.example.com/x\n' });
+  assert.equal(lookalike.status, 1, '只放行那個網址本身，不放行以它開頭的其他網域');
 });
 
 test('產出的 site/ 與非 Markdown／JSON 檔不掃描', t => {
