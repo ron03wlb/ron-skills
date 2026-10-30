@@ -18,13 +18,5 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22.19.0'
-      - name: Clone Matt upstream
-        run: git clone --depth 1 https://github.com/mattpocock/skills.git "$RUNNER_TEMP/matt"
-      - name: Clone pstack upstream
-        run: git clone --depth 1 https://github.com/backnotprop/pstack.git "$RUNNER_TEMP/pstack"
-      - name: Overlays apply on upstream main
-        run: MATT_SKILLS="$RUNNER_TEMP/matt" PSTACK_SKILLS="$RUNNER_TEMP/pstack" bin/sync-skills --check
-      - name: Markdown links
-        run: node scripts/check-links.mjs
-      - name: Tests
-        run: node --test --test-force-exit tests/*.test.mjs
+      - name: Checks on upstream main
+        run: bin/check --upstream

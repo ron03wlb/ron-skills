@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# 本 repo 唯一的檢查入口：pre-commit、CI 與 issue-run 的 acceptance 都只呼叫它，三項檢查只寫在這裡。
+# 用法：bin/check [--upstream]
+#   --upstream  先把 Matt 與 pstack 上游最新 main 淺 clone 到暫存目錄再檢查（與 CI 相同）；
+#               本機 ~/code/skills 是 fork，會落後上游，只跑本機版本時 overlay 漂移要等 CI 才看得到。
+# 環境變數 MATT_SKILLS、PSTACK_SKILLS 同 bin/sync-skills；--upstream 會覆寫它們。
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+if [[ ${1:-} == --upstream ]]; then
+  up=$(mktemp -d); trap 'rm -rf "$up"' EXIT
+  git clone -q --depth 1 https://github.com/mattpocock/skills.git "$up/matt"
+  git clone -q --depth 1 https://github.com/backnotprop/pstack.git "$up/pstack"
+  export MATT_SKILLS=$up/matt PSTACK_SKILLS=$up/pstack
+fi
+
+bin/sync-skills --check
+node scripts/check-links.mjs
+node --test --test-force-exit tests/*.test.mjs
