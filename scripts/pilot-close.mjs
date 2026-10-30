@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // /issue-pilot coordinator 的 Close：batch 的 merge 進到 origin/main 之後，照 docs/agents/pilot.md 的 Close 收掉每個 done 成員。
-// 先確認 merge SHA 已在 origin/main、主 checkout 的 main 跟上 origin/main（落後就 --ff-only），再對每個成員依序做
+// 先跑 Bare guard（上一輪可能中斷在 Orca 設成 bare 之後），確認 merge SHA 已在 origin/main、主 checkout 的 main 跟上 origin/main（落後就 --ff-only），再對每個成員依序做
 // evidence（證據留言）→ counterpart（對應單交接）→ close（關 Issue）→ terminal → worktree（rm 後跑 Bare guard）→ branch（`branch -d`）
 // → remote（刪遠端分支）→ parent（子單全部結束就留言關母單）。每一步先看做過沒有，做過就 SKIP，所以中斷後可以重跑。
-// 本機分支一律 `branch -d`，沒合進 main 就讓 git 拒絕（batch-40-51 手寫的 `-D` 會刪掉沒合入的分支）。
+// 本機分支一律 `branch -d`，沒合進 main 就讓 git 拒絕（batch-40-51 手寫的 `-D` 會刪掉沒合入的分支）；設了 upstream 的分支 `-d` 只比 upstream，先自己比 main。
 // Orca 一律用 `path:` 選擇器：Orca 開的 worktree 用 `branch:` 找不到（selector_not_found，#49）。
 // Orca rm 會順便刪掉它能證明已合入的本機分支，這時 branch 步驟就 SKIP。
 // 所有子行程的 stdin 都接 /dev/null（Orca CLI 會吃掉 stdin）；stderr 照常顯示，只濾掉 WSL 上 Orca 每次都印的 crashpad 錯誤行（#73）。
@@ -22,7 +22,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const USAGE = '用法：node scripts/pilot-close.mjs <batch key> <pr> <merge sha>（需要 ORCA_CLI_COMMAND）';
 const REPO = 'ron03wlb/ron-skills';
-const STEPS = ['evidence', 'counterpart', 'close', 'terminal', 'worktree', 'branch', 'remote', 'parent'];
 const here = dirname(fileURLToPath(import.meta.url));
 
 /** 步驟失敗：印成 `STOP <n> <step> <原因>`；沒帶 step 的錯誤由呼叫端補上正在做的那一步。 */
@@ -96,8 +95,12 @@ function syncMain(main, sha) {
 const issueView = (step, n, repo, fields) => JSON.parse(must(step, 'gh', ['issue', 'view', String(n), '--repo', repo, '--json', fields]));
 const api = (step, path) => JSON.parse(must(step, 'gh', ['api', `repos/${REPO}/${path}`]));
 
-/** 一個成員的 Close 各步驟，依 STEPS 的順序傳回 'DONE' 或 'SKIP'；失敗丟錯。 */
-function* closeMember({ cli, main, key, pr, sha, regression }, { n, branch, handle }) {
+/**
+ * 一個成員的 Close 各步驟，每一步先把 `at.step` 設成自己的名字，再傳回 'DONE' 或 'SKIP'；失敗丟錯。
+ * 呼叫端用 `at.step` 印 DONE／SKIP 行，也替不是 Stop 的錯誤標出 STOP 的步驟。
+ */
+function* closeMember({ cli, main, key, pr, sha, regression }, { n, branch, handle }, at) {
+  at.step = 'evidence';
   const issue = issueView('evidence', n, REPO, 'state,body,comments');
 
   if (issue.comments.some(c => c.body.includes(sha))) yield 'SKIP';
@@ -107,14 +110,17 @@ function* closeMember({ cli, main, key, pr, sha, regression }, { n, branch, hand
     yield 'DONE';
   }
 
+  at.step = 'counterpart';
   yield counterpart({ main, sha, n }, must('counterpart', 'node', [join(here, 'pilot-counterpart.mjs')], issue.body));
 
+  at.step = 'close';
   if (issue.state === 'CLOSED') yield 'SKIP';
   else {
     must('close', 'gh', ['issue', 'close', n, '--repo', REPO]);
     yield 'DONE';
   }
 
+  at.step = 'terminal';
   // worktree 已經移除時，它的 terminal 也跟著關了，Orca 也認不得那個選擇器。
   const tree = worktreeOf(main, branch);
   const terminalOpen = handle && tree
@@ -125,6 +131,7 @@ function* closeMember({ cli, main, key, pr, sha, regression }, { n, branch, hand
     yield 'DONE';
   }
 
+  at.step = 'worktree';
   if (!tree) yield 'SKIP';
   else {
     let failed;
@@ -132,17 +139,22 @@ function* closeMember({ cli, main, key, pr, sha, regression }, { n, branch, hand
     // rm 失敗也可能已把主 checkout 設成 bare，或其實已經移除（Orca 曾在建好 worktree 時回 ok:false）；以 git worktree list 為準。
     const unbare = run(join(here, 'pilot-unbare.sh'), [main, `close #${n}`]);
     if (unbare.stdout) process.stdout.write(unbare.stdout);
-    if (unbare.status !== 0) throw new Stop('worktree', `unbare ${unbare.reason}`);
+    if (unbare.status !== 0) throw new Stop('worktree', [failed?.message, `unbare ${unbare.reason}`].filter(Boolean).join('；'));
     if (worktreeOf(main, branch)) throw failed ?? new Stop('worktree', 'rm 之後 git worktree list 仍有這個分支');
     yield 'DONE';
   }
 
+  at.step = 'branch';
   if (!gitIn(main, 'rev-parse', '--verify', '-q', `refs/heads/${branch}`).stdout.trim()) yield 'SKIP';
   else {
+    // 分支設了 upstream 時 `branch -d` 只比 upstream，沒合進 main 也會刪掉，所以這時先自己比 main；沒有 upstream 就讓 `branch -d` 拒絕。
+    const upstream = gitIn(main, 'for-each-ref', '--format=%(upstream)', `refs/heads/${branch}`).stdout.trim();
+    if (upstream && gitIn(main, 'merge-base', '--is-ancestor', branch, 'main').status !== 0) throw new Stop('branch', `${branch} 有沒合進 main 的 commit（upstream 已有，branch -d 不會擋）`);
     must('branch', 'git', ['-C', main, 'branch', '-d', branch]);
     yield 'DONE';
   }
 
+  at.step = 'remote';
   const remote = gitIn(main, 'ls-remote', '--exit-code', '--heads', 'origin', branch).status;
   if (remote === 2) yield 'SKIP';
   else if (remote !== 0) throw new Stop('remote', `ls-remote exit ${remote}`);
@@ -151,6 +163,7 @@ function* closeMember({ cli, main, key, pr, sha, regression }, { n, branch, hand
     yield 'DONE';
   }
 
+  at.step = 'parent';
   yield closeParent(n);
 }
 
@@ -205,16 +218,18 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     if (!existsSync(checkpoint)) throw new Stop('checkpoint', `缺 ${checkpoint}`);
     const text = readFileSync(checkpoint, 'utf8');
     if (!/^current: /m.test(text)) throw new Stop('checkpoint', `${checkpoint} 沒有 current: 行`);
+    const members = doneMembers(text);
+    if (!members.length) throw new Stop('checkpoint', `${checkpoint} 沒有 done 成員`);
     const regression = text.match(/^regression: .*$/gm)?.pop();
+    // 上一輪可能中斷在 Orca rm 把主 checkout 設成 bare 之後；那時 worktree 已經不在，worktree 步驟不會再跑 Bare guard。
+    const unbare = run(join(here, 'pilot-unbare.sh'), [main, `close #${key}`]);
+    if (unbare.stdout) process.stdout.write(unbare.stdout);
+    if (unbare.status !== 0) throw new Stop('checkpoint', `unbare ${unbare.reason}`);
     at.step = 'main';
     console.log(`${syncMain(main, sha)} ${key} main`);
-    for (const member of doneMembers(text)) {
-      Object.assign(at, { n: member.n, step: STEPS[0] });
-      let i = 0;
-      for (const outcome of closeMember({ cli, main, key, pr, sha, regression }, member)) {
-        console.log(`${outcome} ${member.n} ${STEPS[i]}`);
-        at.step = STEPS[++i];
-      }
+    for (const member of members) {
+      at.n = member.n;
+      for (const outcome of closeMember({ cli, main, key, pr, sha, regression }, member, at)) console.log(`${outcome} ${member.n} ${at.step}`);
     }
     Object.assign(at, { n: key, step: 'checkpoint' });
     writeFileSync(checkpoint, readFileSync(checkpoint, 'utf8').replace(/^current: .*$/m, 'current: closed'));

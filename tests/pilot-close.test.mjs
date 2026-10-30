@@ -286,3 +286,34 @@ test('任何失敗都印 STOP：checkpoint 不在、gh 回的不是 JSON', t => 
   assert.equal(garbled.status, 4, garbled.stdout + garbled.stderr);
   assert.match(lines(garbled).pop(), /^STOP 76 evidence /);
 });
+
+// git 對設了 upstream 的分支只比 upstream：分支 push 過、沒合進 main，`branch -d` 也只印 warning 就刪掉（review 實測）。
+test('分支有 upstream 但沒合進 main：branch 步驟 STOP，不交給 branch -d，本機與遠端分支都還在', t => {
+  const f = fixture(t, { pushed: true, unmerged: true, orcaDeletesBranch: false });
+  git(f.worktree, 'push', '-q', '-u', 'origin', BRANCH);
+  const result = f.close();
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(lines(result).pop(), /^STOP 76 branch .*main/);
+  assert.equal(f.branchExists(), true);
+  assert.equal(f.remoteHas(), true);
+});
+
+test('上一輪中斷在 Orca 設成 bare 之後：重跑先還原 bare，再接著做', t => {
+  const f = fixture(t);
+  git(f.repo, 'worktree', 'remove', '--force', f.worktree);
+  git(f.repo, 'config', 'core.bare', 'true');
+  const result = f.close();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(lines(result)[0], `UNBARE ${f.repo}`);
+  assert.equal(git(f.repo, 'rev-parse', '--is-bare-repository'), 'false');
+  assert.equal(lines(result).pop(), 'CLOSED 76');
+});
+
+test('checkpoint 沒有 done 成員：STOP，不把 current 寫成 closed', t => {
+  const f = fixture(t);
+  writeFileSync(join(f.repo, '.scratch/pilot/batch-76.md'), f.checkpoint().replace('| done |', '| stop |'));
+  const result = f.close();
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(lines(result).pop(), /^STOP 76 checkpoint /);
+  assert.doesNotMatch(f.checkpoint(), /^current: closed$/m);
+});
