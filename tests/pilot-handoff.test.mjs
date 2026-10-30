@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -39,7 +39,11 @@ else if (b === 'send') {
   if (${takeover && !sendRejected}) fs.writeFileSync(${JSON.stringify(coordinator)}, 'pid 99   loop yes   since 2026-10-30T15:00:00+08:00   name ron-skills-ac\\n');
   reply('send', { send: { accepted: ${!sendRejected} } });
 }
-else if (b === 'read') reply('read', { terminal: { tail: [fs.readFileSync(${JSON.stringify(log)} + '.sent', 'utf8').trim().split('\\n').pop()] } });
+else if (b === 'close') reply('close', { close: { handle: arg('--terminal') } });
+else if (b === 'read') {
+  const sent = ${JSON.stringify(log)} + '.sent';
+  reply('read', { terminal: { tail: [fs.existsSync(sent) ? fs.readFileSync(sent, 'utf8').trim().split('\\n').pop() : '❯'], draft: '' } });
+}
 `);
   chmodSync(cli, 0o755);
   const handoff = (pid = '42') => spawnSync('node', [script, '--session', SESSION, '--pid', pid, '--reason', '已合入 2 批'], {
@@ -72,12 +76,14 @@ test('交接：改寫為 handoff 行、在主 checkout 開分頁並送出 /loop 
   assert.match(readFileSync(coordinator, 'utf8'), /^pid 99 /);
 });
 
-test('送出後新 session 沒寫入 pid 行：STOP pid-timeout，還原 coordinator 檔', t => {
-  const { coordinator, original, handoff } = fixture(t, { takeover: false });
+test('沒有 coordinator 檔：STOP not-coordinator，不建檔、不呼叫 Orca', t => {
+  const { coordinator, log, handoff } = fixture(t);
+  rmSync(coordinator);
   const result = handoff();
-  assert.equal(result.status, 4);
-  assert.equal(result.stdout.trim(), 'STOP pid-timeout term_pilot');
-  assert.equal(readFileSync(coordinator, 'utf8'), original);
+  assert.equal(result.status, 4, result.stderr);
+  assert.match(result.stdout.trim(), /^STOP not-coordinator/);
+  assert.equal(existsSync(coordinator), false);
+  assert.equal(readFileSync(log, 'utf8'), '');
 });
 
 test('送出時 coordinator 檔已是 handoff 行（不含 pid 欄），新 session 才會視為無人占用', t => {
@@ -87,17 +93,20 @@ test('送出時 coordinator 檔已是 handoff 行（不含 pid 欄），新 sess
   assert.match(seen, new RegExp(`^handoff   from-session ${SESSION}   from-pid 42   at \\S+   reason 已合入 2 批\\n$`));
 });
 
-for (const [name, options, cause] of [
-  ['create 失敗', { createError: true }, /^STOP create create_failed$/],
-  ['兩輪 TUI 都未就緒', { tuiUnsatisfied: 2 }, /^STOP tui-timeout term_pilot$/],
-  ['send 被拒', { sendRejected: true }, /^STOP send term_pilot$/],
+for (const [name, options, cause, opened] of [
+  ['create 失敗', { createError: true }, /^STOP create create_failed$/, false],
+  ['兩輪 TUI 都未就緒', { tuiUnsatisfied: 2 }, /^STOP tui-timeout term_pilot$/, true],
+  ['send 被拒', { sendRejected: true }, /^STOP send term_pilot$/, true],
+  ['新 session 沒寫入 pid 行', { takeover: false }, /^STOP pid-timeout term_pilot$/, true],
 ]) {
-  test(`${name}：STOP、還原 coordinator 檔`, t => {
-    const { coordinator, original, handoff } = fixture(t, options);
+  // 開出來的分頁不關，`/loop /issue-pilot` 之後仍可能接手，與照常繼續的舊 coordinator 同時活著。
+  test(`${name}：STOP、還原 coordinator 檔${opened ? '、關掉新開的分頁' : ''}`, t => {
+    const { coordinator, original, log, handoff } = fixture(t, options);
     const result = handoff();
     assert.equal(result.status, 4);
     assert.match(result.stdout.trim(), cause);
     assert.equal(readFileSync(coordinator, 'utf8'), original);
+    assert.equal(/^terminal close --terminal term_pilot --json$/m.test(readFileSync(log, 'utf8')), opened);
   });
 }
 

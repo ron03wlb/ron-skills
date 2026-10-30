@@ -2,12 +2,15 @@
 // 把 prompt 送進既有的 Orca Claude terminal（pilot 派工送 `/issue-run`、handoff 送 `/loop /issue-pilot`），並確認已開始處理。移植自 spay2。
 // 不用裸 `terminal send`：它會回 accepted，文字卻停在輸入框沒提交，重送又會黏成兩份。
 // 步驟：等 TUI 閒置（兩輪）→ 送出並讀畫面確認 prompt 開頭或 `esc to interrupt` 出現，沒出現就延後重送。
+// 送出前先讀 composer：先前裸 `terminal send` 留下未提交的同一段 prompt 時只補 Enter，不再黏成兩份（spay2 #691）。
 // session 仍在忙時 tui-idle 不成立，兩輪逾時即 STOP tui-timeout，不把 prompt 排進忙碌中的 turn。
 //
 // 用法：node scripts/orca-session-send.mjs --terminal <handle> --prompt <text>
 // stdout 最後一行：SENT <handle>，或 STOP <原因>（tui-timeout <handle>、send <handle>、orca <錯誤碼>）。
+// stderr：第一次送出因 composer 已有該 prompt 而只補 Enter 時印 `DRAFT_SUBMIT <handle>`（不含 prompt 文字）。
 // exit：0 已送達；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 const USAGE = '用法：node scripts/orca-session-send.mjs --terminal <handle> --prompt <text>（需要 ORCA_CLI_COMMAND）';
 
@@ -41,10 +44,12 @@ export function waitTuiReady(cli, handle) {
 /**
  * 送出 prompt 並確認進了 Claude：TUI 剛就緒時 Orca 會回 accepted 卻吞掉輸入。
  * 畫面出現 prompt 開頭或 `esc to interrupt` 才算送達；否則依 SEND_DELAYS 重送。送不出或三次都沒送達傳回 false。
+ * 第一次送出前先讀一次 composer 的 `draft`（缺省視為空），已有同一段文字時只補 Enter，並在 stderr 印 `DRAFT_SUBMIT <handle>`。
  */
 export function sendPrompt(cli, handle, text) {
   const landed = tail => tail.some(line => line.includes(text.slice(0, 24)) || line.includes('esc to interrupt'));
-  let draft = '';
+  let draft = orca(cli, 'terminal', 'read', '--terminal', handle).terminal?.draft ?? '';
+  if (resendInput(draft, text)[1] === '') console.error(`DRAFT_SUBMIT ${handle}`);
   for (const delay of SEND_DELAYS) {
     if (delay) sleep(delay);
     if (!orca(cli, 'terminal', 'send', '--terminal', handle, ...resendInput(draft, text)).send?.accepted) return false;
@@ -77,7 +82,7 @@ export function sendToSession(cli, handle, prompt) {
   return { handle };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const value = flag => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
   const handle = value('--terminal');

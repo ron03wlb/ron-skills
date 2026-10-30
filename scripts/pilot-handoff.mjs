@@ -4,14 +4,16 @@
 // 步驟：確認 `.scratch/pilot/coordinator` 的 pid 是呼叫者 → 改寫為 handoff 行（不含 `pid ` 欄，新 session 視為無人占用）
 //   → 在主 checkout 新開分頁 `issue-pilot coordinator` 跑 claude → orca-session-send 送出 `/loop /issue-pilot`
 //   → 等新 session 把 `pid ` 行寫進 coordinator 檔，才算交接完成。
-// 任一步失敗就還原 coordinator 檔並 STOP，舊 session 照常繼續當 coordinator。
+// 任一步失敗就還原 coordinator 檔、關掉已開的分頁並 STOP，舊 session 照常繼續當 coordinator（分頁留著，`/loop` 之後仍可能接手，變成兩個 coordinator）。
+// 沒有 coordinator 檔也是 STOP not-coordinator。
 //
 // 用法：node scripts/pilot-handoff.mjs --session <舊 session id> --pid <舊 CLAUDE_PID> --reason <原因>
 // stdout 最後一行：HANDED_OFF <terminal handle>，或 STOP <原因>（not-coordinator、create、tui-timeout、send、orca、pid-timeout）。
 // exit：0 交接完成；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { orca, sendToSession } from './orca-session-send.mjs';
 
 const USAGE = '用法：node scripts/pilot-handoff.mjs --session <id> --pid <pid> --reason <原因>（需要 ORCA_CLI_COMMAND）';
@@ -44,16 +46,19 @@ function waitNewCoordinator(file, pid) {
 
 function handoff(cli, main, { session, pid, reason }) {
   const file = join(main, '.scratch/pilot/coordinator');
-  const original = readFileSync(file, 'utf8');
+  const original = existsSync(file) ? readFileSync(file, 'utf8') : '';
   if (!new RegExp(`^pid ${pid}\\b`, 'm').test(original)) return `STOP not-coordinator ${original.trim()}`;
   const line = `handoff   from-session ${session}   from-pid ${pid}   at ${new Date().toISOString()}   reason ${reason}\n`;
   writeFileSync(file, line);
   // 新 session 可能已寫入自己的 pid 行；只在檔案仍是本次 handoff 行時還原，不蓋掉別人。
+  let handle;
   const stop = cause => {
+    if (handle) {
+      try { orca(cli, 'terminal', 'close', '--terminal', handle); } catch (error) { cause += `（關閉 ${handle} 失敗：${error.message}，請手動關掉）`; }
+    }
     if (readFileSync(file, 'utf8') === line) writeFileSync(file, original);
     return `STOP ${cause}`;
   };
-  let handle;
   try {
     handle = orca(cli, 'terminal', 'create', '--worktree', `path:${main}`, '--title', TITLE, '--command', 'claude').terminal.handle;
   } catch (error) {
@@ -65,7 +70,7 @@ function handoff(cli, main, { session, pid, reason }) {
   return `HANDED_OFF ${handle}`;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const value = flag => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
   const options = { session: value('--session'), pid: value('--pid'), reason: value('--reason') };
