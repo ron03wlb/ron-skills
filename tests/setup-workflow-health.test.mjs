@@ -120,9 +120,9 @@ test('隱性跨 repo 依賴：指向本 repo、使用者設定目錄或只到 re
   assert.equal(lines.at(-1), 'HEALTHY');
 });
 
-test('等級標示：adapter 自己寫的等級不必提到 repo 名；同一行提到兩個等級不算宣稱', t => {
+test('等級標示：adapter 寫明「等級」的行不必提到 repo 名，描述某級機制的句子不算；同一行提到兩個等級不算宣稱', t => {
   const { lines } = health(repo(t, {
-    'docs/agents/issue-run.md': '# issue-run adapter\n\n導入等級：L3\n',
+    'docs/agents/issue-run.md': '# issue-run adapter\n\n導入等級：L3\n\n- Push: L2 起由 pre-push hook 重驗。\n',
     'docs/guide.md': 'acme 的 adapter 只看五段就是 L1；其餘段落屬於 L3。\n',
   }));
   const level = lines.filter(line => line.startsWith('FINDING level'));
@@ -137,6 +137,12 @@ test('已追蹤但工作樹刪掉的檔案不讓體檢中斷；清單缺 sha256 
   assert.equal(status, 1, stderr);
   assert.match(lines.find(line => line.startsWith('FINDING divergence')), /invalid-entry scripts\/x\.mjs/);
   assert.equal(lines.at(-1), 'FINDINGS 1');
+});
+
+test('清單項目缺 template 也回報 invalid-entry 而不中斷', t => {
+  const { status, stderr, lines } = health(repo(t, { 'docs/agents/workflow-templates.json': JSON.stringify({ copies: { 'scripts/x.mjs': { commit: 'a', sha256: 'ab' } } }) }));
+  assert.equal(status, 1, stderr);
+  assert.match(lines.at(-2), /invalid-entry scripts\/x\.mjs/);
 });
 
 test('分歧：正本已不存在時回報 missing-canonical', t => {
@@ -160,4 +166,10 @@ test('不是 git repo 時 exit 2；不認得的旗標 exit 2', t => {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   assert.equal(health(dir).status, 2);
   assert.equal(spawnSync('node', [script, repo(t), '--fix'], { encoding: 'utf8', env }).status, 2);
+});
+
+test('清單不是合法 JSON 時回報 invalid-manifest', t => {
+  const { status, stderr, lines } = health(repo(t, { 'docs/agents/workflow-templates.json': '{bad' }));
+  assert.equal(status, 1, stderr);
+  assert.match(lines.at(-2), /^FINDING divergence invalid-manifest /);
 });
