@@ -4,7 +4,7 @@ description: "Gather the /retro files of retired coordinator sessions, implement
 disable-model-invocation: true
 ---
 
-Retired coordinator sessions ran `/retro` in **collect mode**: each wrote its candidates to a file and waits. You turn those files into one retro unit. Project facts (the collector script, worktree naming, checks, merge, push) come from the repo adapter `docs/agents/issue-run.md`, Pilot **Retro collect** line (in the file the Pilot section points to, when it points to one); with no such line, stop and say so. Run from the main checkout. `$ARGUMENTS` may name sessions (first 8 characters) to restrict the run to.
+Retired coordinator sessions ran `/retro` in **collect mode**: each wrote its candidates to a file and waits. You turn those files into one retro unit. Project facts (the collector script, worktree naming, checks, merge, push) come from the repo adapter `docs/agents/issue-run.md`, Pilot **Retro collect** line (in the file the Pilot section points to, when it points to one); with no such line, stop and say so. Run from the coordinator checkout (the Pilot **Coordinator checkout** line, or the main checkout without one). `$ARGUMENTS` may name sessions (first 8 characters) to restrict the run to.
 
 ## Steps
 

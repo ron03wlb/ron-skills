@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // skill 以 `Pilot **<名稱>** line` 讀 adapter 的 Pilot 設定；各 repo 照 ADAPTER.md 範本寫 adapter，範本沒列的設定就不會有人寫。
+// 無法在更上層消除：ADAPTER.md 是複製進各 repo 再填寫的範本，skill 與範本分屬不同檔案且無型別可共用，只能在 --check 比對兩邊。
 // 掃描本 repo 的 SKILL.md 與 README.md 中的 `Pilot **<名稱>** line`，每個名稱都必須是 ADAPTER.md `## Pilot` 段的一個 `**<名稱>.**` 條目。
 // 用法：node scripts/check-pilot-lines.mjs
 // stdout：每個違規一行 `PILOT_LINE_UNDOCUMENTED <名稱>（<引用檔>）`；exit 0 無違規、1 有違規。
