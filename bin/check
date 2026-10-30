@@ -21,3 +21,7 @@ node scripts/check-workflow-strings.mjs
 node scripts/check-workflow-secrets.mjs
 node scripts/check-workflow-sync.mjs
 node --test --test-force-exit tests/*.test.mjs
+# setup-workflow 的 script 正本與測試：先列出檔名（node --test 的輸出不帶檔名），再以正本的 node-test-guarded 跑，它會補跑靜默遺失的測試。
+templates=(skills/engineering/setup-workflow/templates/*.test.mjs)
+echo "TEMPLATE_TESTS ${#templates[@]}: ${templates[*]##*/}"
+node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-force-exit "${templates[@]}"

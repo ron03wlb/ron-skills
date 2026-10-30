@@ -16,10 +16,10 @@ const assistant = text => JSON.stringify({ type: 'assistant', message: { role: '
 const toolUse = id => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input: {} }] } });
 
 test('isMostlyEnglish：英文進度行命中', () => {
-  // 2026-10-20 retro 實例
+  // 2026-10-20 實例
   assert.equal(isMostlyEnglish('Both batches are in (issue-run 75/75, issue-pilot 18/18). Generating the two reports in parallel now.'), true);
   assert.equal(isMostlyEnglish('Rule changes noted (push handoff uses `推送指令` from check-before-push). Running Codex review.'), true);
-  // retro 1021b：3–5 個英文單字、沒有中文的短句原本低於門檻
+  // 3–5 個英文單字、沒有中文的短句原本低於門檻
   assert.equal(isMostlyEnglish('Still running; nothing new.'), true);
   assert.equal(isMostlyEnglish('Now the tests.'), true);
 });
@@ -28,8 +28,8 @@ test('isMostlyEnglish：中文句型夾技術名詞、程式碼與短句不命�
   for (const text of [
     '兩個 batch 都送出了，背景會等它們完成後自動取回結果。',
     'Fast check exit 0。跑 Docker focused（全部 `OverviewCompatibility*` integration tests）。',
-    '執行 `node scripts/check-contracts.sh --verbose --no-cache` 與 /home/ron/code/spay2/scripts/claude-hook-git-bypass.mjs。',
-    '```bash\nnode analyze.mjs report --skill issue-run --repo ~/code/spay2\n```\n報告已產生。',
+    '執行 `node scripts/check-contracts.sh --verbose --no-cache` 與 /home/user/code/app/scripts/claude-hook-git-bypass.mjs。',
+    '```bash\nnode analyze.mjs report --skill issue-run --repo ~/code/app\n```\n報告已產生。',
     'DONE 439 4b14f45a922942987473d3a1b9358740c2409777',
     'OK.',
     'Pushed.',
@@ -104,7 +104,7 @@ test('hook PostToolUse：工具呼叫前的英文進度行 exit 2；中文、平
   assert.match(stop.stderr, /本輪有 1 段/);
 });
 
-// retro 1024a：2026-10-23 819a4da3 transcript 的實際形狀（欄位節錄）
+// 2026-10-23 某 transcript 的實際形狀（欄位節錄）
 const LIMIT = "You've hit your weekly limit · resets 3am (Asia/Taipei)";
 const synthetic = (text = LIMIT) => JSON.stringify({ type: 'assistant', isApiErrorMessage: true, error: 'rate_limit', apiError: 'usage_limit_reached',
   message: { model: '<synthetic>', role: 'assistant', stop_reason: 'stop_sequence', content: [{ type: 'text', text }] } });
@@ -115,7 +115,7 @@ const stopFeedback = sample => JSON.stringify({ type: 'user', isMeta: true,
 const postBlock = sample => JSON.stringify({ type: 'attachment', attachment: { type: 'hook_blocking_error', hookName: 'PostToolUse:Bash', hookEvent: 'PostToolUse',
   blockingError: { blockingError: `[node "$CLAUDE_PROJECT_DIR/scripts/claude-hook-language.mjs"]: 語言檢查：這次工具呼叫前有 1 段使用者可見文字以英文為主（例：「${sample}」）。`, command: 'node' } } });
 
-test('isSyntheticEntry／isHarnessText：harness 合成項目與用量上限句型（retro 1024a）', () => {
+test('isSyntheticEntry／isHarnessText：harness 合成項目與用量上限句型', () => {
   assert.equal(isSyntheticEntry(JSON.parse(synthetic())), true);
   assert.equal(isSyntheticEntry({ type: 'assistant', message: { model: '<synthetic>', content: [] } }), true);
   assert.equal(isSyntheticEntry(JSON.parse(assistant('一般回覆'))), false);
@@ -129,14 +129,14 @@ test('isSyntheticEntry／isHarnessText：harness 合成項目與用量上限句�
   }
 });
 
-test('lastTurnTexts／textsBeforeTool：略過合成的用量上限訊息，結構欄位缺漏時以句型略過（retro 1024a）', () => {
+test('lastTurnTexts／textsBeforeTool：略過合成的用量上限訊息，結構欄位缺漏時以句型略過', () => {
   const jsonl = [user('/loop'), synthetic(), continuation(), toolUse('t1'), toolResult(), assistant(LIMIT), assistant('接著探針。'), toolUse('t2')].join('\n');
   assert.deepEqual(lastTurnTexts(jsonl), ['接著探針。']);
   assert.deepEqual(textsBeforeTool(jsonl, 't1'), []);
   assert.deepEqual(textsBeforeTool(jsonl, 't2'), ['接著探針。']);
 });
 
-test('lastTurnTexts：本 hook 提示過（Stop feedback 或 PostToolUse blocking error）的段落不再重提（retro 1024a）', () => {
+test('lastTurnTexts：本 hook 提示過（Stop feedback 或 PostToolUse blocking error）的段落不再重提', () => {
   const english = 'Merged the branch. Now land the next one please.';
   assert.deepEqual(lastTurnTexts([user('/loop'), assistant(english), stopFeedback(english), assistant('已改用中文說明。')].join('\n')), ['已改用中文說明。']);
   assert.deepEqual(lastTurnTexts([user('/loop'), assistant(english), toolUse('t1'), postBlock(english), toolResult()].join('\n')), []);
@@ -145,7 +145,7 @@ test('lastTurnTexts：本 hook 提示過（Stop feedback 或 PostToolUse blockin
   assert.deepEqual(lastTurnTexts([user('/loop'), assistant(english), other].join('\n')), [english]);
 });
 
-test('hook Stop：只有用量上限訊息、或英文段落已提示過一次時 exit 0（retro 1024a）', () => {
+test('hook Stop：只有用量上限訊息、或英文段落已提示過一次時 exit 0', () => {
   const dir = mkdtempSync(join(tmpdir(), 'claude-hook-language-'));
   const limit = join(dir, 'limit.jsonl');
   writeFileSync(limit, [user('/loop /issue-pilot'), synthetic(), continuation(), toolUse('t1'), toolResult(), assistant('額度恢復，繼續協調。')].join('\n'));
