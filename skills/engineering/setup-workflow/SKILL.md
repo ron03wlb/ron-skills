@@ -85,4 +85,5 @@ Canonical scripts in `<skill>/templates/`. A row's level is the lowest level tha
 | `adr-next.mjs` | L2, repos with `docs/adr/` | named in the repo's ADR rules |
 | `claude-hook-main-checkout.mjs` | L3, always | `PreToolUse` matcher `Edit\|Write\|Bash`: blocks writes (Bash: `sed -i`, `perl -i`, `>`/`>>`, `tee` targets) that would dirty the main checkout's `git status` (tracked files and new files that are not gitignored), which stop the pilot's Probe from merging |
 | `orca-worktree-create.mjs`, `orca-session-send.mjs`, `orca-session-split.mjs` | L3, with Orca | the adapter's Dispatch and Handoff lines |
+| `pilot-counterpart.mjs` | L3, when Issues name cross-repo counterparts (`對應單：<owner>/<repo>#<m>`) | the adapter's Pilot Close line |
 | `run-codex-review.mjs` | `codex` | the adapter's Review |
