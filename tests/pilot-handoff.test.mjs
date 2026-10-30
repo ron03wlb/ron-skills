@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import { FAST, orcaReplySource } from './helpers/fake-orca.mjs';
 
 const script = new URL('../scripts/pilot-handoff.mjs', import.meta.url).pathname;
@@ -13,7 +14,8 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !ke
 
 // 主 checkout 的 coordinator 檔（pid 42），以及記錄呼叫的假 Orca CLI（回應由 helpers/fake-orca.mjs 的真實樣本長出）。
 // `takeover` 為真時，假 Orca 收到送出就像新 session 跑了 /issue-pilot 的 Entry：把自己的 `pid ` 行寫進 coordinator 檔。
-function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true } = {}) {
+// `waitHangs` 為真時 `terminal wait` 永遠不回。
+function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true, waitHangs = false } = {}) {
   const temp = mkdtempSync(join(tmpdir(), 'pilot-handoff-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
@@ -32,6 +34,7 @@ const fs = require('fs'); const [, b] = process.argv.slice(2); const arg = k => 
 fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 ${orcaReplySource()}
 if (b === 'create') ${createError ? `fail('create_failed')` : `reply('create', { terminal: { handle: 'term_pilot' } })`};
+else if (b === 'wait' && ${waitHangs}) setInterval(() => {}, 1000);
 else if (b === 'wait') reply('wait', { wait: { satisfied: (fs.readFileSync(${JSON.stringify(log)}, 'utf8').match(/terminal wait/g) || []).length > ${tuiUnsatisfied} } });
 else if (b === 'send') {
   fs.appendFileSync(${JSON.stringify(log)} + '.sent', arg('--text') + '\\n');
@@ -46,11 +49,12 @@ else if (b === 'read') {
 }
 `);
   chmodSync(cli, 0o755);
-  const handoff = (pid = '42') => spawnSync('node', [script, '--session', SESSION, '--pid', pid, '--reason', '已合入 2 批'], {
-    cwd: repo, encoding: 'utf8',
-    env: { ...env, ORCA_CLI_COMMAND: cli, ...FAST, PILOT_HANDOFF_WAIT_MS: '300', PILOT_HANDOFF_POLL_MS: '10' },
-  });
-  return { repo, coordinator, original, log, handoff };
+  const args = pid => [script, '--session', SESSION, '--pid', pid, '--reason', '已合入 2 批'];
+  const options = extra => ({ cwd: repo, encoding: 'utf8', env: { ...env, ORCA_CLI_COMMAND: cli, ...FAST, PILOT_HANDOFF_WAIT_MS: '300', PILOT_HANDOFF_POLL_MS: '10', ...extra } });
+  const handoff = (pid = '42', extra = {}) => spawnSync('node', args(pid), { ...options(extra), timeout: 20000 });
+  // 背景執行，給要在中途送訊號的測試用。
+  const start = (extra = {}) => spawn('node', args('42'), options(extra));
+  return { repo, coordinator, original, log, handoff, start };
 }
 
 // 真實發生過的錯：coordinator 已換人（pid 不是呼叫者）時舊 session 照樣交接，會把新 coordinator 的 pid 行蓋掉。
@@ -115,6 +119,42 @@ for (const [name, options, cause, opened] of [
     assert.match(result.stdout.trim(), cause);
     assert.equal(readFileSync(coordinator, 'utf8'), original);
     assert.equal(/^terminal close --terminal term_pilot --json$/m.test(readFileSync(log, 'utf8')), opened);
+  });
+}
+
+// 真實發生過的錯：腳本一路同步等到底，最壞約 15 分鐘，超過 Bash 工具 600 秒上限；被殺時 coordinator 停在 handoff 行，不還原也不印 STOP。
+test('總時間超過上限（新 session 一直沒寫 pid 行）：STOP timeout、還原 coordinator 檔、關掉新開的分頁', t => {
+  const { coordinator, original, log, handoff } = fixture(t, { takeover: false });
+  const result = handoff('42', { PILOT_HANDOFF_WAIT_MS: '600000', PILOT_HANDOFF_BUDGET_MS: '1500' });
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(result.stdout.trim().split('\n').pop(), 'STOP timeout');
+  assert.equal(readFileSync(coordinator, 'utf8'), original);
+  assert.match(readFileSync(log, 'utf8'), /^terminal close --terminal term_pilot --json$/m);
+});
+
+test('等 TUI 時 Orca 卡住：預算到了殺掉它、STOP timeout、還原並關掉分頁', t => {
+  const { coordinator, original, log, handoff } = fixture(t, { waitHangs: true });
+  const result = handoff('42', { SESSION_TUI_WAIT_MS: '120000', PILOT_HANDOFF_BUDGET_MS: '1500' });
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(result.stdout.trim().split('\n').pop(), 'STOP timeout');
+  assert.equal(readFileSync(coordinator, 'utf8'), original);
+  assert.match(readFileSync(log, 'utf8'), /^terminal close --terminal term_pilot --json$/m);
+});
+
+for (const name of ['SIGTERM', 'SIGINT']) {
+  test(`等新 session 時收到 ${name}：STOP signal ${name}、還原 coordinator 檔、關掉新開的分頁`, async t => {
+    const { coordinator, original, log, start } = fixture(t, { takeover: false });
+    const child = start({ PILOT_HANDOFF_WAIT_MS: '600000' });
+    let stdout = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    while (!existsSync(log + '.sent')) await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise(resolve => setTimeout(resolve, 200));
+    child.kill(name);
+    const [status] = await once(child, 'exit');
+    assert.equal(status, 4);
+    assert.equal(stdout.trim().split('\n').pop(), `STOP signal ${name}`);
+    assert.equal(readFileSync(coordinator, 'utf8'), original);
+    assert.match(readFileSync(log, 'utf8'), /^terminal close --terminal term_pilot --json$/m);
   });
 }
 

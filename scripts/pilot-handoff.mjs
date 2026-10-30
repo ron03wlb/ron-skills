@@ -6,13 +6,16 @@
 //   → 等新 session 把 `pid ` 行寫進 coordinator 檔，才算交接完成。
 // 任一步失敗就還原 coordinator 檔、關掉已開的分頁並 STOP，舊 session 照常繼續當 coordinator（分頁留著，`/loop` 之後仍可能接手，變成兩個 coordinator）。
 // 沒有 coordinator 檔也是 STOP not-coordinator。
+// 總時間有上限：Bash 工具最多等 600 秒，被殺就來不及還原，所以預算到了（STOP timeout）或收到 SIGTERM、SIGINT（STOP signal <名稱>）都中止進行中的步驟、走同一條還原路徑，
+// 最壞在 540 秒內結束。因此全程用 async：同步等待會擋住訊號處理。
 //
 // 用法：node scripts/pilot-handoff.mjs --session <舊 session id> --pid <舊 CLAUDE_PID> --reason <原因>
-// stdout 最後一行：HANDED_OFF <terminal handle>，或 STOP <原因>（not-coordinator、create、tui-timeout、send、orca、pid-timeout）。
+// stdout 最後一行：HANDED_OFF <terminal handle>，或 STOP <原因>（not-coordinator、create、tui-timeout、send、orca、pid-timeout、timeout、signal）。
 // exit：0 交接完成；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { orca, sendToSession } from './orca-session-send.mjs';
 
@@ -20,11 +23,13 @@ const USAGE = '用法：node scripts/pilot-handoff.mjs --session <id> --pid <pid
 export const LOOP_COMMAND = '/loop /issue-pilot';
 export const TITLE = 'issue-pilot coordinator';
 
-/** 新 session 啟動、TUI 就緒後跑完 /issue-pilot 的 Entry 才寫 pid 行；預設最多等 10 分鐘。 */
-const WAIT_MS = Number(process.env.PILOT_HANDOFF_WAIT_MS || 600000);
+/** 新 session 啟動、TUI 就緒後跑完 /issue-pilot 的 Entry 才寫 pid 行；送達後最多等 5 分鐘（仍受總預算限制）。 */
+const WAIT_MS = Number(process.env.PILOT_HANDOFF_WAIT_MS || 300000);
 const POLL_MS = Number(process.env.PILOT_HANDOFF_POLL_MS || 5000);
 
-const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+/** 總預算 520 秒，到了就中止；還原時關分頁最多再等 10 秒，合計低於 540 秒。 */
+const BUDGET_MS = Number(process.env.PILOT_HANDOFF_BUDGET_MS || 520000);
+const CLOSE_MS = 10000;
 
 /** 主 checkout：`git worktree list` 的第一列，從任何 worktree 呼叫都指回同一處。 */
 function mainCheckout() {
@@ -33,18 +38,19 @@ function mainCheckout() {
   return result.stdout.split('\n')[0].replace(/^worktree /, '');
 }
 
-/** 等 coordinator 檔出現別人的 `pid ` 行；逾時傳回 false。 */
-function waitNewCoordinator(file, pid) {
+/** 等 coordinator 檔出現別人的 `pid ` 行；逾時傳回 false，中止時丟出 AbortError。 */
+async function waitNewCoordinator(file, pid, signal) {
   const deadline = Date.now() + WAIT_MS;
   for (;;) {
     const owner = (existsSync(file) ? readFileSync(file, 'utf8') : '').match(/^pid (\d+)\b/m)?.[1];
     if (owner && owner !== pid) return true;
     if (Date.now() >= deadline) return false;
-    sleep(POLL_MS);
+    await sleep(POLL_MS, undefined, { signal });
   }
 }
 
-function handoff(cli, main, { session, pid, reason }) {
+/** `signal` 中止時（reason 為 `timeout` 或 `signal <名稱>`）進行中的步驟丟錯，STOP 原因改用 reason。 */
+async function handoff(cli, main, { session, pid, reason }, signal) {
   const file = join(main, '.scratch/pilot/coordinator');
   const original = existsSync(file) ? readFileSync(file, 'utf8') : '';
   if (!new RegExp(`^pid ${pid}\\b`, 'm').test(original)) return `STOP not-coordinator ${original.trim().split('\n').join(' / ')}`;
@@ -52,21 +58,27 @@ function handoff(cli, main, { session, pid, reason }) {
   writeFileSync(file, line);
   // 新 session 可能已寫入自己的 pid 行；只在檔案仍是本次 handoff 行時還原，不蓋掉別人。
   let handle;
-  const stop = cause => {
+  const ctx = { cli, signal };
+  const stop = async cause => {
+    if (signal.aborted) cause = signal.reason;
     if (handle) {
-      try { orca(cli, 'terminal', 'close', '--terminal', handle); } catch (error) { cause += `（關閉 ${handle} 失敗：${error.message}，請手動關掉）`; }
+      try { await orca({ cli, signal: AbortSignal.timeout(CLOSE_MS) }, 'terminal', 'close', '--terminal', handle); } catch (error) { cause += `（關閉 ${handle} 失敗：${error.message}，請手動關掉）`; }
     }
     if (!existsSync(file) || readFileSync(file, 'utf8') === line) writeFileSync(file, original);
     return `STOP ${cause}`;
   };
   try {
-    handle = orca(cli, 'terminal', 'create', '--worktree', `path:${main}`, '--title', TITLE, '--command', 'claude').terminal.handle;
+    handle = (await orca(ctx, 'terminal', 'create', '--worktree', `path:${main}`, '--title', TITLE, '--command', 'claude')).terminal.handle;
   } catch (error) {
     return stop(`create ${error.message}`);
   }
-  const sent = sendToSession(cli, handle, LOOP_COMMAND);
+  const sent = await sendToSession(ctx, handle, LOOP_COMMAND);
   if (sent.stop) return stop(sent.stop);
-  if (!waitNewCoordinator(file, pid)) return stop(`pid-timeout ${handle}`);
+  try {
+    if (!await waitNewCoordinator(file, pid, signal)) return stop(`pid-timeout ${handle}`);
+  } catch (error) {
+    return stop(error.message);
+  }
   return `HANDED_OFF ${handle}`;
 }
 
@@ -79,8 +91,12 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     console.error(USAGE);
     process.exit(2);
   }
+  const controller = new AbortController();
+  const budget = setTimeout(() => controller.abort('timeout'), BUDGET_MS);
+  for (const name of ['SIGTERM', 'SIGINT']) process.on(name, () => controller.abort(`signal ${name}`));
   try {
-    const line = handoff(cli, mainCheckout(), options);
+    const line = await handoff(cli, mainCheckout(), options, controller.signal);
+    clearTimeout(budget);
     console.log(line);
     process.exit(line.startsWith('STOP') ? 4 : 0);
   } catch (error) {
