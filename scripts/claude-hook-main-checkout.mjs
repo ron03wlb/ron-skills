@@ -191,6 +191,8 @@ export function bashWriteTargets(command, cwd) {
       for (let i = 0; i < args.length; i += 1) {
         const arg = args[i];
         if (arg === '-e' || arg === '-f' || /^-[a-zA-Z]*e$/.test(arg)) { i += 1; continue; }
+        // BSD sed 的 `-i ''`：緊接的空字串是備份後綴，不是 sed script（#100）
+        if (/^-[a-zA-Z]*i$/.test(arg) && args[i + 1] === '') { i += 1; continue; }
         if (arg.startsWith('-')) continue;
         if (!scriptSeen) { scriptSeen = true; continue; }
         files.push(rawArgs[i]);
