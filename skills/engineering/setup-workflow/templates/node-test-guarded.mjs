@@ -7,6 +7,7 @@
 // force-exit 是測試 guardrail 的規範，不拿掉，改成比對後單獨重跑遺失的檔：
 //   子行程端由 lib/node-test-count-preload.mjs 記每檔實際跑完的測試名稱；父行程的 `ℹ tests <n>` 等於總數即通過，
 //   不等時以 spec 輸出的測試名稱逐檔比對，找出有測試沒出現在輸出的檔。
+//   沒有 node.test tracing channel 的 Node（22）記不到名稱：所有記錄都沒收到事件時放行，只回傳 node --test 的 exit code。
 // 用法：node scripts/node-test-guarded.mjs <node --test 的選項（--name=value 形式）…> <測試檔…>
 //   node --test 失敗時原樣回傳其 exit code。
 //   有遺失時每檔印 `NODE_TEST_LOST <path> ran=<子行程跑完數> missing=<輸出中缺的數>` 到 stderr，以同樣選項單獨重跑該檔，
@@ -31,6 +32,12 @@ export function parseRan(text) {
     ran.set(file, [...(ran.get(file) ?? []), ...names]);
   }
   return ran;
+}
+
+/** preload 的 JSON lines 有記錄、但沒有一筆收到 node.test 事件（Node 22 沒有這個 channel）。 */
+export function untraced(text) {
+  const records = text.split('\n').filter(Boolean).map(line => JSON.parse(line));
+  return records.length > 0 && !records.some(record => record.traced);
 }
 
 /** spec 輸出最後的 `ℹ tests <n>`；沒有時 null。 */
@@ -71,12 +78,17 @@ async function runOnce(options, files) {
     const code = await new Promise(done => child.on('close', (status, signal) => done(status ?? (signal ? 1 : 0))));
     if (code !== 0) return { code, lost: [] };
     const wanted = files.map(file => resolve(file));
-    const read = () => parseRan(existsSync(ranFile) ? readFileSync(ranFile, 'utf8') : '');
-    let ran = read();
+    const read = () => existsSync(ranFile) ? readFileSync(ranFile, 'utf8') : '';
+    let text = read();
+    let ran = parseRan(text);
     const total = () => [...ran.values()].reduce((sum, names) => sum + names.length, 0);
-    if (ran.size >= wanted.length && total() === reportedTotal(output)) return { code, lost: [] };
+    if (untraced(text) || (ran.size >= wanted.length && total() === reportedTotal(output))) return { code, lost: [] };
     // 父行程先結束：還在跑的子行程結束時才寫記錄，等它們寫完再比對
-    for (const until = Date.now() + ORPHAN_WAIT_MS; wanted.some(file => !ran.has(file)) && Date.now() < until; ran = read()) await sleep(500);
+    for (const until = Date.now() + ORPHAN_WAIT_MS; wanted.some(file => !ran.has(file)) && !untraced(text) && Date.now() < until; ran = parseRan(text)) {
+      await sleep(500);
+      text = read();
+    }
+    if (untraced(text)) return { code, lost: [] };
     const lost = lostFiles(ran, output);
     for (const file of wanted.filter(file => !ran.has(file))) lost.push({ file, ran: '?', missing: '?' });
     return { code, lost, mismatch: !lost.length && total() !== reportedTotal(output) ? `ran=${total()} reported=${reportedTotal(output)}` : null };

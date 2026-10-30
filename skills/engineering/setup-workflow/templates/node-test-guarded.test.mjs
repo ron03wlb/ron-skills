@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { lostFiles, parseRan, reportedTotal } from './node-test-guarded.mjs';
+import { lostFiles, parseRan, reportedTotal, untraced } from './node-test-guarded.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./node-test-guarded.mjs', import.meta.url));
 
@@ -19,6 +19,13 @@ function fixture(t, files) {
   return (...args) => spawnSync(process.execPath, [SCRIPT, '--test-force-exit', ...args], { cwd: dir, encoding: 'utf8', env });
 }
 
+// Node 22 沒有 node.test tracing channel：wrapper 放行、不偵測遺失，偵測遺失的測試只在有 channel 時跑
+const PROBE = "import { tracingChannel } from 'node:diagnostics_channel';\nlet seen = false;\n"
+  + "tracingChannel('node.test').subscribe({ start() {}, asyncStart() {}, asyncEnd() {}, error() {}, end() { seen = true; } });\n"
+  + "process.on('exit', () => process.stderr.write(String(seen)));\nconst { test } = await import('node:test');\ntest('probe', () => {});\n";
+const NO_CHANNEL = spawnSync(process.execPath, ['--input-type=module', '-e', PROBE], { encoding: 'utf8' }).stderr.trim() !== 'true'
+  && `${process.version} 沒有 node.test tracing channel`;
+
 const PASS = "import { test, describe, it } from 'node:test';\ndescribe('g', () => { it('x', () => {}); it('y', () => {}); });\ntest('o', async t => { await t.test('sub', () => {}); });\ntest.skip('s', () => {});\n";
 
 test('parseRan／reportedTotal／lostFiles：以 spec 輸出的名稱逐檔比對；同名分屬多檔時兩檔都算', () => {
@@ -29,6 +36,9 @@ test('parseRan／reportedTotal／lostFiles：以 spec 輸出的名稱逐檔比�
   assert.equal(reportedTotal('no summary'), null);
   assert.deepEqual(lostFiles(ran, output), [{ file: '/a.test.mjs', ran: 3, missing: 1 }, { file: '/b.test.mjs', ran: 3, missing: 2 }]);
   assert.deepEqual(lostFiles(parseRan('{"file":"/a.test.mjs","names":["x","v"]}\n'), output), []);
+  assert.equal(untraced('{"file":"/a.test.mjs","names":[],"traced":false}\n{"file":"/b.test.mjs","names":[],"traced":false}\n'), true);
+  assert.equal(untraced('{"file":"/a.test.mjs","names":[],"traced":false}\n{"file":"/b.test.mjs","names":["z"],"traced":true}\n'), false);
+  assert.equal(untraced(''), false);
 });
 
 test('全部回報：exit 0，輸出照舊是 spec（含 suite、子測試、skip）', t => {
@@ -52,7 +62,7 @@ const LOSSY = "import { test } from 'node:test';\nimport { existsSync, rmSync } 
   + "test('mute', () => { if (existsSync('MUTE')) { if (existsSync('FLAKY_ONCE')) rmSync('MUTE'); process.stdout.write = () => true; } });\n"
   + "for (const n of [1, 2, 3]) test(`t${n}`, () => {});\n";
 
-test('子行程跑完的測試沒有回報到父行程且 exit 0：印 NODE_TEST_LOST，單獨重跑通過即 exit 0', t => {
+test('子行程跑完的測試沒有回報到父行程且 exit 0：印 NODE_TEST_LOST，單獨重跑通過即 exit 0', { skip: NO_CHANNEL }, t => {
   const run = fixture(t, { 'lossy.test.mjs': LOSSY, 'ok.test.mjs': "import { test } from 'node:test';\ntest('ok', () => {});\n", MUTE: '', FLAKY_ONCE: '' });
   const result = run('lossy.test.mjs', 'ok.test.mjs');
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -60,7 +70,7 @@ test('子行程跑完的測試沒有回報到父行程且 exit 0：印 NODE_TEST
   assert.doesNotMatch(result.stderr, /ok\.test\.mjs/);
 });
 
-test('單獨重跑仍遺失：NODE_TEST_RERUN FAIL、exit 1', t => {
+test('單獨重跑仍遺失：NODE_TEST_RERUN FAIL、exit 1', { skip: NO_CHANNEL }, t => {
   const run = fixture(t, { 'lossy.test.mjs': LOSSY, MUTE: '' });
   const result = run('lossy.test.mjs');
   assert.equal(result.status, 1, result.stdout + result.stderr);
