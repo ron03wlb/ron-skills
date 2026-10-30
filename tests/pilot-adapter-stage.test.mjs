@@ -1,12 +1,51 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
-// coordinator 照 adapter Pilot 段逐行執行；這裡驗的是它讀到的那幾行。
+// coordinator 照 adapter Pilot 段逐行執行；這裡驗的是它讀到的那幾行。Pilot 段只指向 pilot.md，內容都在那裡（#45）。
 const adapter = readFileSync(new URL('../docs/agents/issue-run.md', import.meta.url), 'utf8');
-const pilot = adapter.match(/^## Pilot\n([\s\S]*?)(?=^## |(?![\s\S]))/m)[1];
+const pilot = readFileSync(new URL('../docs/agents/pilot.md', import.meta.url), 'utf8');
 const line = name => pilot.match(new RegExp(`^- \\*\\*${name}\\.\\*\\*.*$`, 'm'))?.[0] ?? '';
 const stageWorktree = '/home/ron/orca/workspaces/ron-skills/pilot-stage';
+
+test('issue-run.md 的 Pilot 段只留一行指向 pilot.md', () => {
+  const section = adapter.match(/^## Pilot\n([\s\S]*?)(?=^## |(?![\s\S]))/m)[1].trim();
+  assert.equal(section.split('\n').length, 1, 'Pilot 段只留一行');
+  assert.match(section, /\]\(pilot\.md\)/);
+});
+
+// 重現真實歷史：#20 改 Close、#22 改 Handoff，兩條相鄰沒空行，git 併成同一個 hunk 判成衝突（gate G2）。
+test('pilot.md 條目之間空一行：兩條分支各改相鄰條目可以自動合併', t => {
+  assert.doesNotMatch(pilot, /^- \*\*.*\n- \*\*/m, '相鄰兩個條目之間要空一行');
+  const repo = mkdtempSync(join(tmpdir(), 'pilot-md-merge-'));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  const git = (...args) => spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+  const edit = (name, mark) => writeFileSync(join(repo, 'pilot.md'), readFileSync(join(repo, 'pilot.md'), 'utf8').replace(`- **${name}.** `, `- **${name}.** ${mark} `));
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.email', 't@t');
+  git('config', 'user.name', 't');
+  writeFileSync(join(repo, 'pilot.md'), pilot);
+  git('add', '.');
+  git('commit', '-qm', 'base');
+  git('switch', '-qc', 'a');
+  edit('Close', '[A]');
+  git('commit', '-qam', 'a');
+  git('switch', '-qc', 'b', 'main');
+  edit('Handoff', '[B]');
+  git('commit', '-qam', 'b');
+  git('switch', '-q', 'a');
+  const merge = git('merge', '--no-edit', 'b');
+  assert.equal(merge.status, 0, merge.stdout + merge.stderr);
+});
+
+test('Stage：衝突 hunk 兩邊改的是不同條目時各取各的版本，並在新的 staged SHA 重跑 Regression', () => {
+  const stage = line('Stage');
+  assert.match(stage, /不同的 `- \*\*<名稱>\.\*\*` 條目/);
+  assert.match(stage, /重跑 Regression/);
+});
 
 // 重現真實歷史：stage #15 時主 checkout 切到 pilot/stage-<key>，工作樹帶出該分支的 .claude/settings.json，
 // 在主 checkout 跑的 session 都載入了它的 hook，切回 main 後每次 Stop 都報找不到腳本（#21）。
