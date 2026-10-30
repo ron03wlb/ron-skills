@@ -13,5 +13,5 @@ bare=$(git -C "$checkout" rev-parse --is-bare-repository)
 [[ $bare == true ]] || exit 0
 git -C "$checkout" config core.bare false
 mkdir -p "$checkout/.scratch/pilot"
-echo "| $(date -Iseconds) | 還原 core.bare | 被設成 true（$when） | git rev-parse --is-bare-repository 印出 true | git config core.bare false |" >> "$checkout/.scratch/pilot/decisions.md"
+echo "| $(date -Iseconds) | 還原 core.bare | 被設成 true（${when}） | git rev-parse --is-bare-repository 印出 true | git config core.bare false |" >> "$checkout/.scratch/pilot/decisions.md"
 echo "UNBARE $checkout"
