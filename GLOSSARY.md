@@ -43,3 +43,11 @@ _Avoid_: epic、map、總單
 **對應單**:
 另一個 repo 裡處理同一件事的 issue，在本文寫成「對應單：<owner>/<repo>#<m>」；這張 issue 合入後，pilot 到對應單留言交接。整句寫在「」、code span 或 code block 裡的是引用，不算。
 _Avoid_: 關聯單、mirror issue
+
+**池子**:
+開著、可以直接派工的 Issue：標 `ready-for-agent`，而且不是母單、沒被 block、沒被認領。
+_Avoid_: queue、backlog、待辦
+
+**認領**:
+session 開始處理一張 Issue 前，在 tracker 上把它指派給自己，讓其他機器或 session 不會撿到同一張。
+_Avoid_: lock、claim、佔單

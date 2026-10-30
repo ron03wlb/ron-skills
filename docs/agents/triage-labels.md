@@ -17,3 +17,10 @@ Edit the "Label in our tracker" column to match whatever vocabulary you actually
 ## `parent` label
 
 帶 `parent` label 的 issue 是母單（見 [issue-tracker.md](issue-tracker.md#母單)）：`/triage` 不把它放進 Unlabeled 桶，也不給它掛上表中任何 triage label。母單的 label 由 pilot 的 Reconcile 整理（[issue-run.md](issue-run.md) 的 **Probe**）。
+
+## `priority` 與 `retro` label
+
+兩個都不是 triage 角色，可以和上表的 label 同時掛。`scripts/issue-pool.mjs` 讀它們：
+
+- **`priority`**：`ready` 桶排在最前，勝過 block 開著的單的數目和號碼。
+- **`retro`**：retro 收集來的改進候選，還沒細化；不論掛了哪個 triage label，都歸到 `retro` 桶，不進池子。
