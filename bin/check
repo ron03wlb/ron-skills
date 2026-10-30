@@ -28,4 +28,5 @@ node --test --test-reporter=spec --test-force-exit tests/*.test.mjs | tee "$tmp/
 templates=(skills/engineering/setup-workflow/templates/*.test.mjs)
 echo "TEMPLATE_TESTS ${#templates[@]}: ${templates[*]##*/}"
 node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-force-exit "${templates[@]}" | tee -a "$tmp/tests.log"
-echo "CHECK_PASS tests $(sed -n 's/^ℹ tests \([0-9]*\)$/\1/p' "$tmp/tests.log" | paste -sd+)"
+# paste 要帶 `-`：macOS 的 BSD paste 沒有檔案參數時不讀 stdin，只印 usage，數字整段消失（#98）。
+echo "CHECK_PASS tests $(sed -n 's/^ℹ tests \([0-9]*\)$/\1/p' "$tmp/tests.log" | paste -sd+ -)"
