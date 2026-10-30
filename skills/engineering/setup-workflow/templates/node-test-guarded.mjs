@@ -2,10 +2,12 @@
 // 包住 `node --test`，偵測並補跑靜默遺失的測試（曾發生：多檔合併執行時一個長跑測試檔的最後 14 個測試
 // 沒有出現在輸出、總數少 13，卻 exit 0；單獨重跑 91 個全過）。Node v24.21 重現：`--test-force-exit` 加上多檔並行時，
 // 父行程會在長跑檔的子行程跑完前結束，該檔尾段結果不見、整體仍 exit 0；不加 force-exit 或只跑單檔幾乎不發生，
-// 父行程多掛 reporter（含寫檔）時幾乎每次發生，所以本 wrapper 不加 reporter，只轉印預設 spec 輸出。
+// 父行程多掛 reporter（含寫檔）時幾乎每次發生，所以本 wrapper 不多掛 reporter，只轉印 spec 輸出。
+// 呼叫端沒給 `--test-reporter` 時明確指定單一的 spec：Node 22 在 stdout 不是 TTY（這裡是 pipe）時預設 tap，Node 23 起才一律 spec。
 // force-exit 是測試 guardrail 的規範，不拿掉，改成比對後單獨重跑遺失的檔：
 //   子行程端由 lib/node-test-count-preload.mjs 記每檔實際跑完的測試名稱；父行程的 `ℹ tests <n>` 等於總數即通過，
 //   不等時以 spec 輸出的測試名稱逐檔比對，找出有測試沒出現在輸出的檔。
+//   沒有 node.test tracing channel 的 Node（22）記不到名稱：所有記錄都沒收到事件時放行，只回傳 node --test 的 exit code。
 // 用法：node scripts/node-test-guarded.mjs <node --test 的選項（--name=value 形式）…> <測試檔…>
 //   node --test 失敗時原樣回傳其 exit code。
 //   有遺失時每檔印 `NODE_TEST_LOST <path> ran=<子行程跑完數> missing=<輸出中缺的數>` 到 stderr，以同樣選項單獨重跑該檔，
@@ -30,6 +32,12 @@ export function parseRan(text) {
     ran.set(file, [...(ran.get(file) ?? []), ...names]);
   }
   return ran;
+}
+
+/** preload 的 JSON lines 有記錄、但沒有一筆收到 node.test 事件（Node 22 沒有這個 channel）。 */
+export function untraced(text) {
+  const records = text.split('\n').filter(Boolean).map(line => JSON.parse(line));
+  return records.length > 0 && !records.some(record => record.traced);
 }
 
 /** spec 輸出最後的 `ℹ tests <n>`；沒有時 null。 */
@@ -70,12 +78,18 @@ async function runOnce(options, files) {
     const code = await new Promise(done => child.on('close', (status, signal) => done(status ?? (signal ? 1 : 0))));
     if (code !== 0) return { code, lost: [] };
     const wanted = files.map(file => resolve(file));
-    const read = () => parseRan(existsSync(ranFile) ? readFileSync(ranFile, 'utf8') : '');
-    let ran = read();
+    const readText = () => existsSync(ranFile) ? readFileSync(ranFile, 'utf8') : '';
+    let text = readText();
+    let ran = parseRan(text);
     const total = () => [...ran.values()].reduce((sum, names) => sum + names.length, 0);
     if (ran.size >= wanted.length && total() === reportedTotal(output)) return { code, lost: [] };
     // 父行程先結束：還在跑的子行程結束時才寫記錄，等它們寫完再比對
-    for (const until = Date.now() + ORPHAN_WAIT_MS; wanted.some(file => !ran.has(file)) && Date.now() < until; ran = read()) await sleep(500);
+    for (const until = Date.now() + ORPHAN_WAIT_MS; wanted.some(file => !ran.has(file)) && !untraced(text) && Date.now() < until;) {
+      await sleep(500);
+      text = readText();
+      ran = parseRan(text);
+    }
+    if (untraced(text)) return { code, lost: [] };
     const lost = lostFiles(ran, output);
     for (const file of wanted.filter(file => !ran.has(file))) lost.push({ file, ran: '?', missing: '?' });
     return { code, lost, mismatch: !lost.length && total() !== reportedTotal(output) ? `ran=${total()} reported=${reportedTotal(output)}` : null };
@@ -86,6 +100,7 @@ async function runOnce(options, files) {
 
 export async function main(args) {
   const options = args.filter(arg => arg.startsWith('-'));
+  if (!options.some(arg => arg.startsWith('--test-reporter='))) options.unshift('--test-reporter=spec');
   const files = args.filter(arg => !arg.startsWith('-'));
   const first = await runOnce(options, files);
   if (first.code !== 0) return first.code;
