@@ -9,6 +9,15 @@
             "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude-hook-unbare.sh\""
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/claude-hook-main-checkout.mjs\""
+          }
+        ]
       }
     ],
     "Stop": [

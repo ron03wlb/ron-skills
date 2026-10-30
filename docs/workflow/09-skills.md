@@ -8,7 +8,8 @@
 
 | skill | 做什麼 | 等級 | 來源 |
 | --- | --- | --- | --- |
-| `/setup-matt-pocock-skills` | 產生 `docs/agents/` 的 tracker、triage label、domain docs 設定 | L1（人輸入） | Matt |
+| `/setup-workflow` | 導入入口：偵測等級（L0–L3）與擴充，建議往上一級；經人確認後寫 tracker、label、domain docs 與 adapter，並把 script 正本複製到 `scripts/`、記錄在 `docs/agents/workflow-templates.json` | L1（人輸入） | ron-skills |
+| `/setup-matt-pocock-skills` | 產生 `docs/agents/` 的 tracker、triage label、domain docs 設定 | L1（人輸入；`/setup-workflow` 會照它的步驟做，手動時才單獨用） | Matt |
 | `wizard` | 產生互動式 bash 精靈，帶人走完只有人能做的設定（建專案、token、CI secret） | 輔助 | Matt |
 | `writing-for-agents` | 寫 skill、`CLAUDE.md`、adapter 這類給 agent 讀的文件 | 輔助 | Matt |
 
