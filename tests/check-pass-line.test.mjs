@@ -19,7 +19,7 @@ function checkPass(t, { bsd }) {
   mkdirSync(bin);
   writeFileSync(join(bin, 'paste'), `#!/usr/bin/env bash
 # 模擬 BSD paste：要有檔案參數（\`-\` 表示 stdin）才執行，否則印 usage、exit 1。
-for arg in "$@"; do [[ $arg == - || $arg != -* ]] && exec ${realPaste} "$@"; done
+for arg in "$@"; do [[ $arg == - || $arg != -* ]] && exec "${realPaste}" "$@"; done
 echo 'usage: paste [-s] [-d delimiters] file ...' >&2; exit 1
 `);
   chmodSync(join(bin, 'paste'), 0o755);
@@ -29,6 +29,8 @@ echo 'usage: paste [-s] [-d delimiters] file ...' >&2; exit 1
 
 test('bin/check 有 CHECK_PASS 那一行', () => {
   assert.ok(line, 'bin/check 找不到 echo "CHECK_PASS 開頭的那一行');
+  // 下面的測試以環境變數 tmp 提供 $tmp/tests.log；bin/check 改了讀的檔案，這裡先失敗，不會只看到少了數字。
+  assert.match(line, /"\$tmp\/tests\.log"/);
 });
 
 test('BSD paste（macOS）：CHECK_PASS 印出兩組測試數 201+129', t => {
