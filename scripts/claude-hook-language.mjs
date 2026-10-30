@@ -32,7 +32,7 @@ const WORD = /\b[A-Za-z]{2,}\b/g;
  * 或英文單字 3–5 個且完全沒有中文字（「Still running; nothing new.」）。
  * 以中文句型串起技術名詞的進度行（「Fast check exit 0。跑 Docker focused」）不會命中；
  * 門檻依 2026-10-20 對 ~/.claude/projects 全部 11386 段 assistant 文字的抽樣調整；
- * 短句規則依 2026-10-21 對最近 173 個 transcript 7334 段文字抽樣：多命中 93 段，全是英文進度句。
+ * 短句規則依 2026-10-21 對 spay2 最近 173 個 transcript 7334 段文字抽樣：多命中 93 段，全是英文進度句。
  * @param {string} text assistant text block
  * @returns {boolean}
  */
@@ -53,7 +53,7 @@ const HARNESS = [
 const HARNESS_MAX = 300;
 const NOTICE = '語言檢查：';
 
-/** harness 合成的 assistant 項目：isApiErrorMessage、apiError 或 model `<synthetic>`（2026-10-23 819a4da3 的 weekly limit 即此形狀）。 */
+/** harness 合成的 assistant 項目：isApiErrorMessage、apiError 或 model `<synthetic>`（spay2 2026-10-23 transcript 的 weekly limit 即此形狀）。 */
 export function isSyntheticEntry(entry) {
   return entry.type === 'assistant' && (entry.isApiErrorMessage === true || Boolean(entry.apiError) || entry.message?.model === '<synthetic>');
 }
