@@ -8,7 +8,7 @@ import { invalidRules } from './check-claude-settings.mjs';
 
 test('工具名大寫開頭、mcp__ 開頭與帶 (...) 的規則都合法', () => {
   const settings = { permissions: {
-    allow: ['Bash(git status:*)', 'Bash(orca-ide terminal create *)', 'WebFetch', 'mcp__claude_ai_Linear__authenticate'],
+    allow: ['Bash(git status:*)', 'Bash(orca terminal create *)', 'WebFetch', 'mcp__claude_ai_Linear__authenticate'],
     deny: ['Edit(.claude/settings*.json)'],
   } };
   assert.deepEqual(invalidRules(settings), []);

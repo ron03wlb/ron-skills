@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../skills/productivity/daily-summary/scripts/day-sessions.mjs', import.meta.url).pathname;
 
@@ -13,7 +13,7 @@ const codexUser = (text) => JSON.stringify({ type: 'response_item', payload: { t
 
 /** 暫存的 Claude projects 與 Codex sessions 根目錄；當天為 2026-10-29（UTC+8）。 */
 function fixture(t) {
-  const root = mkdtempSync(join(tmpdir(), 'day-sessions-'));
+  const root = mkdtempSync(join(realTmpdir(), 'day-sessions-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const claude = join(root, 'claude');
   const proj = join(claude, '-home-ron-code-spay2');

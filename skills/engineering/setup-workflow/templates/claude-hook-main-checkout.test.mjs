@@ -3,10 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirtiesMainCheckout } from './claude-hook-main-checkout.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-main-checkout.mjs', import.meta.url));
 const hook = input => spawnSync('node', [script], { input, encoding: 'utf8' });
@@ -17,7 +17,7 @@ const git = (cwd, ...args) => {
 
 /** 暫存 repo：主 checkout 有追蹤檔 docs/a.md 與 gitignored .scratch/，另建一個 worktree。 */
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'claude-hook-main-checkout-'));
+  const root = mkdtempSync(join(realTmpdir(), 'claude-hook-main-checkout-'));
   const main = join(root, 'main');
   mkdirSync(join(main, 'docs'), { recursive: true });
   git(main, 'init', '-q', '-b', 'main');

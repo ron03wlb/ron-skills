@@ -3,10 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { numbersIn, plan } from './adr-next.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./adr-next.mjs', import.meta.url));
 const git = (cwd, ...args) => {
@@ -42,7 +42,7 @@ test('plan：下一號取整合分支與他人占用的最大值 +1；自己的�
 
 /** 整合分支已有 ADR-0001；other 已提交 ADR-0002；dirty 有未提交的 ADR-0003（未追蹤新概念檔）。 */
 const fixture = t => {
-  const root = mkdtempSync(join(tmpdir(), 'adr-next-'));
+  const root = mkdtempSync(join(realTmpdir(), 'adr-next-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const main = join(root, 'main');
   git(root, 'init', '-q', '-b', 'integration', main);

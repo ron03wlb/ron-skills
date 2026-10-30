@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { FAST, orcaReplySource } from './helpers/fake-orca.mjs';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../scripts/pilot-handoff.mjs', import.meta.url).pathname;
 const SESSION = '00000000-0000-0000-0000-000000000001';
@@ -17,7 +17,7 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !ke
 // `waitHangs` 為真時 `terminal wait` 永遠不回；`createDelayMs` 讓 `terminal create` 晚回（分頁已開、handle 還沒回來）；
 // `orphanLate` 為真時 `terminal list` 看不到 create 開的分頁（create 被殺時 Orca 還沒建好）。
 function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true, waitHangs = false, createDelayMs = 0, orphanLate = false } = {}) {
-  const temp = mkdtempSync(join(tmpdir(), 'pilot-handoff-'));
+  const temp = mkdtempSync(join(realTmpdir(), 'pilot-handoff-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
   mkdirSync(repo);

@@ -3,10 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findHits, parseArgs, parseWorktrees } from './concurrent-edits.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./concurrent-edits.mjs', import.meta.url));
 const git = (cwd, ...args) => {
@@ -44,7 +44,7 @@ test('findHits：略過自己的 worktree；他人已提交、未提交與整合
 
 /** 主 worktree 在 integration；other 分支改了 a.md（已提交）與 b.mjs（未提交）；整合分支在 base 之後又動了 c.txt。 */
 const fixture = t => {
-  const root = mkdtempSync(join(tmpdir(), 'concurrent-edits-'));
+  const root = mkdtempSync(join(realTmpdir(), 'concurrent-edits-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const main = join(root, 'main');
   git(root, 'init', '-q', '-b', 'integration', main);
