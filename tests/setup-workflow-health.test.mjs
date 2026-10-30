@@ -107,7 +107,7 @@ test('隱性跨 repo 依賴：adapter、settings、scripts 裡指向其他 repo 
   assert.equal(status, 1);
   const crossRepo = lines.filter(line => line.startsWith('FINDING cross-repo'));
   assert.equal(crossRepo.length, 3, lines.join('\n'));
-  assert.match(crossRepo[0], /~\/code\/spay2\/scripts\/orca-session-send\.mjs .*# docs\/agents\/issue-run\.md:9/);
+  assert.match(crossRepo.join('\n'), /~\/code\/spay2\/scripts\/orca-session-send\.mjs .*# docs\/agents\/issue-run\.md:9/);
   assert.match(crossRepo.join('\n'), /\/home\/someone\/code\/other-repo\/scripts\/hook\.mjs .*# \.claude\/settings\.json:1/);
   assert.match(crossRepo.join('\n'), /\$HOME\/work\/tools\/bin\/x\.mjs .*# scripts\/run\.sh:2/);
 });
@@ -118,4 +118,46 @@ test('隱性跨 repo 依賴：指向本 repo、使用者設定目錄或只到 re
   }));
   assert.equal(status, 0, lines.join('\n'));
   assert.equal(lines.at(-1), 'HEALTHY');
+});
+
+test('等級標示：adapter 自己寫的等級不必提到 repo 名；同一行提到兩個等級不算宣稱', t => {
+  const { lines } = health(repo(t, {
+    'docs/agents/issue-run.md': '# issue-run adapter\n\n導入等級：L3\n',
+    'docs/guide.md': 'acme 的 adapter 只看五段就是 L1；其餘段落屬於 L3。\n',
+  }));
+  const level = lines.filter(line => line.startsWith('FINDING level'));
+  assert.equal(level.length, 1, lines.join('\n'));
+  assert.match(level[0], /claimed L3 detected L0 .*# docs\/agents\/issue-run\.md:3/);
+});
+
+test('已追蹤但工作樹刪掉的檔案不讓體檢中斷；清單缺 sha256 的項目回報而不中斷', t => {
+  const root = repo(t, { 'notes.md': 'acme 是 L1\n', 'docs/agents/workflow-templates.json': JSON.stringify({ copies: { 'scripts/x.mjs': { template: TEMPLATE, commit: 'a' } } }) });
+  rmSync(join(root, 'notes.md'));
+  const { status, stderr, lines } = health(root);
+  assert.equal(status, 1, stderr);
+  assert.match(lines.find(line => line.startsWith('FINDING divergence')), /invalid-entry scripts\/x\.mjs/);
+  assert.equal(lines.at(-1), 'FINDINGS 1');
+});
+
+test('分歧：正本已不存在時回報 missing-canonical', t => {
+  const manifest = { copies: { 'scripts/x.mjs': { template: 'skills/engineering/setup-workflow/templates/no-such.mjs', commit: 'a', sha256: sha256('x\n') } } };
+  const { lines } = health(repo(t, { 'scripts/x.mjs': 'x\n', 'docs/agents/workflow-templates.json': JSON.stringify(manifest) }));
+  assert.match(lines.find(line => line.startsWith('FINDING divergence')), /missing-canonical scripts\/x\.mjs/);
+});
+
+test('隱性跨 repo 依賴：bin/ 與 git hook 也掃；家目錄下直接放 repo 的檔案路徑也算', t => {
+  const { lines } = health(repo(t, {
+    'bin/check': '#!/usr/bin/env bash\nnode ~/code/spay2/scripts/x.mjs\n',
+    '.githooks/pre-push': '#!/usr/bin/env bash\nnode ~/spay2/send.mjs\n',
+  }));
+  const crossRepo = lines.filter(line => line.startsWith('FINDING cross-repo')).join('\n');
+  assert.match(crossRepo, /~\/code\/spay2\/scripts\/x\.mjs .*# bin\/check:2/);
+  assert.match(crossRepo, /~\/spay2\/send\.mjs .*# \.githooks\/pre-push:2/);
+});
+
+test('不是 git repo 時 exit 2；不認得的旗標 exit 2', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'setup-workflow-health-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  assert.equal(health(dir).status, 2);
+  assert.equal(spawnSync('node', [script, repo(t), '--fix'], { encoding: 'utf8', env }).status, 2);
 });

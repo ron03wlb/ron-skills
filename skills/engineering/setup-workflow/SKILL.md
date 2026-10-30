@@ -10,7 +10,7 @@ Bring the target repo (the cwd, or the path in `$ARGUMENTS`) one **level** up th
 
 With `health` as the first word of `$ARGUMENTS`, run only the [Health check](#health-check) on the target repo (the path after it, or the cwd) and skip the steps below.
 
-`<skill>` below is this skill's directory (`readlink -f ~/.claude/skills/setup-workflow`); `<ron-skills>` is the repo that holds it (`git -C <skill> rev-parse --show-toplevel`). Both scripts document their usage and output lines in their header comment.
+`<skill>` below is this skill's directory (`readlink -f ~/.claude/skills/setup-workflow`); `<ron-skills>` is the repo that holds it (`git -C <skill> rev-parse --show-toplevel`). Each script documents its usage and output lines in its header comment.
 
 ## Steps
 
@@ -58,14 +58,14 @@ For a repo already imported: compare its adapter, docs and copies with what it a
 
    | Kind | Gap | Handling to recommend |
    | --- | --- | --- |
-   | `level` | a non-table doc line names this repo with exactly one level, and it differs from the level `detect.mjs` finds | correct the doc to the detected level, citing the `SIGNAL` evidence |
+   | `level` | a non-table line of the adapter, or of another Markdown file that names this repo, mentions exactly one level, and it differs from the level `detect.mjs` finds | correct the doc to the detected level, citing the `SIGNAL` evidence |
    | `divergence canonical-newer` | the copy still matches `workflow-templates.json`, but the canonical script has changed since | overwrite with `copy-templates.mjs <repo> --yes <template>` once the human confirms |
    | `divergence local-modified` | the copy no longer matches the recorded sha256 | carry the change back to the canonical script in ron-skills first |
    | `divergence both-modified` | both of the above; the indented diff (copy → canonical) follows the line | show the diff and leave the decision to the human |
-   | `divergence missing-copy`, `missing-canonical` | the manifest records a copy or canonical path that no longer exists | recopy, or drop the entry, as the human decides |
-   | `cross-repo` | the adapter, `.claude/settings.json` or `scripts/` uses an absolute home path into another repo | copy the file into this repo (as a template when it is generic), or pass the path in through an env var |
+   | `divergence missing-copy`, `missing-canonical`, `invalid-entry` | the manifest records a copy or canonical path that no longer exists, or an entry without `template` or `sha256` | recopy, or drop the entry, as the human decides |
+   | `cross-repo` | the adapter, `.claude/settings.json`, `scripts/`, `bin/` or the git hooks use an absolute home path into another repo | copy the file into this repo (as a template when it is generic), or pass the path in through an env var |
 
-2. **Report.** List each finding with its evidence and the handling above, then the last line verbatim. Done when every finding is listed or the run printed `HEALTHY`.
+2. **Report.** The `level` and `cross-repo` rules match text, so read each finding's evidence line and drop a false positive (a repo name that is also a common word, a path in an example) with the reason. List each remaining finding with its evidence and the handling above, then the script's last line verbatim. Done when every finding is listed or the run printed `HEALTHY`.
 
 ## Templates
 
