@@ -30,7 +30,12 @@ candidate 是分支 tip。acceptance 是在 candidate SHA、工作樹乾淨時�
 
 證據貼成 Issue 留言（candidate SHA、指令與 exit code、findings）。
 
-單獨跑的 `/issue-run` 在 acceptance 通過、證據貼好之後自己落地，不等人：把 PR body（`/pr` 格式，每張 Issue 一行 `Closes #<n>`）寫進 scratchpad，用 Bash `timeout: 600000` 跑 `node scripts/land.mjs <candidate 所在分支> --title '<標題>' --body-file <檔>`。它 push、開 PR、等 CI、以 merge commit 合併，再移除該分支的 worktree、刪本機與 `origin` 分支、讓主 checkout 的 `main` 跟上；多張 ticket 時，各 ticket 的 worktree 與分支在 `LANDED` 之後另外移除。最後一行是 `LANDED <pr> <merge sha>` 時，對每張 Issue 留言 PR 與 merge SHA，還開著的再關閉；`STOP checks-timeout` 重跑同一條指令，其他 `STOP <原因>`（如 `ci-failed`、`merge`）停下回報人，不硬合。
+單獨跑的 `/issue-run` 在 acceptance 通過、證據貼好之後自己落地，不等人：把 PR body（`/pr` 格式，每張 Issue 一行 `Closes #<n>`）寫進 scratchpad，用 Bash `timeout: 600000` 跑 `node scripts/land.mjs <candidate 所在分支> --title '<標題>' --body-file <檔>`。它 push、開 PR、等 CI、以 merge commit 合併，再移除該分支的 worktree、刪本機與 `origin` 分支、讓主 checkout 的 `main` 跟上；多張 ticket 時，各 ticket 的 worktree 在 `LANDED` 之後另外移除（Orca 建的用 `"$ORCA_CLI_COMMAND" worktree rm --worktree path:<path>`，會一起刪掉分支；其餘用 `git worktree remove` 加 `git branch -d`）。讀最後一行：
+
+- `LANDED <pr> <merge sha>`：對每張 Issue 留言 PR 與 merge SHA，還開著的再關閉。
+- `STOP checks-timeout`：重跑同一條指令。
+- `STOP worktree-rm`：PR 已經合入，只剩收尾沒做完；照常留言、關單，再回報人處理 worktree。
+- 其他 `STOP <原因>`（如 `ci-failed`、`merge`）或 exit 1：停下回報人，不硬合。
 
 pilot 底下的 worker 不落地：push、開 PR、合併與關單都由 coordinator 照 [pilot.md](pilot.md) 的 Push gate 與 Close 做。
 
