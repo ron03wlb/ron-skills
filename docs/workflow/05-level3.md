@@ -48,7 +48,7 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 
 ## adapter 的 Pilot 段
 
-L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條是一行。範本與每條的 Default 見 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 的 Pilot 段；實例見 ron-skills 的 [`docs/agents/issue-run.md`](../agents/issue-run.md)。
+L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目。範本與每條的 Default 見 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 的 Pilot 段；實例見 ron-skills 的 [`docs/agents/issue-run.md`](../agents/issue-run.md)。
 
 | 條目 | 寫什麼 |
 | --- | --- |
