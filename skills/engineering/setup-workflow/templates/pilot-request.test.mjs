@@ -62,6 +62,15 @@ test('decline <行號> --reason：附加 `   declined <reason>`', t => {
   assert.equal(lines(dir)[4], '2026-10-30T20:20:00+08:00   declined 的 source 也算內文   source demo-0d   declined 已經有 hold');
 });
 
+// 沒有 source 欄的行 reader 一律當成開著；只附加標記關不掉，所以先補上 `source unknown`。
+test('沒有 source 欄的行：apply 先補 `   source unknown` 再標記，之後 list 不再列出', t => {
+  const dir = checkout(t, '2026-10-30T20:00:00+08:00   重跑 probe\n');
+  const result = run(dir, 'apply', '1');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(lines(dir)[0], /^2026-10-30T20:00:00\+08:00   重跑 probe   source unknown   applied \S+$/);
+  assert.equal(run(dir, 'list').stdout, '');
+});
+
 test('行號不是開著的 request：印 NOT_OPEN <行號>、exit 1、不改檔', t => {
   const dir = checkout(t);
   for (const line of ['1', '4', '6', '99']) {

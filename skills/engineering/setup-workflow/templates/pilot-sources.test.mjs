@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { realTmpdir } from './test/real-tmpdir.mjs';
@@ -59,6 +59,15 @@ test('checkout 裡以 .. 開頭的檔名仍記成相對路徑', t => {
   const dir = checkout(t);
   writeFileSync(join(dir, '..notes.md'), 'x\n');
   assert.equal(run(dir, '--record', join(dir, '..notes.md')).stdout, 'SOURCE_CHANGED ..notes.md\nRECORDED 1\n');
+});
+
+test('經由 symlink 路徑執行仍會跑（macOS 的 /tmp 是 /private/tmp 的 symlink）', t => {
+  const dir = checkout(t);
+  const link = join(dir, 'link.mjs');
+  symlinkSync(SCRIPT, link);
+  const result = spawnSync('node', [link, dir, 'AGENTS.md'], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'SOURCE_CHANGED AGENTS.md\n');
 });
 
 test('沒給來源：exit 2', t => {

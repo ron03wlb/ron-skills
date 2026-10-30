@@ -67,6 +67,12 @@ test('--repair 認得手寫的 `| --- |` 分隔列與多空白的表頭，換成
   assert.equal(readFileSync(file(dir), 'utf8'), `# Decisions\n\n${HEADER}| a | b | c | d | e |\n`);
 });
 
+test('--repair 遇到不存在的檔案：印 OK、不建檔', t => {
+  const dir = checkout(t);
+  assert.equal(run(dir, '--repair').stdout, 'OK\n');
+  assert.throws(() => readFileSync(file(dir)));
+});
+
 test('--repair 遇到不是表格列或欄數不對的行：印 MALFORMED <行號> <行>、exit 1、不改檔', t => {
   const dir = checkout(t);
   const text = `# Decisions\n\n${HEADER}| a | b | c | d | e |\n隨手寫的備註\n| x | y |\n`;
