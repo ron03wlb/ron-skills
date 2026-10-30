@@ -20,7 +20,7 @@
 | --- | --- | --- | --- |
 | `.claude/settings.json` 的 allow／deny | 本地強制 | agent 的每次工具呼叫是否在放行範圍內；deny 的指令（例如直接開 MR、連資料庫）一律拒絕 | 人在自己的終端做同樣的事不受限；包在放行腳本裡的動作也看不到 |
 | `PreToolUse` hook：擋繞過 git hook | 本地強制 | Bash 指令含 `--no-verify`、`git commit -n`、`-c core.hooksPath=` 即拒絕 | 只比對字串；寫進腳本檔再執行的繞過抓不到 |
-| `PreToolUse` hook：擋改主 checkout | 本地強制 | Edit／Write，以及 Bash 的 `sed -i`、`perl -i`、`>`／`>>` 重導向與 `tee`，會讓本專案主 checkout 的 `git status` 不乾淨就拒絕（追蹤檔，以及沒被 gitignore 的新檔；別的 repo 不管），要求改在 worktree；L3 必接，因為 pilot 的 Probe 看到主 checkout 有改動就停止合併 | Bash 是啟發式辨識：子 shell、`eval`、腳本檔裡的寫入擋不到；解析不了的指令一律放行；目標裡的 `$變數` 先用同一條指令的賦值或環境變數代換，代換不了的（含 `$(…)`、`$$`、`${X:-y}`）不算目標；`cd`／`git -C` 到代換不了的目錄時照原本的目錄判斷 |
+| `PreToolUse` hook：擋改主 checkout | 本地強制 | Edit／Write，以及 Bash 的 `sed -i`、`perl -i`、`>`／`>>` 重導向與 `tee`，會讓本專案主 checkout 的 `git status` 不乾淨就拒絕（追蹤檔，以及沒被 gitignore 的新檔；別的 repo 不管），要求改在 worktree；L3 必接，因為 pilot 的 Probe 看到主 checkout 有改動就停止合併 | Bash 是啟發式辨識：子 shell、`eval`、腳本檔裡的寫入擋不到；解析不了的指令一律放行；目標裡的 `$變數` 先用同一條指令的賦值或環境變數代換，代換不了的（含 `$(pwd)` 以外的 `$(…)`、`$$`、`${X:-y}`）不算目標；`cd`／`git -C` 到代換不了的目錄時照原本的目錄判斷 |
 
 L1 通常一個 hook 都沒有；L2 開始多 session 並行時再加。
 

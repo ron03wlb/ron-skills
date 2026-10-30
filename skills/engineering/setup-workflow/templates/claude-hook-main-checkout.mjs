@@ -115,10 +115,10 @@ function expandBraces(word) {
   return match ? match[2].split(',').flatMap(part => expandBraces(`${match[1]}${part}${match[3]}`)) : [word];
 }
 
-/** 代換 `$NAME`／`${NAME}`：先查指令內賦值（值為 null 表示賦值時就解析不了；PWD 是目前目錄），再查環境變數；有解析不了的 `$` 時回傳 null。 */
+/** 代換 `$NAME`／`${NAME}`（`$(pwd)` 當成 `$PWD`）：先查指令內賦值（值為 null 表示賦值時就解析不了；PWD 是目前目錄），再查環境變數；有解析不了的 `$` 時回傳 null。 */
 function expandVars(word, vars) {
   let unresolved = false;
-  const expanded = word.replace(/\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})/g, (_, plain, braced) => {
+  const expanded = word.replaceAll('$(pwd)', '${PWD}').replace(/\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})/g, (_, plain, braced) => {
     const name = plain ?? braced;
     const value = vars.has(name) ? vars.get(name) : process.env[name];
     if (typeof value !== 'string') unresolved = true;

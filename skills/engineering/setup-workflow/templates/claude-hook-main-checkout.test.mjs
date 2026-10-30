@@ -159,6 +159,7 @@ test('Bash：無法解析的 $變數 不當成主 checkout 路徑；同一條指
     'declare F=docs/a.md; sed -i "s/a/b/" $F',
     'cd docs && echo hi > $PWD/new.md', // $PWD 是指令當下的目錄，不是 hook 行程的
     'D=$PWD; echo hi > $D/new.md',
+    'echo hi > "$(pwd)/new.md"',
     // cd 到解析不了的目錄時，後面的相對路徑仍依原本的目錄判斷：在主 checkout 常見這種寫法
     'cd "$(git rev-parse --show-toplevel)" && sed -i "s/a/b/" docs/a.md',
     'cd $D && echo hi > GLOSSARY.md',
