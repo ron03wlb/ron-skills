@@ -14,6 +14,7 @@ if [[ ${1:-} == --upstream ]]; then
   export MATT_SKILLS=$up/matt PSTACK_SKILLS=$up/pstack
 fi
 
+node scripts/check-node-version.mjs
 bin/sync-skills --check
 node scripts/check-links.mjs
 node scripts/build-workflow-site.mjs --check
