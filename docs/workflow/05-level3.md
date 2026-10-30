@@ -73,7 +73,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Project tick hooks | 每輪要跑的專案檢查 |
 | Retro collect | `/retro-collect` 需要的事實 |
 
-沒有專用腳本也能起步：ron-skills 的 Pilot 段把 Probe、Watch 都寫成手動指令序列，等真的跑出摩擦再做成腳本。
+沒有專用腳本也能起步：Probe、Watch 可以先寫成手動指令序列，等真的跑出摩擦再做成腳本。ron-skills 就是這樣：手拼 probe 漏過 terminal 已結束卻沒有結果行的 worker，之後才把 Probe 做成 `scripts/pilot-probe.mjs`，一次印出主 checkout、開著的請求與 gate、各 worker 與 batch 的狀態。
 
 ## tick hooks
 
