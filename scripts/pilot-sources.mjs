@@ -6,7 +6,7 @@
 // stdout：與記錄不同的來源每個一行 `SOURCE_CHANGED <source>`（沒有記錄也算），不存在的 `SOURCE_MISSING <source>`（記錄時已不存在的不再印）；
 //   --record 先照樣回報，再以這次的清單整份改寫記錄，最後印 `RECORDED <n>`。exit 0；沒給來源 exit 2。
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { storeDir, usage } from './lib/pilot-store.mjs';
@@ -38,7 +38,8 @@ export function checkSources(checkout, sources, { record = false } = {}) {
   return out;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+// 經由 symlink 執行時 argv[1] 不是真實路徑（macOS 的 /tmp），不先 realpath 就會安靜地什麼都不做，等於回報「都沒變」。
+if (import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const [checkout, ...args] = process.argv.slice(2);
   const sources = args.filter(arg => arg !== '--record');
   if (!checkout || !sources.length || sources.some(arg => arg.startsWith('--'))) usage(USAGE);

@@ -4,7 +4,7 @@
 //       node scripts/pilot-decision.mjs <checkout> --repair
 // stdout：附加時檔案不存在或是空的就先寫 `# Decisions` 標題與表頭，再附加一列；印 `DECISION <time>`。欄位不能含 `|` 或換行。
 // --repair：把檔案整理成「標題、表頭、全部列」（補上 pilot-unbare.sh 在沒有檔案時只附加列的情形，移除表格中間的空行與重複表頭），
-//   有改印 `REPAIRED`、本來就對印 `OK`；有不是五欄表格列的行時每行印 `MALFORMED <行號> <行>`、exit 1、不改檔。
+//   有改印 `REPAIRED`、本來就對（或檔案不存在）印 `OK`；有不是五欄表格列的行時每行印 `MALFORMED <行號> <行>`、exit 1、不改檔。
 // exit：0 成功；1 MALFORMED；2 用法錯誤。
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -23,7 +23,8 @@ if (!checkout || checkout.startsWith('--')) usage(USAGE);
 const file = join(storeDir(checkout), 'decisions.md');
 
 if (args.length === 1 && args[0] === '--repair') {
-  const lines = existsSync(file) ? readFileSync(file, 'utf8').split('\n') : [];
+  if (!existsSync(file)) { console.log('OK'); process.exit(0); }
+  const lines = readFileSync(file, 'utf8').split('\n');
   const rows = [];
   const malformed = [];
   lines.forEach((line, index) => {
@@ -33,8 +34,8 @@ if (args.length === 1 && args[0] === '--repair') {
   });
   if (malformed.length) { console.log(malformed.join('\n')); process.exit(1); }
   const text = `${[HEADING, '', ...HEADER, ...rows].join('\n')}\n`;
-  if (existsSync(file) && readFileSync(file, 'utf8') === text) console.log('OK');
-  else { mkdirSync(storeDir(checkout), { recursive: true }); writeFileSync(file, text); console.log('REPAIRED'); }
+  if (readFileSync(file, 'utf8') === text) console.log('OK');
+  else { writeFileSync(file, text); console.log('REPAIRED'); }
   process.exit(0);
 }
 

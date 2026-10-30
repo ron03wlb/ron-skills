@@ -33,8 +33,8 @@
     },
     "scripts/pilot-decision.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-decision.mjs",
-      "commit": "181e7833a1ca1708d798ffd6acb040cef203581b",
-      "sha256": "d3a618d7ff2e1d0ef1ce7b1d6928b0f38772eee562913f3a0b7dd1ebb25e22e8"
+      "commit": "b2a4ebd7a67c114f3b06b9368a853539fb9753bf",
+      "sha256": "c159373546680bd41d763cdd51f1f35a9f133ade8786b6db3c760c6585aeb1e8"
     },
     "scripts/pilot-hold.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-hold.mjs",
@@ -48,13 +48,13 @@
     },
     "scripts/pilot-request.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-request.mjs",
-      "commit": "181e7833a1ca1708d798ffd6acb040cef203581b",
-      "sha256": "577704c9e510ac5feee02a4b6e97f983eee55afc72ad42cecdf37f9d48ad80f3"
+      "commit": "b2a4ebd7a67c114f3b06b9368a853539fb9753bf",
+      "sha256": "e436cc4ec97bd39c138c81be08d659e8900687441a9f12edb5dfa6212f672b5f"
     },
     "scripts/pilot-sources.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-sources.mjs",
-      "commit": "181e7833a1ca1708d798ffd6acb040cef203581b",
-      "sha256": "81ad564112e914f36077bc8a8e4cd2d498a2f8a282db96bd5f1d82d31cd8534d"
+      "commit": "b2a4ebd7a67c114f3b06b9368a853539fb9753bf",
+      "sha256": "69b226139e459148ee840362baf386263695b17631e405fba874a2824c9019c9"
     }
   }
 }
