@@ -42,6 +42,8 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 | `requests.md` | 其他 session 轉來的請求（插單、hold、stop） |
 | `sessions.md` | 每個 coordinator session 一行，給 `/retro` 找紀錄 |
 
+這張表只說各檔案的用途。每個檔案的路徑、逐行格式與合法值（包括 `coordinator`、`hold` 與批次 checkpoint）只寫在 [`PILOT-STORE.md`](../../skills/engineering/issue-pilot/PILOT-STORE.md)，各專案的 adapter 不再另寫一份。
+
 在其他 session 輸入 `/issue-pilot <n>`、`/issue-pilot hold`、`/issue-pilot stop`，請求會轉給正在跑的 coordinator，不會多開一個。
 
 **交棒**：coordinator 刻意短命。合入幾批（ron-skills 是 2 批）或遇到 compaction 後，它在安全點停掉自己的背景工作、在新的 session 接手 `/loop /issue-pilot`，舊 session 退役。
@@ -57,13 +59,13 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Defaults | worker 上限、每批張數、誰合入、誰 push 與合併 PR／MR、何時交棒 |
 | Integration branch | 本機整合分支的名稱、怎麼開、合進主線後怎麼跟上 |
 | Pool | 挑單的查詢與排序；被擋住或已在其他批次的單怎麼濾掉 |
-| Batch | 批次 key 與 checkpoint 格式：每個成員一行（Issue、分支、worktree、terminal、開始時間、stuck-after、狀態、candidate SHA） |
+| Batch | 批次 checkpoint 由哪個步驟建立；檔名、欄位與狀態值照 [`PILOT-STORE.md`](../../skills/engineering/issue-pilot/PILOT-STORE.md) |
 | Brief check | 拒絕缺欄位 brief 的指令（goal、scope、acceptance、verify、timebox、forbidden、report、standing orders 路徑） |
 | Dispatch | 開 worktree 與 terminal 並送出 `/issue-run <n> --worker …` 的指令 |
 | Watch | 唯讀讀取 worker 畫面的指令；最後一行 `DONE`／`STOP` 就是做完 |
 | Agent rows | 每個派出的 agent 記在哪 |
 | Probe | 每輪對帳的指令或步驟 |
-| Hold flag | hold 怎麼設、怎麼清；哪個合入步驟在合入前檢查它 |
+| Hold flag | 哪個合入步驟在合入前檢查 `hold` |
 | Stage | 開批次分支、依序合入 `DONE` 的成員；哪些衝突 coordinator 可以自己解 |
 | Regression | 在 staged SHA 跑什麼、怎樣算過 |
 | Integrate | 合進整合分支的條件與指令 |
