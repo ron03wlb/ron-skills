@@ -40,7 +40,11 @@ const git = (dir, args, { fallback = '', stderr = 'ignore' } = {}) => {
   return ((result.stdout ?? '') + (result.status === 0 ? '' : fallback)).replace(/\n+$/, '');
 };
 /** 交給系統的 sort：排序跟著本機 locale，和 bash 的 glob 與 `sort` 一致，輸出才和 bash 版逐行相同。 */
-const localeSort = (lines, ...flags) => spawnSync('sort', flags, { input: lines.map(line => `${line}\n`).join(''), encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+const localeSort = (lines, ...flags) => {
+  const result = spawnSync('sort', flags, { input: lines.map(line => `${line}\n`).join(''), encoding: 'utf8', stdio: ['pipe', 'pipe', 'inherit'] });
+  if (result.status !== 0) throw new Error(`sort 失敗（exit ${result.status}）`, { cause: result.error });
+  return result.stdout.split('\n').filter(Boolean);
+};
 /** bash 的 $PWD 是邏輯路徑；環境的 PWD 失效時才退回 getcwd。 */
 const logicalCwd = () => {
   const pwd = process.env.PWD;
@@ -51,16 +55,16 @@ const logicalCwd = () => {
 };
 
 /** 受管來源，依 --list 判斷來源的順序；同步時只清掉指向這些位置的舊連結。 */
-const MANAGED = [[BUILD, 'overlay'], [MATT, 'matt'], [PSTACK, 'pstack'], [ROOT, 'ron-skills']];
+const MANAGED = [{ base: BUILD, label: 'overlay' }, { base: MATT, label: 'matt' }, { base: PSTACK, label: 'pstack' }, { base: ROOT, label: 'ron-skills' }];
 
 function list() {
   const pwd = logicalCwd();
-  const sources = [...MANAGED, [join(pwd, '.claude'), 'project']];
+  const sources = [...MANAGED, { base: join(pwd, '.claude'), label: 'project' }];
   const lines = [];
   for (const dir of [...entries(DESTS[0]), ...entries(join(pwd, '.claude/skills'))]) {
     if (!hasSkill(dir)) continue;
     const real = realpathSync(dir);
-    const src = sources.find(([base]) => under(real, base))?.[1] ?? 'other';
+    const src = sources.find(({ base }) => under(real, base))?.label ?? 'other';
     const kind = /^disable-model-invocation: true/m.test(readFileSync(join(dir, 'SKILL.md'), 'utf8')) ? 'user' : 'model';
     lines.push(`${kind}\t${basename(dir)}\t${src}`);
   }
@@ -122,8 +126,9 @@ function sync(check) {
       // 上游新增、清單未列的 skill 只提示：要用就加一行，不用就加 `-<path>`。
       let dirs = entries(join(base, 'skills'));
       if (depth === 2) dirs = dirs.flatMap(entries);
-      for (const dir of localeSort(dirs)) {
-        const rel = dir.slice(join(base, 'skills').length + 1);
+      // bash 排的是 glob 展開後的 `<dir>/SKILL.md`：`foo-bar/SKILL.md` 和 `foo/SKILL.md` 的順序與只排目錄時相反。
+      for (const file of localeSort(dirs.map(dir => join(dir, 'SKILL.md')))) {
+        const dir = dirname(file), rel = dir.slice(join(base, 'skills').length + 1);
         if (hasSkill(dir) && !listed.has(rel)) warn(`NEW ${label} ${rel}（上游新增；在 ${listName} 加入或以 -${rel} 略過）`);
       }
     };
@@ -151,7 +156,7 @@ function sync(check) {
     }
 
     mkdirSync(BUILD, { recursive: true });
-    for (const patch of entries(join(ROOT, 'overlays')).filter(path => path.endsWith('.patch')).sort()) {
+    for (const patch of entries(join(ROOT, 'overlays')).filter(path => path.endsWith('.patch'))) {
       const name = basename(patch, '.patch');
       if (!isDir(join(tmp, name))) continue;
       rmSync(join(BUILD, name), { recursive: true, force: true });
@@ -164,7 +169,7 @@ function sync(check) {
       for (const link of entries(dest)) {
         if (!isLink(link)) continue;
         const to = readlinkSync(link);
-        if (MANAGED.some(([base]) => under(to, base)) && !target.has(basename(link))) unlinkSync(link);
+        if (MANAGED.some(({ base }) => under(to, base)) && !target.has(basename(link))) unlinkSync(link);
       }
       for (const [name, to] of target) {
         const path = join(dest, name);

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
@@ -76,7 +76,9 @@ test('同步只換掉受管連結：清掉清單外的舊連結，不碰別處�
   assert.equal(readlinkSync(join(a, 'foreign')), join(tmp, 'foreign'));
   assert.equal(readlinkSync(join(b, 'issue-pilot')), join(root, 'skills/engineering/issue-pilot'));
   assert.equal(readlinkSync(join(b, 'issue-run')), join(root, 'skills/engineering/issue-run'));
-  const overlay = readdirSync(join(root, 'overlays')).find(name => name.endsWith('.patch')).replace(/\.patch$/, '');
+  // 清單裡啟用、而且有補丁的 skill 才會連到 overlay build。
+  const enabled = ['matt-skills.txt', 'pstack-skills.txt'].flatMap(file => readFileSync(join(root, file), 'utf8').split('\n')).map(line => line.trim()).filter(line => line && !/^[#-]/.test(line));
+  const overlay = enabled.map(rel => rel.split('/').pop()).sort().find(name => existsSync(join(root, 'overlays', `${name}.patch`)));
   assert.equal(readlinkSync(join(b, overlay)), join(xdg, 'ron-skills/overlay', overlay));
   assert.equal(existsSync(join(xdg, 'ron-skills/overlay', overlay, 'SKILL.md')), true);
 });
