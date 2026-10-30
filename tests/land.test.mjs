@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { mergeSample } from './helpers/fake-orca.mjs';
-import { checksVerdict, pickPr } from '../scripts/land.mjs';
+import { checksVerdict, pickMergedPr, pickPr } from '../scripts/land.mjs';
 
 const script = new URL('../scripts/land.mjs', import.meta.url).pathname;
 // 同 pilot-unbare.test.mjs：清掉 pre-commit 匯出的 GIT_*，否則 fixture 的 git 指令會寫進本 repo。
@@ -23,9 +23,10 @@ const FAIL = [{ bucket: 'fail', state: 'FAILURE' }];
 /**
  * bare remote、主 checkout（在 main）、feature 分支的 worktree，以及 PATH 上的假 gh、假 Orca。
  * 假 gh 的狀態存在 gh-state.json：`checks` 依序回應每次 `pr checks`（`'none'` 是 CI 還沒登記），最後一筆重複使用。
- * 假 gh 的 `pr merge` 真的在 remote 上做 --no-ff 合併；假 Orca 的 `worktree rm` 照真實行為把主 checkout 設成 bare。
+ * 假 gh 的 `pr merge` 真的在 remote 上做 --no-ff 合併；假 Orca 的 `worktree rm` 照真實行為把主 checkout 設成 bare、一起刪掉本機分支。
+ * branchSelectorMissing：照 `orca-ide worktree create --branch` 開的 worktree，`branch:` 選擇器回 selector_not_found，只認 `path:`（#49）。
  */
-function fixture(t, { checks = [PASS], orcaFails = false, selfHosted = false } = {}) {
+function fixture(t, { checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false } = {}) {
   const temp = mkdtempSync(join(tmpdir(), 'land-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const sh = (cwd, ...args) => {
@@ -100,10 +101,14 @@ const fs = require('fs'); const { execFileSync } = require('child_process');
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(log)}, 'orca ' + args.join(' ') + '\\n');
 if (${orcaFails}) { console.log(JSON.stringify({ ok: false, error: { code: 'runtime_unavailable' } })); process.exit(0); }
-const branch = args[args.indexOf('--worktree') + 1].replace(/^branch:/, '');
+const selector = args[args.indexOf('--worktree') + 1];
 const list = execFileSync('git', ['-C', ${JSON.stringify(main)}, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' });
-const path = list.split('\\n\\n').find(b => b.includes('branch refs/heads/' + branch)).match(/^worktree (.+)$/m)[1];
-execFileSync('git', ['-C', ${JSON.stringify(main)}, 'worktree', 'remove', path]);
+const block = list.split('\\n\\n').find(b => selector.startsWith('path:') ? b.split('\\n').includes('worktree ' + selector.slice(5))
+  : !${branchSelectorMissing} && b.split('\\n').includes('branch refs/heads/' + selector.replace(/^branch:/, '')));
+if (!block) { console.log(JSON.stringify({ ok: false, error: { code: 'selector_not_found' } })); process.exit(0); }
+const branch = block.match(/^branch refs\\/heads\\/(.+)$/m)[1];
+execFileSync('git', ['-C', ${JSON.stringify(main)}, 'worktree', 'remove', block.match(/^worktree (.+)$/m)[1]]);
+execFileSync('git', ['-C', ${JSON.stringify(main)}, 'branch', '-D', branch]);
 execFileSync('git', ['-C', ${JSON.stringify(main)}, 'config', 'core.bare', 'true']);
 console.log(JSON.stringify({ ok: true, result: {} }));
 `);
@@ -147,6 +152,19 @@ test('Orca 移除 worktree 把主 checkout 設成 bare：收尾後還原，main 
   assert.match(result.stdout, /^UNBARE /m);
   assert.equal(sh(main, 'rev-parse', '--is-bare-repository'), 'false');
   assert.match(result.stdout, /^MAIN /m);
+});
+
+// 真實發生過的錯：Orca 開的 worktree 用 branch: 選擇器找不到，收尾 STOP worktree-rm selector_not_found（#49，PR #48 收尾）。
+test('Orca 的 branch: 選擇器找不到 worktree：改用 path: 移除並 LANDED', t => {
+  const { main, wt, body, sh, land, prs, remoteHas, last } = fixture(t, { branchSelectorMissing: true });
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(last(result), `LANDED ${prs()[0].number} ${prs()[0].mergeCommit.oid}`);
+  assert.match(result.stdout, new RegExp(`^WORKTREE_REMOVED ${wt}$`, 'm'));
+  assert.equal(existsSync(wt), false);
+  assert.equal(remoteHas('feature'), false);
+  assert.equal(sh(main, 'rev-parse', 'HEAD'), prs()[0].mergeCommit.oid);
 });
 
 // 真實發生過的錯：land 合入自己的分支時，收尾移除了腳本所在的 worktree，之後才去跑同目錄的 pilot-unbare.sh（#40 實作時發現）。
@@ -193,6 +211,41 @@ test('合併後收尾中斷，重跑：不重開 PR、不重複合併，只補�
   assert.equal((calls().match(/^gh pr create /gm) || []).length, 1);
   assert.equal(existsSync(wt), false);
   assert.equal(sh(main, 'rev-parse', 'HEAD'), prs()[0].mergeCommit.oid);
+});
+
+// 真實發生過的錯：收尾 STOP 後人手動用 Orca 移除 worktree，Orca 一起刪掉本機分支，重跑在 rev-parse refs/heads/<branch> 失敗（#49）。
+test('本機分支已被刪、PR 已合入，重跑：接著刪 origin 分支、main 跟上，LANDED', t => {
+  const { main, wt, body, sh, land, calls, prs, remoteHas, temp, last } = fixture(t, { orcaFails: true });
+
+  const first = land(['feature', '--body-file', body]);
+  assert.equal(first.status, 4);
+  assert.match(last(first), /^STOP worktree-rm /);
+  // 人手動移除：Orca 刪掉 worktree 與本機分支，並把主 checkout 設成 bare，再自己還原。
+  const orca = join(temp, 'bin/orca');
+  writeFileSync(orca, readFileSync(orca, 'utf8').replace('if (true)', 'if (false)'));
+  assert.equal(spawnSync(orca, ['worktree', 'rm', '--worktree', `path:${wt}`], { env: { ...env, ...IDENTITY } }).status, 0);
+  sh(main, 'config', 'core.bare', 'false');
+  assert.equal(sh(main, 'branch', '--list', 'feature'), '');
+  assert.equal(remoteHas('feature'), true);
+
+  const second = land(['feature', '--body-file', body], main);
+  assert.equal(second.status, 0, second.stdout + second.stderr);
+  assert.equal(last(second), `LANDED ${prs()[0].number} ${prs()[0].mergeCommit.oid}`);
+  assert.equal(prs().length, 1);
+  assert.equal((calls().match(/^gh pr merge /gm) || []).length, 1);
+  assert.equal(remoteHas('feature'), false);
+  assert.equal(sh(main, 'rev-parse', 'HEAD'), prs()[0].mergeCommit.oid);
+});
+
+test('本機分支不在、也沒有已合入的 PR：STOP no-branch，不開 PR', t => {
+  const { main, wt, body, sh, land, calls, last } = fixture(t);
+  sh(main, 'worktree', 'remove', wt);
+  sh(main, 'branch', '-D', 'feature');
+
+  const result = land(['feature', '--body-file', body], main);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(last(result), /^STOP no-branch feature/);
+  assert.doesNotMatch(calls(), /^gh pr create /m);
 });
 
 // #37：pilot 的 batch 已 push、PR 還開著就中斷（如 CI 等到逾時），checkpoint 還是 `merged <sha>`（LANDED 之後才設 pushed），
@@ -265,6 +318,14 @@ test('pickPr：開著的優先；已合入只在 head 等於 tip 時沿用', () 
   assert.equal(pickPr([merged, { state: 'OPEN', number: 2 }], 'new').number, 2);
   assert.equal(pickPr([merged], 'old'), merged);
   assert.equal(pickPr([merged], 'new'), null);
+});
+
+test('pickMergedPr：只接 head 等於 tip 的已合入 PR；沒有 tip（origin 也沒有分支）回 null，不取最新的', () => {
+  const newer = { state: 'MERGED', number: 3, headRefOid: 'b' };
+  const older = { state: 'MERGED', number: 1, headRefOid: 'a' };
+  assert.equal(pickMergedPr([{ state: 'OPEN', number: 4, headRefOid: 'a' }, newer, older], 'a'), older);
+  assert.equal(pickMergedPr([newer, older], undefined), null);
+  assert.equal(pickMergedPr([newer], 'c'), null);
 });
 
 test('checksVerdict：空的是 pending；有失敗或取消是 fail；全部通過或略過是 pass', () => {

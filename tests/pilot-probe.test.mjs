@@ -271,6 +271,65 @@ test('沒有 ORCA_CLI_COMMAND 時其他檢查照跑，running 成員印 STUCK no
   assert.deepEqual(lines(result), [`UNBARE ${repo}`, 'WORKER 23 STUCK no-orca']);
 });
 
+// #52：coordinator 讀主 checkout 的 adapter，pilot/integration 上的版本比較新時會照過時的規則 stage（#21 的 Stage worktree）。
+// issue-run.md 與 pilot.md（#45 之後）都比；只有 integration 有也算，兩邊相同或沒有 pilot/integration 時不印。
+// review 第一輪：main 自己改了 adapter、integration 還沒跟上時，integration 的版本比較舊，不印（否則 coordinator 會改讀舊規則）。
+test('pilot/integration 的 adapter 比 main 新時印 ADAPTER_AHEAD <檔案>', t => {
+  const { repo, git, probe } = fixture(t);
+  const commit = (files, message) => {
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(join(repo, path, '..'), { recursive: true });
+      writeFileSync(join(repo, path), text);
+      git('add', path);
+    }
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', message);
+  };
+  commit({ 'docs/agents/issue-run.md': '# adapter\n' }, 'adapter');
+  assert.equal(probe().stdout, '');
+  git('branch', 'pilot/integration');
+  assert.equal(probe().stdout, '');
+
+  git('switch', '-q', 'pilot/integration');
+  commit({ 'docs/agents/issue-run.md': '# adapter\n- Stage worktree\n', 'docs/agents/pilot.md': '# pilot\n' }, 'newer adapter');
+  git('switch', '-q', 'main');
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), ['ADAPTER_AHEAD docs/agents/issue-run.md', 'ADAPTER_AHEAD docs/agents/pilot.md']);
+
+  // main 跟上 integration 之後只剩 integration 新改的 pilot.md。
+  git('merge', '-q', '--ff-only', 'pilot/integration');
+  git('switch', '-q', 'pilot/integration');
+  commit({ 'docs/agents/pilot.md': '# pilot\n- Probe\n' }, 'newer pilot');
+  git('switch', '-q', 'main');
+  assert.deepEqual(lines(probe()), ['ADAPTER_AHEAD docs/agents/pilot.md']);
+
+  // main 直接合入新的 issue-run.md：integration 那份比較舊，不印。
+  commit({ 'docs/agents/issue-run.md': '# adapter\n- Push gate\n' }, 'main adapter');
+  assert.deepEqual(lines(probe()), ['ADAPTER_AHEAD docs/agents/pilot.md']);
+
+  // review 第二輪：integration 刪掉的檔讀不到（`git show pilot/integration:<檔案>` 會失敗），不印。
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '-q', '--no-edit', 'pilot/integration');
+  git('switch', '-q', 'pilot/integration');
+  git('merge', '-q', '--ff-only', 'main');
+  git('rm', '-q', 'docs/agents/pilot.md');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'drop pilot');
+  git('switch', '-q', 'main');
+  assert.equal(probe().stdout, '');
+});
+
+test('沒有本機 main 時不比 adapter，其他檢查照跑', t => {
+  const { repo, git, probe } = fixture(t);
+  git('switch', '-q', '-c', 'pilot/integration');
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  writeFileSync(join(repo, 'docs/agents/issue-run.md'), '# adapter\n');
+  git('add', 'docs/agents/issue-run.md');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'adapter');
+  git('branch', '-q', '-D', 'main');
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), ['NOT_MAIN pilot/integration']);
+});
+
 // `moved` 的成員已經移到別的 batch（如 batch-21-27 的 #27），不再擋這個 batch；Claude Code 的結果 bullet 也可能是 `⏺`。
 test('moved 成員不擋 STAGEABLE，⏺ 開頭的結果行也讀得到', t => {
   const { batch, probe } = fixture(t, { screens: { term_21: { status: 'running', tail: [`⏺ DONE 21 ${SHA}`] } } });
