@@ -15,11 +15,12 @@ function run(...args) {
   writeFileSync(join(temp, 'gh'), `#!/usr/bin/env node
 const args = process.argv.slice(2);
 require('fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+if (process.env.GH_HOST) require('fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(['GH_HOST', process.env.GH_HOST]) + '\\n');
 const id = args.join(' ').match(/^api repos\\/[^ ]+\\/issues\\/(\\d+) --jq \\.id$/);
 if (id) console.log(9000 + Number(id[1]));
 `);
   chmodSync(join(temp, 'gh'), 0o755);
-  const result = spawnSync('node', [script, ...args], { encoding: 'utf8', env: { ...process.env, PATH: `${temp}:${process.env.PATH}`, GH_REPO: 'other/repo' } });
+  const result = spawnSync('node', [script, ...args], { encoding: 'utf8', env: { ...process.env, PATH: `${temp}:${process.env.PATH}`, GH_REPO: 'other/repo', GH_HOST: 'other.example' } });
   let calls = [];
   try { calls = readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line)); } catch {}
   return { ...result, calls };
@@ -39,6 +40,8 @@ test('改寫目標 repo 的參數：exit 2、不呼叫 gh', () => {
     ['comment', 'https://github.com/other/repo/issues/1', '--body', 'x'],
     ['comment', '96', 'https://github.com/other/repo/issues/1', '--body', 'x'],
     ['comment', '96', '--body', 'x', '--', '--repo', 'other/repo'],
+    ['constructor', '96'],
+    ['__proto__', '96'],
   ]) {
     const result = run(...args);
     assert.equal(result.status, 2, `${args.join(' ')}：${result.stderr}`);

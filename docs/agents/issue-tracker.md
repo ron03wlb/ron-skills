@@ -2,7 +2,7 @@
 
 Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
 
-寫入本 repo 的 tracker（留言、label、關單、開單、sub-issue、依賴）一律走 `node scripts/gh-tracker.mjs`：`.claude/settings.json` 只放行它，直接跑 gh 的留言、關單在 auto mode 會被當成 External System Writes 擋下（#96）。它固定寫 `ron03wlb/ron-skills`、只收數字 Issue 號碼和白名單旗標（用法見腳本開頭），其他 repo 的寫入照舊用 `gh … --repo <owner>/<repo>`，交給人核准。讀取不受影響，照下列 `gh` 指令。
+本 repo 的留言、label 與 assignee、關單、開單、sub-issue、依賴一律在 repo 根目錄以 `node scripts/gh-tracker.mjs` 寫入（allow 規則比對的是這個相對路徑）：`.claude/settings.json` 只放行它，直接跑 gh 的留言、關單在 auto mode 會被當成 External System Writes 擋下（#96）。它固定寫 `ron03wlb/ron-skills`、只收數字 Issue 號碼和白名單旗標（用法見腳本開頭），其他 repo 的寫入照舊用 `gh … --repo <owner>/<repo>`，交給人核准；wrapper 沒涵蓋的寫入（如 `gh issue reopen`）在 auto mode 仍會被擋或詢問。讀取不受影響，照下列 `gh` 指令。
 
 ## Conventions
 
@@ -14,7 +14,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Apply / remove labels**: `node scripts/gh-tracker.mjs edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `node scripts/gh-tracker.mjs close <number> --comment "..."`
 
-Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
+Reads infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone. Writes need no inference: `scripts/gh-tracker.mjs` always passes `--repo ron03wlb/ron-skills`.
 
 ## Pull requests as a triage surface
 
