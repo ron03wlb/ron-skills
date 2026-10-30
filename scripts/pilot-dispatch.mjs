@@ -9,7 +9,7 @@
 // 用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>...（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
 // stdout：每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
-//   state 只寫 running 或 stop（pilot-probe.mjs 只認 Batch 段的 running／done／stop），STOP 原因只在 stdout。
+//   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop），STOP 原因只在 stdout。
 // exit：0 全部派出；4 有成員 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -51,7 +51,7 @@ function now() {
   return `${local}${offset < 0 ? '-' : '+'}${pad(offset / 60)}:${pad(offset % 60)}`;
 }
 
-/** 沒有 batch checkpoint 時寫表頭（Batch 段的格式）；已有時不動，重跑同一個 batch 只換成員行。 */
+/** 沒有 batch checkpoint 時寫表頭（格式見 skills/engineering/issue-pilot/PILOT-STORE.md）；已有時不動，重跑同一個 batch 只換成員行。 */
 function writeHeader(main, checkpoint, key) {
   if (existsSync(checkpoint)) return;
   const sha = run('git', ['-C', main, 'rev-parse', '--short', 'pilot/integration']).stdout.trim();
