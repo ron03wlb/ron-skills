@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | agent 讀 Issue 拿到空白 | `gh issue view <n> --comments` 在非 tty 環境（agent 的 Bash 工具）不輸出任何東西 | 一律 `gh issue view <n> --json number,title,body,labels,comments`；寫進 `docs/agents/issue-tracker.md` |
 | `which orca` 有東西，Orca 指令卻都失敗 | Linux 上的 `orca` 是 GNOME 螢幕閱讀器 | Orca 可用與否只看 `ORCA_CLI_COMMAND` 是否設定 |
-| Orca `worktree create` 回 `runtime_unavailable`，重試後多出一個 `<name>-2` | 從 WSL 呼叫時，回應早於實際完成 | 只呼叫一次，用 `git worktree list` 輪詢確認；絕不重試 |
+| Orca `worktree create` 回 `runtime_unavailable` 或 `runtime_timeout`，重試後多出一個 `<name>-2` | 從 WSL 呼叫時，回應早於實際完成 | 只呼叫一次，用 `git worktree list` 輪詢確認；絕不重試 |
 | Orca `worktree create --repo path:<WSL 路徑>` 回 `repo_not_found`（帶 `--agent` 時變成 `agent_session_operation_unknown`） | WSL 下 Orca 以 Windows UNC 路徑記錄 repo | 不帶 `--repo`，在該 repo 的 checkout 執行，讓 Orca 從 cwd 推斷 |
 | Orca 的 worktree 操作（create、rm）之後，主 checkout 在 `git worktree list` 顯示 `(bare)`，`git status` 回 `must be run in a work tree` | 從 WSL 建立或移除 worktree 時，Orca 把主 repo `.git/config` 的 `core.bare` 改成 `true`，不一定在指令當下發生 | 每個 tick 開頭與每次 `worktree create`、`worktree rm` 之後，在主 checkout 跑 `git rev-parse --is-bare-repository`，印出 `true` 就執行 `git config core.bare false`（ron-skills 用 `scripts/pilot-unbare.sh`） |
 | `orca terminal send` 回 accepted，worker 的輸入框卻是空的；重送後收到黏成兩份的 prompt | TUI 剛就緒時輸入停在 draft 沒提交，`--screen` 看不到 draft | 用會讀 draft、確認畫面出現 prompt 才回報送達的送出腳本；draft 已有 prompt 時只補 Enter |
