@@ -4,13 +4,14 @@
 //   → 主 checkout 的 main 以 --ff-only 跟上 origin/main → bin/sync-skills。
 // 每一步都能從中斷處重跑：還開著的 PR 沿用；head 等於分支 tip 的 PR 已合入就直接收尾，不重開、不重合。
 // 本機分支已經不在（Orca rm 會一起刪掉，#49）時不 push，只從已合入的 PR 接著收尾。
+// push 前先擋：沒有 origin/main 以外的 commit（no-commits）；`--keep-branch` 時分支沒包含 origin/main（behind-main）。
 // `--keep-branch`（pilot/integration）：不刪分支、不移除 worktree，改把分支 --ff-only 跟上 origin/main 再 push；
 // 不用 `git branch -f`，它會把 upstream 改成 origin/main（#27）。
 // Orca 從 WSL 移除 worktree 會把主 checkout 設成 bare，所以移除後一律跑 pilot-unbare.sh。
 //
 // 用法：node scripts/land.mjs <branch> [--keep-branch] [--body-file <file>] [--title <title>]
 // stdout：每步一行進度；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
-//   （checked-out-in-main、dirty-worktree、no-branch、push、no-body、pr-create、ci-failed、checks-timeout、merge、not-merged、worktree-rm）。
+//   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、ci-failed、checks-timeout、merge、not-merged、worktree-rm）。
 // 合入之後的收尾問題（main 沒跟上、sync-skills 失敗）印 WARN，不影響 LANDED。
 // exit：0 已合入；4 STOP；2 用法錯誤；1 其他失敗。
 import { spawnSync } from 'node:child_process';
@@ -144,16 +145,22 @@ export async function land({ branch, keepBranch = false, bodyFile, title, cwd = 
   const tip = run('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], main).stdout.trim();
   if (!tip && keepBranch) throw new Stop(`no-branch ${branch} --keep-branch 要本機分支`);
 
+  const prs = JSON.parse(gh(main, 'pr', 'list', '--head', branch, '--state', 'all', '--limit', '100', '--json', 'number,state,url,headRefOid,mergeCommit'));
+  let pr;
   if (tip) {
+    pr = pickPr(prs, tip);
+    if (pr?.state !== 'MERGED') {
+      git(main, 'fetch', 'origin', 'main');
+      const contains = (ancestor, descendant) => run('git', ['merge-base', '--is-ancestor', ancestor, descendant], main).status === 0;
+      // 分支在送出前被別的 session 切走，commit 落到別條分支，推出去的是沒有新 commit 的空分支（retro 2026-10-30 ron-skills-0d）。
+      if (!pr && contains(tip, 'origin/main')) throw new Stop(`no-commits ${branch} 沒有 origin/main 以外的 commit`);
+      // push 事件的 CI 跑分支自己那份 workflow：沒合入 origin/main 的 CI 修正（#48 的 Node 版本）就會紅燈（PR #50）。
+      if (keepBranch && !contains('origin/main', tip)) throw new Stop(`behind-main ${branch} 沒有包含 origin/main：先合入 origin/main 並重跑 Regression`);
+    }
     const push = run('git', ['push', '-u', 'origin', branch], main);
     if (push.status !== 0) throw new Stop(`push ${push.stderr.trim().split('\n').pop()}`);
     console.log(`PUSHED ${branch} ${tip}`);
-  }
-
-  const prs = JSON.parse(gh(main, 'pr', 'list', '--head', branch, '--state', 'all', '--limit', '100', '--json', 'number,state,url,headRefOid,mergeCommit'));
-  let pr;
-  if (tip) pr = pickPr(prs, tip);
-  else {
+  } else {
     const remote = git(main, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`).split('\n').find(line => line.endsWith(`\trefs/heads/${branch}`));
     pr = pickMergedPr(prs, remote?.split('\t')[0]);
     if (!pr) throw new Stop(`no-branch ${branch} 本機沒有這條分支，也沒有 head 等於 origin 分支 tip 的已合入 PR`);

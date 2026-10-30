@@ -5,6 +5,8 @@
 // 主 checkout 判定：目標所在 repo 的 git-dir 等於 git-common-dir（worktree 兩者不同）；gitignored 檔（如 .scratch/）與 repo 外檔案放行。
 // Bash 也擋（曾有 session 在主 checkout 以 sed -i 改三支追蹤檔，Edit|Write hook 擋不到）：啟發式辨識 sed -i／perl -i、`>`／`>>` 重導向與 tee 的寫入目標，
 // 依指令中的 cd 與 hook 輸入的 cwd 解析相對路徑並展開 `{a,b}`，每個目標用和 Edit|Write 同一個判斷；heredoc 內文與引號內文字不算。eval、子 shell 字串等寫法不在辨識範圍。
+// 主 checkout 切分支也擋（git switch、git checkout -b 或切到其他本機分支，切回預設分支放行）：曾有兩個 session 先後在主 checkout 開分支，
+// 一方的 commit 落到另一方的分支上，送出的是沒有新 commit 的空分支（retro 2026-10-30）。
 // 輸入不合法、git 失敗等任何無法判定的情況 exit 0 不輸出（fail-open），避免卡住正常工作。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -136,6 +138,60 @@ export function bashWriteTargets(command, cwd) {
   return targets.filter(path => path !== '/dev/null');
 }
 
+/** 目錄是不是主 checkout（git-dir 等於 git-common-dir）；無法判定時為 false。 */
+function isMainCheckout(dir) {
+  const dirs = git(existingDir(dir), 'rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir');
+  if (dirs.status !== 0) return false;
+  const [gitDir, commonDir] = dirs.stdout.trim().split('\n');
+  return Boolean(gitDir) && gitDir === commonDir;
+}
+
+/** repo 的預設分支：origin/HEAD 指向的分支；沒有 origin/HEAD 時 main 與 master 都算。 */
+function defaultBranches(dir) {
+  const head = git(dir, 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD');
+  return head.status === 0 ? [head.stdout.trim().replace(/^origin\//, '')] : ['main', 'master'];
+}
+
+const CREATE_FLAGS = new Set(['-c', '-C', '--create', '--force-create', '-b', '-B', '--orphan', '--detach', '-d']);
+
+/**
+ * Bash 指令在主 checkout 切換或新開分支的位置（啟發式）：git switch、git checkout -b／-B／--orphan／--detach，或 git checkout <本機分支>；
+ * 切到預設分支、`git checkout -- <檔案>` 放行。
+ * @param {string} command Bash tool 的 command
+ * @param {string} cwd hook 輸入的 cwd；指令內的 `cd <dir>` 與 `git -C <dir>` 依序套用
+ * @returns {string[]} 會被切走分支的主 checkout 目錄；無法解析時丟錯（呼叫端 fail-open）
+ */
+export function bashBranchSwitches(command, cwd) {
+  const found = [];
+  let dir = cwd;
+  const segments = [[]];
+  for (const token of tokenize(stripHeredocs(command))) {
+    if (token.op === ';') segments.push([]);
+    else if (token.word !== undefined) segments.at(-1).push(token.word);
+  }
+  const absolute = path => (isAbsolute(path) ? path : resolve(dir, path));
+  for (const [name, ...args] of segments) {
+    if (name === 'cd' && args[0]) { dir = absolute(args[0]); continue; }
+    if (name !== 'git') continue;
+    let repo = dir;
+    let i = 0;
+    for (; i < args.length && args[i].startsWith('-'); i += 1) {
+      if (args[i] === '-C') { repo = absolute(args[i + 1]); i += 1; }
+      else if (args[i] === '-c') i += 1;
+    }
+    const [sub, ...rest] = args.slice(i);
+    if (sub !== 'switch' && sub !== 'checkout') continue;
+    if (sub === 'checkout' && rest.includes('--')) continue;
+    if (!isMainCheckout(repo)) continue;
+    const target = rest.find(arg => !arg.startsWith('-'));
+    const creates = rest.some(arg => CREATE_FLAGS.has(arg));
+    if (!creates && defaultBranches(repo).includes(target)) continue;
+    if (sub === 'checkout' && !creates && git(repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${target}`).status !== 0) continue;
+    found.push(repo);
+  }
+  return found;
+}
+
 /** 主 checkout 防護訊息。 */
 function deny(paths) {
   process.stderr.write(`主 checkout 防護：${paths.join('、')} 在主 checkout 內且未被 gitignore，未提交的修改或新檔會擋住 integration 合併。`
@@ -152,6 +208,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     try { paths = bashWriteTargets(command, typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd()); } catch { process.exit(0); }
     const dirty = [...new Set(paths)].filter(dirtiesMainCheckout);
     if (dirty.length) deny(dirty);
+    let switches = [];
+    try { switches = bashBranchSwitches(command, typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd()); } catch { process.exit(0); }
+    if (switches.length) {
+      process.stderr.write(`主 checkout 防護：不在主 checkout（${switches[0]}）切換或新開分支，它要一直停在預設分支；其他 session 同時在這裡開分支時，commit 會落到別人的分支上。`
+        + '請用 `node scripts/orca-worktree-create.mjs --name <name> --base-branch <integration> --branch <branch>` 開 worktree 再 commit。\n');
+      process.exit(2);
+    }
     process.exit(0);
   }
   const filePath = input?.tool_input?.file_path;
