@@ -10,12 +10,13 @@ import { lostFiles, parseRan, reportedTotal, untraced } from './node-test-guarde
 const SCRIPT = fileURLToPath(new URL('./node-test-guarded.mjs', import.meta.url));
 
 /** 暫存目錄放 fixture 測試檔，以 wrapper 執行。 */
-function fixture(t, files) {
+function fixture(t, files, extraEnv = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'node-test-guarded-test-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
   const env = { ...process.env };
-  for (const key of ['NODE_TEST_CONTEXT', 'NODE_TEST_COUNT_FILE', 'NODE_TEST_COUNT_ROOT', 'NODE_OPTIONS', 'NODE_TEST_GUARD_WAIT_MS']) delete env[key];
+  for (const key of ['NODE_TEST_CONTEXT', 'NODE_TEST_COUNT_FILE', 'NODE_TEST_COUNT_ROOT', 'NODE_TEST_COUNTED', 'NODE_OPTIONS', 'NODE_TEST_GUARD_WAIT_MS']) delete env[key];
+  Object.assign(env, extraEnv);
   return (...args) => spawnSync(process.execPath, [SCRIPT, '--test-force-exit', ...args], { cwd: dir, encoding: 'utf8', env });
 }
 
@@ -47,6 +48,13 @@ test('全部回報：exit 0，輸出照舊是 spec（含 suite、子測試、ski
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /^ℹ tests 6$/m);
   assert.doesNotMatch(result.stderr, /NODE_TEST_LOST/);
+});
+
+test('子行程記下跑完的測試名稱：不必等候逾時，exit 0、不印 NODE_TEST_LOST', t => {
+  const run = fixture(t, { 'a.test.mjs': PASS }, { NODE_TEST_GUARD_WAIT_MS: '1000' });
+  const result = run('a.test.mjs');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stderr, /NODE_TEST_LOST|NODE_TEST_COUNT_MISMATCH/);
 });
 
 test('測試失敗：原樣回傳 node --test 的 exit code，不另印 NODE_TEST_LOST', t => {
