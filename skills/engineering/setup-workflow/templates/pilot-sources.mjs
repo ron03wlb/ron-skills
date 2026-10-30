@@ -7,7 +7,7 @@
 //   --record 先照樣回報，再以這次的清單整份改寫記錄，最後印 `RECORDED <n>`。exit 0；沒給來源 exit 2。
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { storeDir, usage } from './lib/pilot-store.mjs';
 
@@ -24,8 +24,8 @@ export function checkSources(checkout, sources, { record = false } = {}) {
   const out = [];
   const current = sources.map(source => {
     const path = resolve(root, source);
-    const inside = !relative(root, path).startsWith('..') && !isAbsolute(relative(root, path));
-    const name = inside ? relative(root, path) : path;
+    const rel = relative(root, path);
+    const name = rel && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel) ? rel : path;
     const hash = existsSync(path) && statSync(path).isFile() ? createHash('sha256').update(readFileSync(path)).digest('hex') : MISSING;
     if (hash === MISSING) { if (recorded.get(name) !== MISSING) out.push(`SOURCE_MISSING ${name}`); } else if (recorded.get(name) !== hash) out.push(`SOURCE_CHANGED ${name}`);
     return [name, hash];

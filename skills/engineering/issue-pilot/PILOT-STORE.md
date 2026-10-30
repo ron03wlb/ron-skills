@@ -127,11 +127,11 @@ The setup-workflow templates that write this store, copied into a project's `scr
 | Script | Command | stdout | exit |
 | --- | --- | --- | --- |
 | `pilot-register.mjs` | `<checkout> --name <session name> --loop yes\|no [--pid <pid>] [--session <id>] [<source>...]` (pid and session default to `$CLAUDE_PID`, `$CLAUDE_CODE_SESSION_ID`) | `REGISTERED pid <pid>   since <since>`; `SESSION_APPENDED` when it appended the start line; then `pilot-sources --record`'s lines for the sources given; `STOP retired` when `sessions.md` has a handoff from this session | 0; 4 `STOP` |
-| `pilot-decision.mjs` | `<checkout> --decision <text> --reason <text> --evidence <text> --result <text> [--time <time>]` | `DECISION <time>` (writes the heading and header row first when the file is missing or empty) | 0 |
+| `pilot-decision.mjs` | `<checkout> --decision <text> --reason <text> --evidence <text> --result <text> [--time <time>]` | `DECISION <time>` (appends only; writes the heading and header row first when the file is missing or empty) | 0 |
 | `pilot-decision.mjs` | `<checkout> --repair` | `REPAIRED` (rewrote it as heading, header, every row: rows `pilot-unbare.sh` appended before the header, blank lines and repeated headers inside the table) or `OK`; `MALFORMED <line no> <line>` per line that is not a five-column row, and the file is left as is | 0; 1 `MALFORMED` |
-| `pilot-request.mjs` | `<checkout> list` | `REQUEST <line no>   <line>` per open request | 0 |
+| `pilot-request.mjs` | `<checkout> list` | `REQUEST <line no>   <line>` per open request (a line with no ` source ` field counts as open, as the probe reads it) | 0 |
 | `pilot-request.mjs` | `<checkout> apply <line no> [--note <text>]`, `<checkout> decline <line no> --reason <text> [--note <text>]` | `APPLIED <line no>`, `DECLINED <line no>`; `NOT_OPEN <line no>` when that line is not an open request | 0; 1 `NOT_OPEN` |
-| `pilot-hold.mjs` | `<checkout> show`, `set <reason>`, `clear` | `HOLD <since>   <reason>`, `HOLD (no reason)`, `NO_HOLD`; `HOLD_SET`; `HOLD_CLEARED` or `NO_HOLD` | 0 |
-| `pilot-sources.mjs` | `<checkout> [--record] <source>...` | `SOURCE_CHANGED <path>` per source whose hash differs from the record (or has none), `SOURCE_MISSING <path>` per source that no longer exists; `--record` then rewrites the record and prints `RECORDED <n>` | 0 |
+| `pilot-hold.mjs` | `<checkout> show`, `set <reason>`, `clear` | `HOLD <since>   <reason>` (`(no since)` for a JSON line without one), `HOLD (no reason)`, `NO_HOLD`; `HOLD_SET`; `HOLD_CLEARED` or `NO_HOLD` | 0 |
+| `pilot-sources.mjs` | `<checkout> [--record] <source>...` | `SOURCE_CHANGED <path>` per source whose hash differs from the record (or has none), `SOURCE_MISSING <path>` per source that does not exist and was not already recorded `missing`; `--record` then rewrites the record and prints `RECORDED <n>` | 0 |
 
 A note, reason, or field is one line without three spaces in a row; a decisions cell also has no `|`, and a request mark has no `source` word, which would reopen the line.

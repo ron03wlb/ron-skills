@@ -59,4 +59,5 @@ test('契約的 Canonical scripts 列出每支寫存檔的正本，正本不含�
       assert.doesNotMatch(text, /spay2|ron-skills|\/Users\/|\/home\//, `${file} 含專案字樣`);
     }
   }
+  assert.doesNotMatch(read('skills/engineering/setup-workflow/templates/lib/pilot-store.mjs'), /spay2|ron-skills|\/Users\/|\/home\//, 'lib/pilot-store.mjs 含專案字樣');
 });

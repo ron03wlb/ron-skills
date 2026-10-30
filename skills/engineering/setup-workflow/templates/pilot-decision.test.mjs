@@ -45,6 +45,7 @@ test('欄位含 | 或換行、缺欄位：exit 2，不寫檔', t => {
   assert.equal(add(dir, ['--reason', 'a | b']).status, 2);
   assert.equal(add(dir, ['--result', 'a\nb']).status, 2);
   assert.equal(run(dir, '--decision', 'd').status, 2);
+  assert.equal(add(dir, ['--time', 'yesterday']).status, 2);
   assert.throws(() => readFileSync(file(dir)));
 });
 
@@ -57,6 +58,13 @@ test('--repair 補上標題與表頭、移除表格中間的空行與重複表�
   assert.equal(result.stdout, 'REPAIRED\n');
   assert.equal(readFileSync(file(dir), 'utf8'), `# Decisions\n\n${HEADER}| a | 還原 core.bare | b | c | d |\n| e | f | g | h | i |\n`);
   assert.equal(run(dir, '--repair').stdout, 'OK\n');
+});
+
+test('--repair 認得手寫的 `| --- |` 分隔列與多空白的表頭，換成標準表頭', t => {
+  const dir = checkout(t);
+  writeFileSync(file(dir), '# Decisions\n\n|  time | decision | reason | evidence | result |\n| --- | --- | --- | --- | --- |\n| a | b | c | d | e |\n');
+  assert.equal(run(dir, '--repair').stdout, 'REPAIRED\n');
+  assert.equal(readFileSync(file(dir), 'utf8'), `# Decisions\n\n${HEADER}| a | b | c | d | e |\n`);
 });
 
 test('--repair 遇到不是表格列或欄數不對的行：印 MALFORMED <行號> <行>、exit 1、不改檔', t => {

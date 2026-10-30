@@ -55,6 +55,12 @@ test('來源從 checkout 解析，與呼叫者的 cwd 無關；也接受絕對�
   assert.equal(result.stdout, 'SOURCE_CHANGED AGENTS.md\nSOURCE_CHANGED docs/agents/pilot.md\nRECORDED 2\n');
 });
 
+test('checkout 裡以 .. 開頭的檔名仍記成相對路徑', t => {
+  const dir = checkout(t);
+  writeFileSync(join(dir, '..notes.md'), 'x\n');
+  assert.equal(run(dir, '--record', join(dir, '..notes.md')).stdout, 'SOURCE_CHANGED ..notes.md\nRECORDED 1\n');
+});
+
 test('沒給來源：exit 2', t => {
   assert.equal(run(checkout(t)).status, 2);
   assert.equal(run(checkout(t), '--record').status, 2);

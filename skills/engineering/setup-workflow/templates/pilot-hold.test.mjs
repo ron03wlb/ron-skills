@@ -43,6 +43,8 @@ test('舊的空檔與壞掉的內容仍是 hold，只是沒有原因', t => {
   assert.equal(run(dir, 'show').stdout, 'HOLD (no reason)\n');
   writeFileSync(hold(dir), 'not json');
   assert.equal(run(dir, 'show').stdout, 'HOLD (no reason)\n');
+  writeFileSync(hold(dir), '{"reason":"手寫的"}');
+  assert.equal(run(dir, 'show').stdout, 'HOLD (no since)   手寫的\n');
 });
 
 test('clear 刪掉 hold 印 HOLD_CLEARED；本來就沒有時印 NO_HOLD', t => {
@@ -59,5 +61,8 @@ test('用法錯誤：exit 2', t => {
   const dir = checkout(t);
   assert.equal(run(dir, 'set').status, 2);
   assert.equal(run(dir, 'bogus').status, 2);
+  // show 以三個空白分欄，reason 有三個空白或換行就分不出欄位。
+  assert.equal(run(dir, 'set', 'a   b').status, 2);
+  assert.equal(run(dir, 'set', 'a\nb').status, 2);
   assert.equal(spawnSync('node', [SCRIPT], { encoding: 'utf8' }).status, 2);
 });
