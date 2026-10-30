@@ -1,0 +1,108 @@
+# 05 L3 導入
+
+L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：它自己從 tracker 挑 `ready-for-agent` 的單、每張派一個 worker、整批回歸後合進本機整合分支，再把 push 指令交給你。你只剩三件事：產品決策、對共用環境執行 artifact 並讀回、`git push`（除非 adapter 允許 coordinator 自己 push）。
+
+## 進入條件
+
+- L2 的入口都已存在，而且每個都有固定的 exit code 與一行修正指示：coordinator 靠 exit code 判斷下一步，不讀散文。
+- 裝了 Orca，且在 Orca 的 terminal 裡 `ORCA_CLI_COMMAND` 有設定：派 worker、監看、交棒都經 Orca。
+- 權限規則照 [04 權限規則](04-level2.md#權限規則) 設好，新 session 啟動沒有警告。
+- adapter 有 **Pilot** 段（見下方）。沒有這段時 `/issue-pilot` 直接停下並說明。
+
+## `/loop /issue-pilot`
+
+在主 checkout（或 adapter Pilot 段 **Coordinator checkout** 指定的 checkout）執行：
+
+```text
+/loop /issue-pilot
+```
+
+`/loop` 讓它自己排下一次喚醒；每次醒來跑一輪（tick）：
+
+1. **Reconcile 對帳**：讀 `.scratch/pilot/` 的狀態檔、其他 session 轉來的請求、還開著的 gate，用 Watch 指令唯讀查看每個 worker。
+2. **Drain 收件**：每個做完的 worker 分成 `DONE`（記下 candidate SHA）、`STOP`（照停因處理）或問題（只依 adapter 或 skill 的規則回答，產品問題變成 gate）。
+3. **Project hooks**：跑 adapter 列的專案檢查（見下方 tick hooks）。
+4. **Pick 挑單**：worker 數低於上限時，依 adapter 的 Pool 規則挑下一批；`needs-triage` 的單先照 Readiness 補齊。
+5. **Dispatch 派工**：每張開一個 worktree 與 terminal，執行 `/issue-run <n> --worker <batch checkpoint>`。
+6. **Land 落地**：整批成員都 `DONE` 或 `STOP` 後，在批次分支依號碼合入、在 staged SHA 跑回歸、通過才合進整合分支，然後交出 push 指令。
+7. **Report and sleep**：重產 `status.md`，有需要人做的事才通知；排下一次喚醒（有 worker 在跑時 1200 秒，閒置時 1800 到 3600 秒）。
+
+它的狀態全在磁碟上（`.scratch/pilot/` 與各批次 checkpoint），不靠對話記憶：
+
+| 檔案 | 內容 |
+| --- | --- |
+| `preferences.md` | standing orders：worker 上限、批次大小、誰合入、誰 push |
+| `gates.md` | 等人回覆的問題、選項、已套用的預設 |
+| `decisions.md` | 每個決定的理由、證據、結果 |
+| `status.md` | 從 checkpoint 重產的現況，不手寫 |
+| `requests.md` | 其他 session 轉來的請求（插單、hold、stop） |
+| `sessions.md` | 每個 coordinator session 一行，給 `/retro` 找紀錄 |
+
+在其他 session 輸入 `/issue-pilot <n>`、`/issue-pilot hold`、`/issue-pilot stop`，請求會轉給正在跑的 coordinator，不會多開一個。
+
+**交棒**：coordinator 刻意短命。合入幾批（ron-skills 是 2 批）或遇到 compaction 後，它在安全點停掉自己的背景工作、在新的 session 接手 `/loop /issue-pilot`，舊 session 退役。
+
+## adapter 的 Pilot 段
+
+L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條是一行。範本與每條的 Default 見 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 的 Pilot 段；實例見 ron-skills 的 [`docs/agents/issue-run.md`](../agents/issue-run.md)。
+
+| 條目 | 寫什麼 |
+| --- | --- |
+| Coordinator checkout | coordinator 在哪個 checkout 跑、`.scratch/pilot/` 放哪 |
+| Sessions | 怎麼登記 coordinator session |
+| Defaults | worker 上限、每批張數、誰合入、誰 push、何時交棒 |
+| Integration branch | 本機整合分支的名稱、怎麼開、合進主線後怎麼跟上 |
+| Pool | 挑單的查詢與排序；被擋住或已在其他批次的單怎麼濾掉 |
+| Batch | 批次 key 與 checkpoint 格式：每個成員一行（Issue、分支、worktree、terminal、開始時間、stuck-after、狀態、candidate SHA） |
+| Brief check | 拒絕缺欄位 brief 的指令（goal、scope、acceptance、verify、timebox、forbidden、report、standing orders 路徑） |
+| Dispatch | 開 worktree 與 terminal 並送出 `/issue-run <n> --worker …` 的指令 |
+| Watch | 唯讀讀取 worker 畫面的指令；最後一行 `DONE`／`STOP` 就是做完 |
+| Agent rows | 每個派出的 agent 記在哪 |
+| Probe | 每輪對帳的指令或步驟 |
+| Hold flag | hold 怎麼設、怎麼清；哪個合入步驟在合入前檢查它 |
+| Stage | 開批次分支、依序合入 `DONE` 的成員；哪些衝突 coordinator 可以自己解 |
+| Regression | 在 staged SHA 跑什麼、怎樣算過 |
+| Integrate | 合進整合分支的條件與指令 |
+| Push gate | 整合分支 tip 等於最後通過回歸的 SHA 時，交給人的 push 指令 |
+| Close | 進到主線之後的證據留言、關單、移除 worktree 與分支 |
+| Handoff | 交棒的指令 |
+| Project tick hooks | 每輪要跑的專案檢查 |
+| Retro collect | `/retro-collect` 需要的事實 |
+
+沒有專用腳本也能起步：ron-skills 的 Pilot 段把 Probe、Watch 都寫成手動指令序列，等真的跑出摩擦再做成腳本。
+
+## tick hooks
+
+專案自己每輪要做、ron-skills 不認識的檢查（例如每日資料採集的派發、API 額度檢查），寫在 Pilot 段的 **Project tick hooks**：每輪在 Drain 之後、Pick 之前，從 coordinator checkout 依序執行。exit 0 繼續；非 0 開一個 gate（附 exit code 與輸出尾段），這一輪跳過 Pick 與 Dispatch，已在跑的 worker 與 Land 照常；下一輪再跑一次，exit 0 就自動解除 gate。沒寫這一行就整步略過。
+
+## Orca
+
+| 用途 | 做法 |
+| --- | --- |
+| 派工 | `orca worktree create … --agent claude --prompt "/issue-run <n> --worker <checkpoint>"`，回傳的 worktree 路徑與 terminal handle 記進批次 checkpoint |
+| 監看 | `orca terminal read --terminal <handle>`：畫面最後一行是 `DONE <n> <sha>` 或 `STOP <n> <原因>` 就是做完；terminal 已結束但沒有這行就是卡住 |
+| 結案 | `orca worktree rm` 移除 worktree，Orca 不會留下孤兒紀錄 |
+
+確切的子命令與旗標以專案 adapter 的 Dispatch、Watch、Close 行為準（ron-skills 用 `orca-ide`）。從 WSL 呼叫 Orca 時，`worktree create` 常先回 `runtime_unavailable` 但其實已經建好：只呼叫一次，用 `git worktree list` 確認，不要重試（見 [08 常見坑](08-pitfalls.md)）。
+
+## Codex 跨模型 review
+
+L1／L2 的 review 是 Claude 的 `code-review` skill。L3 在 adapter 的 Review 段加上 Codex 的 runner，用在三個地方：
+
+- **高風險 Issue 的獨立情境驗證**：adapter 列的高風險類別（權限、金流寫入、跨模組路徑之類）在 candidate 產生後，由沒寫程式的全新 Codex 在 candidate SHA 用 adapter 的 driver 跑至少一個情境，記下 SHA、指令、觀察結果。這筆紀錄是合入證據，diff review 不能取代。
+- **跨模型挑戰**：兩輪 review 後仍有爭議的 finding，或高風險 Issue 上的 finding，同一個問題分別問 Claude 與 Codex，報告兩邊同意與分歧之處再決定。
+- **worker 的最後一輪**：兩輪修正後，在最終 candidate 上用 adapter 的 review 指令（有 Codex runner 時就是它）跑一輪只審不修；有 P2 以上就 `STOP`，只剩 P3 記進 rulings 後照常 `DONE`。
+
+Codex 呼叫失敗時改用 `code-review` skill，並在報告註明 Codex 不可用。
+
+## `/retro-collect`
+
+coordinator 退役後，在每個退役分頁輸入 `/retro`：它以收集模式只把建議寫進 `.scratch/retro/<session 前 8 碼>.md`，不自己實作。全部收齊後在任一 session 輸入 `/retro-collect`：彙整成一份計畫、在單一 retro worktree 實作全部採用項、照 adapter 的 **Retro collect** 行合入並 push，最後關掉已收集的分頁。adapter 沒寫這一行時它會停下並說明。
+
+## 專案自訂的分級
+
+L1／L2 的分級入口一律是 `/triage`。專案的分級規則多到 `/triage` 裝不下時，可以做一個專案層 skill 取代它，並在 adapter 的 Readiness 段指向它。例子是 L3 實例的 `/issue-queue`：先列出待補關聯、待釐清、可開工、阻塞中四區總覽，再逐張釐清，並在 ready 前檢查本文的固定區塊。這是專案擴充，不是 L3 的必要條件。
+
+## L3 實例的其他擴充
+
+L3 實例另外加了 SQL Issue 與共用環境讀回、Docker 測試單一入口、整合分支 lock 與預約、回歸排隊、定期完整驗收、固定 SHA 的 push 腳本與發布導讀站等擴充，細節見 <https://spay2-workflow-docs.pages.dev>；它們都是在本流程之上因為專案需要而加的，不必照搬。

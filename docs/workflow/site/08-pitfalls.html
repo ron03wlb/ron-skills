@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>08 常見坑｜ron-skills 交付流程</title>
+<link rel="stylesheet" href="static/site.css">
+<script defer src="static/site.js"></script>
+</head>
+<body>
+<button class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">目錄</button>
+<aside class="sidebar" id="sidebar" aria-label="流程導讀目錄">
+<nav class="chapters" aria-label="章節"><h2>章節</h2><a href="index.html">ron-skills 交付流程</a><a href="01-tooling.html">01 工具與角色</a><a href="02-lifecycle.html">02 Issue 生命週期</a><a href="03-level1.html">03 L1 導入</a><a href="04-level2.html">04 L2 導入</a><a href="05-level3.html">05 L3 導入</a><a href="06-quality-gates.html">06 品質校驗時間軸</a><a href="07-rules.html">07 規則沉澱</a><a href="08-pitfalls.html" aria-current="page">08 常見坑</a><a href="09-skills.html">09 Skills 索引</a></nav>
+<nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2></nav>
+<nav class="rules" aria-label="正式規範"><h2>正式規範（原始 Markdown）</h2><a href="../../../README.md">README.md</a><a href="../../../skills/engineering/issue-run/ADAPTER.md">skills/engineering/issue-run/ADAPTER.md</a></nav>
+</aside>
+<main class="content">
+<article>
+<h1>08 常見坑</h1>
+<p>換了專案也會再踩的坑。專案自己的坑（特定資料庫、特定 CI、特定測試環境）寫在專案的文件裡，不放這裡。</p>
+<h2 id="工具與環境">工具與環境</h2>
+<div class="table-wrap"><table><thead><tr><th>症狀</th><th>原因</th><th>做法</th></tr></thead><tbody><tr><td>agent 讀 Issue 拿到空白</td><td><code>gh issue view &lt;n&gt; --comments</code> 在非 tty 環境（agent 的 Bash 工具）不輸出任何東西</td><td>一律 <code>gh issue view &lt;n&gt; --json number,title,body,labels,comments</code>；寫進 <code>docs/agents/issue-tracker.md</code></td></tr><tr><td><code>which orca</code> 有東西，Orca 指令卻都失敗</td><td>Linux 上的 <code>orca</code> 是 GNOME 螢幕閱讀器</td><td>Orca 可用與否只看 <code>ORCA_CLI_COMMAND</code> 是否設定</td></tr><tr><td>Orca <code>worktree create</code> 回 <code>runtime_unavailable</code>，重試後多出一個 <code>&lt;name&gt;-2</code></td><td>從 WSL 呼叫時，回應早於實際完成</td><td>只呼叫一次，用 <code>git worktree list</code> 輪詢確認；絕不重試</td></tr><tr><td><code>git stash pop</code> 套上了別的 session 的改動</td><td>stash 清單是所有 worktree 共用的</td><td>worktree 之間不用 stash 搬東西；要暫存就用 WIP commit，非用 stash 不可時加唯一訊息、記下 SHA、以 <code>git stash apply &lt;sha&gt;</code> 還原</td></tr><tr><td>本機全綠，CI 一跑就紅</td><td>本機的上游 checkout（fork）落後上游</td><td>acceptance 對上游最新版跑一次（ron-skills：<code>bin/check --upstream</code>）</td></tr><tr><td>背景工作看起來像 timeout</td><td>背景行程繼承了忽略 SIGINT 的設定</td><td>先在前景與背景各單獨重跑一次，再判斷是不是負載</td></tr><tr><td>WSL 裡 headless Chromium 截圖的中文變方框</td><td>WSL 預設沒有中文字型</td><td>把 Noto Sans TC 放進 <code>~/.local/share/fonts/</code>、在 fontconfig 加 fallback、<code>fc-cache -f</code></td></tr><tr><td>貼到終端的 SQL 或多行設定執行結果不對</td><td>換行被轉成 CRLF，或被終端折行</td><td>以檔案交付，請人用檔案執行，不要貼上</td></tr></tbody></table></div>
+<h2 id="權限與規則">權限與規則</h2>
+<div class="table-wrap"><table><thead><tr><th>症狀</th><th>原因</th><th>做法</th></tr></thead><tbody><tr><td>每次啟動 Claude Code 都警告 <code>allows any option at its *</code></td><td>allow 規則的 <code>*</code> 在中間（<code>git -C * fetch</code>），能夾帶 git 選項</td><td><code>*</code> 只放最後；git 寫入包進腳本或 <code>pilot_git.py</code>（見 <a href="04-level2.html#權限規則">04 權限規則</a>）</td></tr><tr><td>agent 說它需要一條新的 allow 規則</td><td><code>.claude/settings.json</code> 只有人能改</td><td>人審過再加；不要讓 agent 自己編輯 settings</td></tr><tr><td>規則寫在 memory 或 skill 裡，agent 還是一再違反</td><td>文字規則沒有強制力</td><td>做成檢查或入口（見 <a href="07-rules.html">07 規則沉澱</a>）</td></tr><tr><td><code>/loop /&lt;skill&gt;</code> 叫不起來</td><td>skill 設了 <code>disable-model-invocation</code>，Skill tool 呼叫不了</td><td>被 <code>/loop</code> 驅動的 skill 不設這個旗標</td></tr><tr><td>改了一行註解，測試就紅</td><td>那個檔被其他檔以 hash 釘住</td><td>改既有檔前先查是否被釘住；adapter 的 Review 段列出釘住的檔</td></tr></tbody></table></div>
+<h2 id="流程">流程</h2>
+<div class="table-wrap"><table><thead><tr><th>症狀</th><th>原因</th><th>做法</th></tr></thead><tbody><tr><td>開了一堆空的 worktree，看板與 worktree 對不上</td><td>開單就建 worktree，或兩套看板各自記狀態</td><td>認領時才建；只用 tracker 的 label 當看板</td></tr><tr><td>Issue 關了，改動卻還不在主線</td><td>合併與結案之間隔著 push，人忘了</td><td>兩段式結案：第二次先查 SHA 已在遠端才關單（見 <a href="04-level2.html#兩段式結案">04</a>）</td></tr><tr><td>換人或換標題後，又試了一次早就證明不行的做法</td><td>撤回的方案只留在舊對話或留言裡</td><td>被重開、回歸或長尾的 Issue，開工前先彙整已撤回的方案寫進 checkpoint</td></tr><tr><td>兩個 session 同時合入，結果對不上</td><td>整合分支與回歸是共用資源</td><td>合入只有一個入口且有 lock（見 <a href="04-level2.html#整合分支與-lock">04</a>）</td></tr><tr><td>回歸通過了，合入後卻是紅的</td><td>回歸跑在 stage 時的 SHA，之後整合分支又有新 commit</td><td>回歸只對那個 SHA 有效；整合分支有新 commit 就重新 stage、重跑</td></tr><tr><td>worker 印了 <code>DONE</code> 之後又醒來，回報「沒事可做」</td><td>它自己排的 <code>/loop</code> 喚醒或背景工作還在</td><td>worker 印完最後一行就停掉自己的 loop 與背景工作</td></tr><tr><td>長時間跑同一個 coordinator，判斷越來越差</td><td>context 一直 compaction</td><td>coordinator 刻意短命：合入幾批或遇到 compaction 就交棒</td></tr></tbody></table></div>
+</article>
+<footer class="source">本頁由 <code>node scripts/build-workflow-site.mjs</code> 自 <code>docs/workflow/08-pitfalls.md</code> 產生；請改 Markdown 重產，不要手改 HTML。</footer>
+</main>
+</body>
+</html>

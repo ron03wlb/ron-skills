@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>09 Skills 索引｜ron-skills 交付流程</title>
+<link rel="stylesheet" href="static/site.css">
+<script defer src="static/site.js"></script>
+</head>
+<body>
+<button class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">目錄</button>
+<aside class="sidebar" id="sidebar" aria-label="流程導讀目錄">
+<nav class="chapters" aria-label="章節"><h2>章節</h2><a href="index.html">ron-skills 交付流程</a><a href="01-tooling.html">01 工具與角色</a><a href="02-lifecycle.html">02 Issue 生命週期</a><a href="03-level1.html">03 L1 導入</a><a href="04-level2.html">04 L2 導入</a><a href="05-level3.html">05 L3 導入</a><a href="06-quality-gates.html">06 品質校驗時間軸</a><a href="07-rules.html">07 規則沉澱</a><a href="08-pitfalls.html">08 常見坑</a><a href="09-skills.html" aria-current="page">09 Skills 索引</a></nav>
+<nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2></nav>
+<nav class="rules" aria-label="正式規範"><h2>正式規範（原始 Markdown）</h2><a href="../../../README.md">README.md</a><a href="../../../skills/engineering/issue-run/ADAPTER.md">skills/engineering/issue-run/ADAPTER.md</a></nav>
+</aside>
+<main class="content">
+<article>
+<h1>09 Skills 索引</h1>
+<p>依交付階段列出 skill，並標出它從哪一級開始用。<strong>等級</strong>欄：L1 是基本流程就會用到；L2、L3 是導入到該級才需要；「輔助」是隨時可用、但不是流程的必經入口。</p>
+<p>使用者輸入的 skill（<code>/名稱</code>）有些設了 <code>disable-model-invocation</code>，只能由人輸入，agent 不會自己觸發；表中以「人輸入」標示。</p>
+<h2 id="設定每個-repo-一次">設定（每個 repo 一次）</h2>
+<div class="table-wrap"><table><thead><tr><th>skill</th><th>做什麼</th><th>等級</th><th>來源</th></tr></thead><tbody><tr><td><code>/setup-matt-pocock-skills</code></td><td>產生 <code>docs/agents/</code> 的 tracker、triage label、domain docs 設定</td><td>L1（人輸入）</td><td>Matt</td></tr><tr><td><code>wizard</code></td><td>產生互動式 bash 精靈，帶人走完只有人能做的設定（建專案、token、CI secret）</td><td>輔助</td><td>Matt</td></tr><tr><td><code>writing-for-agents</code></td><td>寫 skill、<code>CLAUDE.md</code>、adapter 這類給 agent 讀的文件</td><td>輔助</td><td>Matt</td></tr></tbody></table></div>
+<h2 id="需求與開單">需求與開單</h2>
+<div class="table-wrap"><table><thead><tr><th>skill</th><th>做什麼</th><th>等級</th><th>來源</th></tr></thead><tbody><tr><td><code>grilling</code>、<code>grill-me</code>、<code>grill-with-docs</code></td><td>逐題追問一個計畫或想法，直到決策都定案</td><td>輔助</td><td>Matt（ron-skills overlay）</td></tr><tr><td><code>to-spec</code></td><td>把對話整理成 spec</td><td>輔助</td><td>Matt</td></tr><tr><td><code>to-tickets</code></td><td>把 spec 拆成可獨立交付的 Issue</td><td>輔助</td><td>Matt</td></tr><tr><td><code>domain-modeling</code></td><td>維護 <code>GLOSSARY.md</code> 與 ADR</td><td>輔助</td><td>Matt（ron-skills overlay）</td></tr><tr><td><code>research</code>、<code>prototype</code></td><td>查證事實寫成檔案；做一個丟棄式原型回答設計問題</td><td>輔助</td><td>Matt</td></tr></tbody></table></div>
+<h2 id="分級">分級</h2>
+<div class="table-wrap"><table><thead><tr><th>skill</th><th>做什麼</th><th>等級</th><th>來源</th></tr></thead><tbody><tr><td><code>/triage</code></td><td>把 Issue 推進五個 triage 狀態，ready 的單寫好 agent brief</td><td>L1（人輸入）</td><td>Matt</td></tr><tr><td>專案自訂的分級 skill</td><td>分級規則多到 <code>/triage</code> 裝不下時取代它的專案層入口（見 <a href="05-level3.html#專案自訂的分級">05 專案自訂的分級</a>）</td><td>L3（可選）</td><td>各專案</td></tr></tbody></table></div>
+<h2 id="實作與驗證">實作與驗證</h2>
+<div class="table-wrap"><table><thead><tr><th>skill</th><th>做什麼</th><th>等級</th><th>來源</th></tr></thead><tbody><tr><td><code>/issue-run</code></td><td>把 ready 的 Issue 不中斷地跑到本機 candidate commit；<code>--worker</code> 模式由 coordinator 派出</td><td>L1（人輸入）</td><td>ron-skills</td></tr><tr><td><code>implement</code></td><td>單張 ticket 的實作程序（<code>/issue-run</code> 照它做）</td><td>L1（由 <code>/issue-run</code> 引用）</td><td>Matt</td></tr><tr><td><code>implement-spec</code></td><td>多張 ticket：task graph、每張一個 implementer subagent 與 worktree</td><td>L1（由 <code>/issue-run</code> 引用）</td><td>Matt</td></tr><tr><td><code>tdd</code></td><td>紅、綠、重構；第一個產品改動前先有會紅的測試</td><td>L1</td><td>Matt</td></tr><tr><td><code>code-review</code></td><td>Standards 與 Spec 兩軸平行審查，並排回報</td><td>L1</td><td>Matt</td></tr><tr><td><code>diagnosing-bugs</code></td><td>難解的 bug 與效能退化的診斷迴圈</td><td>輔助</td><td>Matt</td></tr><tr><td><code>codebase-design</code></td><td>設計深模組、找 seam 的共用詞彙</td><td>輔助</td><td>Matt</td></tr></tbody></table></div>
+<h2 id="交付與結案">交付與結案</h2>
+<div class="table-wrap"><table><thead><tr><th>skill</th><th>做什麼</th><th>等級</th><th>來源</th></tr></thead><tbody><tr><td><code>pr</code></td><td>寫 PR／MR 的描述</td><td>L1</td><td>Matt</td></tr><tr><td><code>orca-cli</code></td><td>操作 Orca 的 worktree、terminal 與交棒</td><td>L2（有 Orca 時）、L3</td><td>使用者層</td></tr></tbody></table></div>
+<h2 id="常駐交付">常駐交付</h2>
+<div class="table-wrap"><table><thead><tr><th>skill</th><th>做什麼</th><th>等級</th><th>來源</th></tr></thead><tbody><tr><td><code>/loop /issue-pilot</code></td><td>常駐 coordinator：挑單、派 worker、整批回歸、合入整合分支、交出 push</td><td>L3</td><td>ron-skills</td></tr><tr><td><code>poteto-mode</code></td><td>pstack 的 Autopilot、Orchestrate playbook；<code>/issue-pilot</code> 的協調方法來源</td><td>L3（由 <code>/issue-pilot</code> 引用）</td><td>pstack（ron-skills overlay）</td></tr><tr><td><code>principle-*</code></td><td>pstack 的決策原則，每條寫明何時套用</td><td>L3（由 <code>poteto-mode</code> 引用）</td><td>pstack</td></tr><tr><td><code>arena</code></td><td>幾個 agent 各自實作同一題、交叉評審後挑一個；只用在昂貴、難逆轉、有多種合理做法的設計決策</td><td>輔助</td><td>pstack（ron-skills overlay）</td></tr><tr><td><code>loop</code></td><td>讓一個 skill 依固定間隔或自行排程重複執行</td><td>L3</td><td>Claude Code 內建</td></tr></tbody></table></div>
+<h2 id="回顧與沉澱">回顧與沉澱</h2>
+<div class="table-wrap"><table><thead><tr><th>skill</th><th>做什麼</th><th>等級</th><th>來源</th></tr></thead><tbody><tr><td><code>/retro</code></td><td>回顧一次 session，提出環境改善（檢查、導覽、規範）</td><td>L2（人輸入）</td><td>Matt（ron-skills overlay：寫入前查並行修改；退役 coordinator 改為收集模式）</td></tr><tr><td><code>/retro-collect</code></td><td>收集退役 coordinator 的 <code>/retro</code> 檔，在一個 retro worktree 實作全部採用項</td><td>L3（人輸入）</td><td>ron-skills</td></tr><tr><td><code>handoff</code></td><td>把對話壓成交接文件，讓新的 session 接手</td><td>輔助</td><td>Matt</td></tr></tbody></table></div>
+<h2 id="怎麼看完整清單">怎麼看完整清單</h2>
+<pre><code class="language-bash">~/code/ron-skills/bin/sync-skills --list   # 每個 skill 一行：user/model、名稱、來源；在專案目錄執行會含專案 skill</code></pre>
+<p>哪些 Matt 與 pstack 的 skill 被連結、哪些刻意不連結，記在 ron-skills 的 <code>matt-skills.txt</code> 與 <code>pstack-skills.txt</code>。</p>
+</article>
+<footer class="source">本頁由 <code>node scripts/build-workflow-site.mjs</code> 自 <code>docs/workflow/09-skills.md</code> 產生；請改 Markdown 重產，不要手改 HTML。</footer>
+</main>
+</body>
+</html>

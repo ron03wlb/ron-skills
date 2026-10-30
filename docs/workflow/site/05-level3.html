@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>05 L3 導入｜ron-skills 交付流程</title>
+<link rel="stylesheet" href="static/site.css">
+<script defer src="static/site.js"></script>
+</head>
+<body>
+<button class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">目錄</button>
+<aside class="sidebar" id="sidebar" aria-label="流程導讀目錄">
+<nav class="chapters" aria-label="章節"><h2>章節</h2><a href="index.html">ron-skills 交付流程</a><a href="01-tooling.html">01 工具與角色</a><a href="02-lifecycle.html">02 Issue 生命週期</a><a href="03-level1.html">03 L1 導入</a><a href="04-level2.html">04 L2 導入</a><a href="05-level3.html" aria-current="page">05 L3 導入</a><a href="06-quality-gates.html">06 品質校驗時間軸</a><a href="07-rules.html">07 規則沉澱</a><a href="08-pitfalls.html">08 常見坑</a><a href="09-skills.html">09 Skills 索引</a></nav>
+<nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2></nav>
+<nav class="rules" aria-label="正式規範"><h2>正式規範（原始 Markdown）</h2><a href="../../../README.md">README.md</a><a href="../../../skills/engineering/issue-run/ADAPTER.md">skills/engineering/issue-run/ADAPTER.md</a></nav>
+</aside>
+<main class="content">
+<article>
+<h1>05 L3 導入</h1>
+<p>L3 讓一個常駐的 <strong>coordinator</strong> 接手 L2 裡由你下指令的部分：它自己從 tracker 挑 <code>ready-for-agent</code> 的單、每張派一個 worker、整批回歸後合進本機整合分支，再把 push 指令交給你。你只剩三件事：產品決策、對共用環境執行 artifact 並讀回、<code>git push</code>（除非 adapter 允許 coordinator 自己 push）。</p>
+<h2 id="進入條件">進入條件</h2>
+<ul>
+<li>L2 的入口都已存在，而且每個都有固定的 exit code 與一行修正指示：coordinator 靠 exit code 判斷下一步，不讀散文。</li>
+<li>裝了 Orca，且在 Orca 的 terminal 裡 <code>ORCA_CLI_COMMAND</code> 有設定：派 worker、監看、交棒都經 Orca。</li>
+<li>權限規則照 <a href="04-level2.html#權限規則">04 權限規則</a> 設好，新 session 啟動沒有警告。</li>
+<li>adapter 有 <strong>Pilot</strong> 段（見下方）。沒有這段時 <code>/issue-pilot</code> 直接停下並說明。</li>
+</ul>
+<h2 id="loop-issue-pilot"><code>/loop /issue-pilot</code></h2>
+<p>在主 checkout（或 adapter Pilot 段 <strong>Coordinator checkout</strong> 指定的 checkout）執行：</p>
+<pre><code class="language-text">/loop /issue-pilot</code></pre>
+<p><code>/loop</code> 讓它自己排下一次喚醒；每次醒來跑一輪（tick）：</p>
+<ol>
+<li><strong>Reconcile 對帳</strong>：讀 <code>.scratch/pilot/</code> 的狀態檔、其他 session 轉來的請求、還開著的 gate，用 Watch 指令唯讀查看每個 worker。</li>
+<li><strong>Drain 收件</strong>：每個做完的 worker 分成 <code>DONE</code>（記下 candidate SHA）、<code>STOP</code>（照停因處理）或問題（只依 adapter 或 skill 的規則回答，產品問題變成 gate）。</li>
+<li><strong>Project hooks</strong>：跑 adapter 列的專案檢查（見下方 tick hooks）。</li>
+<li><strong>Pick 挑單</strong>：worker 數低於上限時，依 adapter 的 Pool 規則挑下一批；<code>needs-triage</code> 的單先照 Readiness 補齊。</li>
+<li><strong>Dispatch 派工</strong>：每張開一個 worktree 與 terminal，執行 <code>/issue-run &lt;n&gt; --worker &lt;batch checkpoint&gt;</code>。</li>
+<li><strong>Land 落地</strong>：整批成員都 <code>DONE</code> 或 <code>STOP</code> 後，在批次分支依號碼合入、在 staged SHA 跑回歸、通過才合進整合分支，然後交出 push 指令。</li>
+<li><strong>Report and sleep</strong>：重產 <code>status.md</code>，有需要人做的事才通知；排下一次喚醒（有 worker 在跑時 1200 秒，閒置時 1800 到 3600 秒）。</li>
+</ol>
+<p>它的狀態全在磁碟上（<code>.scratch/pilot/</code> 與各批次 checkpoint），不靠對話記憶：</p>
+<div class="table-wrap"><table><thead><tr><th>檔案</th><th>內容</th></tr></thead><tbody><tr><td><code>preferences.md</code></td><td>standing orders：worker 上限、批次大小、誰合入、誰 push</td></tr><tr><td><code>gates.md</code></td><td>等人回覆的問題、選項、已套用的預設</td></tr><tr><td><code>decisions.md</code></td><td>每個決定的理由、證據、結果</td></tr><tr><td><code>status.md</code></td><td>從 checkpoint 重產的現況，不手寫</td></tr><tr><td><code>requests.md</code></td><td>其他 session 轉來的請求（插單、hold、stop）</td></tr><tr><td><code>sessions.md</code></td><td>每個 coordinator session 一行，給 <code>/retro</code> 找紀錄</td></tr></tbody></table></div>
+<p>在其他 session 輸入 <code>/issue-pilot &lt;n&gt;</code>、<code>/issue-pilot hold</code>、<code>/issue-pilot stop</code>，請求會轉給正在跑的 coordinator，不會多開一個。</p>
+<p><strong>交棒</strong>：coordinator 刻意短命。合入幾批（ron-skills 是 2 批）或遇到 compaction 後，它在安全點停掉自己的背景工作、在新的 session 接手 <code>/loop /issue-pilot</code>，舊 session 退役。</p>
+<h2 id="adapter-的-pilot-段">adapter 的 Pilot 段</h2>
+<p>L3 的專案事實全寫在 adapter 的 <code>## Pilot</code> 段，每一條是一行。範本與每條的 Default 見 <a href="../../../skills/engineering/issue-run/ADAPTER.md"><code>ADAPTER.md</code></a> 的 Pilot 段；實例見 ron-skills 的 <a href="../../agents/issue-run.md"><code>docs/agents/issue-run.md</code></a>。</p>
+<div class="table-wrap"><table><thead><tr><th>條目</th><th>寫什麼</th></tr></thead><tbody><tr><td>Coordinator checkout</td><td>coordinator 在哪個 checkout 跑、<code>.scratch/pilot/</code> 放哪</td></tr><tr><td>Sessions</td><td>怎麼登記 coordinator session</td></tr><tr><td>Defaults</td><td>worker 上限、每批張數、誰合入、誰 push、何時交棒</td></tr><tr><td>Integration branch</td><td>本機整合分支的名稱、怎麼開、合進主線後怎麼跟上</td></tr><tr><td>Pool</td><td>挑單的查詢與排序；被擋住或已在其他批次的單怎麼濾掉</td></tr><tr><td>Batch</td><td>批次 key 與 checkpoint 格式：每個成員一行（Issue、分支、worktree、terminal、開始時間、stuck-after、狀態、candidate SHA）</td></tr><tr><td>Brief check</td><td>拒絕缺欄位 brief 的指令（goal、scope、acceptance、verify、timebox、forbidden、report、standing orders 路徑）</td></tr><tr><td>Dispatch</td><td>開 worktree 與 terminal 並送出 <code>/issue-run &lt;n&gt; --worker …</code> 的指令</td></tr><tr><td>Watch</td><td>唯讀讀取 worker 畫面的指令；最後一行 <code>DONE</code>／<code>STOP</code> 就是做完</td></tr><tr><td>Agent rows</td><td>每個派出的 agent 記在哪</td></tr><tr><td>Probe</td><td>每輪對帳的指令或步驟</td></tr><tr><td>Hold flag</td><td>hold 怎麼設、怎麼清；哪個合入步驟在合入前檢查它</td></tr><tr><td>Stage</td><td>開批次分支、依序合入 <code>DONE</code> 的成員；哪些衝突 coordinator 可以自己解</td></tr><tr><td>Regression</td><td>在 staged SHA 跑什麼、怎樣算過</td></tr><tr><td>Integrate</td><td>合進整合分支的條件與指令</td></tr><tr><td>Push gate</td><td>整合分支 tip 等於最後通過回歸的 SHA 時，交給人的 push 指令</td></tr><tr><td>Close</td><td>進到主線之後的證據留言、關單、移除 worktree 與分支</td></tr><tr><td>Handoff</td><td>交棒的指令</td></tr><tr><td>Project tick hooks</td><td>每輪要跑的專案檢查</td></tr><tr><td>Retro collect</td><td><code>/retro-collect</code> 需要的事實</td></tr></tbody></table></div>
+<p>沒有專用腳本也能起步：ron-skills 的 Pilot 段把 Probe、Watch 都寫成手動指令序列，等真的跑出摩擦再做成腳本。</p>
+<h2 id="tick-hooks">tick hooks</h2>
+<p>專案自己每輪要做、ron-skills 不認識的檢查（例如每日資料採集的派發、API 額度檢查），寫在 Pilot 段的 <strong>Project tick hooks</strong>：每輪在 Drain 之後、Pick 之前，從 coordinator checkout 依序執行。exit 0 繼續；非 0 開一個 gate（附 exit code 與輸出尾段），這一輪跳過 Pick 與 Dispatch，已在跑的 worker 與 Land 照常；下一輪再跑一次，exit 0 就自動解除 gate。沒寫這一行就整步略過。</p>
+<h2 id="orca">Orca</h2>
+<div class="table-wrap"><table><thead><tr><th>用途</th><th>做法</th></tr></thead><tbody><tr><td>派工</td><td><code>orca worktree create … --agent claude --prompt &quot;/issue-run &lt;n&gt; --worker &lt;checkpoint&gt;&quot;</code>，回傳的 worktree 路徑與 terminal handle 記進批次 checkpoint</td></tr><tr><td>監看</td><td><code>orca terminal read --terminal &lt;handle&gt;</code>：畫面最後一行是 <code>DONE &lt;n&gt; &lt;sha&gt;</code> 或 <code>STOP &lt;n&gt; &lt;原因&gt;</code> 就是做完；terminal 已結束但沒有這行就是卡住</td></tr><tr><td>結案</td><td><code>orca worktree rm</code> 移除 worktree，Orca 不會留下孤兒紀錄</td></tr></tbody></table></div>
+<p>確切的子命令與旗標以專案 adapter 的 Dispatch、Watch、Close 行為準（ron-skills 用 <code>orca-ide</code>）。從 WSL 呼叫 Orca 時，<code>worktree create</code> 常先回 <code>runtime_unavailable</code> 但其實已經建好：只呼叫一次，用 <code>git worktree list</code> 確認，不要重試（見 <a href="08-pitfalls.html">08 常見坑</a>）。</p>
+<h2 id="codex-跨模型-review">Codex 跨模型 review</h2>
+<p>L1／L2 的 review 是 Claude 的 <code>code-review</code> skill。L3 在 adapter 的 Review 段加上 Codex 的 runner，用在三個地方：</p>
+<ul>
+<li><strong>高風險 Issue 的獨立情境驗證</strong>：adapter 列的高風險類別（權限、金流寫入、跨模組路徑之類）在 candidate 產生後，由沒寫程式的全新 Codex 在 candidate SHA 用 adapter 的 driver 跑至少一個情境，記下 SHA、指令、觀察結果。這筆紀錄是合入證據，diff review 不能取代。</li>
+<li><strong>跨模型挑戰</strong>：兩輪 review 後仍有爭議的 finding，或高風險 Issue 上的 finding，同一個問題分別問 Claude 與 Codex，報告兩邊同意與分歧之處再決定。</li>
+<li><strong>worker 的最後一輪</strong>：兩輪修正後，在最終 candidate 上用 adapter 的 review 指令（有 Codex runner 時就是它）跑一輪只審不修；有 P2 以上就 <code>STOP</code>，只剩 P3 記進 rulings 後照常 <code>DONE</code>。</li>
+</ul>
+<p>Codex 呼叫失敗時改用 <code>code-review</code> skill，並在報告註明 Codex 不可用。</p>
+<h2 id="retro-collect"><code>/retro-collect</code></h2>
+<p>coordinator 退役後，在每個退役分頁輸入 <code>/retro</code>：它以收集模式只把建議寫進 <code>.scratch/retro/&lt;session 前 8 碼&gt;.md</code>，不自己實作。全部收齊後在任一 session 輸入 <code>/retro-collect</code>：彙整成一份計畫、在單一 retro worktree 實作全部採用項、照 adapter 的 <strong>Retro collect</strong> 行合入並 push，最後關掉已收集的分頁。adapter 沒寫這一行時它會停下並說明。</p>
+<h2 id="專案自訂的分級">專案自訂的分級</h2>
+<p>L1／L2 的分級入口一律是 <code>/triage</code>。專案的分級規則多到 <code>/triage</code> 裝不下時，可以做一個專案層 skill 取代它，並在 adapter 的 Readiness 段指向它。例子是 L3 實例的 <code>/issue-queue</code>：先列出待補關聯、待釐清、可開工、阻塞中四區總覽，再逐張釐清，並在 ready 前檢查本文的固定區塊。這是專案擴充，不是 L3 的必要條件。</p>
+<h2 id="l3-實例的其他擴充">L3 實例的其他擴充</h2>
+<p>L3 實例另外加了 SQL Issue 與共用環境讀回、Docker 測試單一入口、整合分支 lock 與預約、回歸排隊、定期完整驗收、固定 SHA 的 push 腳本與發布導讀站等擴充，細節見 &lt;https://spay2-workflow-docs.pages.dev&gt;；它們都是在本流程之上因為專案需要而加的，不必照搬。</p>
+</article>
+<footer class="source">本頁由 <code>node scripts/build-workflow-site.mjs</code> 自 <code>docs/workflow/05-level3.md</code> 產生；請改 Markdown 重產，不要手改 HTML。</footer>
+</main>
+</body>
+</html>
