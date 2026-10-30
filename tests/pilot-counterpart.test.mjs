@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
+// scripts/pilot-counterpart.mjs 是 setup-workflow 正本的副本，通用行為由正本測試涵蓋；這裡只留本 repo 真實 Issue 本文的驗收（#53）。
 const script = new URL('../scripts/pilot-counterpart.mjs', import.meta.url).pathname;
 const run = body => spawnSync('node', [script], { input: body, encoding: 'utf8' });
 

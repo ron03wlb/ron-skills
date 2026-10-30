@@ -39,3 +39,7 @@ _Avoid_: Program store、scratch、狀態檔
 **母單**:
 範圍已定、子單已拆好的分組 issue；本身不派工、不驗收，開關跟著子單走。
 _Avoid_: epic、map、總單
+
+**對應單**:
+另一個 repo 裡處理同一件事的 issue，在本文寫成「對應單：<owner>/<repo>#<m>」；這張 issue 合入後，pilot 到對應單留言交接。整句寫在引號或 code 裡的是引用，不算。
+_Avoid_: 關聯單、mirror issue

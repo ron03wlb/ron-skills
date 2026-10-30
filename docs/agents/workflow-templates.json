@@ -20,6 +20,11 @@
       "template": "skills/engineering/setup-workflow/templates/orca-worktree-create.mjs",
       "commit": "d949d9446d7c758aeb965c0c69183e1184726d73",
       "sha256": "c9bfcf8bd3ef0b47724dabe979f50b2038b4d78b7b09dc31b72c6a5208fe5469"
+    },
+    "scripts/pilot-counterpart.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/pilot-counterpart.mjs",
+      "commit": "ca00ccdc2b501501b0fcf25f893626c8c7d25dc8",
+      "sha256": "444367d72b5b8b0b84612bd1ccbf41c5bc40b8e544e7b8d10ef4aa44c7720c44"
     }
   }
 }
