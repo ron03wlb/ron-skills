@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
@@ -40,6 +40,7 @@ test('--list 依連結的真實位置標出來源，並列出目前目錄的專�
   symlinkSync(skill(join(tmp, 'elsewhere/delta')), join(dest, 'delta'));
   skill(join(dest, 'local'));
   mkdirSync(join(dest, 'no-skill-md'));
+  writeFileSync(join(dest, 'README'), '');
   skill(join(proj, '.claude/skills/proj-only'));
 
   const result = run(['--list'], { MATT_SKILLS: matt, PSTACK_SKILLS: pstack, XDG_DATA_HOME: xdg, SKILL_DIRS: dest }, proj);
@@ -75,6 +76,7 @@ test('同步只換掉受管連結：清掉清單外的舊連結，不碰別處�
   assert.equal(readlinkSync(join(a, 'foreign')), join(tmp, 'foreign'));
   assert.equal(readlinkSync(join(b, 'issue-pilot')), join(root, 'skills/engineering/issue-pilot'));
   assert.equal(readlinkSync(join(b, 'issue-run')), join(root, 'skills/engineering/issue-run'));
-  assert.equal(readlinkSync(join(b, 'grilling')), join(xdg, 'ron-skills/overlay/grilling'));
-  assert.equal(existsSync(join(xdg, 'ron-skills/overlay/grilling/SKILL.md')), true);
+  const overlay = readdirSync(join(root, 'overlays')).find(name => name.endsWith('.patch')).replace(/\.patch$/, '');
+  assert.equal(readlinkSync(join(b, overlay)), join(xdg, 'ron-skills/overlay', overlay));
+  assert.equal(existsSync(join(xdg, 'ron-skills/overlay', overlay, 'SKILL.md')), true);
 });

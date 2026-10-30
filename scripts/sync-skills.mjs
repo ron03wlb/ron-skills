@@ -8,6 +8,8 @@
 //           SKILL_DIRS（預設 ~/.claude/skills 與 ~/.agents/skills）
 // 清單檔：matt-skills.txt（相對 skills/，兩層 <類別>/<名稱>）、pstack-skills.txt（相對 skills/，一層 <名稱>）。
 // 清單內 `# pin: <SHA>` 註明驗證過的上游版本；checkout 的 HEAD 不同時只警告。
+// stdout：--list 每個 skill 一行；--check 成功時 `CHECK_OK <n> skills`；同步成功時 `SYNCED <n> skills → <dirs>`。
+// stderr：MISSING、DUPLICATE、OVERLAY_FAILED（exit 1），NEW、SKIP、WARN（只提示）。exit 0 成功、1 有任何 exit 1 的行或檢查失敗。
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -19,7 +21,7 @@ const HOME = homedir();
 const MATT = process.env.MATT_SKILLS || join(HOME, 'code/skills');
 const PSTACK = process.env.PSTACK_SKILLS || join(HOME, 'code/pstack');
 const BUILD = join(process.env.XDG_DATA_HOME || join(HOME, '.local/share'), 'ron-skills/overlay');
-const DESTS = (process.env.SKILL_DIRS || `${HOME}/.claude/skills ${HOME}/.agents/skills`).split('\n')[0].trim().split(/[ \t]+/);
+const DESTS = (process.env.SKILL_DIRS || `${HOME}/.claude/skills ${HOME}/.agents/skills`).split('\n')[0].split(/[ \t]+/).filter(Boolean);
 // git hook（pre-commit 跑 bin/check）會匯出這些變數，`git -C <上游 checkout>` 繼承後讀到的是本 repo。
 const env = { ...process.env };
 for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE']) delete env[key];
@@ -30,14 +32,17 @@ const isFile = path => statSync(path, { throwIfNoEntry: false })?.isFile() ?? fa
 const isLink = path => lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink() ?? false;
 /** shell glob `*` 的一層：不含點開頭的項目。 */
 const entries = dir => (isDir(dir) ? readdirSync(dir).filter(name => !name.startsWith('.')).map(name => join(dir, name)) : []);
+const hasSkill = dir => isDir(dir) && isFile(join(dir, 'SKILL.md'));
 const under = (path, base) => path.startsWith(`${base}/`);
-/** 和 bash 的 `$(git … || echo <fallback>)` 一樣：失敗時接上 fallback，去掉結尾換行。 */
-const git = (cwd, args, fallback = '') => {
-  const result = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'ignore'] });
-  return (result.stdout + (result.status === 0 ? '' : fallback)).replace(/\n+$/, '');
+/** 和 bash 的 `$(git … || echo <fallback>)` 一樣：失敗時接上 fallback，去掉結尾換行；stderr 預設丟掉（`2>/dev/null`）。 */
+const git = (dir, args, { fallback = '', stderr = 'ignore' } = {}) => {
+  const result = spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', stderr] });
+  return ((result.stdout ?? '') + (result.status === 0 ? '' : fallback)).replace(/\n+$/, '');
 };
+/** 交給系統的 sort：排序跟著本機 locale，和 bash 的 glob 與 `sort` 一致，輸出才和 bash 版逐行相同。 */
+const localeSort = (lines, ...flags) => spawnSync('sort', flags, { input: lines.map(line => `${line}\n`).join(''), encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
 /** bash 的 $PWD 是邏輯路徑；環境的 PWD 失效時才退回 getcwd。 */
-const cwd = () => {
+const logicalCwd = () => {
   const pwd = process.env.PWD;
   try {
     if (pwd && realpathSync(pwd) === process.cwd()) return pwd;
@@ -45,20 +50,22 @@ const cwd = () => {
   return process.cwd();
 };
 
+/** 受管來源，依 --list 判斷來源的順序；同步時只清掉指向這些位置的舊連結。 */
+const MANAGED = [[BUILD, 'overlay'], [MATT, 'matt'], [PSTACK, 'pstack'], [ROOT, 'ron-skills']];
+
 function list() {
-  const pwd = cwd();
+  const pwd = logicalCwd();
+  const sources = [...MANAGED, [join(pwd, '.claude'), 'project']];
   const lines = [];
   for (const dir of [...entries(DESTS[0]), ...entries(join(pwd, '.claude/skills'))]) {
-    if (!isDir(dir) || !isFile(join(dir, 'SKILL.md'))) continue;
+    if (!hasSkill(dir)) continue;
     const real = realpathSync(dir);
-    const src = under(real, BUILD) ? 'overlay' : under(real, MATT) ? 'matt' : under(real, PSTACK) ? 'pstack' : under(real, ROOT) ? 'ron-skills' : under(real, join(pwd, '.claude')) ? 'project' : 'other';
+    const src = sources.find(([base]) => under(real, base))?.[1] ?? 'other';
     const kind = /^disable-model-invocation: true/m.test(readFileSync(join(dir, 'SKILL.md'), 'utf8')) ? 'user' : 'model';
-    lines.push(`${kind}\t${basename(dir)}\t${src}\n`);
+    lines.push(`${kind}\t${basename(dir)}\t${src}`);
   }
-  // 交給 sort -u：排序跟著本機 locale，輸出才和 bash 版逐行相同。
-  const sorted = spawnSync('sort', ['-u'], { input: lines.join(''), encoding: 'utf8' });
-  process.stdout.write(sorted.stdout);
-  return sorted.status;
+  for (const line of localeSort(lines, '-u')) console.log(line);
+  return 0;
 }
 
 function sync(check) {
@@ -74,8 +81,8 @@ function sync(check) {
         failed = true;
         return;
       }
-      const branch = git(base, ['rev-parse', '--abbrev-ref', 'HEAD'], '非 git 目錄');
-      if (branch !== 'main' || spawnSync('git', ['-C', base, 'status', '--porcelain', '--', 'skills'], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'inherit'] }).stdout.trim()) {
+      const branch = git(base, ['rev-parse', '--abbrev-ref', 'HEAD'], { fallback: '非 git 目錄' });
+      if (branch !== 'main' || git(base, ['status', '--porcelain', '--', 'skills'], { stderr: 'inherit' })) {
         warn(`WARN ${label} checkout 不是乾淨的 main（${branch}）；overlay 會套在目前內容上`);
       }
       const text = readFileSync(listFile, 'utf8');
@@ -115,9 +122,9 @@ function sync(check) {
       // 上游新增、清單未列的 skill 只提示：要用就加一行，不用就加 `-<path>`。
       let dirs = entries(join(base, 'skills'));
       if (depth === 2) dirs = dirs.flatMap(entries);
-      for (const dir of dirs.sort()) {
+      for (const dir of localeSort(dirs)) {
         const rel = dir.slice(join(base, 'skills').length + 1);
-        if (isFile(join(dir, 'SKILL.md')) && !listed.has(rel)) warn(`NEW ${label} ${rel}（上游新增；在 ${listName} 加入或以 -${rel} 略過）`);
+        if (hasSkill(dir) && !listed.has(rel)) warn(`NEW ${label} ${rel}（上游新增；在 ${listName} 加入或以 -${rel} 略過）`);
       }
     };
 
@@ -125,7 +132,7 @@ function sync(check) {
     syncSource('pstack', PSTACK, join(ROOT, 'pstack-skills.txt'), 1);
 
     for (const dir of entries(join(ROOT, 'skills')).flatMap(entries)) {
-      if (isDir(dir) && isFile(join(dir, 'SKILL.md'))) target.set(basename(dir), dir);
+      if (hasSkill(dir)) target.set(basename(dir), dir);
     }
 
     const checks = [
@@ -157,7 +164,7 @@ function sync(check) {
       for (const link of entries(dest)) {
         if (!isLink(link)) continue;
         const to = readlinkSync(link);
-        if ([MATT, PSTACK, ROOT, BUILD].some(base => under(to, base)) && !target.has(basename(link))) unlinkSync(link);
+        if (MANAGED.some(([base]) => under(to, base)) && !target.has(basename(link))) unlinkSync(link);
       }
       for (const [name, to] of target) {
         const path = join(dest, name);
