@@ -49,15 +49,13 @@ The file's existence is the hold; deleting it clears the hold.
 
 ## `.scratch/pilot/decisions.md`
 
-The decision trail: a `# Decisions` heading, then one Markdown table with five columns, one row per decision, appended. Readers do not require the heading or the header row: `pilot-unbare.sh` appends a row even when the file does not exist yet.
+The decision trail: a `# Decisions` heading, then one Markdown table with five columns, one row per decision, appended. Readers do not require the heading or the header row: `pilot-unbare.sh` appends its `還原 core.bare` rows even when the file does not exist yet.
 
 ```
 | time | decision | reason | evidence | result |
 |---|---|---|---|---|
 | 2026-10-30T12:33:07+08:00 | 成為 coordinator（ron-skills-44） | 無 coordinator 檔 | .scratch/pilot/coordinator | ok |
 ```
-
-`pilot-unbare.sh` appends rows here too (`還原 core.bare`).
 
 ## `.scratch/pilot/requests.md`
 

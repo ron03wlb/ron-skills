@@ -59,7 +59,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Defaults | worker 上限、每批張數、誰合入、誰 push 與合併 PR／MR、何時交棒 |
 | Integration branch | 本機整合分支的名稱、怎麼開、合進主線後怎麼跟上 |
 | Pool | 挑單的查詢與排序；被擋住或已在其他批次的單怎麼濾掉 |
-| Batch | 批次 key 與 checkpoint 格式：每個成員一行（Issue、分支、worktree、terminal、開始時間、stuck-after、狀態、candidate SHA） |
+| Batch | 批次 checkpoint 由哪個步驟建立；檔名、欄位與狀態值照 [`PILOT-STORE.md`](../../skills/engineering/issue-pilot/PILOT-STORE.md) |
 | Brief check | 拒絕缺欄位 brief 的指令（goal、scope、acceptance、verify、timebox、forbidden、report、standing orders 路徑） |
 | Dispatch | 開 worktree 與 terminal 並送出 `/issue-run <n> --worker …` 的指令 |
 | Watch | 唯讀讀取 worker 畫面的指令；最後一行 `DONE`／`STOP` 就是做完 |
