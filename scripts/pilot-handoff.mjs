@@ -6,7 +6,7 @@
 //   → 等新 session 把 `pid ` 行寫進 coordinator 檔，才算交接完成。
 // 任一步失敗就還原 coordinator 檔、關掉已開的分頁並 STOP，舊 session 照常繼續當 coordinator（分頁留著，`/loop` 之後仍可能接手，變成兩個 coordinator）。
 // 沒有 coordinator 檔也是 STOP not-coordinator。
-// 總時間有上限：Bash 工具最多等 600 秒，被殺就來不及還原，所以預算到了（STOP timeout）或收到 SIGTERM、SIGINT（STOP signal <名稱>）都中止進行中的步驟、走同一條還原路徑，
+// 總時間有上限：Bash 工具最多等 600 秒，被殺就來不及還原，所以預算到了（STOP timeout）或收到 SIGTERM、SIGINT（STOP signal <名稱>）都中止進行中的步驟（terminal create 例外，見 BUDGET_MS）、走同一條還原路徑，
 // 最壞在 540 秒內結束。因此全程用 async：同步等待會擋住訊號處理。
 //
 // 用法：node scripts/pilot-handoff.mjs --session <舊 session id> --pid <舊 CLAUDE_PID> --reason <原因>
