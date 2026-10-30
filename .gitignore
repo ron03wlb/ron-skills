@@ -1,3 +1,5 @@
+# pilot 與 issue-run 的 checkpoint（docs/agents/issue-run.md：不 commit）
+.scratch/
 node_modules/
 .idea/
 # archify 的 delivery 收據含本機絕對路徑，只供 visual-check --require-provenance 在本機使用（#10）

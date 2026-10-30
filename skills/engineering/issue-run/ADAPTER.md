@@ -64,6 +64,8 @@ What `/issue-pilot` needs on top of the sections above: pool query, worker cap a
 - **Project tick hooks.** Scripts the coordinator runs each tick after Drain and before Pick, in order, from the coordinator checkout, for project checks ron-skills does not model (a daily collection dispatch, a quota check). Exit 0 continues; any other exit opens a gate with the script's output and skips Pick and Dispatch for that tick. Default: none; the step is skipped.
 - **Retro collect.** What `/retro-collect` needs: the collector script, retro worktree naming, checks, merge, and push. Default: none; `/retro-collect` stops and says so.
 
+Run every Pilot command once in the repo before writing it into the adapter; a command copied from another repo's adapter fails on that repo's paths (ron-skills retro 4f58fc81#1). Orca under WSL records repos by their Windows UNC path, so `orca worktree create --repo path:<WSL path>` returns `repo_not_found`, wrapped as `agent_session_operation_unknown` when `--agent` rides along: omit `--repo` and run it from the repo's checkout, which Orca infers it from. A repo without delivery scripts can start from ron-skills' own [`docs/agents/issue-run.md`](../../../docs/agents/issue-run.md#pilot).
+
 Default: no Pilot section; `/issue-pilot` stops and says so.
 
 ## Permissions
