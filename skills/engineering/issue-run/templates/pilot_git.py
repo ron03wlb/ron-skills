@@ -3,7 +3,12 @@
 
 `.claude/settings.json` 只放行 `python3 scripts/pilot_git.py:*`。allow rule 寫成 `git -C * <subcommand>` 時，
 中間的 `*` 也能吞下 `-c core.sshCommand=…` 這類 git 全域選項（Claude Code 會警告 "allows any option at its *"），
-所以路徑與參數改由這裡檢查：主 checkout 只能 fetch 與唯讀查詢，寫入只限 WORKTREE_ROOT 下以 BRANCH_PREFIX 開頭的 worktree。
+所以路徑與參數改由這裡檢查：主 checkout 只能 fetch 與唯讀查詢，寫入只限 worktree root 下以 BRANCH_PREFIX 開頭的 worktree。
+
+主 checkout 與 worktree root 依機器決定，不寫死：
+  主 checkout     環境變數 PILOT_GIT_MAIN_CHECKOUT；沒有時取本 script 所在 repo 的 git common dir 的上一層
+                  （在主 checkout 或任一 linked worktree 執行都得到主 checkout）。
+  worktree root   環境變數 PILOT_GIT_WORKTREE_ROOT；沒有時是 ~/orca/workspaces/<主 checkout 目錄名>（Orca 在 WSL、macOS 都放這裡）。
 
 用法：python3 scripts/pilot_git.py <子命令> <checkout> [參數]
   fetch <checkout>                 git fetch origin
@@ -14,18 +19,17 @@
   log   <checkout> <range>         git log --oneline <range>
 驗證失敗 exit 2，stderr 一行原因；其餘 exit code 與輸出照 git。
 
-範本：複製成專案的 scripts/pilot_git.py，只改下面四個常數；步驟見 ADAPTER.md「Permissions」段。
+範本：複製成專案的 scripts/pilot_git.py，只改下面兩個常數；步驟見 ADAPTER.md「Permissions」段。
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-# 依專案改這四個常數（參考實作：Growth 的 scripts/pilot_git.py）。
-MAIN_CHECKOUT = Path("/home/ron/code/<repo>")
-WORKTREE_ROOT = Path("/home/ron/orca/workspaces/<repo>")
+# 依專案改這兩個常數（參考實作：Growth 的 scripts/pilot_git.py）。
 BRANCH_PREFIX = "feature-ron-"
 BASE_BRANCH = "main"
 
@@ -40,15 +44,38 @@ class Refused(Exception):
     pass
 
 
+def main_checkout() -> Path:
+    """PILOT_GIT_MAIN_CHECKOUT，沒有時取本 script 所在 repo 的 git common dir 的上一層。"""
+    if os.environ.get("PILOT_GIT_MAIN_CHECKOUT"):
+        return Path(os.environ["PILOT_GIT_MAIN_CHECKOUT"]).resolve()
+    here = Path(__file__).resolve().parent
+    found = subprocess.run(
+        ["git", "-C", str(here), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True, text=True,
+    )
+    if found.returncode:
+        raise Refused(f"找不到主 checkout：{here} 不在 git repo 裡，請設 PILOT_GIT_MAIN_CHECKOUT")
+    return Path(found.stdout.strip()).parent.resolve()
+
+
+def worktree_root(main: Path) -> Path:
+    """PILOT_GIT_WORKTREE_ROOT，沒有時是 ~/orca/workspaces/<主 checkout 目錄名>。"""
+    if os.environ.get("PILOT_GIT_WORKTREE_ROOT"):
+        return Path(os.environ["PILOT_GIT_WORKTREE_ROOT"]).resolve()
+    return (Path.home() / "orca" / "workspaces" / main.name).resolve()
+
+
 def resolve_checkout(command: str, raw: str) -> Path:
-    """主 checkout 只給唯讀子命令；其他一律須為 WORKTREE_ROOT 的直接子目錄且名稱以 BRANCH_PREFIX 開頭。"""
+    """主 checkout 只給唯讀子命令；其他一律須為 worktree root 的直接子目錄且名稱以 BRANCH_PREFIX 開頭。"""
     path = Path(raw).resolve()
-    if path == MAIN_CHECKOUT.resolve():
+    main = main_checkout()
+    if path == main:
         if command not in READ_ONLY:
             raise Refused(f"{command} 不能在主 checkout 執行（主 checkout 的 Git 寫入需逐次批准）")
         return path
-    if path.parent != WORKTREE_ROOT.resolve() or not path.name.startswith(BRANCH_PREFIX):
-        raise Refused(f"{raw} 不是主 checkout，也不是 {WORKTREE_ROOT}/{BRANCH_PREFIX}* worktree")
+    root = worktree_root(main)
+    if path.parent != root or not path.name.startswith(BRANCH_PREFIX):
+        raise Refused(f"{raw} 不是主 checkout {main}，也不是 {root}/{BRANCH_PREFIX}* worktree")
     return path
 
 

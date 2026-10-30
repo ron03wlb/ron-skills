@@ -10,7 +10,9 @@ import { env } from './helpers/git-fixture.mjs';
 const adapter = readFileSync(new URL('../docs/agents/issue-run.md', import.meta.url), 'utf8');
 const pilot = readFileSync(new URL('../docs/agents/pilot.md', import.meta.url), 'utf8');
 const line = name => pilot.match(new RegExp(`^- \\*\\*${name}\\.\\*\\*.*$`, 'm'))?.[0] ?? '';
-const stageWorktree = '/home/ron/orca/workspaces/ron-skills/pilot-stage';
+// 路徑依機器決定（#93）：Coordinator checkout、Stage worktree 兩條各定義一次怎麼取得，其他條目只用佔位符。
+const mainCheckout = '<主 checkout>';
+const stageWorktree = '<stage worktree>';
 
 test('issue-run.md 的 Pilot 段只留一行指向 pilot.md', () => {
   const section = adapter.match(/^## Pilot\n([\s\S]*?)(?=^## |(?![\s\S]))/m)[1].trim();
@@ -76,7 +78,7 @@ test('Stage、Regression、Integrate、Integration branch 寫明在 stage worktr
   for (const name of ['Stage', 'Regression', 'Integrate', 'Integration branch']) {
     const text = line(name);
     assert.ok(text.includes(stageWorktree), `**${name}.** 要寫明在 stage worktree 執行`);
-    for (const [hit, target] of text.matchAll(/git (?:-C (\S+) )?(?:checkout|switch)\b/g)) {
+    for (const [hit, target] of text.matchAll(/git (?:-C (<[^>]+>|[^\s<]\S*) )?(?:checkout|switch)\b/g)) {
       assert.equal(target, stageWorktree, `${name}：${hit} 不在 stage worktree`);
     }
   }
@@ -84,6 +86,33 @@ test('Stage、Regression、Integrate、Integration branch 寫明在 stage worktr
 
 // 主 checkout 不在 main 的偵測在 pilot-probe.mjs 裡（tests/pilot-probe.test.mjs 驗 NOT_MAIN）；這裡驗 Probe 跑它並處理 NOT_MAIN。
 test('Probe 在主 checkout 跑 pilot-probe.mjs，並處理 NOT_MAIN', () => {
-  assert.match(line('Probe'), /node scripts\/pilot-probe\.mjs \/home\/ron\/code\/ron-skills/);
+  assert.ok(line('Probe').includes(`node scripts/pilot-probe.mjs ${mainCheckout}`), 'Probe 要在主 checkout 跑 pilot-probe.mjs');
   assert.match(line('Probe'), /`NOT_MAIN <分支>` 回報人，不 stage、不 merge/);
+});
+
+// 重現 #93：pilot.md 寫死 WSL 的 /home/ron/... 與 orca-ide，macOS 上 Probe、Dispatch、Stage 第一步就失敗。
+test('pilot.md 不寫死機器路徑與 Orca 指令名：Orca 一律 "$ORCA_CLI_COMMAND"', () => {
+  assert.doesNotMatch(pilot, /\/home\/|\/Users\//, '不寫機器專屬的絕對路徑');
+  assert.doesNotMatch(pilot, /orca-ide/, 'Orca 指令寫 "$ORCA_CLI_COMMAND"');
+  for (const name of ['Watch', 'Stage', 'Close']) {
+    assert.match(line(name), /`"\$ORCA_CLI_COMMAND" (terminal|worktree) /, `**${name}.** 的 Orca 指令`);
+  }
+});
+
+test('主 checkout 與 stage worktree 各在自己的條目定義一次怎麼取得', () => {
+  const coordinator = line('Coordinator checkout');
+  assert.ok(coordinator.includes(mainCheckout));
+  assert.ok(coordinator.includes('git rev-parse --show-toplevel'));
+  assert.ok(coordinator.includes('git rev-parse --path-format=absolute --git-common-dir'));
+  const stage = line('Stage worktree');
+  assert.ok(stage.includes(stageWorktree));
+  assert.ok(stage.includes('git -C <主 checkout> worktree list --porcelain'));
+  assert.match(stage, /`pilot\/integration`.*`pilot\/stage-\*`/);
+});
+
+// #21 的根因是主 checkout 的工作樹被換掉：路徑改成佔位符後，整份 pilot.md 對主 checkout 都不能 checkout／switch。
+test('整份 pilot.md 沒有在主 checkout checkout／switch 的步驟', () => {
+  const hits = [...pilot.matchAll(/git -C (<[^>]+>|[^\s<]\S*) (?:checkout|switch)\b/g)].map(([, target]) => target);
+  assert.ok(hits.length > 0, '應該找得到 stage worktree 的 switch');
+  for (const target of hits) assert.equal(target, stageWorktree);
 });

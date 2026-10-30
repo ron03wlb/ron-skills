@@ -78,7 +78,7 @@ done</code></pre>
 <li>已經把 git 寫入包進交付腳本的 repo（合入入口、結案入口），allow 只放行那幾支腳本，腳本裡面才跑 <code>git -C</code>。</li>
 <li>還沒有交付腳本的 repo，用範本 <a href="../../../skills/engineering/issue-run/templates/pilot_git.py"><code>pilot_git.py</code></a>：
 <ol>
-<li>複製成 repo 的 <code>scripts/pilot_git.py</code>，改四個常數（主 checkout、worktree 根目錄、分支前綴、base 分支）。它先驗證目標與參數再執行 <code>git -C</code>：主 checkout 只能 <code>fetch</code>、<code>rev</code>、<code>log</code>；寫入（<code>sync</code>、<code>stage</code>、<code>push</code>）只能到 <code>&lt;worktree 根目錄&gt;/&lt;前綴&gt;*</code>；參數不得以 <code>-</code> 開頭；<code>push</code> 只推 <code>&lt;前綴&gt;*</code> 分支。驗證失敗 exit 2。</li>
+<li>複製成 repo 的 <code>scripts/pilot_git.py</code>，改兩個常數（分支前綴、base 分支）。主 checkout 與 worktree 根目錄依機器偵測，不是常數：主 checkout 是環境變數 <code>PILOT_GIT_MAIN_CHECKOUT</code>，沒有時取 script 所在 repo 的 <code>git rev-parse --path-format=absolute --git-common-dir</code> 的上一層；worktree 根目錄是 <code>PILOT_GIT_WORKTREE_ROOT</code>，沒有時是 <code>~/orca/workspaces/&lt;主 checkout 目錄名&gt;</code>；偵測結果在某台機器上不對時才設。它先驗證目標與參數再執行 <code>git -C</code>：主 checkout 只能 <code>fetch</code>、<code>rev</code>、<code>log</code>；寫入（<code>sync</code>、<code>stage</code>、<code>push</code>）只能到 <code>&lt;worktree 根目錄&gt;/&lt;前綴&gt;*</code>；參數不得以 <code>-</code> 開頭；<code>push</code> 只推 <code>&lt;前綴&gt;*</code> 分支。驗證失敗 exit 2。</li>
 <li>allow 換成一條 <code>Bash(python3 scripts/pilot_git.py:*)</code>，刪掉所有 <code>Bash(git -C …)</code>。</li>
 <li>adapter 裡的 git 步驟一律寫成 <code>python3 scripts/pilot_git.py &lt;子命令&gt; &lt;checkout&gt; …</code>，並加一個測試：adapter 每條指令都有對應的 allow 規則、沒有直接呼叫 <code>git -C</code> 的步驟。</li>
 <li>開一個新 session，確認啟動時沒有權限警告。</li>

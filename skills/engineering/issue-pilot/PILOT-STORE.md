@@ -101,7 +101,7 @@ integration: pilot/integration @ 202f8ec
 
 | Issue | branch | worktree | handle | started | stuck-after | state | candidate |
 |---|---|---|---|---|---|---|---|
-| 53 | issue/53-close-cross-repo-handoff | /home/ron/orca/workspaces/ron-skills/issue-53 | term_5cbbd19b-… | 2026-10-30T21:12:24+08:00 | 90m | running | |
+| 53 | issue/53-close-cross-repo-handoff | /path/to/workspaces/ron-skills/issue-53 | term_5cbbd19b-… | 2026-10-30T21:12:24+08:00 | 90m | running | |
 ```
 
 - `current:` holds the batch state, one of `dispatched`, `staged <sha>`, `merged <sha>`, `pushed <sha>`, `closed`; the three SHAs are the same staged SHA. Text after the value, separated by a space, is a note readers ignore (dispatch time, PR and merge SHA). The old form `pushed` without a SHA is still accepted; readers then take the SHA from the last `regression:` line.
