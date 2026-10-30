@@ -294,3 +294,10 @@ test('清單本身讀不到時回報 unreadable，不說成不是合法 JSON', {
   assert.match(lines.at(-2), /^FINDING divergence unreadable docs\/agents\/workflow-templates\.json /);
   assert.doesNotMatch(lines.join('\n'), /合法 JSON/);
 });
+
+test('清單路徑是目錄時回報 invalid-manifest，不說成讀不到', t => {
+  const root = repo(t, { 'docs/agents/workflow-templates.json/x': '{}' });
+  const { status, stderr, lines } = health(root);
+  assert.equal(status, 1, stderr);
+  assert.match(lines.at(-2), /^FINDING divergence invalid-manifest docs\/agents\/workflow-templates\.json /);
+});

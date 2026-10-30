@@ -64,10 +64,10 @@ For a repo already imported: compare its adapter, docs and copies with what it a
    | `divergence both-modified` | both of the above; the indented diff (copy → canonical) follows the line | show the diff and leave the decision to the human |
    | `divergence stale-record` | the copy and the canonical script are identical, but neither matches the recorded sha256 | rerun `copy-templates.mjs <repo> <template>` to refresh the record |
    | `divergence unreadable` | the manifest itself, or the copy or canonical script an entry names, cannot be read (permissions) | fix the permissions and rerun the check |
-   | `divergence missing-copy`, `missing-canonical`, `invalid-entry`, `invalid-manifest` | the manifest records a copy or canonical path that no longer exists or is not a file, has an entry without `template` or `sha256`, or is not a valid JSON object with an object `copies` | recopy, or drop the entry, as the human decides |
+   | `divergence missing-copy`, `missing-canonical`, `invalid-entry`, `invalid-manifest` | the manifest records a copy or canonical path that no longer exists or is not a file, has an entry without `template` or `sha256`, or is not a file holding a valid JSON object with an object `copies` | recopy, or drop the entry, as the human decides |
    | `cross-repo` | the adapter, `.claude/settings.json`, `scripts/`, `bin/` or the git hooks use an absolute home path into another repo | copy the file into this repo (as a template when it is generic), or pass the path in through an env var |
 
-2. **Report.** The `level` and `cross-repo` rules match text, so read each finding's evidence line and drop a false positive (a repo name that is also a common word, a path in an example) with the reason. List each remaining finding with its evidence and the handling above, every file the stderr says was skipped as not checked, then the script's last line verbatim. Done when every finding is listed or the run printed `HEALTHY`.
+2. **Report.** The `level` and `cross-repo` rules match text, so read each finding's evidence line and drop a false positive (a repo name that is also a common word, a path in an example, a `~` path inside shell quotes such as `"~/x"` or `'~/x'`, which bash does not expand) with the reason. List each remaining finding with its evidence and the handling above, every file the stderr says was skipped as not checked, then the script's last line verbatim. Done when every finding is listed or the run printed `HEALTHY`.
 
 ## Templates
 

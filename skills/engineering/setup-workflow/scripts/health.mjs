@@ -73,7 +73,8 @@ const ADVICE = {
 const isObject = value => typeof value === 'object' && value !== null && !Array.isArray(value);
 let copies = {};
 let manifestText = null;
-if (existsSync(join(root, MANIFEST))) {
+if (existsSync(join(root, MANIFEST)) && !isFile(join(root, MANIFEST))) finding('divergence', `invalid-manifest ${MANIFEST} 不是檔案`, MANIFEST);
+else if (existsSync(join(root, MANIFEST))) {
   try { manifestText = read(MANIFEST); } catch (error) { finding('divergence', `unreadable ${MANIFEST} 清單讀不到：${error.code ?? error.message}`, MANIFEST); }
 }
 if (manifestText !== null) {
@@ -91,7 +92,7 @@ for (const [path, entry] of Object.entries(copies)) {
   if (!isFile(template)) { finding('divergence', `missing-canonical ${path} 正本 ${entry.template} 已不存在`, MANIFEST); continue; }
   let copySha, canonicalSha;
   try { [copySha, canonicalSha] = [sha256(copy), sha256(template)]; } catch (error) {
-    finding('divergence', `unreadable ${path} ${error.path === copy ? '副本' : `正本 ${entry.template}`}讀不到：${error.code ?? error.message}`, MANIFEST);
+    finding('divergence', `unreadable ${path} ${error.path === copy ? '副本' : `正本 ${entry.template} `}讀不到：${error.code ?? error.message}`, MANIFEST);
     continue;
   }
   const copyChanged = copySha !== entry.sha256;
