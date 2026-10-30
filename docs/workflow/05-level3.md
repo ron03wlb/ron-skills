@@ -96,7 +96,7 @@ L1／L2 的 review 是 Claude 的 `code-review` skill。L3 在 adapter 的 Revie
 
 - **高風險 Issue 的獨立情境驗證**：adapter 列的高風險類別（權限、金流寫入、跨模組路徑之類）在 candidate 產生後，由沒寫程式的全新 Codex 在 candidate SHA 用 adapter 的 driver 跑至少一個情境，記下 SHA、指令、觀察結果。這筆紀錄是合入證據，diff review 不能取代。
 - **跨模型挑戰**：兩輪 review 後仍有爭議的 finding，或高風險 Issue 上的 finding，同一個問題分別問 Claude 與 Codex，報告兩邊同意與分歧之處再決定。
-- **worker 的最後一輪**：兩輪修正後，在最終 candidate 上用 adapter 的 review 指令（有 Codex runner 時就是它）跑一輪只審不修；有 P2 以上就 `STOP`：剩下的全是第一步已經留言的產品取捨時，原因寫 `decision <摘要>`，coordinator 開 gate；只要有一項不是取捨，原因寫 `findings after two review cycles`，coordinator 重派一個 worker。只剩 P3 記進 rulings 後照常 `DONE`。
+- **worker 的最後一輪**：兩輪修正後，在最終 candidate 上用 adapter 的 review 指令（有 Codex runner 時就是它）跑一輪只審不修；有 P2 以上就 `STOP`：剩下的全是兩輪修正時已經在 Issue 留言的產品取捨時，原因寫 `decision <摘要>`，coordinator 開 gate；只要有一項不是取捨，原因寫 `findings after two review cycles`，coordinator 重派一個 worker。只剩 P3 記進 rulings 後照常 `DONE`。
 
 Codex 呼叫失敗時改用 `code-review` skill，並在報告註明 Codex 不可用。
 
