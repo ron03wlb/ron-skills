@@ -18,5 +18,6 @@ bin/sync-skills --check
 node scripts/check-links.mjs
 node scripts/build-workflow-site.mjs --check
 node scripts/check-workflow-strings.mjs
+node scripts/check-workflow-secrets.mjs
 node scripts/check-workflow-sync.mjs
 node --test --test-force-exit tests/*.test.mjs
