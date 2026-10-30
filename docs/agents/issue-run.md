@@ -32,7 +32,7 @@ candidate 是分支 tip。acceptance 是在 candidate SHA、工作樹乾淨時�
 
 ## Pilot
 
-給使用者層級的 `/issue-pilot` coordinator 用的專案設定（`/loop /issue-pilot`）。上面各段在 pilot 底下照樣適用，這裡只寫 pilot 不同的地方。本 repo 沒有 pilot 專用腳本：probe、watch、status 都由 coordinator 依下列指令手動做，沒列出的指令就是沒有。
+給使用者層級的 `/issue-pilot` coordinator 用的專案設定（`/loop /issue-pilot`）。上面各段在 pilot 底下照樣適用，這裡只寫 pilot 不同的地方。本 repo 唯一的 pilot 專用腳本是 Bare guard 的 `scripts/pilot-unbare.sh`；probe、watch、status 都由 coordinator 依下列指令手動做，沒列出的指令就是沒有。
 
 - **Coordinator checkout.** 主 checkout `/home/ron/code/ron-skills`，`.scratch/pilot/` 放在這裡，不 commit。
 - **Bare guard.** Orca 從 WSL 做 worktree 操作（create、rm 都會）時，可能把主 checkout `.git/config` 的 `core.bare` 改成 `true`，之後 `git status` 回 `must be run in a work tree`，stage、merge 全部失敗。在主 checkout 跑 `scripts/pilot-unbare.sh /home/ron/code/ron-skills <時機>`（時機如 `probe`、`dispatch #<n>`、`close #<n>`）：是 bare 就執行 `git config core.bare false`、在 `.scratch/pilot/decisions.md` 記一筆，並印出 `UNBARE <checkout>`；不是 bare 時不輸出。下列 Probe、Dispatch、Close 都只呼叫它。

@@ -38,3 +38,11 @@ test('不是 bare 時不輸出、不寫 decisions.md', t => {
   assert.equal(git('rev-parse', '--is-bare-repository').stdout.trim(), 'false');
   assert.equal(existsSync(join(repo, '.scratch/pilot/decisions.md')), false);
 });
+
+test('路徑不是 git checkout 時以非 0 結束，不當成「不是 bare」', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'pilot-unbare-none-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const result = spawnSync(unbare, [dir, 'probe'], { encoding: 'utf8', env });
+  assert.notEqual(result.status, 0);
+});
