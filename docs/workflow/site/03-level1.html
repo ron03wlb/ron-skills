@@ -19,7 +19,7 @@
 <article>
 <h1>03 L1 導入</h1>
 <p>L1 的目標：在一個還沒有 adapter 的 repo 裡，把第一張 Issue 用 <code>/issue-run</code> 跑到本機 candidate commit。照下面的 checklist 由上往下做，每一步都有「做完的樣子」，對不上就停在那一步。</p>
-<p>實例是 ron-skills 本身：它的 adapter 是 <a href="../../agents/issue-run.md"><code>docs/agents/issue-run.md</code></a>，唯一檢查入口是 <code>bin/check</code>。</p>
+<p>實例：ron-skills 的 adapter <a href="../../agents/issue-run.md"><code>docs/agents/issue-run.md</code></a> 只看 Tracker、Readiness、Checks、Candidate and acceptance、Evidence and closing 五段，就是一份 L1 adapter；其餘段落屬於 L3。唯一檢查入口是 <code>bin/check</code>。</p>
 <h2 id="checklist">Checklist</h2>
 <h3 id="1-裝-skills每台機器一次">1. 裝 skills（每台機器一次）</h3>
 <pre><code class="language-bash">git clone https://github.com/ron03wlb/ron-skills ~/code/ron-skills   # private：先取得讀取權限
