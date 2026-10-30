@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// 把 prompt 送進既有的 Orca Claude terminal（pilot 派工送 `/issue-run`、handoff 送 `/loop /issue-pilot`），並確認已開始處理。移植自 spay2。
+// 把 prompt 送進既有的 Orca Claude terminal（例如派工送 `/issue-run`、交接送 `/loop /issue-pilot`），並確認已開始處理。
 // 不用裸 `terminal send`：它會回 accepted，文字卻停在輸入框沒提交，重送又會黏成兩份。
 // 步驟：等 TUI 閒置（兩輪）→ 送出並讀畫面確認 prompt 開頭或 `esc to interrupt` 出現，沒出現就延後重送。
-// 送出前先讀 composer：先前裸 `terminal send` 留下未提交的同一段 prompt 時只補 Enter，不再黏成兩份（spay2 #691）。
+// 送出前先讀 composer：先前裸 `terminal send` 留下未提交的同一段 prompt 時只補 Enter，不再黏成兩份。
 // session 仍在忙時 tui-idle 不成立，兩輪逾時即 STOP tui-timeout，不把 prompt 排進忙碌中的 turn。
 //
 // 用法：node scripts/orca-session-send.mjs --terminal <handle> --prompt <text>
@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 
 const USAGE = '用法：node scripts/orca-session-send.mjs --terminal <handle> --prompt <text>（需要 ORCA_CLI_COMMAND）';
 
-/** 每輪等 TUI 就緒的上限；共等兩輪（spay2 實測第一次常逾時、第二次在 30 秒內就緒）。 */
+/** 每輪等 TUI 就緒的上限；共等兩輪（實測第一次常逾時、第二次在 30 秒內就緒）。 */
 const TUI_WAIT_MS = Number(process.env.SESSION_TUI_WAIT_MS || 120000);
 
 /**
@@ -28,7 +28,7 @@ const SEND_DELAYS = [0, Number(process.env.SESSION_SEND_RESEND_MS || 5000), Numb
 
 /**
  * Orca CLI 呼叫；回傳 JSON 的 result，失敗丟出含錯誤碼的 Error。
- * `signal` 中止時殺掉 CLI 並丟出 AbortError（pilot-handoff 用它限制總時間、處理 SIGTERM）。
+ * `signal` 中止時殺掉 CLI 並丟出 AbortError（呼叫者用它限制總時間、處理 SIGTERM）。
  */
 export async function orca({ cli, signal }, ...args) {
   const child = spawn(cli, [...args, '--json'], { stdio: ['ignore', 'pipe', 'pipe'], signal });

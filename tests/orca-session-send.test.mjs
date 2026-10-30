@@ -43,7 +43,7 @@ else if (b === 'read') {
   return { log, send };
 }
 
-const PROMPT = '/issue-run 22 --worker /home/ron/code/ron-skills/.scratch/pilot/batch-20-22.md';
+const PROMPT = '/issue-run 22 --worker /repo/.scratch/batch-20-22.md';
 
 test('等 TUI 閒置、送出並讀畫面確認：SENT <handle>，不開新 terminal、不帶 --wait-submit', t => {
   const { log, send } = fixture(t);
@@ -66,7 +66,7 @@ test('第一輪仍忙碌時再等一輪；兩輪都忙碌 STOP tui-timeout，不
   assert.doesNotMatch(readFileSync(log, 'utf8'), /terminal send/);
 });
 
-// 真實發生過的錯：裸 `terminal send` 回 accepted、文字卻沒提交，重送又黏成兩份（adapter Dispatch 第 3 步）。
+// 真實發生過的錯：裸 `terminal send` 回 accepted、文字卻沒提交，重送又黏成兩份。
 test('送出被吞：讀畫面確認後重送；三次都被吞 STOP send', t => {
   const late = fixture(t, { swallow: 1 });
   assert.equal(late.send(['--terminal', 'term_w', '--prompt', PROMPT]).stdout.trim(), 'SENT term_w');
@@ -76,7 +76,7 @@ test('送出被吞：讀畫面確認後重送；三次都被吞 STOP send', t =>
   assert.equal(result.stdout.trim(), 'STOP send term_w');
 });
 
-// 真實發生過的錯（spay2 #691）：先前裸 `terminal send` 留下未提交的同一段 prompt，第一次就送整段，worker 收到黏成兩份。
+// 真實發生過的錯：先前裸 `terminal send` 留下未提交的同一段 prompt，第一次就送整段，worker 收到黏成兩份。
 test('送出前 composer 已有同一段 prompt：第一次只補 Enter，不黏成兩份；stderr 印 DRAFT_SUBMIT <handle>', t => {
   const { log, send } = fixture(t, { draft: PROMPT });
   const result = send(['--terminal', 'term_w', '--prompt', PROMPT]);
@@ -98,7 +98,7 @@ test('draft 為空、缺省或與 prompt 無關：送整段 prompt，不印 DRAF
   }
 });
 
-// adapter Dispatch 第 3 步記的失敗模式：文字停在輸入框沒提交。畫面上輸入框那一行含 prompt，不能當成已送達。
+// 曾發生的失敗模式：文字停在輸入框沒提交。畫面上輸入框那一行含 prompt，不能當成已送達。
 test('文字進了輸入框卻沒提交：不算送達，只補 Enter 一次後才 SENT', t => {
   const { log, send } = fixture(t, { stuck: 1 });
   const result = send(['--terminal', 'term_w', '--prompt', PROMPT]);
