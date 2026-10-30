@@ -1,0 +1,17 @@
+{
+  "terminal": {
+    "handle": "term_sample",
+    "status": "running",
+    "tail": [
+      "sample"
+    ],
+    "truncated": false,
+    "limited": false,
+    "oldestCursor": "sample",
+    "nextCursor": "sample",
+    "latestCursor": "sample",
+    "returnedLineCount": 3,
+    "source": "sample",
+    "draft": "sample"
+  }
+}

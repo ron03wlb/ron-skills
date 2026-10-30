@@ -32,12 +32,12 @@ candidate 是分支 tip。acceptance 是在 candidate SHA、工作樹乾淨時�
 
 ## Pilot
 
-給使用者層級的 `/issue-pilot` coordinator 用的專案設定（`/loop /issue-pilot`）。上面各段在 pilot 底下照樣適用，這裡只寫 pilot 不同的地方。本 repo 唯一的 pilot 專用腳本是 Bare guard 的 `scripts/pilot-unbare.sh`；probe、watch、status 都由 coordinator 依下列指令手動做，沒列出的指令就是沒有。
+給使用者層級的 `/issue-pilot` coordinator 用的專案設定（`/loop /issue-pilot`）。上面各段在 pilot 底下照樣適用，這裡只寫 pilot 不同的地方。本 repo 的 pilot 腳本有 Bare guard 的 `scripts/pilot-unbare.sh`、Dispatch 的 `scripts/orca-session-send.mjs` 和 Handoff 的 `scripts/pilot-handoff.mjs`（後兩者要 `ORCA_CLI_COMMAND`）；probe、watch、status 都由 coordinator 依下列指令手動做，沒列出的指令就是沒有。
 
 - **Coordinator checkout.** 主 checkout `/home/ron/code/ron-skills`，`.scratch/pilot/` 放在這裡，不 commit。
 - **Bare guard.** Orca 從 WSL 做 worktree 操作（create、rm 都會）時，可能把主 checkout `.git/config` 的 `core.bare` 改成 `true`，之後 `git status` 回 `must be run in a work tree`，stage、merge 全部失敗。在主 checkout 跑 `scripts/pilot-unbare.sh /home/ron/code/ron-skills <時機>`（時機如 `probe`、`dispatch #<n>`、`close #<n>`）：是 bare 就執行 `git config core.bare false`、在 `.scratch/pilot/decisions.md` 的表格追加一列，並印出 `UNBARE <checkout>`；不是 bare 時不輸出。下列 Probe、Dispatch、Close 都只呼叫它。主 checkout 的工作樹還沒有這支腳本時（本機 `main` 落後 `origin/main`），改跑 `git -C /home/ron/code/ron-skills rev-parse --is-bare-repository`，印出 `true` 就執行 `git -C /home/ron/code/ron-skills config core.bare false` 並手動記一列。
 - **Sessions.** 預設：coordinator 自己在 `.scratch/pilot/sessions.md` 追加一行（ISO 時間、`$CLAUDE_CODE_SESSION_ID`、session 名稱）。
-- **Defaults for `preferences.md`.** 同時最多 2 個 worker；每批最多 2 個 Issue；worker 指令見 Dispatch；只有 coordinator 合進 batch 與整合分支；push 一律由人做（coordinator 不 push）；每個 session 合入 2 批或遇到 compaction 就 handoff。
+- **Defaults for `preferences.md`.** 不限同時跑的 worker 數；每批最多 2 個 Issue；worker 指令見 Dispatch；只有 coordinator 合進 batch 與整合分支；push 一律由人做（coordinator 不 push）；每個 session 合入 2 批或遇到 compaction 就 handoff。
 - **Integration branch.** 本機 `pilot/integration`，第一次用時從 `main` 開（`git branch pilot/integration main`）。人 push 它、開 PR、合進 `main`；合進 `origin/main` 之後，coordinator 用 `git merge --ff-only origin/main` 讓它跟上。
 - **Pool.** `gh issue list --state open --label ready-for-agent --json number,title,labels`，再用 `gh api repos/ron03wlb/ron-skills/issues/<n> --jq .issue_dependencies_summary.blocked_by` 濾掉 `blocked_by > 0` 的 Issue，以及已經在某個開著的 batch checkpoint 裡的 Issue；號碼小的先挑。`needs-triage` 的先照 [Readiness](#readiness) 用 `/triage <n>` 補齊，補完變成 `ready-for-agent` 才挑。
 - **Batch.** key 是成員號碼用 `-` 連起來（如 `8-12`）。checkpoint 在 `.scratch/pilot/batch-<key>.md`，每個成員一行：Issue、branch、worktree、terminal handle、開始時間、stuck-after、state（`running`／`done`／`stop`）、candidate SHA；另一行 `current:` 記 batch 狀態（`dispatched`／`staged <sha>`／`merged <sha>`／`pushed`／`closed`）。各 Issue 自己的 checkpoint 仍在 `.scratch/issue-run-<n>/state.md`（在它的 worktree 裡）。
@@ -45,7 +45,7 @@ candidate 是分支 tip。acceptance 是在 candidate SHA、工作樹乾淨時�
 - **Dispatch.** 每個成員依序跑三步，都在主 checkout：
   1. `orca-ide worktree create --name issue-<n> --base-branch pilot/integration --branch issue/<n>-<slug> --issue <n> --json`。不要帶 `--repo`：Orca 會從 cwd 推斷 repo，帶 `--repo path:<WSL 路徑>` 會回 `repo_not_found`。也不要帶 `--agent`：一起帶時錯誤會被包成 `agent_session_operation_unknown`。之後跑 Bare guard（時機 `dispatch #<n>`）。
   2. `orca-ide terminal create --worktree path:<worktree> --title '#<n>' --command claude --json`，從回傳取 `result.terminal.handle`。
-  3. `node ~/code/spay2/scripts/orca-session-send.mjs --terminal <handle> --prompt "/issue-run <n> --worker /home/ron/code/ron-skills/.scratch/pilot/batch-<key>.md"`，最後一行是 `SENT <handle>` 才算送達。不要用裸 `terminal send`：它會回 accepted，文字卻停在輸入框沒提交，重送又會黏成兩份。
+  3. `node scripts/orca-session-send.mjs --terminal <handle> --prompt "/issue-run <n> --worker /home/ron/code/ron-skills/.scratch/pilot/batch-<key>.md"`，最後一行是 `SENT <handle>` 才算送達，`STOP <原因>` 就是沒送到。不要用裸 `terminal send`：它會回 accepted，文字卻停在輸入框沒提交，重送又會黏成兩份。
 
   把 worktree 路徑和 handle 記進 batch checkpoint。
 - **Watch.** `orca-ide terminal read --terminal <handle> --screen --json`：畫面最後一行是 `DONE <n> <sha>` 或 `STOP <n> <cause>` 就是做完了；`status: exited` 但沒有這行就是卡住。stuck-after 預設 90 分鐘，等累積了實際跑的時間再調。沒有背景 watcher 指令：worker 還在跑時，coordinator 每次被叫醒都 read 一次，以 1200 秒排下一次喚醒。
@@ -57,6 +57,6 @@ candidate 是分支 tip。acceptance 是在 candidate SHA、工作樹乾淨時�
 - **Integrate.** 沒有 hold flag、而且 `pilot/integration` 從 stage 之後沒有新 commit，才在主 checkout 做 `git checkout pilot/integration && git merge --ff-only pilot/stage-<key>`；有新 commit 就重新 stage、重跑 Regression。合完刪掉 `pilot/stage-<key>`，`current:` 設成 `merged <sha>`，再切回 `main`。
 - **Push gate.** `pilot/integration` 的 tip 等於最後一次 Regression 通過的 SHA。通過後把指令交給人：`git push -u origin pilot/integration`，然後開 PR 合進 `main`。push 完把 `current:` 設成 `pushed`。
 - **Close.** batch 的 merge 進到 `origin/main` 之後，對每個成員照 [Evidence and closing](#evidence-and-closing) 處理：證據留言、`gh issue close <n>`、用 `orca-ide worktree rm --worktree branch:issue/<n>-<slug>` 移除 worktree（rm 之後跑 Bare guard，時機 `close #<n>`），並刪掉本機和 `origin` 上的 `issue/<n>-<slug>`；`current:` 設成 `closed`。
-- **Handoff.** 沒有 handoff 指令。條件達到時（見 Defaults），coordinator 停掉自己的背景工作、在 `decisions.md` 和 `sessions.md` 記一筆，把 `coordinator` 改成 `handoff <ISO 時間>`，再請人在新的 session 跑 `/loop /issue-pilot`；改完就算 `HANDED_OFF`。
+- **Handoff.** 條件達到時（見 Defaults），coordinator 先在 `decisions.md` 記一筆原因、停掉自己的背景工作，再在主 checkout 用 Bash `timeout: 600000` 跑 `node scripts/pilot-handoff.mjs --session "$CLAUDE_CODE_SESSION_ID" --pid "$CLAUDE_PID" --reason <原因>`（腳本 540 秒內必定結束：逾時印 `STOP timeout`，收到 SIGTERM、SIGINT 印 `STOP signal <名稱>`，都會先還原）。它確認 `coordinator` 的 pid 是自己後改寫成 handoff 行，新開分頁 `issue-pilot coordinator` 送出 `/loop /issue-pilot`，等新 session 寫入 `pid ` 行。最後一行 `HANDED_OFF <handle>` 才算交接完成，這時才在 `sessions.md` 追加 `<ISO 時間>   handoff from-session <本 session id> → terminal <handle>   reason <原因>`（`sessions.md` 有本 session 的 handoff 就代表已退役，提早記會讓 STOP 後的自己誤判退役）；`STOP <原因>` 時 `coordinator` 已還原、新開的分頁已關掉，照常繼續當 coordinator（`STOP not-coordinator` 表示已經有別的 coordinator，不要再交接）。
 - **Project tick hooks.** 預設：沒有。
 - **Retro collect.** 預設：沒有；`/retro-collect` 停下並說明原因。
