@@ -73,7 +73,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Project tick hooks | 每輪要跑的專案檢查 |
 | Retro collect | `/retro-collect` 需要的事實 |
 
-沒有專用腳本也能起步：Probe、Watch 可以先寫成手動指令序列，等真的跑出摩擦再做成腳本。ron-skills 就是這樣：手拼 probe 漏過 terminal 已結束卻沒有結果行的 worker，之後才把 Probe 做成 `scripts/pilot-probe.mjs`，一次印出主 checkout、開著的請求與 gate、各 worker 與 batch 的狀態。
+沒有專用腳本也能起步：Probe、Watch 可以先寫成手動指令序列，等真的跑出摩擦再做成腳本。ron-skills 就是這樣：手拼 probe 漏過 terminal 已結束卻沒有結果行的 worker，之後才把 Probe 做成 `scripts/pilot-probe.mjs`，一次印出主 checkout、開著的請求與 gate、各 worker 與 batch 的狀態。Push gate 也一樣：先在 adapter 寫成 push、開 PR、等 CI、合併、跟上主線的指令序列，實際跑過之後才收斂成 `scripts/land.mjs`。pilot 帶 `--keep-branch`，保留整合分支並讓它以 `--ff-only` 跟上主線；手動分支（retro、單獨跑的 `/issue-run`）不帶，合入後一併移除 worktree 與分支。兩者共用同一個結果行：`LANDED <pr> <merge sha>` 或 `STOP <原因>`，每一步都能從中斷處重跑。
 
 ## tick hooks
 
