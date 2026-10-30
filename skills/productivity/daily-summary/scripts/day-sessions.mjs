@@ -41,8 +41,17 @@ export function dayWindow(date, tzOffset) {
   return { start, end: start + 86400e3 };
 }
 
-// 把使用者 prompt 壓成一行；harness 雜訊（背景通知、/clear、續接摘要）回 null。
+// 使用者常在 prompt 或 `!` 指令裡貼 token；摘要會進 daily-summary 的 context 與草稿，印出前先遮掉。
+// 恰好 40 位的 hex 是 git sha，保留。
+const SECRET = /\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}|\b(?:ghp_|gho_|ghs_|github_pat_)\w{25,}|\bglpat-[\w-]{15,}|\bsk-[\w-]{24,}|\beyJ[\w-]{15,}\.[\w-]{15,}\.[\w-]{15,}|\b(?![0-9a-f]{40}\b)[0-9a-f]{32,}\b/gi;
+
+// 把使用者 prompt 壓成一行並遮掉 token；harness 雜訊（背景通知、/clear、續接摘要）回 null。
 export function cleanPrompt(text) {
+  const t = flatten(text);
+  return t && t.replace(SECRET, '<redacted>');
+}
+
+function flatten(text) {
   const t = text.trim();
   if (!t || NOISE.some((re) => re.test(t))) return null;
   const cmd = t.match(/<command-name>(\/[^<]+)<\/command-name>(?:\s*<command-args>([\s\S]*?)<\/command-args>)?/);

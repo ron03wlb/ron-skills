@@ -66,6 +66,18 @@ test('Codex 同類 worker 合成一行並計數，略過環境脈絡訊息', (t)
   assert.doesNotMatch(r.stdout, /environment_context/);
 });
 
+// 2026-10-30 的 `! printf %s <32 位 hex> | gh secret set …` 原樣印出，值進了 daily-summary 的 context；以同形假值重現。
+test('遮掉 prompt 裡的 token 與 hash，保留其餘指令', (t) => {
+  const roots = fixture(t);
+  writeFileSync(join(roots.claude, '-home-ron-code-spay2', 'cccccccc-3.jsonl'), [
+    user('2026-10-28T17:00:00Z', `<bash-input>printf %s ${'0123456789abcdef'.repeat(2)} | gh secret set CLOUDFLARE_ACCOUNT_ID</bash-input>`),
+    user('2026-10-28T17:01:00Z', `token 是 glpat-${'x'.repeat(20)}，hash $2b$12$${'a'.repeat(53)}`),
+  ].join('\n'));
+  const r = run(roots);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /- 01:00 cccccccc: ! printf %s <redacted> \| gh secret set CLOUDFLARE_ACCOUNT_ID \| token 是 <redacted>，hash <redacted>$/m);
+});
+
 test('缺日期參數時失敗', () => {
   const r = spawnSync(process.execPath, [script], { encoding: 'utf8' });
   assert.notEqual(r.status, 0);
