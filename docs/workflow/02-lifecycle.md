@@ -16,14 +16,11 @@ Matt 的 `triage` skill 定義五個分級角色；本流程再加兩個交付�
 
 狀態 label 互斥：一張 Issue 同時只有一個。`in-progress` 與 `completed` 是選配：L1 可以不設 Claim（adapter 的 Claim 段預設 none），結案靠 Issue 的 closed 狀態；開始多 session 並行（L2）之後，`in-progress` 才是防止兩個人搶同一張的訊號。
 
-```text
-            ┌──────────────── needs-info ◄──┐
-            ▼                               │
-needs-triage ──/triage──► ready-for-agent ──claim──► in-progress ──candidate+merge──► completed
-            │                                 ▲             │
-            ├──► ready-for-human ─────────────┘(人做)        └──STOP──► 留言、等人決定
-            └──► wontfix
-```
+![Issue 狀態 label 生命週期](diagrams/02-issue-labels.png)
+
+互動版：[diagrams/02-issue-labels.html](diagrams/02-issue-labels.html)（來源 [`diagrams/src/02-issue-labels.lifecycle.json`](diagrams/src/02-issue-labels.lifecycle.json)）
+
+`in-progress` 的單 `STOP` 時狀態不變：原因留言在 Issue 上，等人決定。
 
 ## 看板就是 label
 
@@ -40,6 +37,10 @@ needs-triage ──/triage──► ready-for-agent ──claim──► in-prog
 - GitLab：Issue board 的每個 list 設成一個 label。
 
 ## 從開單到結案
+
+![單張 Issue 交付主流程](diagrams/02-main-flow.png)
+
+互動版：[diagrams/02-main-flow.html](diagrams/02-main-flow.html)（來源 [`diagrams/src/02-main-flow.workflow.json`](diagrams/src/02-main-flow.workflow.json)）
 
 | 階段 | 入口 | 結果 |
 | --- | --- | --- |

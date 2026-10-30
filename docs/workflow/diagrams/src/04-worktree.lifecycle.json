@@ -1,0 +1,41 @@
+{
+  "schema_version": 3,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Issue worktree 生命週期",
+    "locale": "zh-TW",
+    "quality_profile": "standard",
+    "output": "docs/workflow/diagrams/04-worktree.html"
+  },
+  "mainPath": ["created", "implementing", "verifying", "merging", "pushed", "removed"],
+  "states": [
+    { "id": "created", "type": "start", "label": "建立", "sublabel": "從整合分支開出", "tag": "認領時", "step": "01" },
+    { "id": "implementing", "type": "active", "label": "實作中", "sublabel": "單一寫入者", "tag": "in-progress", "step": "02" },
+    { "id": "verifying", "type": "decision", "label": "驗證", "sublabel": "檢查、review", "tag": "candidate", "step": "03" },
+    { "id": "merging", "type": "active", "label": "合入", "sublabel": "合入入口", "tag": "結案第一次", "step": "04" },
+    { "id": "pushed", "type": "waiting", "label": "等 push", "sublabel": "PUSH_REQUIRED", "tag": "Operator", "step": "05" },
+    { "id": "removed", "type": "success", "label": "已移除", "sublabel": "連同分支刪除", "tag": "completed", "step": "06" },
+    { "id": "busy", "type": "waiting", "label": "排隊中", "sublabel": "exit 75 INTEGRATION_BUSY", "tag": "lock" },
+    { "id": "pristine", "type": "neutral", "label": "未開工", "sublabel": "從未 commit", "tag": "刪前分類" },
+    { "id": "kept", "type": "neutral", "label": "保留", "sublabel": "有未合入 commit", "tag": "需人判斷" }
+  ],
+  "transitions": [
+    { "id": "w1", "from": "created", "to": "implementing", "label": "commit" },
+    { "id": "w2", "from": "implementing", "to": "verifying", "label": "候選" },
+    { "id": "w3", "from": "verifying", "to": "merging", "label": "結案入口", "variant": "emphasis" },
+    { "id": "w4", "from": "merging", "to": "pushed", "label": "檢查通過" },
+    { "id": "w5", "from": "pushed", "to": "removed", "label": "push 後", "variant": "emphasis" },
+    { "id": "w6", "from": "verifying", "to": "implementing", "label": "檢查失敗", "variant": "security" },
+    { "id": "w7", "from": "merging", "to": "busy", "label": "lock 忙碌", "variant": "dashed" },
+    { "id": "w8", "from": "busy", "to": "merging", "label": "稍後重試" },
+    { "id": "w9", "from": "created", "to": "pristine", "label": "沒開工", "variant": "dashed" },
+    { "id": "w10", "from": "pristine", "to": "removed", "label": "分類後清理" },
+    { "id": "w11", "from": "implementing", "to": "kept", "label": "未合入就放棄", "variant": "dashed" },
+    { "id": "w12", "from": "kept", "to": "removed", "label": "人判斷後清理" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "何時建、何時刪", "items": ["建：認領、狀態設成 in-progress 的那一刻，不在開單或分級時", "刪：結案入口第二次執行、確認 SHA 已在遠端之後", "主路徑：建立 → commit → candidate → 結案入口合入 → 停在 PUSH_REQUIRED → 人 push → 再跑結案入口移除"] },
+    { "dot": "amber", "title": "守則", "items": ["一張 Issue 一個 worktree、一個寫入者", "分支從整合分支開出，不從 main", "stash 跨 worktree 共用：用 WIP commit 搬東西"] },
+    { "dot": "rose", "title": "刪之前先分類", "items": ["已合入且乾淨的可以刪；有未合入 commit 或還有 terminal 連著的留著", "設了 ORCA_CLI_COMMAND 時經 Orca 建與刪，只刪自己的"] }
+  ]
+}

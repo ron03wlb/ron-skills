@@ -12,7 +12,7 @@
 <button class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">目錄</button>
 <aside class="sidebar" id="sidebar" aria-label="流程導讀目錄">
 <nav class="chapters" aria-label="章節"><h2>章節</h2><a href="index.html">ron-skills 交付流程</a><a href="01-tooling.html">01 工具與角色</a><a href="02-lifecycle.html" aria-current="page">02 Issue 生命週期</a><a href="03-level1.html">03 L1 導入</a><a href="04-level2.html">04 L2 導入</a><a href="05-level3.html">05 L3 導入</a><a href="06-quality-gates.html">06 品質校驗時間軸</a><a href="07-rules.html">07 規則沉澱</a><a href="08-pitfalls.html">08 常見坑</a><a href="09-skills.html">09 Skills 索引</a></nav>
-<nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2></nav>
+<nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2><a href="../diagrams/01-tooling.html" target="_blank" rel="noopener">交付流程工具版圖</a><a href="../diagrams/02-issue-labels.html" target="_blank" rel="noopener">Issue 狀態 label 生命週期</a><a href="../diagrams/02-main-flow.html" target="_blank" rel="noopener">單張 Issue 交付主流程</a><a href="../diagrams/04-worktree.html" target="_blank" rel="noopener">Issue worktree 生命週期</a><a href="../diagrams/05-pilot-loop.html" target="_blank" rel="noopener">/loop /issue-pilot 常駐循環</a><a href="../diagrams/07-retro-loop.html" target="_blank" rel="noopener">/retro 回饋迴圈</a></nav>
 <nav class="rules" aria-label="正式規範"><h2>正式規範（原始 Markdown）</h2><a href="../../../README.md">README.md</a><a href="../../../skills/engineering/issue-run/ADAPTER.md">skills/engineering/issue-run/ADAPTER.md</a></nav>
 </aside>
 <main class="content">
@@ -22,12 +22,9 @@
 <p>Matt 的 <code>triage</code> skill 定義五個分級角色；本流程再加兩個交付狀態。每個角色對應到 tracker 上的哪個 label 字串，寫在 repo 的 <code>docs/agents/triage-labels.md</code>（<code>/setup-matt-pocock-skills</code> 產生），換字串只改那張表。</p>
 <div class="table-wrap"><table><thead><tr><th>label</th><th>意思</th><th>誰設</th><th>下一步</th></tr></thead><tbody><tr><td><code>needs-triage</code></td><td>剛開、還沒人評估</td><td>開單時預設</td><td><code>/triage &lt;n&gt;</code></td></tr><tr><td><code>needs-info</code></td><td>等開單的人補資訊</td><td><code>/triage</code></td><td>補完後再 <code>/triage &lt;n&gt;</code></td></tr><tr><td><code>ready-for-agent</code></td><td>規格完整，agent 可以無人值守做完</td><td><code>/triage</code></td><td><code>/issue-run &lt;n&gt;</code>；L3 由 coordinator 從池中挑</td></tr><tr><td><code>ready-for-human</code></td><td>需要人做（產品判斷、無法自動驗證、共用環境操作）</td><td><code>/triage</code></td><td>人做完後結案</td></tr><tr><td><code>wontfix</code></td><td>不處理</td><td><code>/triage</code></td><td>結案</td></tr><tr><td><code>in-progress</code></td><td>已被認領，有人或 agent 正在做</td><td>adapter 的 Claim 指令</td><td>等 candidate 或 STOP</td></tr><tr><td><code>completed</code></td><td>已合進主線並結案</td><td>結案時</td><td>無</td></tr></tbody></table></div>
 <p>狀態 label 互斥：一張 Issue 同時只有一個。<code>in-progress</code> 與 <code>completed</code> 是選配：L1 可以不設 Claim（adapter 的 Claim 段預設 none），結案靠 Issue 的 closed 狀態；開始多 session 並行（L2）之後，<code>in-progress</code> 才是防止兩個人搶同一張的訊號。</p>
-<pre><code class="language-text">            ┌──────────────── needs-info ◄──┐
-            ▼                               │
-needs-triage ──/triage──► ready-for-agent ──claim──► in-progress ──candidate+merge──► completed
-            │                                 ▲             │
-            ├──► ready-for-human ─────────────┘(人做)        └──STOP──► 留言、等人決定
-            └──► wontfix</code></pre>
+<figure class="diagram" id="diagram-02-issue-labels"><iframe src="../diagrams/02-issue-labels.html" title="Issue 狀態 label 生命週期" loading="lazy"></iframe><figcaption>Issue 狀態 label 生命週期（互動圖：可切換主題、搜尋節點；<a href="../diagrams/02-issue-labels.html" target="_blank" rel="noopener">全頁開啟</a>）</figcaption></figure>
+<p>互動版：<a href="../diagrams/02-issue-labels.html">diagrams/02-issue-labels.html</a>（來源 <a href="../diagrams/src/02-issue-labels.lifecycle.json"><code>diagrams/src/02-issue-labels.lifecycle.json</code></a>）</p>
+<p><code>in-progress</code> 的單 <code>STOP</code> 時狀態不變：原因留言在 Issue 上，等人決定。</p>
 <h2 id="看板就是-label">看板就是 label</h2>
 <p>看板的欄位直接用狀態 label 篩選，改 label 就是移卡，不另外維護一份狀態。</p>
 <div class="table-wrap"><table><thead><tr><th>看板欄位</th><th>label</th></tr></thead><tbody><tr><td>待討論</td><td><code>needs-triage</code>、<code>needs-info</code>，或沒有狀態 label</td></tr><tr><td>可開工</td><td><code>ready-for-agent</code>、<code>ready-for-human</code></td></tr><tr><td>處理中</td><td><code>in-progress</code></td></tr><tr><td>完成／不處理</td><td><code>completed</code>、<code>wontfix</code>、已關閉</td></tr></tbody></table></div>
@@ -36,6 +33,8 @@ needs-triage ──/triage──► ready-for-agent ──claim──► in-prog
 <li>GitLab：Issue board 的每個 list 設成一個 label。</li>
 </ul>
 <h2 id="從開單到結案">從開單到結案</h2>
+<figure class="diagram" id="diagram-02-main-flow"><iframe src="../diagrams/02-main-flow.html" title="單張 Issue 交付主流程" loading="lazy"></iframe><figcaption>單張 Issue 交付主流程（互動圖：可切換主題、搜尋節點；<a href="../diagrams/02-main-flow.html" target="_blank" rel="noopener">全頁開啟</a>）</figcaption></figure>
+<p>互動版：<a href="../diagrams/02-main-flow.html">diagrams/02-main-flow.html</a>（來源 <a href="../diagrams/src/02-main-flow.workflow.json"><code>diagrams/src/02-main-flow.workflow.json</code></a>）</p>
 <div class="table-wrap"><table><thead><tr><th>階段</th><th>入口</th><th>結果</th></tr></thead><tbody><tr><td>需求</td><td>對話、spec、bug 回報；要釐清時先 <code>/grilling</code> 或 <code>/to-spec</code>，要拆票時 <code>/to-tickets</code></td><td>範圍與驗收條件</td></tr><tr><td>開單</td><td>下方的開單指令</td><td><code>needs-triage</code></td></tr><tr><td>分級</td><td><code>/triage &lt;n&gt;</code></td><td><code>ready-for-agent</code>／<code>ready-for-human</code>／<code>needs-info</code>／<code>wontfix</code>；ready 的單附上 agent brief</td></tr><tr><td>認領</td><td>adapter 的 Claim 指令（<code>/issue-run</code> 自己跑）</td><td><code>in-progress</code>；L2 起此時才開 worktree</td></tr><tr><td>實作</td><td><code>/issue-run &lt;n&gt;</code>：單張照 <code>implement</code>，多張照 <code>implement-spec</code>；先寫會紅的測試（<code>tdd</code>）</td><td>本機 commit</td></tr><tr><td>驗證</td><td>adapter 的 Checks 指令，再跑 <code>code-review</code>（Standards／Spec 兩軸，最多兩輪修正）</td><td>candidate commit，證據貼成 Issue 留言</td></tr><tr><td>交付</td><td>人 push、開 PR／MR、合併</td><td>candidate 進到主線</td></tr><tr><td>結案</td><td>確認 candidate 已在遠端主線後關單</td><td><code>completed</code>；刪掉工作分支與 worktree</td></tr></tbody></table></div>
 <p><code>/issue-run</code> 在 Gate 一步就會擋下不合格的單：狀態不是 adapter 的 ready 狀態、preflight 不是 exit 0、或有還沒合入的 blocker。它不會自己跑 <code>/triage</code> 補規格，只告訴你缺什麼、該跑哪個入口。</p>
 <h2 id="tracker-指令對照">tracker 指令對照</h2>
