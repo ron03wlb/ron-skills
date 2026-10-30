@@ -39,7 +39,7 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 | 補丁 | 內容 |
 | --- | --- |
 | `grilling`、`grill-me`、`grill-with-docs` | `effort: high`；`grilling` 另把「派子代理查事實」改為自己用工具查、範圍大才派，並在第一輪前列出與主題相關、還開著的 Issue |
-| `domain-modeling` | repo 自訂的 ADR 版面與索引編號優先 |
+| `domain-modeling` | repo 自訂的 ADR 版面與索引編號優先；主 checkout 不能寫時，詞條與 ADR 原文寫進負責實作的 Issue，由它在 worktree 提交 |
 | `retro` | 寫入前檢查其他 session 的並行修改；repo 有 `scripts/retro-collect.mjs` 且本 session 是退役 coordinator 時改為收集模式：只寫 retro 檔、不實作，等 `/retro-collect` |
 | `poteto-mode` | 本機 harness：先讀上游 `docs/harness/claude-code.md` 做名稱對照；repo 規則與語言優先、無 GitHub PR（對應 candidate／整合分支）、無 cloud（Orca terminal）、Claude 加 Codex 兩家、未連結 skill 改用 Matt 對應 |
 | `arena` | 只用在昂貴、難逆轉且多解的設計決策；一席 Claude worktree 子代理、一席 Codex，Codex 唯讀當 judge；Eval 只用於 worker／review／stop-policy 的 skill 變更 |
