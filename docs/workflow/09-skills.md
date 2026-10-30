@@ -8,7 +8,8 @@
 
 | skill | 做什麼 | 等級 | 來源 |
 | --- | --- | --- | --- |
-| `/setup-matt-pocock-skills` | 產生 `docs/agents/` 的 tracker、triage label、domain docs 設定 | L1（人輸入） | Matt |
+| `/setup-workflow` | 導入入口：偵測等級（L0–L3）與擴充，建議往上一級；經人確認後寫 tracker、label、domain docs 與 adapter，並把 script 正本複製到 `scripts/`、記錄在 `docs/agents/workflow-templates.json` | L1（人輸入） | ron-skills |
+| `/setup-matt-pocock-skills` | 產生 `docs/agents/` 的 tracker、triage label、domain docs 設定 | L1（人輸入；`/setup-workflow` 會照它的步驟做，手動時才單獨用） | Matt |
 | `wizard` | 產生互動式 bash 精靈，帶人走完只有人能做的設定（建專案、token、CI secret） | 輔助 | Matt |
 | `writing-for-agents` | 寫 skill、`CLAUDE.md`、adapter 這類給 agent 讀的文件 | 輔助 | Matt |
 
@@ -52,7 +53,7 @@
 
 | skill | 做什麼 | 等級 | 來源 |
 | --- | --- | --- | --- |
-| `/loop /issue-pilot` | 常駐 coordinator：挑單、派 worker、整批回歸、合入整合分支、交出 push | L3 | ron-skills |
+| `/loop /issue-pilot` | 常駐 coordinator：挑單、派 worker、整批回歸、合入整合分支、push 與開 PR 合併（adapter 允許時），再結案 | L3 | ron-skills |
 | `poteto-mode` | pstack 的 Autopilot、Orchestrate playbook；`/issue-pilot` 的協調方法來源 | L3（由 `/issue-pilot` 引用） | pstack（ron-skills overlay） |
 | `principle-*` | pstack 的決策原則，每條寫明何時套用 | L3（由 `poteto-mode` 引用） | pstack |
 | `arena` | 幾個 agent 各自實作同一題、交叉評審後挑一個；只用在昂貴、難逆轉、有多種合理做法的設計決策 | 輔助 | pstack（ron-skills overlay） |

@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isTrackedInMainCheckout } from './claude-hook-main-checkout.mjs';
+import { dirtiesMainCheckout } from './claude-hook-main-checkout.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-main-checkout.mjs', import.meta.url));
 const hook = input => spawnSync('node', [script], { input, encoding: 'utf8' });
@@ -32,23 +32,31 @@ function fixture() {
   return { root, main, worktree };
 }
 
-test('isTrackedInMainCheckout：只有主 checkout 內的追蹤檔為 true', () => {
+// 新檔也要擋：曾有互動 session 在 pilot 執行時把未追蹤的 GLOSSARY.md 寫進主 checkout，Probe 看到 git status 有改動就停止合併。
+test('dirtiesMainCheckout：會出現在主 checkout git status 的路徑為 true（追蹤檔與未 gitignore 的新檔）', () => {
   const { root, main, worktree } = fixture();
-  assert.equal(isTrackedInMainCheckout(join(main, 'docs', 'a.md')), true);
-  assert.equal(isTrackedInMainCheckout(join(main, 'docs', 'new.md')), false, '新檔');
-  assert.equal(isTrackedInMainCheckout(join(main, 'new-dir', 'deep', 'x.md')), false, '目錄尚未建立的新檔');
-  assert.equal(isTrackedInMainCheckout(join(main, '.scratch', 'note.md')), false, 'gitignored');
-  assert.equal(isTrackedInMainCheckout(join(worktree, 'docs', 'a.md')), false, 'worktree 內追蹤檔');
-  assert.equal(isTrackedInMainCheckout(join(root, 'outside.md')), false, 'repo 外');
+  assert.equal(dirtiesMainCheckout(join(main, 'docs', 'a.md')), true, '追蹤檔');
+  assert.equal(dirtiesMainCheckout(join(main, 'GLOSSARY.md')), true, '新檔');
+  assert.equal(dirtiesMainCheckout(join(main, 'new-dir', 'deep', 'x.md')), true, '目錄尚未建立的新檔');
+  assert.equal(dirtiesMainCheckout(join(main, '.scratch', 'note.md')), false, 'gitignored');
+  assert.equal(dirtiesMainCheckout(join(main, '.scratch', 'new', 'plan.md')), false, 'gitignored 目錄下尚未建立的新檔');
+  assert.equal(dirtiesMainCheckout(join(worktree, 'docs', 'a.md')), false, 'worktree 內追蹤檔');
+  assert.equal(dirtiesMainCheckout(join(worktree, 'GLOSSARY.md')), false, 'worktree 內新檔');
+  assert.equal(dirtiesMainCheckout(join(root, 'outside.md')), false, 'repo 外');
 });
 
-test('hook：主 checkout 追蹤檔 exit 2；其他情況與輸入不合法時 exit 0 無輸出', () => {
+test('hook：主 checkout 追蹤檔與新檔 exit 2；其他情況與輸入不合法時 exit 0 無輸出', () => {
   const { main, worktree } = fixture();
-  const denied = hook(JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: join(main, 'docs', 'a.md') } }));
-  assert.equal(denied.status, 2);
-  assert.match(denied.stderr, /worktree/);
   for (const input of [
-    JSON.stringify({ tool_name: 'Write', tool_input: { file_path: join(main, 'docs', 'new.md') } }),
+    JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: join(main, 'docs', 'a.md') } }),
+    JSON.stringify({ tool_name: 'Write', tool_input: { file_path: join(main, 'GLOSSARY.md') } }),
+  ]) {
+    const denied = hook(input);
+    assert.equal(denied.status, 2, input);
+    assert.match(denied.stderr, /worktree/);
+  }
+  for (const input of [
+    JSON.stringify({ tool_name: 'Write', tool_input: { file_path: join(main, '.scratch', 'plan.md') } }),
     JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: join(worktree, 'docs', 'a.md') } }),
     JSON.stringify({ tool_name: 'Edit', tool_input: {} }),
     'not json',

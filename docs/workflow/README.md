@@ -19,7 +19,7 @@
 | **L0 不導入** | 不寫 adapter，只用個別輔助 skill | 沒有 tracker，或不用 Issue 交付（例如只用輔助 skill 的知識庫） | 不需要開始 |
 | **L1 基本** | 一張 `ready-for-agent` Issue 不中斷地跑到本機 candidate commit，附驗證證據；人 push、開 PR／MR、合併、結案 | 有 tracker、能裝 skills、repo 有（或願意做）一條能跑完所有檢查的指令 | [03 L1 導入](03-level1.md) |
 | **L2 守門** | 每張 Issue 一個 worktree、一條整合分支、合入有 lock、push 前 hook 重驗、兩段式結案、`/retro` 把失誤變成檢查 | L1 已交付過幾張；開始同時開好幾個 session，或已經發生過「繞過檢查」「合錯分支」「狀態對不上」 | [04 L2 導入](04-level2.md) |
-| **L3 常駐** | `/loop /issue-pilot` 常駐 coordinator 自己挑單、派 worker、整批回歸、合入整合分支；人只剩產品決策、共用環境操作與 push | L2 的入口都有固定 exit code；裝了 Orca；願意讓 agent 在無人值守時跑 git | [05 L3 導入](05-level3.md) |
+| **L3 常駐** | `/loop /issue-pilot` 常駐 coordinator 自己挑單、派 worker、整批回歸、合入整合分支；人只剩產品決策、共用環境操作，以及 adapter 沒交給 coordinator 的 push 與合併 | L2 的入口都有固定 exit code；裝了 Orca；願意讓 agent 在無人值守時跑 git | [05 L3 導入](05-level3.md) |
 
 等級相同的專案靠「擴充」區分：tracker 種類、卡關單、外部測試環境、自訂分級入口這類特性與等級無關，可以分別勾選。
 

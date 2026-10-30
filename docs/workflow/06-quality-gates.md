@@ -20,7 +20,7 @@
 | --- | --- | --- | --- |
 | `.claude/settings.json` 的 allow／deny | 本地強制 | agent 的每次工具呼叫是否在放行範圍內；deny 的指令（例如直接開 MR、連資料庫）一律拒絕 | 人在自己的終端做同樣的事不受限；包在放行腳本裡的動作也看不到 |
 | `PreToolUse` hook：擋繞過 git hook | 本地強制 | Bash 指令含 `--no-verify`、`git commit -n`、`-c core.hooksPath=` 即拒絕 | 只比對字串；寫進腳本檔再執行的繞過抓不到 |
-| `PreToolUse` hook：擋改主 checkout | 本地強制 | Edit／Write 的目標是主 checkout 裡被 git 追蹤的檔就拒絕，要求改在 worktree | Bash 寫檔（`sed -i`、heredoc）擋不到 |
+| `PreToolUse` hook：擋改主 checkout | 本地強制 | Edit／Write 會讓主 checkout 的 `git status` 不乾淨就拒絕（追蹤檔，以及沒被 gitignore 的新檔），要求改在 worktree；L3 必接，因為 pilot 的 Probe 看到主 checkout 有改動就停止合併 | Bash 寫檔（`sed -i`、heredoc）擋不到 |
 
 L1 通常一個 hook 都沒有；L2 開始多 session 並行時再加。
 

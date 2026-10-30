@@ -16,17 +16,28 @@ git clone https://github.com/backnotprop/pstack ~/code/pstack
 ~/code/ron-skills/bin/sync-skills           # 連結到 ~/.claude/skills/
 ```
 
-做完的樣子：新開的 Claude Code session 打 `/` 看得到 `issue-run`、`triage`、`setup-matt-pocock-skills`。Matt 或 pstack 放在別的路徑時，用 `MATT_SKILLS`、`PSTACK_SKILLS` 環境變數指定。
+做完的樣子：新開的 Claude Code session 打 `/` 看得到 `issue-run`、`triage`、`setup-workflow`、`setup-matt-pocock-skills`。Matt 或 pstack 放在別的路徑時，用 `MATT_SKILLS`、`PSTACK_SKILLS` 環境變數指定。
 
-### 2. 設定 tracker 與 label（每個 repo 一次）
+### 2. 單一檢查入口
 
-在目標 repo 開 Claude Code，輸入 `/setup-matt-pocock-skills`，依序回答 tracker、triage label、domain docs 三段。它會寫出：
+做一條指令，跑完這個 repo 所有該跑的檢查（lint、型別、測試、文件守門），全過才 exit 0。pre-commit、CI 和 adapter 都只呼叫它，檢查清單只寫在這一個地方。
+
+- 已經有的就沿用：`npm test`、`make check`、`./gradlew check`、`pytest`。
+- 沒有的就建一個 `bin/check`，把現有的指令依序串起來，開頭 `set -euo pipefail`。
+
+做完的樣子：在乾淨的 `main` 上跑它是 exit 0；故意弄壞一個測試再跑是非 0。這兩個 exit code 記下來，第 5 步要用。下一步的 `/setup-workflow` 會先找這條指令（`bin/check`、`npm run check`、`make check`，或 adapter 已寫的 Checks），找不到就停下、不寫任何檔。
+
+### 3. 設定 tracker 與 label（每個 repo 一次）
+
+第 2 步的檢查入口做好之後，在目標 repo 開 Claude Code，輸入 `/setup-workflow`。它先偵測現況（等級、tracker 種類等擴充）並列出要寫的檔案，你確認後才寫入；tracker、triage label、domain docs 三段會在同一個流程裡照 `setup-matt-pocock-skills` 的步驟問完，不必另外執行。第 4 步的 adapter 也在同一次流程裡完成。
+
+手動備用：不用 `/setup-workflow` 時，輸入 `/setup-matt-pocock-skills`，依序回答 tracker、triage label、domain docs 三段。兩種做法都會寫出：
 
 - `docs/agents/issue-tracker.md`：讀單、開單、留言、改 label、依賴關係的指令
 - `docs/agents/triage-labels.md`：五個角色對應的 label 字串
 - `docs/agents/domain.md`，以及 `CLAUDE.md`（或 `AGENTS.md`）的 `## Agent skills` 段
 
-再在 tracker 上建出 label（已存在的會報錯，略過即可）：
+手動時再在 tracker 上建出 label（`/setup-workflow` 會自己建；已存在的會報錯，略過即可）：
 
 ```bash
 # GitHub
@@ -37,18 +48,11 @@ for l in needs-triage needs-info ready-for-agent ready-for-human wontfix; do gla
 
 做完的樣子：`gh label list`（或 `glab label list`）列得出五個 label；`docs/agents/issue-tracker.md` 的讀單指令在 agent 的 Bash 工具裡跑得出內容（GitHub 用 `--json`，見 [02](02-lifecycle.md#tracker-指令對照)）。
 
-### 3. 單一檢查入口
-
-做一條指令，跑完這個 repo 所有該跑的檢查（lint、型別、測試、文件守門），全過才 exit 0。pre-commit、CI 和 adapter 都只呼叫它，檢查清單只寫在這一個地方。
-
-- 已經有的就沿用：`npm test`、`make check`、`./gradlew check`、`pytest`。
-- 沒有的就建一個 `bin/check`，把現有的指令依序串起來，開頭 `set -euo pipefail`。
-
-做完的樣子：在乾淨的 `main` 上跑它是 exit 0；故意弄壞一個測試再跑是非 0。這兩個 exit code 記下來，第 5 步要用。
-
 ### 4. adapter
 
-把 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 複製成目標 repo 的 `docs/agents/issue-run.md`，每段填這個 repo 真的有的指令；沒寫的段落採範本裡的 Default。L1 至少填下面五段。adapter 是給 agent 讀的，用英文寫：
+用 `/setup-workflow` 時，它在第 3 步的同一次流程裡以 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 為骨架寫出 `docs/agents/issue-run.md`，填入第 2 步的檢查入口，並把該等級用得到的 script 正本複製到 `scripts/`、記錄在 `docs/agents/workflow-templates.json`。寫完照下面的「做完的樣子」核對。
+
+手動備用：把 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 複製成目標 repo 的 `docs/agents/issue-run.md`，每段填這個 repo 真的有的指令；沒寫的段落採範本裡的 Default。L1 至少填下面五段。adapter 是給 agent 讀的，用英文寫：
 
 ```markdown
 # issue-run adapter: <repo>
@@ -80,7 +84,7 @@ Post evidence as an Issue comment (candidate SHA, commands with exit codes, find
 
 ### 5. 第一張 Issue
 
-開一張小而確定的單，本文寫清楚「要做的事」與可檢查的「驗收」，驗收裡的檢查只引用第 3 步的那條指令。然後分級：
+開一張小而確定的單，本文寫清楚「要做的事」與可檢查的「驗收」，驗收裡的檢查只引用第 2 步的那條指令。然後分級：
 
 ```text
 /triage <n>
@@ -96,7 +100,7 @@ Post evidence as an Issue comment (candidate SHA, commands with exit codes, find
 /issue-run <n>
 ```
 
-它依序做 Gate、Graph、Claim、Build、Candidate、Report，中間不停下來問；只在[停點](#什麼時候會停)停。分支與 worktree 照 adapter 的 Worktrees and checkpoint 段；沒寫就照 `implement-spec` 的預設。ron-skills 的寫法是：只有一張 ticket 時直接在主 checkout 開 `issue/<n>-<slug>` 分支，多張才開 worktree。
+它依序做 Gate、Graph、Claim、Build、Candidate、Report，中間不停下來問；只在[停點](#什麼時候會停)停。分支與 worktree 照 adapter 的 Worktrees and checkpoint 段；沒寫就照 `implement-spec` 的預設。ron-skills 的寫法是：每張 ticket 都從 `main` 開一個 `issue/<n>-<slug>` 的 worktree，因為它的主 checkout 有 hook 擋寫入（L3 才接，見 [06](06-quality-gates.md#1-編輯時)）；L1 的 repo 沒有這個 hook，一張 ticket 可以直接在主 checkout 開分支。
 
 做完的樣子：報告列出 candidate 的完整 SHA、每條指令與 exit code、review findings（Standards 與 Spec 分開列）、沒跑的檢查，以及你接下來要做的事；Issue 上有一則證據留言。
 
