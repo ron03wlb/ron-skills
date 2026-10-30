@@ -1,15 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../scripts/check-workflow-strings.mjs', import.meta.url).pathname;
 
 // docs/workflow/ 是通用版流程站的來源；spay2 的內網位址、分支命名與專案名不得混進來（#8，R2-Q7）。
 function fixture(t, files) {
-  const dir = mkdtempSync(join(tmpdir(), 'workflow-strings-'));
+  const dir = mkdtempSync(join(realTmpdir(), 'workflow-strings-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const [path, content] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, path)), { recursive: true });

@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { source, run, git } from './test/repo-fixture.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
 // 假 codex：記錄 argv／stdin（每次的 -m 另附加到 FAKE_ARGV.models），-m 屬於 FAKE_CAPACITY 時印容量不足並 exit 1；否則輸出 FAKE_LOG，依 FAKE_WRITES 寫檔（相對路徑落在 -C worktree），必要時寫 -o 報告，以 FAKE_EXIT 結束。
 const FAKE = `#!/usr/bin/env node
@@ -35,7 +35,7 @@ function worktree(temp) {
 }
 
 function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit = 0, staleReport = false, rulings, writes = [], outDir = '.scratch/issue-run-1', baseline, checkpoint, capacity = '' } = {}) {
-  const temp = mkdtempSync(join(tmpdir(), 'codex-review-'));
+  const temp = mkdtempSync(join(realTmpdir(), 'codex-review-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const bin = join(temp, 'codex'); writeFileSync(bin, FAKE); chmodSync(bin, 0o755);
   const repo = worktree(temp); const out = join(repo, outDir); const argvFile = join(temp, 'argv.json');
@@ -116,7 +116,7 @@ test('Codex 再次修改 review 前已修改的檔案也判定 REVIEW_WROTE_REPO
   assert.deepEqual(JSON.parse(result.stderr.trim()).paths, ['dirty.md']);
 });
 test('Codex 只寫暫存目錄（含 worktree 內被忽略的 out dir）照常成功', t => {
-  const temp = mkdtempSync(join(tmpdir(), 'codex-fixture-'));
+  const temp = mkdtempSync(join(realTmpdir(), 'codex-fixture-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const { result } = review(t, { writes: [[join(temp, 'fixture.txt'), 'tmp\n'], ['.scratch/issue-run-1/extra.log', 'ignored\n']] });
   assert.equal(result.status, 0, result.stderr);
@@ -161,7 +161,7 @@ test('stacked：傳入值不等於 checkpoint baseline:（舊候選）時判 BAS
   assert.equal(JSON.parse(result.stderr.trim()).mergeBase, git(repo, 'rev-parse', 'HEAD'));
 });
 test('worktree 不是 git repository 時判定 SNAPSHOT_FAILED，且不呼叫 Codex', t => {
-  const temp = mkdtempSync(join(tmpdir(), 'codex-review-'));
+  const temp = mkdtempSync(join(realTmpdir(), 'codex-review-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const argvFile = join(temp, 'argv.json'); const bin = join(temp, 'codex'); writeFileSync(bin, FAKE); chmodSync(bin, 0o755);
   const result = run(temp, [process.execPath, join(source, 'run-codex-review.mjs'), 'abc123', 'spec.md', temp, join(temp, 'out')],

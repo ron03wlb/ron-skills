@@ -1,16 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const hook = new URL('../scripts/claude-hook-unbare.sh', import.meta.url).pathname;
 // 同 pilot-unbare.test.mjs：清掉 pre-commit 匯出的 GIT_*，否則暫存 repo 的 config 會寫進本 repo。
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
 
 function checkoutWithWorktree(t) {
-  const dir = mkdtempSync(join(tmpdir(), 'claude-hook-unbare-'));
+  const dir = mkdtempSync(join(realTmpdir(), 'claude-hook-unbare-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const main = join(dir, 'main');
   const worktree = join(dir, 'wt');

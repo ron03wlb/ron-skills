@@ -1,15 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../scripts/check-pilot-lines.mjs', import.meta.url).pathname;
 
 // 重現真實歷史：issue-pilot 引用 Pilot **Sessions** line，ADAPTER.md 的 Pilot 段只列了 Hold flag。
 function fixture(t, adapterLines) {
-  const temp = mkdtempSync(join(tmpdir(), 'pilot-lines-'));
+  const temp = mkdtempSync(join(realTmpdir(), 'pilot-lines-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
   mkdirSync(join(repo, 'scripts'), { recursive: true });

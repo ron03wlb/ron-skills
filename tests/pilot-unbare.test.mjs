@@ -1,16 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const unbare = new URL('../scripts/pilot-unbare.sh', import.meta.url).pathname;
 // pre-commit hook 會匯出 GIT_DIR、GIT_INDEX_FILE；不清掉的話 `git -C <暫存 repo> config core.bare true` 會寫進本 repo 的共用 config（#20 worker 實測）。
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
 
 function checkout(t) {
-  const repo = mkdtempSync(join(tmpdir(), 'pilot-unbare-'));
+  const repo = mkdtempSync(join(realTmpdir(), 'pilot-unbare-'));
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   const git = (...args) => spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', env });
   git('init', '-q');
@@ -42,7 +42,7 @@ test('不是 bare 時不輸出、不寫 decisions.md', t => {
 });
 
 test('路徑不是 git checkout 時以非 0 結束，不當成「不是 bare」', t => {
-  const dir = mkdtempSync(join(tmpdir(), 'pilot-unbare-none-'));
+  const dir = mkdtempSync(join(realTmpdir(), 'pilot-unbare-none-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
 
   const result = spawnSync(unbare, [dir, 'probe'], { encoding: 'utf8', env });

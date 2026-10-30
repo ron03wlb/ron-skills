@@ -1,16 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const hook = new URL('../.githooks/pre-commit', import.meta.url).pathname;
 // 本檔自己也會在 pre-commit hook 裡跑：先清掉繼承來的 GIT_*，每個情境再明確帶入要模擬的變數。
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
 
 function scratchRepo(t, prefix) {
-  const repo = mkdtempSync(join(tmpdir(), prefix));
+  const repo = mkdtempSync(join(realTmpdir(), prefix));
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   const git = (...args) => spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', env });
   git('init', '-q');

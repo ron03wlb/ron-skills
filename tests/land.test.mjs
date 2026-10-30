@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { mergeSample } from './helpers/fake-orca.mjs';
 import { checksVerdict, pickMergedPr, pickPr } from '../scripts/land.mjs';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../scripts/land.mjs', import.meta.url).pathname;
 // 同 pilot-unbare.test.mjs：清掉 pre-commit 匯出的 GIT_*，否則 fixture 的 git 指令會寫進本 repo。
@@ -27,7 +27,7 @@ const FAIL = [{ bucket: 'fail', state: 'FAILURE' }];
  * branchSelectorMissing：照 `orca-ide worktree create --branch` 開的 worktree，`branch:` 選擇器回 selector_not_found，只認 `path:`（#49）。
  */
 function fixture(t, { checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false } = {}) {
-  const temp = mkdtempSync(join(tmpdir(), 'land-'));
+  const temp = mkdtempSync(join(realTmpdir(), 'land-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const sh = (cwd, ...args) => {
     const result = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', env: { ...env, ...IDENTITY } });

@@ -2,16 +2,16 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { buildSite, diffSite, renderMarkdown, rewriteHref } from '../scripts/build-workflow-site.mjs';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../scripts/build-workflow-site.mjs', import.meta.url).pathname;
 let root;
 
 before(() => {
-  root = mkdtempSync(join(tmpdir(), 'build-workflow-site-test-'));
+  root = mkdtempSync(join(realTmpdir(), 'build-workflow-site-test-'));
   mkdirSync(join(root, 'diagrams', 'src'), { recursive: true });
   writeFileSync(join(root, 'README.md'), '# 首頁\n\n導讀文字，正式規則見 [`README.md`](../../README.md)。\n\n| 章 | 內容 |\n| --- | --- |\n| [01 工具](01-tooling.md) | 工具 |\n| [02 主流程](02-lifecycle.md) | 流程 |\n');
   writeFileSync(join(root, '01-tooling.md'), '# 01 工具版圖\n\n![工具版圖](diagrams/01-tooling.png)\n\n互動版：[diagrams/01-tooling.html](diagrams/01-tooling.html)\n\n## 角色\n\n- Operator：`git push`\n  - 續行說明\n- Claude Code\n\n```bash\nnode scripts/x.mjs\n```\n');
@@ -94,7 +94,7 @@ test('重產零 diff；手改 HTML 或多出檔案時 diffSite 與 --check 都�
 });
 
 test('README 沒有 H1 時首頁標題用站名', (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'build-workflow-site-noh1-'));
+  const dir = mkdtempSync(join(realTmpdir(), 'build-workflow-site-noh1-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(join(dir, 'README.md'), '只有段落\n');
   assert.match(buildSite(dir)['index.html'], /<title>ron-skills 交付流程｜ron-skills 交付流程<\/title>/);

@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../scripts/check-node-version.mjs', import.meta.url).pathname;
 const local = process.versions.node;
@@ -11,7 +11,7 @@ const major = Number(local.split('.')[0]);
 
 // PR #43：本機 Node 24 跑 bin/check 全過，CI 釘 22.19.0 卻紅，合入後 main 才紅。
 function fixture(t, files) {
-  const dir = mkdtempSync(join(tmpdir(), 'node-version-'));
+  const dir = mkdtempSync(join(realTmpdir(), 'node-version-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(dir, { recursive: true });
   for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);

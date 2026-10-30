@@ -1,16 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../scripts/check-workflow-secrets.mjs', import.meta.url).pathname;
 
 // docs/workflow/ 整個資料夾會公開部署到 Cloudflare Pages；部署前擋機密與私有網址（#11，R2-Q4）。
 // 假憑證在執行時拼出來，避免測試原始碼本身被 secret scanning 當成外洩。
 function fixture(t, files) {
-  const dir = mkdtempSync(join(tmpdir(), 'workflow-secrets-'));
+  const dir = mkdtempSync(join(realTmpdir(), 'workflow-secrets-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const [path, content] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, path)), { recursive: true });

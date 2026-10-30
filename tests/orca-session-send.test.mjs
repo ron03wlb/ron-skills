@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { FAST, orcaReplySource } from './helpers/fake-orca.mjs';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../scripts/orca-session-send.mjs', import.meta.url).pathname;
 
@@ -13,7 +13,7 @@ const script = new URL('../scripts/orca-session-send.mjs', import.meta.url).path
 // 送出 Enter 後連同送出的文字一起出現在畫面上。
 // `stuck` 次送出的文字進了輸入框卻沒提交：畫面最後一行是輸入框裡的 prompt，draft 也還是它。
 function fixture(t, { busy = 0, sendRejected = false, swallow = 0, stale = false, draft, stuck = 0 } = {}) {
-  const temp = mkdtempSync(join(tmpdir(), 'orca-session-send-'));
+  const temp = mkdtempSync(join(realTmpdir(), 'orca-session-send-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const log = join(temp, 'orca.log');
   writeFileSync(log, '');

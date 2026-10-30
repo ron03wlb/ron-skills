@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../scripts/check-workflow-sync.mjs', import.meta.url).pathname;
 const SOURCES = [
@@ -16,7 +16,7 @@ const SOURCES = [
 
 // docs/workflow/ 轉述這些規範；規範改了而沒對照，導讀會默默說法不一（#8，R3-Q5）。
 function fixture(t) {
-  const repo = mkdtempSync(join(tmpdir(), 'workflow-sync-'));
+  const repo = mkdtempSync(join(realTmpdir(), 'workflow-sync-'));
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   mkdirSync(join(repo, 'scripts'), { recursive: true });
   cpSync(script, join(repo, 'scripts/check-workflow-sync.mjs'));
@@ -24,7 +24,7 @@ function fixture(t) {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), `# ${path}\n`);
   }
-  const run = (...args) => spawnSync('node', [join(repo, 'scripts/check-workflow-sync.mjs'), ...args], { cwd: tmpdir(), encoding: 'utf8' });
+  const run = (...args) => spawnSync('node', [join(repo, 'scripts/check-workflow-sync.mjs'), ...args], { cwd: realTmpdir(), encoding: 'utf8' });
   return { repo, run };
 }
 

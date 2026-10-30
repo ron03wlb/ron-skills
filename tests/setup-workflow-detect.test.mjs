@@ -1,16 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { env, git, write } from './helpers/git-fixture.mjs';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../skills/engineering/setup-workflow/scripts/detect.mjs', import.meta.url).pathname;
 
 /** 暫存 repo；files 為 { 相對路徑: 內容 }，寫入後 commit。 */
 function repo(t, files = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'setup-workflow-detect-'));
+  const root = mkdtempSync(join(realTmpdir(), 'setup-workflow-detect-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   git(root, 'init', '-q', '-b', 'main');
   write(root, { 'README.md': 'x\n', ...files });
