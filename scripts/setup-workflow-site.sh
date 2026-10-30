@@ -205,7 +205,7 @@ run_wizard() {
 # 憑證不寫進 .env（本 repo 沒有忽略 .env），只送進 wrangler 子行程與 gh secret。
 cd "$(dirname "$0")/.."
 PROJECT=ron-skills-workflow
-WRANGLER=(npx --yes wrangler@4.145.0)
+WRANGLER=(npx --yes wrangler@4.145.0)   # 與 .github/workflows/workflow-site.yml 的版本一起改
 
 TOTAL_STAGES=5
 
@@ -233,6 +233,13 @@ say "Creates the Pages project with production branch main, using the new token.
 export CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN
 if "${WRANGLER[@]}" pages project list 2>/dev/null | grep -qw "$PROJECT"; then
   note "Project $PROJECT already exists; leaving it as is."
+  branch=$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+    "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/$PROJECT" \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).result.production_branch))' || true)
+  if [[ "$branch" != main ]]; then
+    warn "Its production branch is '${branch:-unknown}', not main: CI deploys with --branch=main would only be previews."
+    SKIPPED+=("Set $PROJECT's production branch to main (Workers & Pages → $PROJECT → Settings → Builds & deployments)")
+  fi
 elif confirm "Create Pages project $PROJECT (production branch main) now?"; then
   "${WRANGLER[@]}" pages project create "$PROJECT" --production-branch=main
 else

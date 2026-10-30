@@ -2,7 +2,8 @@
 // 部署 docs/workflow/ 到 Cloudflare Pages 之後，以匿名 GET 逐檔比對固定網址上的內容與本機 sha256（#11）。
 // CDN 剛部署時可能還回舊版或 404，所以整輪有上限地重試：每輪只重抓還不一致的檔案（spay2 實測一分鐘內一致：預設 6 輪 × 20 秒）。
 // 用法：node scripts/verify-workflow-deploy.mjs <資料夾> <網址>（如 docs/workflow https://ron-skills-workflow.pages.dev）
-// stdout：不一致時每檔一行 `WORKFLOW_DEPLOY_MISMATCH <相對路徑> <原因>`；exit 0 全部一致、1 重試用完仍不一致。
+// stdout：不一致時每檔一行 `WORKFLOW_DEPLOY_MISMATCH <相對路徑> <原因>`，最後一行是通過或失敗的摘要；
+// exit 0 全部一致、1 重試用完仍不一致、2 參數不足。
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';

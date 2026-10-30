@@ -3,7 +3,7 @@
 // 樣式取自 spay2 公開站發布模組的 SECRET_PATTERNS／INTERNAL_PATTERNS，是基礎檢查，不取代人工審查。
 // 掃描資料夾內所有文字檔（含產出的 site/）；圖片與字型只看副檔名，不掃內容。
 // 用法：node scripts/check-workflow-secrets.mjs [資料夾]（預設 docs/workflow）
-// stdout：每個命中一行 `WORKFLOW_SECRET <相對路徑>:<行號> <類型>`，不印命中的值；exit 0 無命中、1 有命中。
+// stdout：每個命中一行 `WORKFLOW_SECRET <相對路徑>:<行號> <類型>`，不印命中的值，有命中時最後一行是修正提示；exit 0 無命中、1 有命中。
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +21,7 @@ const PATTERNS = {
   'credential-url': /https?:\/\/[^\s/<>"']+:[^\s/<>"']+@/,
   'private-ip': /\b(?:10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b/,
   'internal-host': /\b[a-z][a-z0-9+.-]*:\/\/(?:[^\s/<>"'@]+@)?(?:localhost|[\w.-]+\.(?:localhost|local|internal|lan))(?![\w.-])/i,
+  // 只擋 scp 形式的 remote；公開的 https clone 網址是合法內容。
   'git-remote-url': /\b[\w.-]+@[\w.-]+:[\w./~-]+\.git\b/,
 };
 
