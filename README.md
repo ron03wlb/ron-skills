@@ -58,6 +58,10 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 
 pilot 已達標，2026-10-21 起是唯一編排：`deliver-batch`、`deliver-spec`、`project-batch` 已下架。`/issue-run` 單獨使用是手動入口，不是備援。
 
+## land
+
+`node scripts/land.mjs <branch> --body-file <file> [--title <title>]`：把做完的分支一次合入 `main`，依序是 push、開 PR（已經開著就沿用）、等 CI、以 merge commit 合併，接著移除 worktree（透過 Orca）、還原 `core.bare`、刪除本機和 `origin` 的分支，主 checkout 用 `--ff-only` 跟上，最後執行 `bin/sync-skills`。最後一行是 `LANDED <pr> <sha>`，或 `STOP <原因>`（exit 4）；中斷後用同一條指令重跑，會從斷掉的地方接著做，不重開 PR、不重複合併。CI 超過 480 秒還沒跑完時印 `STOP checks-timeout`，重跑會接著等。`--keep-branch` 保留分支，只用 `--ff-only` 讓它跟上 `origin/main` 再 push，給 `pilot/integration` 用（adapter 的 Push gate 等 #27 合入後改用這支）。
+
 ## retro-collect
 
 `/retro-collect [<session8>...]`：收集退役 coordinator 以收集模式寫下的 `/retro` 檔，彙整成一份計畫，在單一 retro worktree 實作全部採用項，合入整合分支並推送，最後關掉已收集的分頁。流程是人在每個舊分頁輸入 `/retro`，再於任一 session 輸入 `/retro-collect`。專案事實讀 adapter Pilot 段的 **Retro collect** 行。
