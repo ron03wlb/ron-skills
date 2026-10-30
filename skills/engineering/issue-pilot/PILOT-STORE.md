@@ -33,7 +33,7 @@ Append-only, one line per event, no header:
 ```
 
 - **Start line**, appended when a session becomes coordinator: `<time>   session <$CLAUDE_CODE_SESSION_ID>   pid <$CLAUDE_PID>   <session name>`.
-- **Handoff line**, appended only after `pilot-handoff` prints `HANDED_OFF <handle>`: `<time>   handoff from-session <old session id> → terminal <handle>   reason <reason>`. A session named by a handoff line's `from-session` is retired.
+- **Handoff line**, appended by `pilot-handoff` itself once the handoff completed, right before it prints `HANDED_OFF <handle>`, and never on `STOP`: `<time>   handoff from-session <old session id> → terminal <handle>   reason <reason>`. A session named by a handoff line's `from-session` is retired.
 - **Old start line**, still accepted by readers and never rewritten: `<time>  <session id>  <session name>  coordinator start` (two spaces, no pid).
 
 ## `.scratch/pilot/hold`

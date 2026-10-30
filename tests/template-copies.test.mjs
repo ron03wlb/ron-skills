@@ -25,3 +25,8 @@ test('.claude/settings.json 以 PreToolUse（Edit|Write|Bash）接上主 checkou
     && list.some(({ command }) => command.includes('scripts/claude-hook-main-checkout.mjs')));
   assert.ok(wired, '.claude/settings.json 的 PreToolUse 沒有以 Edit|Write|Bash 呼叫 scripts/claude-hook-main-checkout.mjs');
 });
+
+// pilot-handoff 是合併兩邊後的正本（#57）：本 repo 的 Handoff 跑的是副本，連同它開 session 用的 orca-session-split。
+test('scripts/pilot-handoff.mjs 與它 import 的 orca-session-send、orca-session-split 都登記為副本', () => {
+  for (const path of ['scripts/pilot-handoff.mjs', 'scripts/orca-session-send.mjs', 'scripts/orca-session-split.mjs']) assert.ok(copies[path], `清單沒有 ${path}`);
+});
