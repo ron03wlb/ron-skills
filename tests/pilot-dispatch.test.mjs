@@ -114,7 +114,8 @@ test('create 把主 checkout 設成 bare：Bare guard 還原、記一列 decisio
 
 const ISO = '\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d[+-]\\d\\d:\\d\\d';
 
-test('batch checkpoint：寫表頭（current dispatched、pilot/integration 的 SHA）與每個成員一行，STOP 的成員記 stop 與原因', t => {
+// state 只能是 Batch 段的 running／done／stop：pilot-probe.mjs 只把 `stop` 算成結束，寫成別的字 batch 就永遠不會 STAGEABLE。
+test('batch checkpoint：寫表頭（current dispatched、pilot/integration 的 SHA）與每個成員一行，STOP 的成員記 stop', t => {
   const { repo, root, dispatch, checkpoint } = fixture(t, { modes: { 46: 'fail' } });
   const result = dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
@@ -127,7 +128,7 @@ test('batch checkpoint：寫表頭（current dispatched、pilot/integration 的 
     '\\| Issue \\| branch \\| worktree \\| handle \\| started \\| stuck-after \\| state \\| candidate \\|',
     '\\|---\\|---\\|---\\|---\\|---\\|---\\|---\\|---\\|',
     `\\| 23 \\| issue/23-pilot-probe \\| ${root}/issue-23 \\| term_23 \\| ${ISO} \\| 90m \\| running \\| \\|`,
-    `\\| 46 \\| issue/46-pilot-dispatch \\|  \\|  \\| ${ISO} \\| 90m \\| stop（create orca worktree create：invalid_argument） \\| \\|`,
+    `\\| 46 \\| issue/46-pilot-dispatch \\|  \\|  \\| ${ISO} \\| 90m \\| stop \\| \\|`,
     '$',
   ].join('\n')));
 });
@@ -140,7 +141,7 @@ test('重跑同一個 batch：已有的成員行就地換掉，其他列不動',
   const rows = checkpoint('23-46').split('\n').filter(line => /^\| \d+ \|/.test(line));
   assert.equal(rows.length, 2);
   assert.match(rows[0], new RegExp(`^\\| 23 \\| issue/23-pilot-probe \\| ${root}/issue-23 \\| term_23 `));
-  assert.match(rows[1], /^\| 46 \| .* stop（create /);
+  assert.match(rows[1], /^\| 46 \| .* \| stop \| \|$/);
 });
 
 // Bash 工具最多等 600 秒，被殺就來不及寫 checkpoint：預算到了中止進行中的步驟，剩下的成員都 STOP timeout。
@@ -151,8 +152,8 @@ test('總預算用完：進行中與還沒派的成員都 STOP timeout，照樣�
   assert.ok(Date.now() - begin < 20000, `${Date.now() - begin} ms`);
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.deepEqual(lines(result), ['STOP 23 timeout', 'STOP 46 timeout']);
-  assert.match(checkpoint('23-46'), /^\| 23 \| .* \| term_23 \| .* stop（timeout） \| \|$/m);
-  assert.match(checkpoint('23-46'), /^\| 46 \| .* stop（timeout） \| \|$/m);
+  assert.match(checkpoint('23-46'), /^\| 23 \| .* \| term_23 \| .* \| stop \| \|$/m);
+  assert.match(checkpoint('23-46'), /^\| 46 \| .* \| stop \| \|$/m);
 });
 
 // 重跑 terminal 或送出 STOP 的成員：worktree 已在，再呼叫 create 會讓 Orca 去重出 `issue-<n>-2`（orca-worktree-create.mjs 的註解）。

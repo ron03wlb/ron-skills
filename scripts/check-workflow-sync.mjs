@@ -15,6 +15,7 @@ const SOURCES = [
   'skills/engineering/issue-run/SKILL.md',
   'skills/engineering/issue-pilot/SKILL.md',
   'skills/engineering/retro-collect/SKILL.md',
+  'skills/engineering/setup-workflow/SKILL.md',
   'skills/engineering/issue-run/ADAPTER.md',
 ];
 
