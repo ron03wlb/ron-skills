@@ -80,17 +80,19 @@ async function spawnText(command, args, options) {
 
 /**
  * 派一個成員；傳回 `{ worktree?, handle }` 或 `{ worktree?, handle?, stop }`（不含 `STOP <n> ` 前綴）。
+ * worktree 已存在（重跑 STOP 的成員）時不再 create：再呼叫一次，Orca 會去重出 `issue-<n>-2`。
  * `signal` 中止時（reason 為 `timeout` 或 `signal <名稱>`）進行中的步驟丟錯，STOP 原因改用 reason；create 被中止時仍跑 Bare guard。
  */
-async function dispatchMember(cli, main, checkpoint, { n, slug }, signal) {
-  const branch = `issue/${n}-${slug}`;
+async function dispatchMember(cli, main, checkpoint, { n, branch }, signal) {
   if (signal.aborted) return { stop: signal.reason };
   let created = '';
-  try {
-    created = await spawnText('node', [join(here, 'orca-worktree-create.mjs'), '--name', `issue-${n}`, '--base-branch', 'pilot/integration', '--branch', branch, '--issue', n],
-      { cwd: main, env: { ...process.env, ORCA_BIN: cli }, signal });
-  } catch (error) {
-    created = error.message;
+  if (!worktreeOf(main, branch)) {
+    try {
+      created = await spawnText('node', [join(here, 'orca-worktree-create.mjs'), '--name', `issue-${n}`, '--base-branch', 'pilot/integration', '--branch', branch, '--issue', n],
+        { cwd: main, env: { ...process.env, ORCA_BIN: cli }, signal });
+    } catch (error) {
+      created = error.message;
+    }
   }
   const unbare = run(join(here, 'pilot-unbare.sh'), [main, `dispatch #${n}`]);
   if (unbare.stdout) process.stdout.write(unbare.stdout);
@@ -117,7 +119,7 @@ async function dispatchMember(cli, main, checkpoint, { n, slug }, signal) {
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [key, ...specs] = process.argv.slice(2);
-  const members = specs.map(spec => spec.match(/^(\d+):([a-z0-9][a-z0-9-]*)$/)).map(m => m && { n: m[1], slug: m[2] });
+  const members = specs.map(spec => spec.match(/^(\d+):([a-z0-9][a-z0-9-]*)$/)).map(m => m && { n: m[1], branch: `issue/${m[1]}-${m[2]}` });
   const cli = process.env.ORCA_CLI_COMMAND;
   if (!key || !members.length || members.some(m => !m) || !cli) {
     console.error(USAGE);
@@ -135,7 +137,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
       const started = now();
       const result = await dispatchMember(cli, main, checkpoint, member, controller.signal);
       stopped ||= Boolean(result.stop);
-      writeRow(checkpoint, member.n, [`issue/${member.n}-${member.slug}`, result.worktree ?? '', result.handle ?? '', started, '90m', result.stop ? `stop（${result.stop}）` : 'running']);
+      writeRow(checkpoint, member.n, [member.branch, result.worktree ?? '', result.handle ?? '', started, '90m', result.stop ? `stop（${result.stop}）` : 'running']);
       console.log(result.stop ? `STOP ${member.n} ${result.stop}` : `DISPATCHED ${member.n} ${result.handle}`);
     }
     clearTimeout(budget);

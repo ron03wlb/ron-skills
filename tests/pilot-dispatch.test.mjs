@@ -154,3 +154,13 @@ test('總預算用完：進行中與還沒派的成員都 STOP timeout，照樣�
   assert.match(checkpoint('23-46'), /^\| 23 \| .* \| term_23 \| .* stop（timeout） \| \|$/m);
   assert.match(checkpoint('23-46'), /^\| 46 \| .* stop（timeout） \| \|$/m);
 });
+
+// 重跑 terminal 或送出 STOP 的成員：worktree 已在，再呼叫 create 會讓 Orca 去重出 `issue-<n>-2`（orca-worktree-create.mjs 的註解）。
+test('重跑時 worktree 已存在：不再呼叫 worktree create，直接開分頁派出', t => {
+  const { dispatch, calls } = fixture(t);
+  assert.equal(dispatch(['46', '46:pilot-dispatch']).status, 0);
+  const result = dispatch(['46', '46:pilot-dispatch']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(lines(result).pop(), 'DISPATCHED 46 term_46');
+  assert.equal(calls().match(/^worktree create /gm).length, 1);
+});
