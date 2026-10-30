@@ -28,7 +28,7 @@ candidate 是分支 tip。acceptance 是在 candidate SHA、工作樹乾淨時�
 
 ## Evidence and closing
 
-證據貼成 Issue 留言（candidate SHA、指令與 exit code、findings）。人負責 push 和合併 PR；candidate 進到 `origin/main` 之後才關閉 Issue，然後把本機和 `origin` 上的工作分支刪掉。
+證據貼成 Issue 留言（candidate SHA、指令與 exit code、findings）。單張 `/issue-run` 做到 candidate 就停，把下一步列在報告裡；pilot 底下 push、開 PR、合併都由 coordinator 照 Pilot 段的 Push gate 做。candidate 進到 `origin/main` 之後才關閉 Issue，然後把本機和 `origin` 上的工作分支刪掉。
 
 ## Pilot
 
@@ -37,8 +37,8 @@ candidate 是分支 tip。acceptance 是在 candidate SHA、工作樹乾淨時�
 - **Coordinator checkout.** 主 checkout `/home/ron/code/ron-skills`，`.scratch/pilot/` 放在這裡，不 commit。
 - **Bare guard.** Orca 從 WSL 做 worktree 操作（create、rm 都會）時，可能把主 checkout `.git/config` 的 `core.bare` 改成 `true`，之後 `git status` 回 `must be run in a work tree`，stage、merge 全部失敗。在主 checkout 跑 `scripts/pilot-unbare.sh /home/ron/code/ron-skills <時機>`（時機如 `probe`、`dispatch #<n>`、`close #<n>`）：是 bare 就執行 `git config core.bare false`、在 `.scratch/pilot/decisions.md` 的表格追加一列，並印出 `UNBARE <checkout>`；不是 bare 時不輸出。下列 Probe、Dispatch、Close 都只呼叫它。主 checkout 的工作樹還沒有這支腳本時（本機 `main` 落後 `origin/main`），改跑 `git -C /home/ron/code/ron-skills rev-parse --is-bare-repository`，印出 `true` 就執行 `git -C /home/ron/code/ron-skills config core.bare false` 並手動記一列。
 - **Sessions.** 預設：coordinator 自己在 `.scratch/pilot/sessions.md` 追加一行（ISO 時間、`$CLAUDE_CODE_SESSION_ID`、session 名稱）。
-- **Defaults for `preferences.md`.** 同時最多 2 個 worker；每批最多 2 個 Issue；worker 指令見 Dispatch；只有 coordinator 合進 batch 與整合分支；push 一律由人做（coordinator 不 push）；每個 session 合入 2 批或遇到 compaction 就 handoff。
-- **Integration branch.** 本機 `pilot/integration`，第一次用時從 `main` 開（`git branch pilot/integration main`）。人 push 它、開 PR、合進 `main`；合進 `origin/main` 之後，coordinator 用 `git merge --ff-only origin/main` 讓它跟上。
+- **Defaults for `preferences.md`.** 同時最多 2 個 worker；每批最多 2 個 Issue；worker 指令見 Dispatch；只有 coordinator 合進 batch 與整合分支；push、開 PR、合進 `main` 都由 coordinator 照 Push gate 做，不交給人（worker 不 push、不開 PR）；每個 session 合入 2 批或遇到 compaction 就 handoff。
+- **Integration branch.** 本機 `pilot/integration`，第一次用時從 `main` 開（`git branch pilot/integration main`）。coordinator 照 Push gate push 它、開 PR、合進 `main`，再用 `git merge --ff-only origin/main` 讓它跟上。
 - **Pool.** `gh issue list --state open --label ready-for-agent --json number,title,labels`，再用 `gh api repos/ron03wlb/ron-skills/issues/<n> --jq .issue_dependencies_summary.blocked_by` 濾掉 `blocked_by > 0` 的 Issue，以及已經在某個開著的 batch checkpoint 裡的 Issue；號碼小的先挑。`needs-triage` 的先照 [Readiness](#readiness) 用 `/triage <n>` 補齊，補完變成 `ready-for-agent` 才挑。
 - **Batch.** key 是成員號碼用 `-` 連起來（如 `8-12`）。checkpoint 在 `.scratch/pilot/batch-<key>.md`，每個成員一行：Issue、branch、worktree、terminal handle、開始時間、stuck-after、state（`running`／`done`／`stop`）、candidate SHA；另一行 `current:` 記 batch 狀態（`dispatched`／`staged <sha>`／`merged <sha>`／`pushed`／`closed`）。各 Issue 自己的 checkpoint 仍在 `.scratch/issue-run-<n>/state.md`（在它的 worktree 裡）。
 - **Brief check.** 沒有指令。worker 的 brief 就是 `/issue-run <n> --worker <checkpoint>` 加上 Issue 本文；tooling fix unit 的 brief 由 coordinator 寫在 `.scratch/pilot/briefs/<name>.md`，派出去前自己核對 goal、scope、acceptance、verify、timebox、forbidden、report 和 `preferences.md` 路徑都在。
@@ -55,8 +55,14 @@ candidate 是分支 tip。acceptance 是在 candidate SHA、工作樹乾淨時�
 - **Stage.** 在主 checkout 從 `pilot/integration` 開 `pilot/stage-<key>`，依號碼順序 `git merge --no-ff issue/<n>-<slug>` 合進每個 `done` 成員。只有兩邊都只是新增、不重疊的段落時，coordinator 才可以自己解衝突；其他衝突一律變成 gate。
 - **Regression.** 在 staged SHA、工作樹乾淨時跑 `bin/check --upstream`，exit 0 才算過；只對那個 SHA 有效。結果（SHA、exit code、尾段輸出）記進 batch checkpoint。
 - **Integrate.** 沒有 hold flag、而且 `pilot/integration` 從 stage 之後沒有新 commit，才在主 checkout 做 `git checkout pilot/integration && git merge --ff-only pilot/stage-<key>`；有新 commit 就重新 stage、重跑 Regression。合完刪掉 `pilot/stage-<key>`，`current:` 設成 `merged <sha>`，再切回 `main`。
-- **Push gate.** `pilot/integration` 的 tip 等於最後一次 Regression 通過的 SHA。通過後把指令交給人：`git push -u origin pilot/integration`，然後開 PR 合進 `main`。push 完把 `current:` 設成 `pushed`。
-- **Close.** batch 的 merge 進到 `origin/main` 之後，對每個成員照 [Evidence and closing](#evidence-and-closing) 處理：證據留言、`gh issue close <n>`、用 `orca-ide worktree rm --worktree branch:issue/<n>-<slug>` 移除 worktree（rm 之後跑 Bare guard，時機 `close #<n>`），並刪掉本機和 `origin` 上的 `issue/<n>-<slug>`；`current:` 設成 `closed`。
+- **Push gate.** `pilot/integration` 的 tip 等於最後一次 Regression 通過的 SHA。通過後 coordinator 在主 checkout 依序執行，不交給人：
+  1. `git push origin pilot/integration`（還沒有 upstream 時加 `-u`）。push 完把 `current:` 設成 `pushed`。
+  2. `gh pr create --base main --head pilot/integration --title '<batch key 與標題>' --body-file <檔案>`，body 列出各 batch、staged SHA、Regression 結果（exit code）和每個成員的 `Closes #<n>`。`pilot/integration` 已經有開著的 PR 時不重開，改用 `gh pr edit <url> --body-file <檔案>` 補上新 batch。
+  3. `gh pr merge <url> --merge`。不要帶 `--delete-branch`：`pilot/integration` 要留著。之後 `gh pr view <url> --json state` 是 `MERGED` 才往下；不是（衝突、檢查沒過、變成 auto-merge）就變成 gate。
+  4. `git fetch origin`，然後 `git merge --ff-only origin/main`（在 `main` 上）、`git checkout pilot/integration && git merge --ff-only origin/main && git push origin pilot/integration`，再切回 `main`。不要用 `git branch -f`：它會把 `pilot/integration` 的 upstream 改成 `origin/main`。ff 不了就變成 gate。
+
+  做完馬上接 Close。
+- **Close.** Push gate 的 PR 合入、batch 的 merge 進到 `origin/main` 之後馬上做，不等人。對每個成員照 [Evidence and closing](#evidence-and-closing) 依序處理：證據留言（附 PR 網址與合入的 merge SHA）；`gh issue close <n>`（PR 的 `Closes #<n>` 已經關掉時 `gh issue view <n> --json state` 是 `CLOSED`，略過這步）；用 `orca-ide terminal close --terminal <handle>` 關掉成員的 terminal（handle 在 batch checkpoint；terminal 已經不在時略過）；用 `orca-ide worktree rm --worktree branch:issue/<n>-<slug>` 移除 worktree（rm 之後跑 Bare guard，時機 `close #<n>`）；`git branch -d issue/<n>-<slug>` 刪本機分支；`git ls-remote --exit-code --heads origin issue/<n>-<slug>` exit 0 才跑 `git push origin --delete issue/<n>-<slug>`，exit 2（遠端沒有這個分支，worker 不 push）就略過。全部成員做完把 `current:` 設成 `closed`。
 - **Handoff.** 沒有 handoff 指令。條件達到時（見 Defaults），coordinator 停掉自己的背景工作、在 `decisions.md` 和 `sessions.md` 記一筆，把 `coordinator` 改成 `handoff <ISO 時間>`，再請人在新的 session 跑 `/loop /issue-pilot`；改完就算 `HANDED_OFF`。
 - **Project tick hooks.** 預設：沒有。
 - **Retro collect.** 預設：沒有；`/retro-collect` 停下並說明原因。

@@ -1,6 +1,6 @@
 # 01 工具與角色
 
-流程裡有五種角色，靠五類工具串起來。先記住一條邊界：**agent 做到本機 candidate commit 為止；push、合進共用分支、產品決策，以及對共用環境（資料庫、正式站）的操作，都留給人。** 到 L3 這條邊界也只放寬到「adapter 明文允許的 push」。
+流程裡有五種角色，靠五類工具串起來。先記住一條邊界：**agent 做到本機 candidate commit 為止；push、合進共用分支、產品決策，以及對共用環境（資料庫、正式站）的操作，都留給人。** 到 L3 這條邊界也只放寬到「adapter 明文允許的 push、開 PR／MR 與合進主線」。
 
 ![交付流程工具版圖](diagrams/01-tooling.png)
 
@@ -10,10 +10,10 @@
 
 | 角色 | 在哪裡跑 | 負責 | 不做 | 從哪一級出現 |
 | --- | --- | --- | --- | --- |
-| **Operator**（人） | 自己的終端與對話 | 提需求、回答釐清問題、產品決策、對共用環境執行 artifact 並讀回、push、合併 PR／MR | 不手動把分支合進整合分支（L2 起一律經入口腳本） | L1 |
+| **Operator**（人） | 自己的終端與對話 | 提需求、回答釐清問題、產品決策、對共用環境執行 artifact 並讀回、push、合併 PR／MR（L3 的 adapter 交給 coordinator 時除外） | 不手動把分支合進整合分支（L2 起一律經入口腳本） | L1 |
 | **controller** | 輸入 `/issue-run <n>` 的那個 session | 單張或一組 Issue 的 Gate → Graph → Claim → Build → Candidate → Report；做到 candidate 停下來報告 | 不 push、不合進共用分支、不結案 | L1 |
 | **subagent**（Claude） | controller 以 Agent 工具派出 | 多張 ticket 時的 implementer（`implement-spec`）、`code-review` 的 Standards／Spec 兩軸審查 | 不跨出指派的 worktree；結論交回 controller 判讀 | L1 |
-| **coordinator** | 主 checkout 的 `/loop /issue-pilot` | 對帳、挑單、組批次、派 worker、整批回歸、合入整合分支、交出 push 指令、結案；決定記在 `.scratch/pilot/decisions.md` | 不寫產品程式碼；同一個 repo 同時只有一個 coordinator | L3 |
+| **coordinator** | 主 checkout 的 `/loop /issue-pilot` | 對帳、挑單、組批次、派 worker、整批回歸、合入整合分支、交出 push 指令（adapter 允許時自己 push、開 PR／MR、合進主線）、結案；決定記在 `.scratch/pilot/decisions.md` | 不寫產品程式碼；同一個 repo 同時只有一個 coordinator | L3 |
 | **worker** | 每張 Issue 自己的 worktree，跑 `/issue-run <n> --worker <checkpoint>` | 單張 Issue 的實作、本單檢查、review，做到 candidate，最後一行印 `DONE <n> <SHA>` 或 `STOP <n> <原因>` | 不問人（產品問題留言到 Issue 後 `STOP`）；不合入、不 push、不結案 | L3 |
 | **Codex** | 經 adapter 指定的 runner 腳本呼叫 | 跨模型 review、高風險 Issue 的獨立情境驗證、兩輪 review 後仍有爭議的 finding 的第二意見 | 不 commit；結果由 controller 判讀 | L3（L1／L2 可選） |
 

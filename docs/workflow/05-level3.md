@@ -1,6 +1,6 @@
 # 05 L3 導入
 
-L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：它自己從 tracker 挑 `ready-for-agent` 的單、每張派一個 worker、整批回歸後合進本機整合分支，再把 push 指令交給你。你只剩三件事：產品決策、對共用環境執行 artifact 並讀回、`git push`（除非 adapter 允許 coordinator 自己 push）。
+L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：它自己從 tracker 挑 `ready-for-agent` 的單、每張派一個 worker、整批回歸後合進本機整合分支，再把 push 指令交給你；adapter 允許時則自己 push、開 PR／MR、合進主線並結案。你只剩三件事：產品決策、對共用環境執行 artifact 並讀回、`git push` 與合併（除非 adapter 交給 coordinator，ron-skills 就是這樣設定）。
 
 ## 進入條件
 
@@ -28,7 +28,7 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 3. **Project hooks**：跑 adapter 列的專案檢查（見下方 tick hooks）。
 4. **Pick 挑單**：worker 數低於上限時，依 adapter 的 Pool 規則挑下一批；`needs-triage` 的單先照 Readiness 補齊。
 5. **Dispatch 派工**：每張開一個 worktree 與 terminal，執行 `/issue-run <n> --worker <batch checkpoint>`。
-6. **Land 落地**：整批成員都 `DONE` 或 `STOP` 後，在批次分支依號碼合入、在 staged SHA 跑回歸、通過才合進整合分支，然後交出 push 指令。
+6. **Land 落地**：整批成員都 `DONE` 或 `STOP` 後，在批次分支依號碼合入、在 staged SHA 跑回歸、通過才合進整合分支，然後照 Push gate 交出 push 指令；adapter 允許時自己 push、開 PR／MR、合併，接著結案。
 7. **Report and sleep**：重產 `status.md`，有需要人做的事才通知；排下一次喚醒（有 worker 在跑時 1200 秒，閒置時 1800 到 3600 秒）。
 
 它的狀態全在磁碟上（`.scratch/pilot/` 與各批次 checkpoint），不靠對話記憶：
@@ -54,7 +54,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條是一行。�
 | --- | --- |
 | Coordinator checkout | coordinator 在哪個 checkout 跑、`.scratch/pilot/` 放哪 |
 | Sessions | 怎麼登記 coordinator session |
-| Defaults | worker 上限、每批張數、誰合入、誰 push、何時交棒 |
+| Defaults | worker 上限、每批張數、誰合入、誰 push 與合併 PR／MR、何時交棒 |
 | Integration branch | 本機整合分支的名稱、怎麼開、合進主線後怎麼跟上 |
 | Pool | 挑單的查詢與排序；被擋住或已在其他批次的單怎麼濾掉 |
 | Batch | 批次 key 與 checkpoint 格式：每個成員一行（Issue、分支、worktree、terminal、開始時間、stuck-after、狀態、candidate SHA） |
@@ -67,8 +67,8 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條是一行。�
 | Stage | 開批次分支、依序合入 `DONE` 的成員；哪些衝突 coordinator 可以自己解 |
 | Regression | 在 staged SHA 跑什麼、怎樣算過 |
 | Integrate | 合進整合分支的條件與指令 |
-| Push gate | 整合分支 tip 等於最後通過回歸的 SHA 時，交給人的 push 指令 |
-| Close | 進到主線之後的證據留言、關單、移除 worktree 與分支 |
+| Push gate | 整合分支 tip 等於最後通過回歸的 SHA 時要跑的 push 指令：交給人，或 adapter 允許時由 coordinator 依序 push、開 PR／MR、合併，再讓整合分支跟上主線 |
+| Close | 進到主線之後的證據留言、關單、關掉成員 terminal、移除 worktree 與分支（遠端沒有該分支時略過） |
 | Handoff | 交棒的指令 |
 | Project tick hooks | 每輪要跑的專案檢查 |
 | Retro collect | `/retro-collect` 需要的事實 |
