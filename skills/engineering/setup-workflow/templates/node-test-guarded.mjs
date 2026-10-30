@@ -78,15 +78,16 @@ async function runOnce(options, files) {
     const code = await new Promise(done => child.on('close', (status, signal) => done(status ?? (signal ? 1 : 0))));
     if (code !== 0) return { code, lost: [] };
     const wanted = files.map(file => resolve(file));
-    const read = () => existsSync(ranFile) ? readFileSync(ranFile, 'utf8') : '';
-    let text = read();
+    const readText = () => existsSync(ranFile) ? readFileSync(ranFile, 'utf8') : '';
+    let text = readText();
     let ran = parseRan(text);
     const total = () => [...ran.values()].reduce((sum, names) => sum + names.length, 0);
-    if (untraced(text) || (ran.size >= wanted.length && total() === reportedTotal(output))) return { code, lost: [] };
+    if (ran.size >= wanted.length && total() === reportedTotal(output)) return { code, lost: [] };
     // 父行程先結束：還在跑的子行程結束時才寫記錄，等它們寫完再比對
-    for (const until = Date.now() + ORPHAN_WAIT_MS; wanted.some(file => !ran.has(file)) && !untraced(text) && Date.now() < until; ran = parseRan(text)) {
+    for (const until = Date.now() + ORPHAN_WAIT_MS; wanted.some(file => !ran.has(file)) && !untraced(text) && Date.now() < until;) {
       await sleep(500);
-      text = read();
+      text = readText();
+      ran = parseRan(text);
     }
     if (untraced(text)) return { code, lost: [] };
     const lost = lostFiles(ran, output);
