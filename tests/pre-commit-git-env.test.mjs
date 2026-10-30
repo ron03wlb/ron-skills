@@ -32,7 +32,7 @@ test('pre-commit 跑 bin/check 前清掉 hook 帶入的 repo 區域 GIT_* 變數
   assert.equal(readFileSync(join(repo, 'seen-env'), 'utf8'), '');
 });
 
-// 修正前，worktree 裡 commit 時 GIT_DIR 指向 .git/worktrees/<name>，sync-skills-git-dir 測試的 `git -C <暫存 repo> init` 繼承後重新 init 那個 worktree，主 checkout 的 core.bare 變 true（#20 worker 實測；GIT_DIR 指向一般 repo 時不會）。
+// 重現真實歷史：worktree 裡 commit 時 GIT_DIR 指向 .git/worktrees/<name>，sync-skills-git-dir 測試的 `git -C <暫存 repo> init` 繼承後重新 init 那個 worktree，主 checkout 的 core.bare 變 true（#20 worker 實測）。
 test('worktree 的 GIT_DIR 洩漏給 sync-skills-git-dir 測試時，主 checkout 不會變成 bare', t => {
   const { repo: main, git } = scratchRepo(t, 'leaked-git-dir-');
   const worktree = `${main}-wt`;
