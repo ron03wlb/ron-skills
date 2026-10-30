@@ -10,7 +10,9 @@
 //                 WORKER <n> STUCK exited|stuck-after <分鐘>|orca <錯誤碼>|no-orca|checkpoint <欄位> <值>
 //                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）
 //   batch：STAGEABLE <key>（dispatched 且每個成員都 done 或 stop；moved 的成員已移到別的 batch，不算）；
-//          current 是 merged／pushed 的 batch 在 git fetch 後印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>
+//          current 是 merged／pushed 的 batch 在 git fetch 後印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
+//          還沒進 origin/main 的 merged batch 改印 RESUME_PUSH <key>（pilot/integration 的 tip 等於最後一次 regression SHA，#37），
+//          不符合時印 NOT_IN_MAIN <key> no-regression｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
 // exit：0 印完；2 用法錯誤；1 其他失敗（Bare guard 或 git status 失敗等）。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -68,11 +70,14 @@ export function openRows(pilot) {
   return out;
 }
 
-/** 解析 batch checkpoint：`current:`、成員表格，與合入的 SHA（`current: merged|pushed <sha>`，沒有就取最後一行 `regression: <sha>`）。 */
+/**
+ * 解析 batch checkpoint：`current:`、成員表格、最後一行 `regression: <sha>` 的 SHA，
+ * 與合入的 SHA（`current: merged|pushed <sha>`，沒有就取 regression 的 SHA）。
+ */
 export function parseBatch(text) {
   const current = text.match(/^current:\s*(.*)$/m)?.[1].trim() ?? '';
-  const sha = current.match(/^(?:merged|pushed) ([0-9a-f]{7,40})\b/)?.[1]
-    ?? [...text.matchAll(/^regression: ([0-9a-f]{7,40})\b/gm)].at(-1)?.[1];
+  const regression = [...text.matchAll(/^regression: ([0-9a-f]{7,40})\b/gm)].at(-1)?.[1];
+  const sha = current.match(/^(?:merged|pushed) ([0-9a-f]{7,40})\b/)?.[1] ?? regression;
   const members = [];
   for (const line of text.split('\n')) {
     const cells = tableCells(line);
@@ -80,7 +85,7 @@ export function parseBatch(text) {
     const [n, branch, worktree, handle, started, stuckAfter, state, candidate] = cells;
     members.push({ n, branch, worktree, handle, started, stuckAfter, state, candidate });
   }
-  return { current, members, sha };
+  return { current, members, regression, sha };
 }
 
 /**
@@ -118,6 +123,17 @@ export async function workerState(ctx, member, now = Date.now()) {
   return minutes > Number(limit) ? `STUCK stuck-after ${minutes}` : `RUNNING ${minutes}`;
 }
 
+/**
+ * 還沒進 origin/main 的 `merged` batch：Push gate 的前提是 pilot/integration 的 tip 等於最後一次 Regression SHA（#37）。
+ * 符合時 coordinator 從 Push gate 第 1 步接著做；Integrate 之後又有 commit、或沒有 regression 行時，直接推會送出沒驗過的內容。
+ */
+function resumePush(checkout, key, regression) {
+  if (!regression) return `NOT_IN_MAIN ${key} no-regression`;
+  const rev = ref => git(checkout, 'rev-parse', '--verify', '-q', ref).stdout.trim();
+  const tip = rev('refs/heads/pilot/integration');
+  return tip && tip === rev(`${regression}^{commit}`) ? `RESUME_PUSH ${key}` : `NOT_IN_MAIN ${key} tip ${tip.slice(0, 7) || 'none'}`;
+}
+
 export async function probe(ctx, checkout) {
   const pilot = join(checkout, '.scratch/pilot');
   const out = [...checkoutState(checkout), ...openRows(pilot)];
@@ -125,7 +141,7 @@ export async function probe(ctx, checkout) {
   const landing = [];
   for (const file of batches) {
     const key = file.slice('batch-'.length, -'.md'.length);
-    const { current, members, sha } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
+    const { current, members, regression, sha } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
     const active = members.filter(m => m.state !== 'moved');
     const finished = active.filter(m => m.state === 'done' || m.state === 'stop').length;
     let read = 0;
@@ -135,14 +151,15 @@ export async function probe(ctx, checkout) {
       out.push(`WORKER ${member.n} ${state}`);
     }
     if (/^dispatched\b/.test(current) && active.length && finished + read === active.length) out.push(`STAGEABLE ${key}`);
-    if (/^(merged|pushed)\b/.test(current)) landing.push({ key, sha });
+    if (/^(merged|pushed)\b/.test(current)) landing.push({ key, sha, regression, merged: /^merged\b/.test(current) });
   }
   if (landing.length) {
     const fetch = git(checkout, 'fetch', '-q', 'origin');
     if (fetch.status !== 0) out.push(`FETCH_FAILED ${fetch.stderr.trim().split('\n').find(line => line.startsWith('fatal:')) ?? fetch.stderr.trim().split('\n')[0]}`);
-    else for (const { key, sha } of landing) {
+    else for (const { key, sha, regression, merged } of landing) {
       if (!sha) out.push(`NOT_IN_MAIN ${key} no-sha`);
-      else out.push(`${git(checkout, 'merge-base', '--is-ancestor', sha, 'origin/main').status === 0 ? 'IN_MAIN' : 'NOT_IN_MAIN'} ${key}`);
+      else if (git(checkout, 'merge-base', '--is-ancestor', sha, 'origin/main').status === 0) out.push(`IN_MAIN ${key}`);
+      else out.push(merged ? resumePush(checkout, key, regression) : `NOT_IN_MAIN ${key}`);
     }
   }
   return out;
