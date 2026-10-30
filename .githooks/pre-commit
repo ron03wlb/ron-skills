@@ -3,6 +3,4 @@
 # 啟用：ln -s ../../.githooks/pre-commit .git/hooks/pre-commit
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
-bin/sync-skills --check >/dev/null
-node scripts/check-links.mjs >/dev/null
-node --test --test-force-exit tests/*.test.mjs >/dev/null
+bin/check >/dev/null
