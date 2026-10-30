@@ -55,7 +55,7 @@ candidate 是分支 tip。acceptance 是在 candidate SHA、工作樹乾淨時�
 - **Regression.** 在 staged SHA、工作樹乾淨時跑 `bin/check --upstream`，exit 0 才算過；只對那個 SHA 有效。結果（SHA、exit code、尾段輸出）記進 batch checkpoint。
 - **Integrate.** 沒有 hold flag、而且 `pilot/integration` 從 stage 之後沒有新 commit，才在主 checkout 做 `git checkout pilot/integration && git merge --ff-only pilot/stage-<key>`；有新 commit 就重新 stage、重跑 Regression。合完刪掉 `pilot/stage-<key>`，`current:` 設成 `merged <sha>`，再切回 `main`。
 - **Push gate.** `pilot/integration` 的 tip 等於最後一次 Regression 通過的 SHA。通過後把指令交給人：`git push -u origin pilot/integration`，然後開 PR 合進 `main`。push 完把 `current:` 設成 `pushed`。
-- **Close.** batch 的 merge 進到 `origin/main` 之後，對每個成員照 [Evidence and closing](#evidence-and-closing) 處理：證據留言、`gh issue close <n>`、用 `orca-ide worktree rm --worktree branch:issue/<n>-<slug>` 移除 worktree，並刪掉本機和 `origin` 上的 `issue/<n>-<slug>`；`current:` 設成 `closed`。
+- **Close.** batch 的 merge 進到 `origin/main` 之後，對每個成員照 [Evidence and closing](#evidence-and-closing) 處理：證據留言、`gh issue close <n>`、用 `orca-ide worktree rm --worktree branch:issue/<n>-<slug>` 移除 worktree（rm 之後在主 checkout 跑 `git rev-parse --is-bare-repository`，印出 `true` 就執行 `git config core.bare false`：Orca 從 WSL 移除 worktree 會把主 repo 設成 bare，之後的 stage、merge 全部失敗），並刪掉本機和 `origin` 上的 `issue/<n>-<slug>`；`current:` 設成 `closed`。
 - **Handoff.** 沒有 handoff 指令。條件達到時（見 Defaults），coordinator 停掉自己的背景工作、在 `decisions.md` 和 `sessions.md` 記一筆，把 `coordinator` 改成 `handoff <ISO 時間>`，再請人在新的 session 跑 `/loop /issue-pilot`；改完就算 `HANDED_OFF`。
 - **Project tick hooks.** 預設：沒有。
 - **Retro collect.** 預設：沒有；`/retro-collect` 停下並說明原因。
