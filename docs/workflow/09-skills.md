@@ -52,7 +52,7 @@
 
 | skill | 做什麼 | 等級 | 來源 |
 | --- | --- | --- | --- |
-| `/loop /issue-pilot` | 常駐 coordinator：挑單、派 worker、整批回歸、合入整合分支、交出 push | L3 | ron-skills |
+| `/loop /issue-pilot` | 常駐 coordinator：挑單、派 worker、整批回歸、合入整合分支、push 與開 PR 合併（adapter 允許時），再結案 | L3 | ron-skills |
 | `poteto-mode` | pstack 的 Autopilot、Orchestrate playbook；`/issue-pilot` 的協調方法來源 | L3（由 `/issue-pilot` 引用） | pstack（ron-skills overlay） |
 | `principle-*` | pstack 的決策原則，每條寫明何時套用 | L3（由 `poteto-mode` 引用） | pstack |
 | `arena` | 幾個 agent 各自實作同一題、交叉評審後挑一個；只用在昂貴、難逆轉、有多種合理做法的設計決策 | 輔助 | pstack（ron-skills overlay） |
