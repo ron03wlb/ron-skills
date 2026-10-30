@@ -14,7 +14,7 @@
 // 輸入不合法、git 失敗等任何無法判定的情況 exit 0 不輸出（fail-open），避免卡住正常工作。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const git = (cwd, ...args) => spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
@@ -29,16 +29,16 @@ function existingDir(path) {
 /**
  * 寫入目標檔是否會讓主 checkout 的 git status 不乾淨：主 checkout 內的追蹤檔，或未被 gitignore 的新檔。
  * @param {string} filePath 絕對路徑
- * @param {string} [projectCommonDir] 本專案的 git-common-dir（見 projectCommonDir()）；給了就只管同一個 repo 的主 checkout
+ * @param {string} [projectCommon] 本專案的 git-common-dir（見 projectCommonDir()）；給了就只管同一個 repo 的主 checkout
  * @returns {boolean} 無法判定時為 false
  */
-export function dirtiesMainCheckout(filePath, projectCommonDir) {
+export function dirtiesMainCheckout(filePath, projectCommon) {
   const dir = existingDir(resolve(filePath));
   const dirs = git(dir, 'rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir');
   if (dirs.status !== 0) return false;
   const [gitDir, commonDir] = dirs.stdout.trim().split('\n');
   if (!gitDir || gitDir !== commonDir) return false;
-  if (projectCommonDir && projectCommonDir !== commonDir) return false;
+  if (projectCommon && projectCommon !== commonDir) return false;
   if (git(dir, 'ls-files', '--error-unmatch', '--', resolve(filePath)).status === 0) return true;
   // check-ignore：0 為 gitignored、1 為未忽略，其他（git 失敗）無法判定
   return git(dir, 'check-ignore', '-q', '--no-index', '--', resolve(filePath)).status === 1;
@@ -134,7 +134,7 @@ const DECLARE = new Set(['export', 'declare', 'typeset', 'readonly', 'local']);
  * 依序走過指令的每一段（以 && || ; | 換行分隔），套用 `NAME=value`、`export／declare／readonly／local NAME=value` 與 `cd`。
  * 每段回傳指令名與引數（字面，供比對旗標）、未代換的引數與重導向目標，以及把未代換的字解析成絕對路徑的 resolvePaths()：
  * 先展開大括號、再代換變數、最後依目前目錄解析；解析不了的字略過。cd 到解析不了的目錄（如 `cd "$(git rev-parse --show-toplevel)"`）
- * 時目錄維持不變，後面的相對路徑照原本的目錄判斷，不放掉主 checkout 裡常見的寫法。
+ * 時目錄維持不變，後面的相對路徑照原本的目錄判斷，不放掉主 checkout 裡常見的寫法；`git -C` 解析不了時同理。
  * @returns {Generator<{name: string, args: string[], rawArgs: string[], redirects: string[], resolvePaths: (word: string) => string[]}>}
  */
 function* walkSegments(command, cwd) {
@@ -145,8 +145,9 @@ function* walkSegments(command, cwd) {
     if (token.op === ';') segments.push([]);
     else segments.at(-1).push(token);
   }
+  const scope = () => new Map([...vars, ['PWD', dir]]);
   const resolvePaths = word => expandBraces(word)
-    .map(part => expandVars(part, new Map([...vars, ['PWD', dir]])))
+    .map(part => expandVars(part, scope()))
     .filter(path => path !== null)
     .map(path => resolve(dir, literal(path)));
   for (const segment of segments) {
@@ -164,7 +165,7 @@ function* walkSegments(command, cwd) {
     const assignments = first === words.length ? words : DECLARE.has(words[0]) ? words.slice(1).filter(word => ASSIGNMENT.test(word)) : [];
     for (const word of assignments) {
       const [, name, value] = ASSIGNMENT.exec(word);
-      vars.set(name, expandVars(value, vars));
+      vars.set(name, expandVars(value, scope()));
     }
     const raw = words.slice(first);
     const [name, ...args] = raw.map(literal);
@@ -230,7 +231,7 @@ export function bashBranchSwitches(command, cwd) {
     let repo = resolvePaths('.')[0];
     let i = 0;
     for (; i < args.length && args[i].startsWith('-'); i += 1) {
-      if (args[i] === '-C') { repo = rawArgs[i + 1] === undefined ? undefined : resolvePaths(rawArgs[i + 1])[0]; i += 1; }
+      if (args[i] === '-C') { repo = rawArgs[i + 1] === undefined ? undefined : resolvePaths(rawArgs[i + 1])[0] ?? repo; i += 1; }
       else if (args[i] === '-c') i += 1;
     }
     if (repo === undefined) continue;
