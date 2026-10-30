@@ -8,9 +8,12 @@
 //       node scripts/gh-tracker.mjs sub-issue add|remove <parent> <child>
 //       node scripts/gh-tracker.mjs blocked-by add|remove <n> <blocker>
 // 在 repo 根目錄執行：allow 規則比對的是 `node scripts/gh-tracker.mjs` 這個相對路徑。
-// 不合規則時 exit 2、不呼叫 gh；其餘照 gh 的 exit code。gh 收到的環境沒有 GH_HOST、GH_REPO，主機與 repo 都只看 --repo。
+// 不合規則時 exit 2、不呼叫 gh；其餘照 gh 的 exit code。主機也要寫死：不帶主機的 --repo 與 gh api 會用 gh config 的預設主機，不一定是 github.com。
+// gh 收到的環境也沒有 GH_HOST、GH_REPO。
+// --body-file 照樣讀本機任何檔案，內容會公開貼到 Issue 上：只指向要貼的檔。
 import { spawnSync } from 'node:child_process';
 
+const HOST = 'github.com';
 const REPO = 'ron03wlb/ron-skills';
 
 // 每個子命令：Issue 號碼的個數，以及可用的旗標（都帶一個值）與它的短名。
@@ -34,7 +37,7 @@ const RELATION_COMMANDS = {
 };
 
 const fail = message => { console.error(`gh-tracker: ${message}`); process.exit(2); };
-const isNumber = arg => /^\d+$/.test(arg ?? '');
+const isNumber = arg => /^[1-9]\d*$/.test(arg ?? '');
 const { GH_HOST, GH_REPO, ...env } = process.env;
 const spawnGh = (args, stdio) => {
   const result = spawnSync('gh', args, { stdio, env, encoding: 'utf8' });
@@ -62,12 +65,12 @@ function parse(args, { numbers, flags }) {
 }
 
 const [command, ...rest] = process.argv.slice(2);
-if (Object.hasOwn(ISSUE_COMMANDS, command)) gh(['issue', command, ...parse(rest, ISSUE_COMMANDS[command]), '--repo', REPO]);
+if (Object.hasOwn(ISSUE_COMMANDS, command)) gh(['issue', command, ...parse(rest, ISSUE_COMMANDS[command]), '--repo', `${HOST}/${REPO}`]);
 if (!Object.hasOwn(RELATION_COMMANDS, command)) fail(`不支援的子命令：${command ?? '（空）'}`);
 const [action, n, other, ...extra] = rest;
 if (!Object.hasOwn(RELATION_COMMANDS[command], action) || extra.length || ![n, other].every(isNumber)) fail(`用法：${command} add|remove <n> <m>（m、n 是純數字 Issue 號碼）`);
-const lookup = spawnGh(['api', `repos/${REPO}/issues/${other}`, '--jq', '.id'], ['ignore', 'pipe', 'inherit']);
+const lookup = spawnGh(['api', '--hostname', HOST, `repos/${REPO}/issues/${other}`, '--jq', '.id'], ['ignore', 'pipe', 'inherit']);
 if (lookup.status !== 0) process.exit(lookup.status ?? 1);
 const id = lookup.stdout.trim();
 if (!isNumber(id)) fail(`#${other} 的 database id 不是數字：${id}`);
-gh(['api', ...RELATION_COMMANDS[command][action](n, id)]);
+gh(['api', '--hostname', HOST, ...RELATION_COMMANDS[command][action](n, id)]);
