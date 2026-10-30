@@ -98,7 +98,7 @@ L1 的結案是人看到 PR 合併後手動關單。L2 把它收成一個入口�
 - 不要寫 `Bash(git -C * fetch origin)`：`-C` 後面的 `*` 也吞得下 `-c core.sshCommand=<指令>` 這類 git 全域選項，等於放行任意指令。Claude Code 每次啟動都會警告 `allows any option at its *`；把路徑寫死成前綴一樣會警告。
 - 已經把 git 寫入包進交付腳本的 repo（合入入口、結案入口），allow 只放行那幾支腳本，腳本裡面才跑 `git -C`。
 - 還沒有交付腳本的 repo，用範本 [`pilot_git.py`](../../skills/engineering/issue-run/templates/pilot_git.py)：
-  1. 複製成 repo 的 `scripts/pilot_git.py`，改四個常數（主 checkout、worktree 根目錄、分支前綴、base 分支）。它先驗證目標與參數再執行 `git -C`：主 checkout 只能 `fetch`、`rev`、`log`；寫入（`sync`、`stage`、`push`）只能到 `<worktree 根目錄>/<前綴>*`；參數不得以 `-` 開頭；`push` 只推 `<前綴>*` 分支。驗證失敗 exit 2。
+  1. 複製成 repo 的 `scripts/pilot_git.py`，改兩個常數（分支前綴、base 分支）。主 checkout 與 worktree 根目錄依機器偵測，不是常數：主 checkout 是環境變數 `PILOT_GIT_MAIN_CHECKOUT`，沒有時取 script 所在 repo 的 `git rev-parse --path-format=absolute --git-common-dir` 的上一層；worktree 根目錄是 `PILOT_GIT_WORKTREE_ROOT`，沒有時是 `~/orca/workspaces/<主 checkout 目錄名>`；偵測結果在某台機器上不對時才設。它先驗證目標與參數再執行 `git -C`：主 checkout 只能 `fetch`、`rev`、`log`；寫入（`sync`、`stage`、`push`）只能到 `<worktree 根目錄>/<前綴>*`；參數不得以 `-` 開頭；`push` 只推 `<前綴>*` 分支。驗證失敗 exit 2。
   2. allow 換成一條 `Bash(python3 scripts/pilot_git.py:*)`，刪掉所有 `Bash(git -C …)`。
   3. adapter 裡的 git 步驟一律寫成 `python3 scripts/pilot_git.py <子命令> <checkout> …`，並加一個測試：adapter 每條指令都有對應的 allow 規則、沒有直接呼叫 `git -C` 的步驟。
   4. 開一個新 session，確認啟動時沒有權限警告。
