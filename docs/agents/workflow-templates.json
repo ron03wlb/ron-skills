@@ -16,6 +16,11 @@
       "commit": "ada628ad8ff233f859b6e1cd3cdb9965b4629871",
       "sha256": "2f002e77b5f78eae66fcc9bd3be3bff3cd2e55b4e67f6ffaebd4096873d29754"
     },
+    "scripts/orca-session-split.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/orca-session-split.mjs",
+      "commit": "e2bb03b122683320a9c8099a06c9cafcdad78aa5",
+      "sha256": "394810c3bfc021217209806858924215ea375c5a73553eb60475df95db4abee8"
+    },
     "scripts/orca-worktree-create.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-worktree-create.mjs",
       "commit": "d949d9446d7c758aeb965c0c69183e1184726d73",
@@ -25,6 +30,11 @@
       "template": "skills/engineering/setup-workflow/templates/pilot-counterpart.mjs",
       "commit": "c8797598f3dd08fb609cb9d6918ca060a15d23f9",
       "sha256": "55f5cc9366a7d32bdeb1757409938935c649de08e593f3968fe3254e5e66858c"
+    },
+    "scripts/pilot-handoff.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/pilot-handoff.mjs",
+      "commit": "39e53226aad911ac7507e3d1700ee93e18d41a43",
+      "sha256": "bafbe47875daf2066d9cd7e3af415dbed1db51277f2fcf11663a565fe04c4240"
     }
   }
 }

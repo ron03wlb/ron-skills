@@ -4,19 +4,22 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { FAST, orcaReplySource } from './helpers/fake-orca.mjs';
-import { realTmpdir } from './helpers/real-tmpdir.mjs';
+import { FAST, orcaReplySource } from './test/fake-orca.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
-const script = new URL('../scripts/pilot-handoff.mjs', import.meta.url).pathname;
+const script = new URL('./pilot-handoff.mjs', import.meta.url).pathname;
 const SESSION = '00000000-0000-0000-0000-000000000001';
 // pre-commit hook 匯出 GIT_DIR 等變數；繼承下去，腳本的 `git worktree list` 會指回本 repo 而不是 fixture。
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
 
-// 主 checkout 的 coordinator 檔（pid 42），以及記錄呼叫的假 Orca CLI（回應由 helpers/fake-orca.mjs 的真實樣本長出）。
-// `takeover` 為真時，假 Orca 收到送出就像新 session 跑了 /issue-pilot 的 Entry：把自己的 `pid ` 行寫進 coordinator 檔。
+// 主 checkout 的 coordinator 檔（pid 42），以及記錄呼叫的假 Orca CLI（回應由 test/fake-orca.mjs 的真實樣本長出）。
+// `takeover` 為真時，假 Orca 收到送出就像新 session 跑了 /issue-pilot 的 Entry：把自己的 `pid ` 行寫進 coordinator 檔；
+// `sendRejected` 時通常不寫，`lateTakeover` 為真時仍寫（Orca 回報拒收，prompt 其實已經送進去）。
 // `waitHangs` 為真時 `terminal wait` 永遠不回；`createDelayMs` 讓 `terminal create` 晚回（分頁已開、handle 還沒回來）；
 // `orphanLate` 為真時 `terminal list` 看不到 create 開的分頁（create 被殺時 Orca 還沒建好）。
-function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true, waitHangs = false, createDelayMs = 0, orphanLate = false } = {}) {
+// 主 checkout 另有既有 session（`--to` 的對象）：term_peer（標題 ron-skills-peer）、兩個標題都是 twin 的分頁；
+// 別的 repo 也有一個標題 ron-skills-peer 的分頁，`--to` 不能選到它。`terminal list --worktree path:<p>` 只回那個 worktree 的分頁。
+function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true, lateTakeover = false, waitHangs = false, createDelayMs = 0, orphanLate = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-handoff-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
@@ -41,14 +44,18 @@ else if (b === 'wait') reply('wait', { wait: { satisfied: (fs.readFileSync(${JSO
 else if (b === 'send') {
   fs.appendFileSync(${JSON.stringify(log)} + '.sent', arg('--text') + '\\n');
   fs.writeFileSync(${JSON.stringify(log)} + '.coordinator', fs.readFileSync(${JSON.stringify(coordinator)}, 'utf8'));
-  if (${takeover && !sendRejected}) fs.writeFileSync(${JSON.stringify(coordinator)}, 'pid 99   loop yes   since 2026-10-30T15:00:00+08:00   name ron-skills-ac\\n');
+  if (${takeover && (!sendRejected || lateTakeover)}) fs.writeFileSync(${JSON.stringify(coordinator)}, 'pid 99   loop yes   since 2026-10-30T15:00:00+08:00   name ron-skills-ac\\n');
   reply('send', { send: { accepted: ${!sendRejected} } });
 }
 else if (b === 'close') reply('close', { close: { handle: arg('--terminal') } });
 else if (b === 'list') {
   // 主 checkout 原有現任 coordinator 的分頁（標題同名，還沒被 Claude 改名）；create 開出分頁後，另有一個人剛開、標題不同的分頁。
   const opened = ${!createError && !orphanLate} && /^terminal create /m.test(fs.readFileSync(${JSON.stringify(log)}, 'utf8'));
-  const terminals = [{ handle: 'term_current', title: 'issue-pilot coordinator' }, ...(opened ? [{ handle: 'term_pilot', title: 'issue-pilot coordinator' }, { handle: 'term_other', title: 'ron@Ron-NB: ~/code/ron-skills' }] : [])];
+  const here = [['term_current', 'issue-pilot coordinator'], ['term_peer', 'ron-skills-peer'], ['term_twin1', 'twin'], ['term_twin2', 'twin'],
+    ...(opened ? [['term_pilot', 'issue-pilot coordinator'], ['term_other', 'ron@Ron-NB: ~/code/ron-skills']] : [])];
+  const all = [...here.map(([handle, title]) => ({ handle, title, worktreePath: ${JSON.stringify(repo)} })), { handle: 'term_far', title: 'ron-skills-peer', worktreePath: '/elsewhere/repo' }];
+  const scope = process.argv.includes('--worktree') ? arg('--worktree').replace(/^path:/, '') : null;
+  const terminals = all.filter(terminal => !scope || terminal.worktreePath === scope);
   reply('list', { terminals, totalCount: terminals.length });
 }
 else if (b === 'read') {
@@ -57,12 +64,12 @@ else if (b === 'read') {
 }
 `);
   chmodSync(cli, 0o755);
-  const args = pid => [script, '--session', SESSION, '--pid', pid, '--reason', '已合入 2 批'];
-  const options = extra => ({ cwd: repo, encoding: 'utf8', env: { ...env, ORCA_CLI_COMMAND: cli, ...FAST, PILOT_HANDOFF_WAIT_MS: '300', PILOT_HANDOFF_POLL_MS: '10', ...extra } });
-  const handoff = (pid = '42', extra = {}) => spawnSync('node', args(pid), { ...options(extra), timeout: 30000 });
+  const args = (pid, more = []) => [script, '--session', SESSION, '--pid', pid, '--reason', '已合入 2 批', ...more];
+  const options = extra => ({ cwd: repo, encoding: 'utf8', env: { ...env, ORCA_CLI_COMMAND: cli, ...FAST, PILOT_HANDOFF_WAIT_MS: '300', PILOT_HANDOFF_POLL_MS: '10', ORCA_TERMINAL_HANDLE: '', ...extra } });
+  const handoff = (pid = '42', extra = {}, more = []) => spawnSync('node', args(pid, more), { ...options(extra), timeout: 30000 });
   // 背景執行，給要在中途送訊號的測試用。
   const start = (extra = {}) => spawn('node', args('42'), options(extra));
-  return { repo, coordinator, original, log, handoff, start };
+  return { repo, coordinator, original, sessions: join(pilot, 'sessions.md'), log, handoff, start };
 }
 
 // 真實發生過的錯：coordinator 已換人（pid 不是呼叫者）時舊 session 照樣交接，會把新 coordinator 的 pid 行蓋掉。
@@ -86,6 +93,92 @@ test('交接：改寫為 handoff 行、在主 checkout 開分頁並送出 /loop 
   assert.match(calls, /^terminal send --terminal term_pilot --text \/loop \/issue-pilot --enter --json$/m);
   assert.doesNotMatch(calls, /terminal split/);
   assert.match(readFileSync(coordinator, 'utf8'), /^pid 99 /);
+});
+
+// spay2 版在 script 內附加 sessions.md；ron-skills 版要 coordinator 在 HANDED_OFF 之後手動附加，漏了 `/retro` 就找不到交接。
+test('交接完成：在 sessions.md 附加 handoff 行（保留既有行），stderr 提醒停掉 watcher', t => {
+  const { sessions, handoff } = fixture(t);
+  const start = '2026-10-30T20:43:33+08:00   session 00000000-0000-0000-0000-000000000001   pid 42   ron-skills-ab\n';
+  writeFileSync(sessions, start);
+  const result = handoff();
+  assert.equal(result.status, 0, result.stderr);
+  const lines = readFileSync(sessions, 'utf8').split('\n');
+  assert.equal(lines[0] + '\n', start);
+  assert.match(lines[1], new RegExp(`^\\S+   handoff from-session ${SESSION} → terminal term_pilot   reason 已合入 2 批$`));
+  assert.equal(lines[2], '');
+  assert.match(result.stderr, /watcher/);
+});
+
+test('STOP 時不附加 sessions.md：提早記 handoff 會讓 STOP 後的自己誤判退役', t => {
+  const { sessions, handoff } = fixture(t, { sendRejected: true });
+  assert.equal(handoff().status, 4);
+  assert.equal(existsSync(sessions), false);
+});
+
+// held-merge 是可選的 hook：adapter 指定了「整合分支合併進行中」的檢查指令才跑（spay2 有，ron-skills 沒有）；沒帶 --held-check 時照常交接（見上面的交接測試）。
+// 指令 exit 0 表示合併進行中、1 表示沒有，其他 exit code 無法判斷，一律不交接。
+for (const [name, check, cause] of [
+  ['回報合併中', 'echo batch-3 合併中; exit 0', /^STOP held-merge batch-3 合併中$/],
+  ['無法判斷', 'exit 3', /^STOP held-check exit 3$/],
+  ['被訊號殺掉', 'kill -TERM $$', /^STOP held-check signal SIGTERM$/],
+]) {
+  test(`--held-check ${name}：STOP，不改 coordinator 檔、不開分頁`, t => {
+    const { coordinator, original, log, handoff } = fixture(t);
+    const result = handoff('42', {}, ['--held-check', check]);
+    assert.equal(result.status, 4, result.stderr);
+    assert.match(result.stdout.trim().split('\n').pop(), cause);
+    assert.equal(readFileSync(coordinator, 'utf8'), original);
+    assert.doesNotMatch(readFileSync(log, 'utf8'), /terminal create/);
+  });
+}
+
+test('--held-check 回報沒有合併：照常 HANDED_OFF，指令在主 checkout 執行', t => {
+  const { repo, handoff } = fixture(t);
+  const result = handoff('42', {}, ['--held-check', 'pwd > held-cwd; exit 1']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'HANDED_OFF term_pilot');
+  assert.equal(readFileSync(join(repo, 'held-cwd'), 'utf8').trim(), repo);
+});
+
+// spay2 的 `--to <name|handle>`：交給已經開著的 session，不開新分頁；只找本 repo（任一 worktree）的分頁，handle 或標題完全相同才算。
+for (const target of ['term_peer', 'ron-skills-peer']) {
+  test(`--to ${target}：送 /loop /issue-pilot 給既有 session、不開新分頁，HANDED_OFF term_peer 並記進 sessions.md`, t => {
+    const { coordinator, sessions, log, handoff } = fixture(t);
+    const result = handoff('42', {}, ['--to', target]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'HANDED_OFF term_peer');
+    const calls = readFileSync(log, 'utf8');
+    assert.doesNotMatch(calls, /terminal (create|split|close) /);
+    assert.match(calls, /^terminal send --terminal term_peer --text \/loop \/issue-pilot --enter --json$/m);
+    assert.match(readFileSync(coordinator, 'utf8'), /^pid 99 /);
+    assert.match(readFileSync(sessions, 'utf8'), /handoff from-session \S+ → terminal term_peer   reason /);
+  });
+}
+
+for (const [name, to, extra, reason, cause] of [
+  ['找不到', 'nobody', {}, 'to-not-found', /^STOP to-not-found nobody$/],
+  ['標題對到兩個分頁', 'twin', {}, 'to-ambiguous', /^STOP to-ambiguous twin term_twin1 term_twin2$/],
+  ['對象是自己的分頁', 'term_peer', { ORCA_TERMINAL_HANDLE: 'term_peer' }, 'to-self', /^STOP to-self term_peer$/],
+  ['對象是 coordinator 檔裡自己的名字', 'ron-skills-ab', {}, 'to-self', /^STOP to-self ron-skills-ab$/],
+]) {
+  test(`--to ${name}：${reason}，不改 coordinator 檔、不送出`, t => {
+    const { coordinator, original, log, handoff } = fixture(t);
+    const result = handoff('42', extra, ['--to', to]);
+    assert.equal(result.status, 4, result.stderr);
+    assert.match(result.stdout.trim().split('\n').pop(), cause);
+    assert.equal(readFileSync(coordinator, 'utf8'), original);
+    assert.doesNotMatch(readFileSync(log, 'utf8'), /terminal (create|send) /);
+  });
+}
+
+// 既有 session 不是這次開的，失敗時不能關掉它。
+test('--to 對象沒寫入 pid 行：STOP pid-timeout、還原 coordinator 檔、不關對象的分頁', t => {
+  const { coordinator, original, log, handoff } = fixture(t, { takeover: false });
+  const result = handoff('42', {}, ['--to', 'term_peer']);
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(result.stdout.trim().split('\n').pop(), 'STOP pid-timeout term_peer');
+  assert.equal(readFileSync(coordinator, 'utf8'), original);
+  assert.doesNotMatch(readFileSync(log, 'utf8'), /terminal close /);
 });
 
 test('coordinator 檔有多行：STOP not-coordinator 仍是單獨的最後一行', t => {
@@ -119,7 +212,7 @@ for (const [name, options, cause, opened] of [
   ['send 被拒', { sendRejected: true }, /^STOP send term_pilot$/, true],
   ['新 session 沒寫入 pid 行', { takeover: false }, /^STOP pid-timeout term_pilot$/, true],
 ]) {
-  // 開出來的分頁不關，`/loop /issue-pilot` 之後仍可能接手，與照常繼續的舊 coordinator 同時活著。
+  // 開出來的分頁要關：留著的話 `/loop /issue-pilot` 之後仍可能接手，與照常繼續的舊 coordinator 同時活著。
   test(`${name}：STOP、還原 coordinator 檔${opened ? '、關掉新開的分頁' : ''}`, t => {
     const { coordinator, original, log, handoff } = fixture(t, options);
     const result = handoff();
@@ -129,6 +222,15 @@ for (const [name, options, cause, opened] of [
     assert.equal(/^terminal close --terminal term_pilot --json$/m.test(readFileSync(log, 'utf8')), opened);
   });
 }
+
+// 新 session 已寫入自己的 pid 行之後才 STOP（Orca 回報拒收，prompt 其實已送進去）：還原會把新 coordinator 蓋掉，所以不還原。
+test('STOP 時 coordinator 檔已是新 session 的 pid 行：不還原、不蓋掉它', t => {
+  const { coordinator, handoff } = fixture(t, { sendRejected: true, lateTakeover: true });
+  const result = handoff();
+  assert.equal(result.status, 4, result.stderr);
+  assert.match(result.stdout.trim(), /^STOP send term_pilot/);
+  assert.match(readFileSync(coordinator, 'utf8'), /^pid 99 /);
+});
 
 // 真實發生過的錯：腳本一路同步等到底，最壞約 15 分鐘，超過 Bash 工具 600 秒上限；被殺時 coordinator 停在 handoff 行，不還原也不印 STOP。
 test('總時間超過上限（新 session 一直沒寫 pid 行）：STOP timeout、還原 coordinator 檔、關掉新開的分頁', t => {
@@ -219,4 +321,6 @@ test('用法錯誤 exit 2', t => {
   const run = args => spawnSync('node', [script, ...args], { cwd: repo, encoding: 'utf8', env: { ...env, ORCA_CLI_COMMAND: 'x' } });
   assert.equal(run(['--session', SESSION]).status, 2);
   assert.equal(run(['--session', SESSION, '--pid', 'abc', '--reason', 'x']).status, 2);
+  assert.equal(run(['--session', SESSION, '--pid', '42', '--reason', 'x', '--to']).status, 2);
+  assert.equal(run(['--session', SESSION, '--pid', '42', '--reason', 'x', '--held-check']).status, 2);
 });
