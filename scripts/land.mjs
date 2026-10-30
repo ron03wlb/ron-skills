@@ -3,13 +3,14 @@
 // 步驟：push → 找或開 PR → 等 CI → 以 merge commit 合併 → 收尾（移除 worktree、還原 core.bare、刪本機與 origin 分支）
 //   → 主 checkout 的 main 以 --ff-only 跟上 origin/main → bin/sync-skills。
 // 每一步都能從中斷處重跑：還開著的 PR 沿用；head 等於分支 tip 的 PR 已合入就直接收尾，不重開、不重合。
+// 本機分支已經不在（Orca rm 會一起刪掉，#49）時不 push，只從已合入的 PR 接著收尾。
 // `--keep-branch`（pilot/integration）：不刪分支、不移除 worktree，改把分支 --ff-only 跟上 origin/main 再 push；
 // 不用 `git branch -f`，它會把 upstream 改成 origin/main（#27）。
 // Orca 從 WSL 移除 worktree 會把主 checkout 設成 bare，所以移除後一律跑 pilot-unbare.sh。
 //
 // 用法：node scripts/land.mjs <branch> [--keep-branch] [--body-file <file>] [--title <title>]
 // stdout：每步一行進度；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
-//   （checked-out-in-main、dirty-worktree、push、no-body、pr-create、ci-failed、checks-timeout、merge、not-merged、worktree-rm）。
+//   （checked-out-in-main、dirty-worktree、no-branch、push、no-body、pr-create、ci-failed、checks-timeout、merge、not-merged、worktree-rm）。
 // 合入之後的收尾問題（main 沒跟上、sync-skills 失敗）印 WARN，不影響 LANDED。
 // exit：0 已合入；4 STOP；2 用法錯誤；1 其他失敗。
 import { spawnSync } from 'node:child_process';
@@ -53,7 +54,15 @@ function worktrees(cwd) {
 
 /** head 為 branch 的 PR：還開著的優先；其次是 head 等於 tip 的已合入 PR（中斷後重跑）；都沒有回 null。 */
 export function pickPr(prs, tip) {
-  return prs.find(pr => pr.state === 'OPEN') ?? prs.find(pr => pr.state === 'MERGED' && pr.headRefOid === tip) ?? null;
+  return prs.find(pr => pr.state === 'OPEN') ?? pickMergedPr(prs, tip);
+}
+
+/**
+ * head 等於 tip 的已合入 PR，沒有回 null。本機分支已不在時只用它、tip 取 origin 上的分支：
+ * 不比對 tip 就取最新一個，分支名稱重用時會把舊 PR 誤報成 LANDED。
+ */
+export function pickMergedPr(prs, tip) {
+  return (tip && prs.find(pr => pr.state === 'MERGED' && pr.headRefOid === tip)) || null;
 }
 
 /** checks 的總結：fail（有失敗或取消）、pass（有檢查而且全部通過或略過）、pending（其他，含還沒登記）。 */
@@ -102,7 +111,8 @@ async function cleanup(main, branch, tree) {
   if (tree) {
     const cli = process.env.ORCA_CLI_COMMAND;
     try {
-      if (cli) await orca({ cli }, 'worktree', 'rm', '--worktree', `branch:${branch}`);
+      // `orca-ide worktree create --branch` 開的 worktree 用 branch: 選擇器找不到（selector_not_found），path: 才找得到（#49）。
+      if (cli) await orca({ cli }, 'worktree', 'rm', '--worktree', `path:${tree.path}`);
       else git(main, 'worktree', 'remove', tree.path);
     } catch (error) {
       throw new Stop(`worktree-rm ${error.message}`);
@@ -131,14 +141,23 @@ export async function land({ branch, keepBranch = false, bodyFile, title, cwd = 
   const tree = worktrees(main).find(item => item.branch === branch);
   if (tree?.path === main && !keepBranch) throw new Stop(`checked-out-in-main ${branch}`);
   if (tree && git(tree.path, 'status', '--porcelain')) throw new Stop(`dirty-worktree ${tree.path}`);
-  const tip = git(main, 'rev-parse', `refs/heads/${branch}`);
+  const tip = run('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], main).stdout.trim();
+  if (!tip && keepBranch) throw new Stop(`no-branch ${branch} --keep-branch 要本機分支`);
 
-  const push = run('git', ['push', '-u', 'origin', branch], main);
-  if (push.status !== 0) throw new Stop(`push ${push.stderr.trim().split('\n').pop()}`);
-  console.log(`PUSHED ${branch} ${tip}`);
+  if (tip) {
+    const push = run('git', ['push', '-u', 'origin', branch], main);
+    if (push.status !== 0) throw new Stop(`push ${push.stderr.trim().split('\n').pop()}`);
+    console.log(`PUSHED ${branch} ${tip}`);
+  }
 
   const prs = JSON.parse(gh(main, 'pr', 'list', '--head', branch, '--state', 'all', '--limit', '100', '--json', 'number,state,url,headRefOid,mergeCommit'));
-  let pr = pickPr(prs, tip);
+  let pr;
+  if (tip) pr = pickPr(prs, tip);
+  else {
+    const remote = git(main, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`).split('\n').find(line => line.endsWith(`\trefs/heads/${branch}`));
+    pr = pickMergedPr(prs, remote?.split('\t')[0]);
+    if (!pr) throw new Stop(`no-branch ${branch} 本機沒有這條分支，也沒有 head 等於 origin 分支 tip 的已合入 PR`);
+  }
   if (!pr) {
     if (!bodyFile) throw new Stop('no-body 新開 PR 要 --body-file');
     const subject = title ?? git(main, 'log', '-1', '--format=%s', tip);
