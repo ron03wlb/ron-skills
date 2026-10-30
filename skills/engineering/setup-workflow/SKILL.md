@@ -83,7 +83,7 @@ Canonical scripts in `<skill>/templates/`. A row's level is the lowest level tha
 | `report-push-scope.mjs` | L2 | the pre-push hook |
 | `concurrent-edits.mjs`, `inflight-overlap.mjs`, `integration-status.mjs` | L2 | named in the adapter's Worktrees and Pilot steps |
 | `adr-next.mjs` | L2, repos with `docs/adr/` | named in the repo's ADR rules |
-| `claude-hook-main-checkout.mjs` | L3, always | `PreToolUse` matcher `Edit\|Write\|Bash`: blocks writes (Bash: `sed -i`, `perl -i`, `>`/`>>`, `tee` targets) that would dirty the main checkout's `git status` (tracked files and new files that are not gitignored), which stop the pilot's Probe from merging |
+| `claude-hook-main-checkout.mjs` | L3, always | `PreToolUse` matcher `Edit\|Write\|Bash`: blocks writes (Bash: `sed -i`, `perl -i`, `>`/`>>`, `tee` targets; `$VAR`s expand from assignments in the same command or the environment, and unresolvable ones are skipped) that would dirty the main checkout's `git status` (tracked files and new files that are not gitignored) of the project's own repo (`$CLAUDE_PROJECT_DIR`), which stop the pilot's Probe from merging |
 | `orca-worktree-create.mjs`, `orca-session-send.mjs`, `orca-session-split.mjs` | L3, with Orca | the adapter's Dispatch and Handoff lines |
 | `pilot-handoff.mjs` | L3, with Orca | the adapter's Pilot Handoff line; pass `--held-check <command>` when the project has an "integration merge in progress" check |
 | `pilot-counterpart.mjs` | L3, when Issues name cross-repo counterparts (`對應單：<owner>/<repo>#<m>`) | the adapter's Pilot Close step (or the Pilot line it points to) |
