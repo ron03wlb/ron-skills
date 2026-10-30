@@ -208,3 +208,38 @@ test('requests.md 與 gates.md 只印還開著的列', t => {
     'GATE G5 #44 Node 22.19 沒有 node.test tracing channel',
   ]);
 });
+
+// review 第一輪：標記只認 `source` 欄之後的 `applied`／`declined`，請求內文提到這兩個字不算已處理。
+test('請求內文出現 applied 但沒有標記時仍是開著的', t => {
+  const { pilot, probe } = fixture(t);
+  writeFileSync(join(pilot, 'requests.md'), '2026-10-30T18:00:00+08:00  request: 撤回昨天 applied 的 preferences   source ad\n');
+  assert.deepEqual(lines(probe()), ['REQUEST 2026-10-30T18:00:00+08:00  request: 撤回昨天 applied 的 preferences   source ad']);
+});
+
+// checkpoint 的 started、stuck-after 寫壞時算不出是否卡住，不能默默印 RUNNING NaN 或退回 90 分鐘。
+test('started 或 stuck-after 解析不了時印 STUCK checkpoint', t => {
+  const { batch, probe } = fixture(t, { screens: { term_1: { status: 'running', tail: ['❯'] }, term_2: { status: 'running', tail: ['❯'] } } });
+  batch('1-2', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 1, started: '17:31' }, { n: 2, stuckAfter: '2h' }]);
+  const out = lines(probe());
+  assert.ok(out.includes('WORKER 1 STUCK checkpoint started 17:31'), out.join('\n'));
+  assert.ok(out.includes('WORKER 2 STUCK checkpoint stuck-after 2h'), out.join('\n'));
+});
+
+// 沒有 ORCA_CLI_COMMAND 時 Bare guard、主 checkout、gate 等與 Orca 無關的檢查照跑，只有 running 成員讀不到。
+test('沒有 ORCA_CLI_COMMAND 時其他檢查照跑，running 成員印 STUCK no-orca', t => {
+  const { repo, git, batch } = fixture(t);
+  git('config', 'core.bare', 'true');
+  batch('23', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 23 }]);
+  const result = spawnSync('node', [script, repo], { encoding: 'utf8', env: Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'ORCA_CLI_COMMAND')) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), [`UNBARE ${repo}`, 'WORKER 23 STUCK no-orca']);
+});
+
+// `moved` 的成員已經移到別的 batch（如 batch-21-27 的 #27），不再擋這個 batch；Claude Code 的結果 bullet 也可能是 `⏺`。
+test('moved 成員不擋 STAGEABLE，⏺ 開頭的結果行也讀得到', t => {
+  const { batch, probe } = fixture(t, { screens: { term_21: { status: 'running', tail: [`⏺ DONE 21 ${SHA}`] } } });
+  batch('21-27', 'dispatched 2026-10-30T15:06:42+08:00', [{ n: 21 }, { n: 27, state: 'moved', candidate: '→ batch-27' }]);
+  const out = lines(probe());
+  assert.ok(out.includes(`WORKER 21 DONE ${SHA}`), out.join('\n'));
+  assert.ok(out.includes('STAGEABLE 21-27'), out.join('\n'));
+});
