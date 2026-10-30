@@ -23,7 +23,7 @@
     },
     "scripts/pilot-counterpart.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-counterpart.mjs",
-      "commit": "ca00ccdc2b501501b0fcf25f893626c8c7d25dc8",
+      "commit": "c8797598f3dd08fb609cb9d6918ca060a15d23f9",
       "sha256": "55f5cc9366a7d32bdeb1757409938935c649de08e593f3968fe3254e5e66858c"
     }
   }
