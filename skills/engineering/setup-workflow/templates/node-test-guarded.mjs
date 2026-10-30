@@ -2,7 +2,8 @@
 // 包住 `node --test`，偵測並補跑靜默遺失的測試（曾發生：多檔合併執行時一個長跑測試檔的最後 14 個測試
 // 沒有出現在輸出、總數少 13，卻 exit 0；單獨重跑 91 個全過）。Node v24.21 重現：`--test-force-exit` 加上多檔並行時，
 // 父行程會在長跑檔的子行程跑完前結束，該檔尾段結果不見、整體仍 exit 0；不加 force-exit 或只跑單檔幾乎不發生，
-// 父行程多掛 reporter（含寫檔）時幾乎每次發生，所以本 wrapper 不加 reporter，只轉印預設 spec 輸出。
+// 父行程多掛 reporter（含寫檔）時幾乎每次發生，所以本 wrapper 不多掛 reporter，只轉印 spec 輸出。
+// 呼叫端沒給 `--test-reporter` 時明確指定單一的 spec：Node 22 在 stdout 不是 TTY（這裡是 pipe）時預設 tap，Node 23 起才一律 spec。
 // force-exit 是測試 guardrail 的規範，不拿掉，改成比對後單獨重跑遺失的檔：
 //   子行程端由 lib/node-test-count-preload.mjs 記每檔實際跑完的測試名稱；父行程的 `ℹ tests <n>` 等於總數即通過，
 //   不等時以 spec 輸出的測試名稱逐檔比對，找出有測試沒出現在輸出的檔。
@@ -86,6 +87,7 @@ async function runOnce(options, files) {
 
 export async function main(args) {
   const options = args.filter(arg => arg.startsWith('-'));
+  if (!options.some(arg => arg.startsWith('--test-reporter='))) options.unshift('--test-reporter=spec');
   const files = args.filter(arg => !arg.startsWith('-'));
   const first = await runOnce(options, files);
   if (first.code !== 0) return first.code;
