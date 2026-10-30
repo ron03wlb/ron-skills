@@ -223,7 +223,7 @@ test('本機分支已被刪、PR 已合入，重跑：接著刪 origin 分支、
   // 人手動移除：Orca 刪掉 worktree 與本機分支，並把主 checkout 設成 bare，再自己還原。
   const orca = join(temp, 'bin/orca');
   writeFileSync(orca, readFileSync(orca, 'utf8').replace('if (true)', 'if (false)'));
-  assert.equal(spawnSync(orca, ['worktree', 'rm', '--worktree', `path:${wt}`]).status, 0);
+  assert.equal(spawnSync(orca, ['worktree', 'rm', '--worktree', `path:${wt}`], { env: { ...env, ...IDENTITY } }).status, 0);
   sh(main, 'config', 'core.bare', 'false');
   assert.equal(sh(main, 'branch', '--list', 'feature'), '');
   assert.equal(remoteHas('feature'), true);
@@ -320,13 +320,12 @@ test('pickPr：開著的優先；已合入只在 head 等於 tip 時沿用', () 
   assert.equal(pickPr([merged], 'new'), null);
 });
 
-test('pickMergedPr：只接已合入的 PR；origin 還有分支時 head 要等於它的 tip，否則取最新的', () => {
+test('pickMergedPr：只接 head 等於 tip 的已合入 PR；沒有 tip（origin 也沒有分支）回 null，不取最新的', () => {
   const newer = { state: 'MERGED', number: 3, headRefOid: 'b' };
   const older = { state: 'MERGED', number: 1, headRefOid: 'a' };
   assert.equal(pickMergedPr([{ state: 'OPEN', number: 4, headRefOid: 'a' }, newer, older], 'a'), older);
-  assert.equal(pickMergedPr([newer, older], undefined), newer);
+  assert.equal(pickMergedPr([newer, older], undefined), null);
   assert.equal(pickMergedPr([newer], 'c'), null);
-  assert.equal(pickMergedPr([{ state: 'OPEN', headRefOid: 'a' }], undefined), null);
 });
 
 test('checksVerdict：空的是 pending；有失敗或取消是 fail；全部通過或略過是 pass', () => {

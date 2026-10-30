@@ -54,12 +54,15 @@ function worktrees(cwd) {
 
 /** head 為 branch 的 PR：還開著的優先；其次是 head 等於 tip 的已合入 PR（中斷後重跑）；都沒有回 null。 */
 export function pickPr(prs, tip) {
-  return prs.find(pr => pr.state === 'OPEN') ?? prs.find(pr => pr.state === 'MERGED' && pr.headRefOid === tip) ?? null;
+  return prs.find(pr => pr.state === 'OPEN') ?? pickMergedPr(prs, tip);
 }
 
-/** 本機分支已不在時只接已合入的 PR：origin 還有這條分支就要 head 等於它的 tip，否則取最新的一個（gh 由新到舊列）。 */
-export function pickMergedPr(prs, remoteTip) {
-  return prs.find(pr => pr.state === 'MERGED' && (!remoteTip || pr.headRefOid === remoteTip)) ?? null;
+/**
+ * head 等於 tip 的已合入 PR，沒有回 null。本機分支已不在時只用它、tip 取 origin 上的分支：
+ * 不比對 tip 就取最新一個，分支名稱重用時會把舊 PR 誤報成 LANDED。
+ */
+export function pickMergedPr(prs, tip) {
+  return (tip && prs.find(pr => pr.state === 'MERGED' && pr.headRefOid === tip)) || null;
 }
 
 /** checks 的總結：fail（有失敗或取消）、pass（有檢查而且全部通過或略過）、pending（其他，含還沒登記）。 */
@@ -139,7 +142,7 @@ export async function land({ branch, keepBranch = false, bodyFile, title, cwd = 
   if (tree?.path === main && !keepBranch) throw new Stop(`checked-out-in-main ${branch}`);
   if (tree && git(tree.path, 'status', '--porcelain')) throw new Stop(`dirty-worktree ${tree.path}`);
   const tip = run('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], main).stdout.trim();
-  if (!tip && keepBranch) throw new Stop(`no-branch ${branch}`);
+  if (!tip && keepBranch) throw new Stop(`no-branch ${branch} --keep-branch 要本機分支`);
 
   if (tip) {
     const push = run('git', ['push', '-u', 'origin', branch], main);
@@ -153,7 +156,7 @@ export async function land({ branch, keepBranch = false, bodyFile, title, cwd = 
   else {
     const remote = git(main, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`).split('\n').find(line => line.endsWith(`\trefs/heads/${branch}`));
     pr = pickMergedPr(prs, remote?.split('\t')[0]);
-    if (!pr) throw new Stop(`no-branch ${branch} 本機沒有這條分支，也找不到已合入的 PR`);
+    if (!pr) throw new Stop(`no-branch ${branch} 本機沒有這條分支，也沒有 head 等於 origin 分支 tip 的已合入 PR`);
   }
   if (!pr) {
     if (!bodyFile) throw new Stop('no-body 新開 PR 要 --body-file');
