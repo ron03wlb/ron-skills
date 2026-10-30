@@ -294,6 +294,37 @@ test('--keep-branch：保留分支並跟上 origin/main；下一批有新 commit
   assert.equal(existsSync(wt), true);
 });
 
+// 真實發生過的錯（PR #50）：pilot/integration 沒包含 origin/main 的 #48（CI 改 Node 24），push 事件跑舊 workflow 紅燈。
+test('--keep-branch：分支沒包含 origin/main 時 STOP behind-main，不 push、不開 PR', t => {
+  const { main, wt, body, sh, land, calls, remoteHas, last, temp } = fixture(t);
+  sh(main, 'worktree', 'remove', wt);
+  sh(main, 'branch', '-m', 'feature', 'integration');
+  const other = join(temp, 'other');
+  sh(temp, 'clone', '-q', join(temp, 'origin.git'), other);
+  writeFileSync(join(other, 'ci.txt'), 'node 24\n');
+  sh(other, 'add', 'ci.txt');
+  sh(other, 'commit', '-q', '-m', 'ci: node 24');
+  sh(other, 'push', '-q', 'origin', 'main');
+
+  const result = land(['integration', '--keep-branch', '--body-file', body], main);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(last(result), /^STOP behind-main integration/);
+  assert.equal(remoteHas('integration'), false);
+  assert.doesNotMatch(calls(), /^gh pr create /m);
+});
+
+// 真實發生過的錯（retro 2026-10-30）：開分支後主 checkout 被別的 session 切走，commit 落在別條分支，推出去的分支停在 main。
+test('分支沒有 origin/main 以外的 commit：STOP no-commits，不 push、不開 PR', t => {
+  const { main, body, sh, land, calls, remoteHas, last } = fixture(t);
+  sh(main, 'branch', 'empty', 'origin/main');
+
+  const result = land(['empty', '--body-file', body], main);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(last(result), /^STOP no-commits empty/);
+  assert.equal(remoteHas('empty'), false);
+  assert.doesNotMatch(calls(), /^gh pr create /m);
+});
+
 test('沒有 PR 也沒給 --body-file：STOP no-body，不開 PR', t => {
   const { land, calls, last } = fixture(t);
 
