@@ -22,7 +22,7 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 升級 Matt：`git -C ~/code/skills pull`，再跑 `bin/sync-skills`。升級 pstack：`git -C ~/code/pstack pull`，`--check` 通過並試跑後，更新 `pstack-skills.txt` 的 `# pin:`。出現 `OVERLAY_FAILED` 代表上游改到補丁位置，連結保持舊版，重做該補丁後再同步。
 
 - `matt-skills.txt`：要連結的 Matt skill 清單（相對 `skills/`）；`-<path>` 表示刻意不連結。`--check` 列出的 `NEW` 行，二選一加入清單。
-- `pstack-skills.txt`：pstack 白名單，同樣格式；`# pin:` 記錄驗證過的上游 SHA，HEAD 不同時只警告。不連結的理由只有三種：與 Matt 或本 repo 的流程重疊（`tdd`、`teach`、`reflect`／`recall`／`correct` 已併入 `retro` 與 `issue-run`、`swarm` 由專案的分區掃描涵蓋）、與 repo 規範衝突（`no-comments` 的刪註解策略、`technical-writing` 的英文句式規則），或 Cursor 專屬。pstack 的方法沒有一個需要兩家以上模型，Claude 加 Codex 即可；`arena` 以 overlay 接本機 worktree 與 Codex judge，`poteto-mode` 的 Eval playbook 經由它執行。
+- `pstack-skills.txt`：pstack 白名單，同樣格式；`# pin:` 記錄驗證過的上游 SHA，HEAD 不同時只警告。不連結的理由只有三種：與 Matt 或本 repo 的流程重疊（`tdd`、`teach`、`reflect`／`recall`／`correct` 已併入 `retro` 與 `issue-run`、`swarm` 由專案的分區掃描涵蓋）、與 repo 規範衝突（`no-comments` 的刪註解策略、`technical-writing` 的英文句式規則），或 Cursor 專屬。pstack 的方法沒有一個需要兩家以上模型，Claude 加 Codex 即可；`arena` 以 overlay 接本機 worktree 與 Codex judge，`poteto-mode` 的 Eval playbook 經由它執行。`create-formal-verification-skill`／`maintain-formal-verification-skill` 用於金流與並發屬性的形式驗證（TLA+ 等），`statechart` 是前者讀 TLA+ 結果的依賴，一併連結。
 - 本機 pre-commit（`.githooks/pre-commit`，clone 後執行一次 `ln -s ../../.githooks/pre-commit .git/hooks/pre-commit` 啟用）：跑與 CI 相同的 `--check`、連結檢查與 `tests/`。
 - CI（`.github/workflows/checks.yml`）：每次 push 與每週一，對 Matt 上游最新 main 跑 `--check`，並以 `node scripts/check-links.mjs` 檢查 Markdown 連結；上游改到補丁位置時會先在這裡變紅。
 - `overlays/<name>.patch`：對 Matt 或 pstack skill 的最小改動，同步時套在 `~/.local/share/ron-skills/overlay/<name>` 的副本上，上游 checkout 本身不變。
