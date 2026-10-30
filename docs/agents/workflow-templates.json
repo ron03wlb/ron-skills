@@ -8,8 +8,8 @@
     },
     "scripts/claude-hook-main-checkout.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-main-checkout.mjs",
-      "commit": "bdbaec3d2375507070cc419c6bc1c9619fc61835",
-      "sha256": "49b8cbb45b01052f5cfb46398e840717def1f6e8aaf61b6b1ae89480665f356f"
+      "commit": "4286a84f9e91ad85267d768c534fcaa2260312ad",
+      "sha256": "1d636a6f49a1596adbec9b3c4a0ec7da501afa2a10f67bfbda238fcc24b529f8"
     },
     "scripts/orca-session-send.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-send.mjs",
