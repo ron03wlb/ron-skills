@@ -59,22 +59,36 @@ async function listTerminals(cli, main) {
   return (await orca({ cli, signal: AbortSignal.timeout(ORCA_STEP_MS) }, 'terminal', 'list', '--worktree', `path:${main}`)).terminals;
 }
 
+/** 關掉分頁；失敗時傳回附在 STOP 原因的說明，成功傳回空字串。 */
+async function closeTerminal(cli, handle) {
+  try {
+    await orca({ cli, signal: AbortSignal.timeout(ORCA_STEP_MS) }, 'terminal', 'close', '--terminal', handle);
+    return '';
+  } catch (error) {
+    return `（關閉 ${handle} 失敗：${error.message}，請手動關掉）`;
+  }
+}
+
 /**
  * create 失敗（含逾時被殺）時，Orca 可能已開好分頁卻沒回 handle：關掉快照之後才出現、標題是 TITLE 的分頁。
  * 標題相同的既有分頁（例如前次 handoff 開出的現任 coordinator）不碰；新出現但標題不同的（Claude 啟動後會改標題，也可能是人剛開的）
- * 不關，傳回附在 STOP 原因的說明。
+ * 不關，傳回附在 STOP 原因的說明。用標題找有兩個漏洞：分頁已被 Claude 改名，或 create 被殺時 Orca 還沒建好、list 看不到；
+ * 所以 create 是被中止而這裡沒關掉任何分頁時，一律提醒人去確認。
  */
-async function closeOrphans(cli, main, before) {
-  let note = '';
+async function closeOrphans(cli, main, before, aborted) {
+  const remind = `（請確認有沒有留下標題 ${TITLE} 或剛由 create 開出的分頁）`;
+  let note = '', closed = 0;
   try {
     for (const terminal of (await listTerminals(cli, main)).filter(terminal => !before.has(terminal.handle))) {
       if (terminal.title !== TITLE) { note += `（新分頁 ${terminal.handle} 標題不符，未關閉，請確認後手動關掉）`; continue; }
-      try { await orca({ cli, signal: AbortSignal.timeout(ORCA_STEP_MS) }, 'terminal', 'close', '--terminal', terminal.handle); } catch (error) { note += `（關閉 ${terminal.handle} 失敗：${error.message}，請手動關掉）`; }
+      const failed = await closeTerminal(cli, terminal.handle);
+      note += failed;
+      if (!failed) closed++;
     }
   } catch (error) {
-    note += `（terminal list 失敗：${error.message}，請確認有沒有留下標題 ${TITLE} 的分頁）`;
+    return `（terminal list 失敗：${error.message}）${remind}`;
   }
-  return note;
+  return aborted && !closed ? note + remind : note;
 }
 
 /** `signal` 中止時（reason 為 `timeout` 或 `signal <名稱>`）進行中的步驟丟錯，STOP 原因改用 reason。 */
@@ -90,7 +104,7 @@ async function handoff(cli, main, { session, pid, reason }, signal) {
   const stop = async cause => {
     if (signal.aborted) cause = signal.reason;
     if (handle) {
-      try { await orca({ cli, signal: AbortSignal.timeout(ORCA_STEP_MS) }, 'terminal', 'close', '--terminal', handle); } catch (error) { cause += `（關閉 ${handle} 失敗：${error.message}，請手動關掉）`; }
+      cause += await closeTerminal(cli, handle);
     }
     if (!existsSync(file) || readFileSync(file, 'utf8') === line) writeFileSync(file, original);
     return `STOP ${cause}`;
@@ -104,7 +118,7 @@ async function handoff(cli, main, { session, pid, reason }, signal) {
   try {
     handle = (await orca({ cli, signal: AbortSignal.timeout(CREATE_MS) }, 'terminal', 'create', '--worktree', `path:${main}`, '--title', TITLE, '--command', 'claude')).terminal.handle;
   } catch (error) {
-    return stop(`create ${error.message}${await closeOrphans(cli, main, before)}`);
+    return stop(`create ${error.message}${await closeOrphans(cli, main, before, error.name === 'AbortError')}`);
   }
   const sent = await sendToSession(ctx, handle, LOOP_COMMAND);
   if (sent.stop) return stop(sent.stop);

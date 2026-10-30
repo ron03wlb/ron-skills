@@ -14,8 +14,9 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !ke
 
 // 主 checkout 的 coordinator 檔（pid 42），以及記錄呼叫的假 Orca CLI（回應由 helpers/fake-orca.mjs 的真實樣本長出）。
 // `takeover` 為真時，假 Orca 收到送出就像新 session 跑了 /issue-pilot 的 Entry：把自己的 `pid ` 行寫進 coordinator 檔。
-// `waitHangs` 為真時 `terminal wait` 永遠不回；`createDelayMs` 讓 `terminal create` 晚回（分頁已開、handle 還沒回來）。
-function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true, waitHangs = false, createDelayMs = 0 } = {}) {
+// `waitHangs` 為真時 `terminal wait` 永遠不回；`createDelayMs` 讓 `terminal create` 晚回（分頁已開、handle 還沒回來）；
+// `orphanLate` 為真時 `terminal list` 看不到 create 開的分頁（create 被殺時 Orca 還沒建好）。
+function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true, waitHangs = false, createDelayMs = 0, orphanLate = false } = {}) {
   const temp = mkdtempSync(join(tmpdir(), 'pilot-handoff-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
@@ -46,7 +47,7 @@ else if (b === 'send') {
 else if (b === 'close') reply('close', { close: { handle: arg('--terminal') } });
 else if (b === 'list') {
   // 主 checkout 原有現任 coordinator 的分頁（標題同名，還沒被 Claude 改名）；create 開出分頁後，另有一個人剛開、標題不同的分頁。
-  const opened = ${!createError} && /^terminal create /m.test(fs.readFileSync(${JSON.stringify(log)}, 'utf8'));
+  const opened = ${!createError && !orphanLate} && /^terminal create /m.test(fs.readFileSync(${JSON.stringify(log)}, 'utf8'));
   const terminals = [{ handle: 'term_current', title: 'issue-pilot coordinator' }, ...(opened ? [{ handle: 'term_pilot', title: 'issue-pilot coordinator' }, { handle: 'term_other', title: 'ron@Ron-NB: ~/code/ron-skills' }] : [])];
   reply('list', { terminals, totalCount: terminals.length });
 }
@@ -180,6 +181,16 @@ test('terminal create 超過上限：STOP create、還原 coordinator 檔、關�
   assert.ok(calls.startsWith(`terminal list --worktree path:${repo} --json\nterminal create `), calls);
   assert.match(calls, /^terminal close --terminal term_pilot --json$/m);
   assert.doesNotMatch(calls, /^terminal close --terminal term_(current|other) /m);
+});
+
+// 審查 P2：create 被殺時 Orca 可能還在建分頁，list 看不到；什麼都沒關時 STOP 原因仍要提醒人去確認，分頁才不會無聲地留著。
+test('terminal create 超過上限、list 還看不到分頁：STOP create 附上請人確認的提醒', t => {
+  const { coordinator, original, log, handoff } = fixture(t, { createDelayMs: 2000, orphanLate: true });
+  const result = handoff('42', { PILOT_HANDOFF_CREATE_MS: '300' });
+  assert.equal(result.status, 4, result.stderr);
+  assert.match(result.stdout.trim().split('\n').pop(), /^STOP create .*請確認有沒有留下標題 issue-pilot coordinator 或剛由 create 開出的分頁/);
+  assert.equal(readFileSync(coordinator, 'utf8'), original);
+  assert.doesNotMatch(readFileSync(log, 'utf8'), /^terminal close /m);
 });
 
 for (const name of ['SIGTERM', 'SIGINT']) {
