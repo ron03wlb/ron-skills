@@ -7,7 +7,7 @@
 //   → 沒有 `--to`：記下主 checkout 現有的分頁 → orca-session-split 在主 checkout 新開分頁 `issue-pilot coordinator` 跑 claude 並送出 `/loop /issue-pilot`
 //     （create 失敗時依快照與標題找回已開的分頁關掉）；有 `--to`：orca-session-send 把 `/loop /issue-pilot` 送給既有 session
 //   → 等新 session 把 `pid ` 行寫進 coordinator 檔，才算交接完成，這時在 `sessions.md` 附加 handoff 行、在 stderr 提醒停掉 watcher。
-// 任一步失敗就還原 coordinator 檔、關掉這次開的分頁（`--to` 的既有 session 不關）並 STOP，舊 session 照常繼續當 coordinator（分頁留著，`/loop` 之後仍可能接手，變成兩個 coordinator）。
+// 任一步失敗就還原 coordinator 檔、關掉這次開的分頁（`--to` 的既有 session 不關）並 STOP，舊 session 照常繼續當 coordinator（新分頁若留著，`/loop` 之後仍可能接手，變成兩個 coordinator）。
 // 沒有 coordinator 檔也是 STOP not-coordinator。
 // 總時間有上限：Bash 工具最多等 600 秒，被殺就來不及還原，所以預算到了（STOP timeout）或收到 SIGTERM、SIGINT（STOP signal <名稱>）都中止進行中的步驟（terminal create 例外，見 BUDGET_MS）、走同一條還原路徑，
 // 最壞在 540 秒內結束。因此全程用 async：同步等待會擋住訊號處理。
@@ -101,15 +101,16 @@ async function closeOrphans(cli, main, before, aborted) {
 
 /**
  * adapter 指定的「整合分支合併進行中」檢查（可選的 hook）：在主 checkout 以 shell 執行。
- * exit 0 是合併中，傳回 `held-merge <stdout>`；1 是沒有，傳回空字串；其他 exit code 無法判斷，傳回 `held-check exit <code>`。
+ * exit 0 是合併中，傳回 `held-merge <stdout>`；1 是沒有，傳回空字串；其他 exit code 無法判斷，傳回 `held-check exit <code>`（被訊號殺掉時是 `held-check signal <名稱>`）。
  */
 async function heldMerge(command, main, signal) {
   const child = spawn(command, { cwd: main, shell: true, stdio: ['ignore', 'pipe', 'inherit'], signal });
   let stdout = '';
   child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
-  const status = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
+  const [status, killed] = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', (...end) => resolve(end)); });
   if (status === 0) return `held-merge ${stdout.trim().split('\n').join(' / ')}`.trim();
-  return status === 1 ? '' : `held-check exit ${status}`;
+  if (status === 1) return '';
+  return status === null ? `held-check signal ${killed}` : `held-check exit ${status}`;
 }
 
 /**
