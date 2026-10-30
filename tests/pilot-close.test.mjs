@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { orcaReplySource } from './helpers/fake-orca.mjs';
+import { mergeSample, orcaReplySource } from './helpers/fake-orca.mjs';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
+
+const samplesDir = new URL('./helpers/fixtures/gh/', import.meta.url).pathname;
+const GH_SAMPLES = Object.fromEntries(['issue-view', 'issue', 'issue-parent', 'issue-parent-404', 'sub-issues']
+  .map(name => [name, JSON.parse(readFileSync(join(samplesDir, `${name}.json`), 'utf8'))]));
 
 const script = new URL('../scripts/pilot-close.mjs', import.meta.url).pathname;
 // pre-commit hook 匯出 GIT_DIR 等變數；繼承下去，腳本的 git 會指回本 repo 而不是 fixture。
@@ -23,8 +27,10 @@ const REPO = 'ron03wlb/ron-skills';
 //   pushed     issue 分支也 push 到 origin；
 //   unmerged   合入之後 issue 分支又多一個 commit（branch -d 會拒絕）；
 //   body       Issue #76 的本文；
-//   siblings   母單 #35 其他子單 { 號碼: 'OPEN' | 'CLOSED' }。
-function fixture(t, { pushed = false, unmerged = false, body = '', siblings = { 70: 'CLOSED' } } = {}) {
+//   siblings   母單 #35 其他子單 { 號碼: 'OPEN' | 'CLOSED' }；
+//   orcaDeletesBranch  Orca rm 一起刪掉已合入的本機分支（真實行為；false 時 branch 步驟由腳本 branch -d）。
+// 假 gh 的輸出從 helpers/fixtures/gh 的真實樣本長出來（同 land.test.mjs）；Orca rm 沒有樣本，比照 land.test.mjs 回空的 result，腳本只看 ok。
+function fixture(t, { pushed = false, unmerged = false, body = '', siblings = { 70: 'CLOSED' }, orcaDeletesBranch = true } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-close-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const origin = join(temp, 'origin.git');
@@ -77,30 +83,34 @@ fs.appendFileSync(${JSON.stringify(log)}, require('path').basename(process.argv[
   mkdirSync(join(temp, 'bin'));
   writeFileSync(gh, `#!/usr/bin/env node
 ${record}
+const GH_SAMPLES = ${JSON.stringify(GH_SAMPLES)};
+const mergeSample = ${mergeSample.toString()};
+const out = (name, patch) => console.log(JSON.stringify(mergeSample(GH_SAMPLES[name], patch, name)));
 const state = JSON.parse(fs.readFileSync(${JSON.stringify(ghState)}, 'utf8')); const save = () => fs.writeFileSync(${JSON.stringify(ghState)}, JSON.stringify(state));
 const key = n => (arg('--repo') === ${JSON.stringify(REPO)} ? n : arg('--repo') + '#' + n);
 const [a, b, n] = args;
 if (a === 'issue' && b === 'view') {
   const issue = state.issues[key(n)];
-  const out = {}; for (const f of arg('--json').split(',')) out[f] = f === 'comments' ? issue.comments.map(body => ({ body })) : issue[f];
-  console.log(JSON.stringify(out));
+  const full = { state: issue.state, body: issue.body, comments: issue.comments.map(body => ({ body })) };
+  out('issue-view', Object.fromEntries(arg('--json').split(',').map(f => [f, full[f]])));
 } else if (a === 'issue' && b === 'comment') {
   state.issues[key(n)].comments.push(args.includes('--body-file') ? fs.readFileSync(arg('--body-file'), 'utf8') : arg('--body')); save();
 } else if (a === 'issue' && b === 'close') {
   Object.assign(state.issues[key(n)], { state: 'CLOSED', reason: 'completed' }); save();
 } else if (a === 'api') {
-  const [, owner, name, , m, sub] = b.split('/');
+  const [, owner, name, , m, sub] = b.replace(/\\?.*$/, '').split('/');
   if (owner + '/' + name !== ${JSON.stringify(REPO)}) { console.error('fake gh: repo ' + b); process.exit(1); }
   const children = Object.entries(state.issues).filter(([, i]) => i.parent === Number(m));
   if (sub === 'parent') {
-    if (!state.issues[m].parent) { console.error('gh: Not Found (HTTP 404)'); process.exit(1); }
-    console.log(JSON.stringify({ number: state.issues[m].parent }));
+    const parent = state.issues[m].parent;
+    if (!parent) { const nf = GH_SAMPLES['issue-parent-404']; console.log(JSON.stringify(nf.stdout)); console.error(nf.stderr); process.exit(nf.exit); }
+    out('issue-parent', { number: parent, state: state.issues[parent].state.toLowerCase() });
   } else if (sub === 'sub_issues') {
-    console.log(JSON.stringify(children.map(([c, i]) => ({ number: Number(c), state_reason: i.state === 'CLOSED' ? i.reason : null }))));
+    out('sub-issues', children.map(([c, i]) => ({ number: Number(c), state: i.state.toLowerCase(), state_reason: i.state === 'CLOSED' ? i.reason : null })));
   } else {
-    const issue = state.issues[m];
-    console.log(JSON.stringify({ number: Number(m), state: issue.state.toLowerCase(),
-      sub_issues_summary: { total: children.length, completed: children.filter(([, i]) => i.state === 'CLOSED').length } }));
+    const closed = children.filter(([, i]) => i.state === 'CLOSED').length;
+    out('issue', { number: Number(m), state: state.issues[m].state.toLowerCase(),
+      sub_issues_summary: { total: children.length, completed: closed, percent_completed: children.length ? Math.round(100 * closed / children.length) : 0 } });
   }
 } else { console.error('fake gh: unknown ' + args.join(' ')); process.exit(1); }
 `);
@@ -115,14 +125,19 @@ console.error('[1031/064000.123:ERROR:registration_protocol_win.cc(108)] CreateF
 console.error('orca: warn sample');
 const open = JSON.parse(fs.readFileSync(${JSON.stringify(terminals)}, 'utf8'));
 const [a, b] = args;
-if (a === 'terminal' && b === 'list') reply('list', { terminals: open.map(handle => ({ handle, branch: arg('--worktree').replace(/^branch:/, '') })), totalCount: open.length });
+// Orca 開的 worktree 只認 path: 選擇器（#49）。
+const selector = args.includes('--worktree') ? arg('--worktree') : undefined;
+const block = selector && execFileSync('git', ['-C', ${JSON.stringify(repo)}, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' })
+  .split(/\\n\\n+/).find(block => selector.startsWith('path:') && block.split('\\n').includes('worktree ' + selector.slice(5)));
+if (selector && !block) fail('selector_not_found');
+else if (a === 'terminal' && b === 'list') reply('list', { terminals: open.map(handle => ({ handle, worktreePath: selector.slice(5) })), totalCount: open.length });
 else if (a === 'terminal' && b === 'close') { fs.writeFileSync(${JSON.stringify(terminals)}, JSON.stringify(open.filter(h => h !== arg('--terminal')))); reply('close', { close: { handle: arg('--terminal') } }); }
 else if (a === 'worktree' && b === 'rm') {
-  const branch = arg('--worktree').replace(/^branch:/, '');
-  const list = execFileSync('git', ['-C', ${JSON.stringify(repo)}, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' });
-  const path = list.split(/\\n\\n+/).find(block => block.includes('branch refs/heads/' + branch))?.match(/^worktree (.*)$/m)[1];
-  execFileSync('git', ['-C', ${JSON.stringify(repo)}, 'worktree', 'remove', '--force', path]);
-  console.log(JSON.stringify({ ok: true, result: { removed: true } }));
+  // 照 \`orca worktree rm --help\`：一起刪掉能證明已合入的本機分支；照 WSL 實況把主 checkout 設成 bare（#20）。
+  execFileSync('git', ['-C', ${JSON.stringify(repo)}, 'worktree', 'remove', '--force', selector.slice(5)]);
+  if (${orcaDeletesBranch}) try { execFileSync('git', ['-C', ${JSON.stringify(repo)}, 'branch', '-d', block.match(/^branch refs\\/heads\\/(.+)$/m)[1]], { stdio: 'ignore' }); } catch {}
+  execFileSync('git', ['-C', ${JSON.stringify(repo)}, 'config', 'core.bare', 'true']);
+  console.log(JSON.stringify({ ok: true, result: {} }));
 }
 else fail('unknown');
 `);
@@ -132,12 +147,12 @@ else fail('unknown');
     cwd: repo, encoding: 'utf8', input: 'leftover-line\n', timeout: 60000,
     env: { ...env, PATH: `${join(temp, 'bin')}:${env.PATH}`, ORCA_CLI_COMMAND: cli },
   });
-  const gh_ = () => JSON.parse(readFileSync(ghState, 'utf8')).issues;
+  const ghIssues = () => JSON.parse(readFileSync(ghState, 'utf8')).issues;
   const checkpoint = () => readFileSync(join(repo, '.scratch/pilot/batch-76.md'), 'utf8');
   const calls = () => readFileSync(log, 'utf8');
   const branchExists = () => spawnSync('git', ['-C', repo, 'rev-parse', '--verify', '-q', `refs/heads/${BRANCH}`], { env }).status === 0;
   const remoteHas = () => spawnSync('git', ['-C', origin, 'rev-parse', '--verify', '-q', `refs/heads/${BRANCH}`], { env }).status === 0;
-  return { temp, origin, repo, worktree, mergeSha, close, gh: gh_, checkpoint, calls, branchExists, remoteHas, terminals: () => JSON.parse(readFileSync(terminals, 'utf8')) };
+  return { temp, origin, repo, worktree, mergeSha, close, issues: ghIssues, checkpoint, calls, branchExists, remoteHas, terminals: () => JSON.parse(readFileSync(terminals, 'utf8')) };
 }
 
 const lines = result => result.stdout.trim().split('\n');
@@ -147,8 +162,13 @@ test('照 Close 依序做完每一步，母單子單全部結束就留言關閉�
   const f = fixture(t, { pushed: true });
   const result = f.close();
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['SKIP 76 main', ...STEPS.map(step => `${step === 'counterpart' ? 'SKIP' : 'DONE'} 76 ${step}`), 'CLOSED 76']);
-  const issues = f.gh();
+  // Orca rm 把主 checkout 設成 bare 由 Bare guard 還原，也一起刪掉已合入的本機分支，所以 branch 是 SKIP。
+  assert.deepEqual(lines(result), ['SKIP 76 main', 'DONE 76 evidence', 'SKIP 76 counterpart', 'DONE 76 close', 'DONE 76 terminal',
+    `UNBARE ${f.repo}`, 'DONE 76 worktree', 'SKIP 76 branch', 'DONE 76 remote', 'DONE 76 parent', 'CLOSED 76']);
+  assert.equal(git(f.repo, 'rev-parse', '--is-bare-repository'), 'false');
+  assert.match(f.calls(), /--worktree path:/);
+  assert.doesNotMatch(f.calls(), /--worktree branch:/);
+  const issues = f.issues();
   assert.equal(issues[76].state, 'CLOSED');
   assert.match(issues[76].comments[0], new RegExp(`https://github.com/${REPO}/pull/100`));
   assert.ok(issues[76].comments[0].includes(f.mergeSha));
@@ -167,8 +187,8 @@ test('照 Close 依序做完每一步，母單子單全部結束就留言關閉�
   const again = f.close();
   assert.equal(again.status, 0, again.stdout + again.stderr);
   assert.deepEqual(lines(again), ['SKIP 76 main', ...STEPS.map(step => `SKIP 76 ${step}`), 'CLOSED 76']);
-  assert.equal(f.gh()[76].comments.length, 1);
-  assert.equal(f.gh()[35].comments.length, 1);
+  assert.equal(f.issues()[76].comments.length, 1);
+  assert.equal(f.issues()[35].comments.length, 1);
 });
 
 test('分支沒合進 main：branch -d 被拒時 STOP，分支還在，current 不改', t => {
@@ -183,9 +203,12 @@ test('分支沒合進 main：branch -d 被拒時 STOP，分支還在，current �
 });
 
 test('遠端沒有分支（ls-remote 回 2）印 SKIP；ls-remote 回其他 exit code 印 STOP', t => {
-  const f = fixture(t);
+  const f = fixture(t, { orcaDeletesBranch: false });
   const result = f.close();
   assert.equal(result.status, 0, result.stdout + result.stderr);
+  // Orca rm 沒刪分支時由腳本 branch -d。
+  assert.ok(lines(result).includes('DONE 76 branch'));
+  assert.equal(f.branchExists(), false);
   assert.ok(lines(result).includes('SKIP 76 remote'));
 
   const g = fixture(t, { siblings: {} });
@@ -219,7 +242,7 @@ test('主 checkout 的 main 落後 origin/main 就先快轉；merge SHA 不在 o
   assert.equal(result2.status, 4, result2.stdout + result2.stderr);
   assert.deepEqual(lines(result2), [lines(result2)[0]]);
   assert.match(lines(result2)[0], /^STOP 76 main /);
-  assert.equal(g.gh()[76].comments.length, 0);
+  assert.equal(g.issues()[76].comments.length, 0);
 });
 
 test('有對應單：交接檔不在就 STOP；寫好後重跑留言，再重跑就 SKIP', t => {
@@ -238,10 +261,10 @@ test('有對應單：交接檔不在就 STOP；寫好後重跑留言，再重跑
   const second = f.close();
   assert.equal(second.status, 0, second.stdout + second.stderr);
   assert.deepEqual(lines(second).slice(0, 3), ['SKIP 76 main', 'SKIP 76 evidence', 'DONE 76 counterpart']);
-  assert.equal(f.gh()['acme/app#7'].comments.length, 1);
+  assert.equal(f.issues()['acme/app#7'].comments.length, 1);
   const third = f.close();
   assert.ok(lines(third).includes('SKIP 76 counterpart'));
-  assert.equal(f.gh()['acme/app#7'].comments.length, 1);
+  assert.equal(f.issues()['acme/app#7'].comments.length, 1);
 });
 
 test('母單還有開著的子單就不關母單', t => {
@@ -249,5 +272,17 @@ test('母單還有開著的子單就不關母單', t => {
   const result = f.close();
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.ok(lines(result).includes('SKIP 76 parent'));
-  assert.equal(f.gh()[35].state, 'OPEN');
+  assert.equal(f.issues()[35].state, 'OPEN');
+});
+
+test('任何失敗都印 STOP：checkpoint 不在、gh 回的不是 JSON', t => {
+  const f = fixture(t);
+  const missing = f.close(['76-85', '100', f.mergeSha]);
+  assert.equal(missing.status, 4, missing.stdout + missing.stderr);
+  assert.deepEqual(lines(missing), [`STOP 76-85 checkpoint 缺 ${f.repo}/.scratch/pilot/batch-76-85.md`]);
+
+  writeFileSync(join(f.temp, 'bin/gh'), '#!/bin/sh\necho "<html>rate limited</html>"\n');
+  const garbled = f.close();
+  assert.equal(garbled.status, 4, garbled.stdout + garbled.stderr);
+  assert.match(lines(garbled).pop(), /^STOP 76 evidence /);
 });
