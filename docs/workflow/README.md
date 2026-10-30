@@ -47,11 +47,12 @@ Markdown 是唯一來源，`site/` 下的 HTML 全是產物。改完 Markdown �
 node scripts/build-workflow-site.mjs
 ```
 
-`bin/check` 對本資料夾跑三道守門：
+`bin/check` 對本資料夾跑四道守門：
 
 - `node scripts/build-workflow-site.mjs --check`：`site/` 與 Markdown 不同步就失敗（忘了重產或手改 HTML）。
 - `node scripts/check-workflow-strings.mjs`：擋住從實例專案帶進來的專屬字串，讓本站維持通用。
 - `node scripts/check-workflow-sync.mjs`：`issue-run`、`issue-pilot`、`retro-collect` 的 `SKILL.md` 或 `ADAPTER.md` 一改就失敗，直到有人對照本站並執行 `node scripts/check-workflow-sync.mjs --restamp`。
+- `tests/workflow-diagrams.test.mjs`：`diagrams/` 的來源、HTML 與 PNG 不齊全、來源 JSON 不是一節點一行，或章節沒嵌入圖與連結時失敗（見下方「圖怎麼看、怎麼改」）。
 
 ## 圖怎麼看、怎麼改
 
@@ -70,4 +71,4 @@ node scripts/build-workflow-site.mjs
 
 - `finalize` 會在 HTML 旁留下 `*.delivery.json` 收據，`visual-check --require-provenance` 靠它確認 HTML 是由 `finalize` 產生；收據含本機絕對路徑，已列在 `.gitignore`，不 commit。
 - `finalize` 會驗證版面，不過就失敗。一次過的限制：workflow 圖最多 6 欄（col 0–5）；畫布寬度上限 1240px，節點標籤要短（約 12 個中文字內，副標更短）；邊不能跨越泳道的垂直邊，跨欄回頭的邊改用虛線另畫或拆成兩個節點；跨泳道的垂直邊不要掛標籤（會把欄撐寬），狀態改寫在節點的 `tag`；先 `validate` 再 `finalize`，每次只改一處再重跑。
-- `finalize` 需要 Chrome／Chromium：`export ARCHIFY_CHROME=<chrome 路徑>`（例如 Playwright 快取裡的 `chromium-*/chrome-linux/chrome`）。WSL 預設沒有中文字型，截圖時中文會變方框；不需要 sudo 的做法見 [08 常見坑](08-pitfalls.md)：把 Windows 的 `NotoSansTC-VF.ttf` 複製到 `~/.local/share/fonts/`，在 `~/.config/fontconfig/fonts.conf` 把 `monospace`、`sans-serif` 的 fallback 加上 `Noto Sans TC`，再 `fc-cache -f`。
+- `finalize` 需要 Chrome／Chromium：`export ARCHIFY_CHROME=<chrome 路徑>`（例如 Playwright 快取裡的 `chromium-*/chrome-linux/chrome`）。WSL 預設沒有中文字型，截圖時中文會變方框，做法見 [08 常見坑](08-pitfalls.md#工具與環境)。

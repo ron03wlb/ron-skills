@@ -30,7 +30,7 @@
     { "id": "w8", "from": "busy", "to": "merging", "label": "稍後重試" },
     { "id": "w9", "from": "created", "to": "pristine", "label": "沒開工", "variant": "dashed" },
     { "id": "w10", "from": "pristine", "to": "removed", "label": "分類後清理" },
-    { "id": "w11", "from": "implementing", "to": "kept", "label": "wontfix", "variant": "dashed" },
+    { "id": "w11", "from": "implementing", "to": "kept", "label": "未合入就放棄", "variant": "dashed" },
     { "id": "w12", "from": "kept", "to": "removed", "label": "人判斷後清理" }
   ],
   "cards": [

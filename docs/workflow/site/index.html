@@ -39,11 +39,12 @@
 <h2 id="本站怎麼產生">本站怎麼產生</h2>
 <p>Markdown 是唯一來源，<code>site/</code> 下的 HTML 全是產物。改完 Markdown 在 repo 根目錄重產，不要手改 HTML：</p>
 <pre><code class="language-bash">node scripts/build-workflow-site.mjs</code></pre>
-<p><code>bin/check</code> 對本資料夾跑三道守門：</p>
+<p><code>bin/check</code> 對本資料夾跑四道守門：</p>
 <ul>
 <li><code>node scripts/build-workflow-site.mjs --check</code>：<code>site/</code> 與 Markdown 不同步就失敗（忘了重產或手改 HTML）。</li>
 <li><code>node scripts/check-workflow-strings.mjs</code>：擋住從實例專案帶進來的專屬字串，讓本站維持通用。</li>
 <li><code>node scripts/check-workflow-sync.mjs</code>：<code>issue-run</code>、<code>issue-pilot</code>、<code>retro-collect</code> 的 <code>SKILL.md</code> 或 <code>ADAPTER.md</code> 一改就失敗，直到有人對照本站並執行 <code>node scripts/check-workflow-sync.mjs --restamp</code>。</li>
+<li><code>tests/workflow-diagrams.test.mjs</code>：<code>diagrams/</code> 的來源、HTML 與 PNG 不齊全、來源 JSON 不是一節點一行，或章節沒嵌入圖與連結時失敗（見下方「圖怎麼看、怎麼改」）。</li>
 </ul>
 <h2 id="圖怎麼看怎麼改">圖怎麼看、怎麼改</h2>
 <ul>
@@ -60,7 +61,7 @@ node scripts/build-workflow-site.mjs</code></pre>
 <ul>
 <li><code>finalize</code> 會在 HTML 旁留下 <code>*.delivery.json</code> 收據，<code>visual-check --require-provenance</code> 靠它確認 HTML 是由 <code>finalize</code> 產生；收據含本機絕對路徑，已列在 <code>.gitignore</code>，不 commit。</li>
 <li><code>finalize</code> 會驗證版面，不過就失敗。一次過的限制：workflow 圖最多 6 欄（col 0–5）；畫布寬度上限 1240px，節點標籤要短（約 12 個中文字內，副標更短）；邊不能跨越泳道的垂直邊，跨欄回頭的邊改用虛線另畫或拆成兩個節點；跨泳道的垂直邊不要掛標籤（會把欄撐寬），狀態改寫在節點的 <code>tag</code>；先 <code>validate</code> 再 <code>finalize</code>，每次只改一處再重跑。</li>
-<li><code>finalize</code> 需要 Chrome／Chromium：<code>export ARCHIFY_CHROME=&lt;chrome 路徑&gt;</code>（例如 Playwright 快取裡的 <code>chromium-*/chrome-linux/chrome</code>）。WSL 預設沒有中文字型，截圖時中文會變方框；不需要 sudo 的做法見 <a href="08-pitfalls.html">08 常見坑</a>：把 Windows 的 <code>NotoSansTC-VF.ttf</code> 複製到 <code>~/.local/share/fonts/</code>，在 <code>~/.config/fontconfig/fonts.conf</code> 把 <code>monospace</code>、<code>sans-serif</code> 的 fallback 加上 <code>Noto Sans TC</code>，再 <code>fc-cache -f</code>。</li>
+<li><code>finalize</code> 需要 Chrome／Chromium：<code>export ARCHIFY_CHROME=&lt;chrome 路徑&gt;</code>（例如 Playwright 快取裡的 <code>chromium-*/chrome-linux/chrome</code>）。WSL 預設沒有中文字型，截圖時中文會變方框，做法見 <a href="08-pitfalls.html#工具與環境">08 常見坑</a>。</li>
 </ul>
 </article>
 <footer class="source">本頁由 <code>node scripts/build-workflow-site.mjs</code> 自 <code>docs/workflow/README.md</code> 產生；請改 Markdown 重產，不要手改 HTML。</footer>
