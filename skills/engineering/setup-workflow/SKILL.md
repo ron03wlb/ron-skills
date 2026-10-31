@@ -75,7 +75,7 @@ Canonical scripts in `<skill>/templates/`. A row's level is the lowest level tha
 
 | Template | Level or extension | Wire-up |
 | --- | --- | --- |
-| `check-markdown-links.mjs`, `check-text-encoding.mjs`, `check-secrets.mjs` | L1 | steps in the check entry |
+| `check-markdown-links.mjs`, `check-text-encoding.mjs`, `check-secrets.mjs`, `check-portability.mjs` | L1 | steps in the check entry |
 | `claude-hook-language.mjs` | L1, when the repo's agent rules require a non-English user-facing language | `.claude/settings.json` `Stop`, `PostToolUse`, `PostToolUseFailure` |
 | `node-test-guarded.mjs` | L1, Node test suites | the check entry runs tests through it |
 | `claude-hook-git-bypass.mjs` | L2 | `PreToolUse` matcher `Bash` |
