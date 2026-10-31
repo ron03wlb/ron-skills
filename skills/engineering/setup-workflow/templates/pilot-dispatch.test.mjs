@@ -130,6 +130,12 @@ else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
 
 const lines = result => result.stdout.trim().split('\n');
 
+/** 把 batch checkpoint 裡成員 `n` 的 state 從 running 改成 `state`（重跑的是 STOP 的成員）。 */
+const markRow = (repo, key, n, state) => {
+  const file = join(repo, `.scratch/pilot/batch-${key}.md`);
+  writeFileSync(file, readFileSync(file, 'utf8').replace(new RegExp(`^(\\| ${n} \\|.*) running \\| \\|$`, 'm'), `$1 ${state} | |`));
+};
+
 // 派工前讀 Issue 最近一則認領留言（格式同 issue-pool.mjs claim），不是這個 session 的就不派（#165）。
 test('最近一則認領是別的 session：STOP not-claimed，不開 worktree、不開分頁，成員記 stop；自己認領的照常派出', t => {
   const { repo, dispatch, calls, checkpoint } = fixture(t, { claims: { 133: [MINE, '認領：other-box／their-session'] } });
@@ -269,8 +275,9 @@ test('總預算用完：進行中與還沒派的成員都 STOP timeout，照樣�
 
 // 重跑 terminal 或送出 STOP 的成員：worktree 已在，再呼叫 create 會讓 Orca 去重出 `issue-<n>-2`（orca-worktree-create.mjs 的註解）。
 test('重跑時 worktree 已存在：不再呼叫 worktree create，直接開分頁派出', t => {
-  const { dispatch, calls } = fixture(t);
+  const { repo, dispatch, calls } = fixture(t);
   assert.equal(dispatch(['46', '46:pilot-dispatch']).status, 0);
+  markRow(repo, '46', '46', 'stop');
   const result = dispatch(['46', '46:pilot-dispatch']);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(lines(result).pop(), 'DISPATCHED 46 term_46_2');
@@ -279,8 +286,9 @@ test('重跑時 worktree 已存在：不再呼叫 worktree create，直接開分
 
 // #174：重跑同一個 key 時，worktree 裡舊的分頁（含 checkpoint 沒記到的）先關掉，和 --fresh 一樣；不再要 coordinator 從 checkpoint 撈 handle 手動關。
 test('重跑時 worktree 已存在：先關掉 worktree 裡舊的分頁再開新的', t => {
-  const { root, cli, dispatch, calls, open } = fixture(t);
+  const { repo, root, cli, dispatch, calls, open } = fixture(t);
   assert.equal(dispatch(['46', '46:pilot-dispatch']).status, 0);
+  markRow(repo, '46', '46', 'stop');
   const tree = join(root, 'issue-46');
   const extra = spawnSync(cli, ['terminal', 'create', '--worktree', `path:${tree}`, '--title', 'shell #46', '--json'], { encoding: 'utf8' });
   assert.equal(extra.status, 0, extra.stderr);
@@ -290,6 +298,20 @@ test('重跑時 worktree 已存在：先關掉 worktree 裡舊的分頁再開新
   assert.match(calls(), /^terminal close --terminal term_46 --json$/m);
   assert.match(calls(), /^terminal close --terminal term_46_2 --json$/m);
   assert.deepEqual(open().filter(t => t.worktreePath === tree).map(t => t.handle), ['term_46_3']);
+});
+
+// 同 --fresh 的 STOP running：整批重跑時，那一列還是 running、分頁還開著的成員 worker 正在跑，關掉它會丟掉進行中的工作。
+test('重跑時成員還是 running、分頁還開著：STOP running，不關分頁、不改寫成員列；STOP 的成員照常重派', t => {
+  const { repo, dispatch, calls, open, checkpoint } = fixture(t);
+  assert.equal(dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']).status, 0);
+  markRow(repo, '23-46', '23', 'stop');
+  const before = checkpoint('23-46').split('\n').find(line => line.startsWith('| 46 |'));
+  const result = dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['DISPATCHED 23 term_23_2', 'STOP 46 running term_46']);
+  assert.doesNotMatch(calls(), /^terminal close --terminal term_46 /m);
+  assert.ok(open().some(t => t.handle === 'term_46'));
+  assert.equal(checkpoint('23-46').split('\n').find(line => line.startsWith('| 46 |')), before);
 });
 
 // #174：派工與 --fresh 前，對開著的 batch 裡 running、done 的成員算和 pilot-probe 的 OVERLAP 相同的重疊。
@@ -328,11 +350,11 @@ test('重派的成員與 running 成員改同一個條目：STOP overlap，不�
   const result = fx.dispatch(['46', '46:pilot-dispatch']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.deepEqual(lines(result), ['STOP 46 overlap 23 docs/pilot.md:Probe']);
-  assert.equal(fx.calls(), fx.before.calls);
+  // 只多了唯讀的 `terminal list`（確認舊分頁是不是還在跑），沒有 close、create、send。
+  assert.equal(fx.calls().replace(/^terminal list .*\n/gm, ''), fx.before.calls.replace(/^terminal list .*\n/gm, ''));
   assert.deepEqual(fx.open(), fx.before.open);
   assert.equal(git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch'), fx.head);
-  // 成員列照其他 STOP 記 stop，worktree 欄留著。
-  assert.match(fx.checkpoint('46'), new RegExp(`^\\| 46 \\| issue/46-pilot-dispatch \\| ${fx.tree} \\| .* \\| stop \\| \\|$`, 'm'));
+  assert.equal(fx.checkpoint('46'), fx.before.batch);
   const allowed = fx.dispatch(['46', '46:pilot-dispatch', '--allow-overlap']);
   assert.equal(allowed.status, 0, allowed.stdout + allowed.stderr);
   assert.match(lines(allowed).pop(), /^DISPATCHED 46 term_46_2$/);
@@ -357,7 +379,8 @@ test('--fresh 的對象與 done（未合入）成員改同一個條目：STOP ov
   const result = fx.dispatch(['46', '--fresh', '46:pilot-dispatch', '--note', fx.note]);
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.deepEqual(lines(result), ['STOP 46 overlap 23 docs/pilot.md:Probe']);
-  assert.equal(fx.calls(), fx.before.calls);
+  // 只多了唯讀的 `terminal list`（確認舊分頁是不是還在跑），沒有 close、create、send。
+  assert.equal(fx.calls().replace(/^terminal list .*\n/gm, ''), fx.before.calls.replace(/^terminal list .*\n/gm, ''));
   assert.equal(git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch'), fx.head);
   assert.equal(git(fx.repo, 'branch', '--list', '*-prior*'), '');
   assert.equal(fx.checkpoint('46'), fx.before.batch);
