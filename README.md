@@ -66,6 +66,10 @@ pilot 已達標，2026-10-21 起是唯一編排：`deliver-batch`、`deliver-spe
 
 `node scripts/land.mjs <branch> --body-file <file> [--title <title>]`：把做完的分支一次合入 `main`，依序是 push、開 PR（已經開著就沿用）、等 CI、以 merge commit 合併，接著移除 worktree（透過 Orca）、還原 `core.bare`、刪除本機和 `origin` 的分支，主 checkout 用 `--ff-only` 跟上，最後執行 `bin/sync-skills`。最後一行是 `LANDED <pr> <sha>`，或 `STOP <原因>`（exit 4）；中斷後用同一條指令重跑，會從斷掉的地方接著做，不重開 PR、不重複合併。CI 超過 480 秒還沒跑完時印 `STOP checks-timeout`，重跑會接著等。`--keep-branch` 保留分支，只用 `--ff-only` 讓它跟上 `origin/main` 再 push，給 `pilot/integration` 用（adapter 的 Push gate 等 #27 合入後改用這支）。`--local-checks <sha>` 只在 GitHub Actions 沒啟動（帳務停擺，job 0 個 step）時用：不等 CI，改確認分支 tip 是 `<sha>`、在它的暫時 worktree 跑 `--check-command` 的檢查（本 repo 帶 `'bin/check --upstream'`，預設 `bin/check`）通過，合併前在 PR 留言附 SHA 與 `CHECK_PASS` 行；CI 跑了但失敗不能改用它。這支是 setup-workflow 正本 `templates/land.mjs` 的副本（#139），要改就改正本。
 
+## issue-queue
+
+`/issue-queue`（手動，或 `/loop /issue-queue` 定時跑）：人看池子的入口。第一行是「進行中 N／上限 M」（M 是 adapter Pilot 段的 worker cap，沒寫顯示「不限」），接著照 `scripts/issue-pool.mjs` 分桶列出開著的單；`stale` 桶附認領者與最後一次留言，釋放或保留由人決定，agent 不搶回。`needs-triage`、`needs-info`、沒標的單逐張照 `/triage` 的規則提出狀態與 brief，人確認後才寫入，所以只有人能把單改成 `ready-for-agent` 或 `ready-for-human`；pilot 自己的細化不變。最後對每張母單印提示（子單全關母單還開著、母單掛 triage label、子單內文寫依賴卻沒設 `blocked_by`（沿用 `pilot-probe` 的 `proseDeps`）、子單沒有「## 驗收」、母單的決策編號沒出現在任何子單），只提示不擋流程，adapter 寫 `Parent hints: off` 可關閉，再逐張母單請人判斷細節與邊界有沒有漏。沒有 `scripts/issue-pool.mjs` 的 repo 先跑 `/setup-workflow`。
+
 ## retro-collect
 
 `/retro-collect [<n>...]`：認領所有開著的 `retro-candidates` Issue（`/retro` 收集模式開的，不限 session 與機器），彙整成一份計畫並合併重複，在單一 retro worktree 實作採用項，太大的候選另開 `retro` Issue 交給 pilot，合入後在每張 Issue 留言結果並關掉。專案事實（在哪個 checkout 跑、認領指令、worktree 與目標分支、檢查、合入）讀 adapter Pilot 段的 **Retro collect** 條目，Tracker 段給 tracker 指令。
