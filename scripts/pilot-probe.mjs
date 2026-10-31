@@ -37,7 +37,8 @@
 //          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
 //   重疊：OVERLAP <n> <m|integration> <檔案數> files [**<條目>.**…]（開著的 batch 裡 running、done 的成員分支已 commit 的內容，相對於與整合分支的 merge-base：
 //          兩個成員改到同一個檔，或整合分支自成員的 merge-base 以來也改了它改的檔；`.md` 檔的改動都在 `- **<名稱>.**` 條目裡時細到條目，
-//          相接的行與同一處的插入也算，git 合併時會衝突；同一對只印一行，後面列重疊的條目名稱，#176）
+//          相接的行與同一處的插入也算，git 合併時會衝突；同一對只印一行，後面列重疊的條目名稱，#176：條目不帶檔名、不同檔的同名條目只列一次，
+//          名稱可能有空格，以 `**`…`.**` 切分；數量固定寫 files，1 也是）
 // exit：0 印完；2 用法錯誤；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS、PARENT_APPLY_FAILED 等）。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
