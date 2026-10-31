@@ -20,7 +20,7 @@ if [[ -n \${FAKE_CHECK_DRIFT:-} ]]; then
   git -C "$FAKE_CHECK_DRIFT" update-ref refs/heads/pilot/integration "$sha"
 fi
 code=\${FAKE_CHECK_EXIT:-0}
-[[ $code == 0 ]] && echo "CHECK_PASS tests 3+4"
+[[ $code == 0 ]] && echo "CHECK_PASS tests 3+4+5"
 exit "$code"
 `;
 
@@ -95,9 +95,9 @@ test('兩個成員、integration 沒變：依號碼合入、跑 Regression、快
   assert.equal(git(f.stageTree, 'symbolic-ref', '--short', 'HEAD'), 'pilot/integration', 'stage worktree 停在 pilot/integration');
   const text = f.read();
   assert.match(text, new RegExp(`^current: merged ${sha}$`, 'm'));
-  assert.match(text, new RegExp(`^regression: ${sha} exit 0 CHECK_PASS tests 3\\+4$`, 'm'));
+  assert.match(text, new RegExp(`^regression: ${sha} exit 0 CHECK_PASS tests 3\\+4\\+5$`, 'm'));
   assert.equal(f.checks(), 1);
-  assert.match(readFileSync(join(f.repo, `.scratch/pilot/reg-${f.key}.log`), 'utf8'), /CHECK_PASS tests 3\+4/);
+  assert.match(readFileSync(join(f.repo, `.scratch/pilot/reg-${f.key}.log`), 'utf8'), /CHECK_PASS tests 3\+4\+5/);
   assert.equal(readFileSync(join(f.temp, 'check.log'), 'utf8'), 'check --upstream\n', 'Regression 跑 bin/check --upstream');
 });
 
@@ -350,18 +350,34 @@ test('只有 scripts/workflow-doc-sync.json 衝突：restamp 完成 merge，chec
   assert.equal(git(f.repo, 'show', `${f.tip()}:${SYNC_SOURCES[1]}`), '# b');
 });
 
-test('workflow-doc-sync.json 和其他檔一起衝突：STOP conflict，不 restamp', t => {
+test('workflow-doc-sync.json 和解不了的檔一起衝突：STOP conflict，不 restamp', t => {
   const f = syncFixture(t, syncMembers({ a: { 'x.txt': 'a\n' }, b: { 'x.txt': 'b\n' } }));
   const result = f.land();
   assert.equal(result.last, 'STOP conflict 2 scripts/workflow-doc-sync.json x.txt');
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
 });
 
+// batch-56（retro ron-skills-ac）：戳記檔和 pilot.md 的 entries 衝突同時出現，coordinator 手解後 Regression 通過，照舊規則卻要開 gate。
+test('workflow-doc-sync.json 和可自己解的檔一起衝突：先解那些檔再 restamp，check-workflow-sync 在結果上通過', t => {
+  const f = syncFixture(t, syncMembers({
+    a: { 'pilot.md': ENTRIES.replace('close v1', 'close v2') },
+    b: { 'pilot.md': ENTRIES.replace('handoff v1', 'handoff v2') },
+  }), { 'pilot.md': ENTRIES });
+  const result = f.land();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.lines.includes('RESOLVED 2 entries+restamp pilot.md scripts/workflow-doc-sync.json'), result.stdout);
+  assert.equal(git(f.repo, 'show', `${f.tip()}:pilot.md`) + '\n', ENTRIES.replace('close v1', 'close v2').replace('handoff v1', 'handoff v2'));
+  const check = spawnSync('node', [join(f.stageTree, 'scripts/check-workflow-sync.mjs')], { cwd: f.stageTree, encoding: 'utf8' });
+  assert.equal(check.status, 0, check.stdout + check.stderr);
+  assert.equal(f.checks(), 1, '解完在新的 staged SHA 跑 Regression');
+});
+
 /** 戳記檔與 check-workflow-sync.mjs 都在 base：從 repo 複製腳本，對 base 的來源先 restamp 一次。 */
-function syncFixture(t, members) {
+function syncFixture(t, members, extraBase = {}) {
   return fixture(t, {
     members,
     base: {
+      ...extraBase,
       ...Object.fromEntries(SYNC_SOURCES.map(path => [path, `# ${path}\n`])),
       'scripts/check-workflow-sync.mjs': readFileSync(SYNC, 'utf8'),
       'scripts/workflow-doc-sync.json': stampsFor(Object.fromEntries(SYNC_SOURCES.map(path => [path, `# ${path}\n`]))),

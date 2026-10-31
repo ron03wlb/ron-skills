@@ -78,10 +78,10 @@ test('Stage、Regression、Integrate 改成呼叫 pilot-land.mjs，不再列手�
   }
 });
 
-test('Stage：允許的衝突解法（不同條目、只新增、只有戳記檔時 restamp），解完照樣跑 Regression', () => {
+test('Stage：允許的衝突解法（不同條目、只新增、戳記檔在其他檔解完後 restamp），解完照樣跑 Regression', () => {
   const stage = line('Stage');
   assert.match(stage, /不同的 `- \*\*<名稱>\.\*\*` 條目/);
-  assert.match(stage, /只有 `scripts\/workflow-doc-sync\.json`.*--restamp/);
+  assert.match(stage, /有 `scripts\/workflow-doc-sync\.json`.*其他衝突檔先用下兩種解法解完.*--restamp/);
   assert.match(stage, /新增不重疊的段落/);
   assert.match(stage, /解完的 staged SHA 一樣要跑 Regression/);
 });

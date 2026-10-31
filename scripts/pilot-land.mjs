@@ -3,7 +3,7 @@
 // 全部在 stage worktree 做（分支是 pilot/integration 或 pilot/stage-* 的那個 worktree；沒有就用 Orca 建 pilot-stage，再跑 Bare guard）：
 //   Stage       stage worktree 要乾淨；`switch -C pilot/stage-<key> <integration tip>`，依號碼 `merge --no-ff` 每個 done 成員。
 //               衝突只照 Stage 條目允許的解法自己解，其他 `merge --abort`：
-//                 restamp    衝突檔只有 scripts/workflow-doc-sync.json：跑 check-workflow-sync.mjs --restamp（#72）；
+//                 restamp    scripts/workflow-doc-sync.json：其他衝突檔都用下兩種解完之後，跑 check-workflow-sync.mjs --restamp（#72）；
 //                 additions  每個衝突 hunk 的 base 是空的（兩邊只在既有檔案的同一處新增，沒有相同的非空行或同名條目）：依號碼兩段都留下；
 //                 entries    每個衝突 hunk 裡兩邊改的是不同的 `- **<名稱>.**` 條目：各取改過的那一版（#45）。
 //               additions 與 entries 只解三個版本都是 UTF-8 文字的檔案，其他的照樣 abort。
@@ -205,17 +205,18 @@ function resolveFile(tree, path, kinds) {
 
 /** 照 Stage 條目允許的解法解掉進行中 merge 的衝突並 add；傳回解法名稱，解不了傳回 undefined（呼叫端 abort）。 */
 function resolveConflicts(tree, files) {
+  const others = files.filter(path => path !== STAMPS);
+  const kinds = new Set();
+  const resolved = others.map(path => resolveFile(tree, path, kinds));
+  if (resolved.includes(undefined)) return undefined;
+  others.forEach((path, i) => writeFileSync(join(tree, path), resolved[i]));
+  if (others.length) must(tree, 'add', '--', ...others);
+  // 戳記檔最後重算：restamp 讀的是其他檔解完之後的來源。
   if (files.includes(STAMPS)) {
-    if (files.length > 1) return undefined;
     if (run('node', [join(tree, 'scripts/check-workflow-sync.mjs'), '--restamp'], { cwd: tree }).status !== 0) return undefined;
     must(tree, 'add', STAMPS);
-    return 'restamp';
+    kinds.add('restamp');
   }
-  const kinds = new Set();
-  const resolved = files.map(path => resolveFile(tree, path, kinds));
-  if (resolved.includes(undefined)) return undefined;
-  files.forEach((path, i) => writeFileSync(join(tree, path), resolved[i]));
-  must(tree, 'add', '--', ...files);
   return [...kinds].sort().join('+');
 }
 
