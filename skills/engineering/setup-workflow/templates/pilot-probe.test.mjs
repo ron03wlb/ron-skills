@@ -520,6 +520,43 @@ test('ADAPTER_AHEAD 只比 adapter 與它 Pilot 段連到的同目錄檔案', t 
   assert.deepEqual(lines(probe()), ['ADAPTER_AHEAD docs/agents/pilot-rules.md']);
 });
 
+// #144：pilot.md 的 Close 條目單行約 3 KB，coordinator 讀整份 diff 被截斷。改動都在 `- **<名稱>.**` 條目裡時，檔名後面附
+// 改動的條目名稱（依名稱排序、以 `,` 分隔，名稱可能有空格）；有任何條目以外的改動時省略名稱欄，表示要讀整份。
+test('ADAPTER_AHEAD 附改動的條目名稱，有條目以外的改動時省略', t => {
+  const { repo, git, probe } = fixture(t);
+  const commit = (changes, message) => {
+    for (const [path, text] of Object.entries(changes)) {
+      writeFileSync(join(repo, path), text);
+      git('add', path);
+    }
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', message);
+  };
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  const rules = entries => `# pilot\n\n前言。\n\n${entries.join('\n\n')}\n`;
+  const base = ['- **Stage.** v1', '- **Scripts ahead.** v1', '- **Close.** v1\n  續行 v1'];
+  commit({ 'docs/agents/issue-run.md': PILOT_SECTION, 'docs/agents/pilot-rules.md': rules(base) }, 'adapter');
+  git('branch', 'pilot/integration');
+  const ahead = (entries, message) => {
+    git('switch', '-q', 'pilot/integration');
+    git('reset', '-q', '--hard', 'main');
+    commit({ 'docs/agents/pilot-rules.md': entries }, message);
+    git('switch', '-q', 'main');
+    const result = probe();
+    assert.equal(result.status, 0, result.stderr);
+    return lines(result);
+  };
+
+  assert.deepEqual(ahead(rules(['- **Stage.** v2', base[1], '- **Close.** v1\n  續行 v2']), 'stage+close'),
+    ['ADAPTER_AHEAD docs/agents/pilot-rules.md Close,Stage']);
+  assert.deepEqual(ahead(rules([...base, '- **New entry.** v1']), 'new entry'),
+    ['ADAPTER_AHEAD docs/agents/pilot-rules.md New entry']);
+  // 刪掉的條目取改動前的名稱，整合分支那份讀不到。
+  assert.deepEqual(ahead(rules([base[0], base[2]]), 'drop entry'), ['ADAPTER_AHEAD docs/agents/pilot-rules.md Scripts ahead']);
+  assert.deepEqual(ahead(rules(base).replace('前言。', '前言 v2。'), 'prose'), ['ADAPTER_AHEAD docs/agents/pilot-rules.md']);
+  assert.deepEqual(ahead(rules(['- **Stage.** v2', ...base.slice(1)]).replace('前言。', '前言 v2。'), 'mixed'),
+    ['ADAPTER_AHEAD docs/agents/pilot-rules.md']);
+});
+
 // #77：coordinator 拿 probe 的 WORKER 行手寫 sed 改成員列，表頭或空的 candidate 欄一變就靜默沒寫進去。
 // `--apply` 照 PILOT-STORE.md 把 DONE 寫成 `done` 與 SHA、STOP 寫成 `stop`；stdout 與不帶 `--apply` 時相同，其他行一個 byte 都不動。
 test('--apply 把 DONE、STOP 寫回成員列的 state 與 candidate，其他行不變', t => {
