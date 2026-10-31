@@ -7,15 +7,17 @@
 // Orca 一律用 `path:` 選擇器：Orca 開的 worktree 用 `branch:` 找不到（selector_not_found，#49）。
 // Orca rm 會順便刪掉它能證明已合入的本機分支，這時 branch 步驟就 SKIP。
 // 所有子行程的 stdin 都接 /dev/null（Orca CLI 會吃掉 stdin）；stderr 照常顯示，只濾掉 WSL 上 Orca 每次都印的 crashpad 錯誤行（#73）。
-// 本 repo 的留言與關單都經 scripts/gh-tracker.mjs：.claude/settings.json 的 tracker 寫入只放行它（#96）；跨 repo 的對應單留言照 #79 直接用 gh，
-// 這支本身另有放行規則（#131），所以對應單留言與 push --delete 都在它底下跑、不再詢問。
+// 本 repo 的留言與關單都經 scripts/gh-tracker.mjs：.claude/settings.json 的 tracker 寫入只放行它（#96）；跨 repo 的對應單留言照 pilot-counterpart
+// 印的 COMMAND 行，依對應單的 host 用 gh 或 glab（#79）；這支本身另有放行規則（#131），所以對應單留言與 push --delete 都在它底下跑、不再詢問。
+// 對應單留言失敗（沒有權限、被擋下、沒裝 glab）不停下：印出交接檔與一行可直接 `!` 執行的指令交給人，batch 照常往下 Close。
 // 請求分支成員（Issue 欄 `-`、branch `retro/<x>`，#143）沒有 Issue：只做 terminal → worktree → branch → remote，不呼叫 gh 也不經 gh-tracker；
 // 它的 DONE／SKIP／STOP 行以分支名稱代替 <n>（STOP branch-malformed 例外，照 checkpoint 印 `-`），Bare guard 的時機是 `close <分支>`。
 // 對應單的交接內容要人寫：coordinator 先寫 <主 checkout>/.scratch/pilot/counterpart-<n>.md，內容要有 merge SHA 與 `ron03wlb/ron-skills#<n>`，
 // 重跑時才認得出已經留過言。
 //
 // 用法：node scripts/pilot-close.mjs <batch key> <pr> <merge sha>（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
-// stdout：每一步一行 `DONE <n> <step>` 或 `SKIP <n> <step>`；任何一步失敗都印 `STOP <n> <step> <原因>` 並停下
+// stdout：每一步一行 `DONE <n> <step>` 或 `SKIP <n> <step>`；counterpart 有對應單交給人時，先每張印 `HANDOFF <n> <ref> ! <指令>`，
+//   該步印 `MANUAL <n> counterpart` 並往下做；其他任何一步失敗都印 `STOP <n> <step> <原因>` 並停下
 //   （開頭 main 那步的 <n> 是 batch key；checkpoint 讀不到或沒有 done 成員只印 STOP <key> checkpoint；
 //   done 成員的 branch 不是 `issue/<n>-<slug>`（請求分支成員是 `retro/<x>`）時，在任何寫入之前只印 STOP branch-malformed <n> <JSON 字串的 branch>）。Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。
 //   全部成員做完，checkpoint 的 `current:` 寫成 `closed`，最後一行 `CLOSED <key>`。
@@ -131,7 +133,7 @@ function* closeIssue({ main, key, pr, sha, regression }, n, at) {
   }
 
   at.step = 'counterpart';
-  yield counterpart({ main, sha, n }, must('counterpart', 'node', [join(here, 'pilot-counterpart.mjs')], issue.body));
+  yield counterpart({ main, sha, n }, issue.body);
 
   at.step = 'close';
   if (issue.state === 'CLOSED') yield 'SKIP';
@@ -187,21 +189,41 @@ function* cleanUp({ cli, main }, { n, branch, handle }, at) {
   }
 }
 
-/** 對應單交接；沒有對應單或每張都已留過言傳回 SKIP。 */
-function counterpart({ main, sha, n }, refs) {
+/**
+ * 對應單交接；沒有對應單或每張都已留過言傳回 SKIP。指令照 pilot-counterpart 的 COMMAND 行（host 決定 gh 或 glab，#79），
+ * 留言失敗（沒有權限、被擋下）或讀不到 GitLab 對應單的留言時，印 `HANDOFF <n> <ref> ! <指令>` 交給人、這一步傳回 MANUAL，batch 照常往下 Close。
+ */
+function counterpart({ main, sha, n }, body) {
   const file = join(main, `.scratch/pilot/counterpart-${n}.md`);
   const member = `${REPO}#${n}`;
   const namesMember = new RegExp(`${member.replace(/[/#]/g, '\\$&')}\\b`);
-  let posted = false;
-  for (const [, repo, m] of refs.matchAll(/^COUNTERPART (\S+)#(\d+)$/gm)) {
-    if (issueView('counterpart', m, repo, 'comments').comments.some(c => c.body.includes(sha) && namesMember.test(c.body))) continue;
-    if (!existsSync(file)) throw new Stop('counterpart', `${repo}#${m} 缺 ${file}`);
-    const text = readFileSync(file, 'utf8');
-    if (!text.includes(sha) || !namesMember.test(text)) throw new Stop('counterpart', `${repo}#${m} ${file} 要寫出 merge ${sha} 與成員 ${member}`);
-    must('counterpart', 'gh', ['issue', 'comment', m, '--repo', repo, '--body-file', file]);
-    posted = true;
+  const posted = text => text.includes(sha) && namesMember.test(text);
+  const refs = must('counterpart', 'node', [join(here, 'pilot-counterpart.mjs'), '--file', file], body);
+  let outcome = 'SKIP';
+  for (const [, ref, m, kind, repoArg, command] of refs.matchAll(/^COUNTERPART (\S+#(\d+))(?: (github|gitlab) (\S+))?\nCOMMAND (.+)$/gm)) {
+    const repo = repoArg ?? ref.replace(/#\d+$/, '');
+    // GitLab 的已留言檢查讀 glab issue view --comments 的文字；讀不到（沒裝 glab、沒登入、連不到）就交給人，人看得到對應單上有沒有留過。
+    const read = kind === 'gitlab' ? run('glab', ['issue', 'view', m, '-R', repo, '--comments']) : undefined;
+    const done = read ? read.status === 0 && posted(read.stdout) : githubComments(ref, m, repo, kind).some(c => posted(c.body));
+    if (done) continue;
+    if (!existsSync(file)) throw new Stop('counterpart', `${ref} 缺 ${file}`);
+    if (!posted(readFileSync(file, 'utf8'))) throw new Stop('counterpart', `${ref} ${file} 要寫出 merge ${sha} 與成員 ${member}`);
+    if ((read && read.status !== 0) || run('sh', ['-c', command]).status !== 0) {
+      console.log(`HANDOFF ${n} ${ref} ! ${command}`);
+      outcome = 'MANUAL';
+    } else if (outcome === 'SKIP') outcome = 'DONE';
   }
-  return posted ? 'DONE' : 'SKIP';
+  return outcome;
+}
+
+/** GitHub 對應單的留言；裸 ref 讀不到時多半是寫成裸 ref 的 GitLab 對應單，STOP 指出要改寫成 issue 網址。 */
+function githubComments(ref, m, repo, kind) {
+  try {
+    return issueView('counterpart', m, repo, 'comments').comments;
+  } catch (error) {
+    if (kind || !(error instanceof Stop)) throw error;
+    throw new Stop('counterpart', `${ref} ${error.message}（裸的 <owner>/<repo>#<m> 是 github.com；GitLab 或 GitHub Enterprise 的對應單要在本文寫成 issue 網址）`);
+  }
 }
 
 /** 成員有母單、母單還開著而且子單全部結束，就留言列出每張子單的 state_reason 再關母單。 */

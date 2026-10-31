@@ -131,7 +131,7 @@ test('還沒有 issue-tracker.md 時 tracker 依 origin 推定；本機路徑的
   assert.deepEqual([path.result.code.value, path.result.tracker.value], ['local', 'local']);
 });
 
-// 對照表：hosts.mjs 是腳本讀的那一份（pilot-counterpart 之後也讀它），HOSTS.md 是人與 adapter 填寫時讀的那一份，兩者逐列一致。
+// 對照表：hosts.mjs 是腳本讀的那一份（pilot-counterpart 也讀它），HOSTS.md 是人與 adapter 填寫時讀的那一份，兩者逐列一致。
 const hostsDoc = readFileSync(new URL('../skills/engineering/setup-workflow/HOSTS.md', import.meta.url), 'utf8');
 
 test('對照表：每個動作的 gh 與 glab 指令都以同一列出現在 HOSTS.md，每列都有 --help 核對紀錄', () => {

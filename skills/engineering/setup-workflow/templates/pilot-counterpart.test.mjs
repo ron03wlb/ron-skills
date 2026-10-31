@@ -36,3 +36,27 @@ test('整句包在「」、code span 或 code block 裡的對應單是引用，�
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, '');
 });
+
+// GitLab 與 GitHub Enterprise 的對應單寫成 issue 網址才帶得出 host；裸的 <owner>/<repo>#<m> 一律是 github.com（#79）。
+test('GitLab issue 網址：帶出 host 種類與 -R 的值；github.com 網址與裸 ref 是同一張', () => {
+  const result = run('app 對應單：http://192.168.200.202/acme/app/-/issues/7\nweb 對應單：https://gitlab.example.com/group/sub/web/issues/12\n'
+    + 'api 對應單：https://github.com/acme/api/issues/3；api 對應單：acme/api#3\nops 對應單：https://github.corp.example/acme/ops/issues/5\n');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'COUNTERPART acme/app#7 gitlab http://192.168.200.202/acme/app\n'
+    + 'COUNTERPART group/sub/web#12 gitlab https://gitlab.example.com/group/sub/web\n'
+    + 'COUNTERPART acme/api#3\n'
+    + 'COUNTERPART acme/ops#5 github github.corp.example/acme/ops\n');
+});
+
+// Close 照 COMMAND 行留言，留言失敗時把同一行交給人用 `!` 執行；指令取自 hosts.mjs 的對照表（glab issue note 沒有 --body-file）。
+test('--file：每張對應單後面印一行 COMMAND，照 host 用 gh issue comment 或 glab issue note -m', () => {
+  const result = spawnSync('node', [SCRIPT, '--file', '/tmp/x y/counterpart-1.md'], { encoding: 'utf8',
+    input: 'app 對應單：http://192.168.200.202/acme/app/-/issues/7\nweb 對應單：acme/web#12\nops 對應單：https://github.corp.example/acme/ops/issues/5\n' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'COUNTERPART acme/app#7 gitlab http://192.168.200.202/acme/app\n'
+    + 'COMMAND glab issue note 7 -R http://192.168.200.202/acme/app -m "$(cat \'/tmp/x y/counterpart-1.md\')"\n'
+    + 'COUNTERPART acme/web#12\n'
+    + 'COMMAND gh issue comment 12 --repo acme/web --body-file \'/tmp/x y/counterpart-1.md\'\n'
+    + 'COUNTERPART acme/ops#5 github github.corp.example/acme/ops\n'
+    + 'COMMAND gh issue comment 5 --repo github.corp.example/acme/ops --body-file \'/tmp/x y/counterpart-1.md\'\n');
+});
