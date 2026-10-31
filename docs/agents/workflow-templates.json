@@ -7,8 +7,8 @@
     },
     "scripts/check-portability.mjs": {
       "template": "skills/engineering/setup-workflow/templates/check-portability.mjs",
-      "commit": "fd80ee7ace26b991d0d2b4425c376efd252023c1",
-      "sha256": "50d0f5c8e3c24fdb72035a7fc0152a2b5d1b551f5cde0f886f8b8c7631ac04d4"
+      "commit": "9e12a94ca2ec43953199f5fa700e40efaaf21c14",
+      "sha256": "ed0676c33c7afb603324974b61a37a5cba683bcc619905ab77c003d02c4f7907"
     },
     "scripts/claude-hook-language.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-language.mjs",
