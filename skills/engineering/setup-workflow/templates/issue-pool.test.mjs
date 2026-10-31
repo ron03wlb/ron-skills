@@ -84,17 +84,17 @@ test('標 ready-for-agent、沒被 block、不是母單、沒被認領的 Issue 
 });
 
 const BUCKET_CASES = [
-  ['blocked', '有開著的 blocked_by', issue(7, { labels: ['ready-for-agent'], blockedBy: [3] })],
-  ['blocked', '掛 retro 也照樣被開著的 blocked_by 擋住', issue(7, { labels: ['ready-for-agent', 'retro'], blockedBy: [3] })],
+  ['blocked', '有開著的 blocked_by', issue(7, { labels: ['bug', 'ready-for-agent'], blockedBy: [3] })],
+  ['blocked', '掛 retro 也照樣被開著的 blocked_by 擋住', issue(7, { labels: ['enhancement', 'ready-for-agent', 'retro'], blockedBy: [3] })],
   ['parent', '有 sub-issue 的母單，即使標了 ready-for-agent', issue(7, { labels: ['ready-for-agent'], subIssues: 2 })],
   ['needs-triage', '標 needs-triage', issue(7, { labels: ['bug', 'needs-triage'] })],
-  ['needs-info', '標 needs-info', issue(7, { labels: ['needs-info'] })],
-  ['human', '標 ready-for-human', issue(7, { labels: ['ready-for-human'] })],
+  ['needs-info', '標 needs-info', issue(7, { labels: ['bug', 'needs-info'] })],
+  ['human', '標 ready-for-human', issue(7, { labels: ['enhancement', 'ready-for-human'] })],
   ['unlabeled', '沒有任何 triage label', issue(7, { labels: ['enhancement'] })],
-  ['claimed', '已被指派、24 小時內有留言', issue(7, { labels: ['ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(30), commentAt: hoursAgo(2) })],
-  ['stale', '已被指派、超過 24 小時沒有新留言', issue(7, { labels: ['ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(30), commentAt: hoursAgo(25) })],
+  ['claimed', '已被指派、24 小時內有留言', issue(7, { labels: ['bug', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(30), commentAt: hoursAgo(2) })],
+  ['stale', '已被指派、超過 24 小時沒有新留言', issue(7, { labels: ['bug', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(30), commentAt: hoursAgo(25) })],
   ['retro-candidates', '標 retro-candidates（retro 的候選清單，等 /retro-collect）', issue(7, { labels: ['retro-candidates', 'ready-for-agent'] })],
-  ['human', '標 ready-for-human、指派給人很久沒留言（不是 agent 的認領）', issue(7, { labels: ['ready-for-human'], assignees: ['ron'], assignedAt: hoursAgo(72) })],
+  ['human', '標 ready-for-human、指派給人很久沒留言（不是 agent 的認領）', issue(7, { labels: ['enhancement', 'ready-for-human'], assignees: ['ron'], assignedAt: hoursAgo(72) })],
 ];
 for (const [bucket, why, fixture] of BUCKET_CASES) {
   test(`${why}的 Issue 歸到 ${bucket}`, () => {
@@ -105,7 +105,7 @@ for (const [bucket, why, fixture] of BUCKET_CASES) {
 }
 
 test('認領時限可以用 --stale-hours 覆寫，過期只歸到 stale、不釋放', () => {
-  const { run, calls } = fakeGh({ issues: [issue(7, { labels: ['ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(3) })] });
+  const { run, calls } = fakeGh({ issues: [issue(7, { labels: ['bug', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(3) })] });
   assert.equal(run().stdout, 'claimed #7 標題 7\n');
   assert.equal(run('--stale-hours', '2').stdout, 'stale #7 標題 7\n');
   assert.ok(calls().every(([cmd, sub]) => cmd === 'api' && sub === 'graphql'), '列出時只讀，不改 Issue');
@@ -156,12 +156,46 @@ test('ready 排序：別的 repo 的單算一張，不沿著同號碼的本 repo
 
 test('ready 桶先印，其餘依桶的順序、桶內依號碼', () => {
   const result = fakeGh({ issues: [
-    issue(12, { labels: ['needs-triage'] }),
-    issue(2, { labels: ['ready-for-agent'], blockedBy: [11] }),
-    issue(11, { labels: ['ready-for-agent'], blocking: [2] }),
-    issue(1, { labels: ['needs-triage'] }),
+    issue(12, { labels: ['bug', 'needs-triage'] }),
+    issue(2, { labels: ['bug', 'ready-for-agent'], blockedBy: [11] }),
+    issue(11, { labels: ['bug', 'ready-for-agent'], blocking: [2] }),
+    issue(1, { labels: ['bug', 'needs-triage'] }),
   ] }).run();
   assert.equal(result.stdout, 'ready #11 標題 11\nblocked #2 標題 2\nneeds-triage #1 標題 1\nneeds-triage #12 標題 12\n');
+});
+
+const noCategory = issues => fakeGh({ issues }).run().stdout.split('\n').filter(line => line.startsWith('NO_CATEGORY '));
+
+test('有 triage 狀態 label 卻沒有分類 label 的單印 NO_CATEGORY（#130 當時是 ready-for-agent,retro）', () => {
+  const result = fakeGh({ issues: [issue(130, { labels: ['ready-for-agent', 'retro'] })] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #130 標題 130\nNO_CATEGORY 130\n');
+});
+
+test('NO_CATEGORY 不印：已有分類、沒有 triage 狀態、母單（sub-issue 或 parent label）、retro-candidates', () => {
+  assert.deepEqual(noCategory([
+    issue(130, { labels: ['ready-for-agent', 'retro', 'bug'] }),
+    issue(131, { labels: ['retro'] }),
+    issue(132, { labels: ['ready-for-agent'], subIssues: 2 }),
+    issue(133, { labels: ['parent', 'ready-for-agent'] }),
+    issue(134, { labels: ['retro-candidates', 'ready-for-agent'] }),
+  ]), []);
+});
+
+test('NO_CATEGORY 涵蓋每個 triage 狀態與每個桶，依號碼排序', () => {
+  assert.deepEqual(noCategory([
+    issue(9, { labels: ['wontfix'] }),
+    issue(3, { labels: ['needs-triage'] }),
+    issue(5, { labels: ['ready-for-human'] }),
+    issue(4, { labels: ['needs-info'] }),
+    issue(8, { labels: ['ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(1) }),
+    issue(6, { labels: ['ready-for-agent'], blockedBy: [3] }),
+  ]), ['NO_CATEGORY 3', 'NO_CATEGORY 4', 'NO_CATEGORY 5', 'NO_CATEGORY 6', 'NO_CATEGORY 8', 'NO_CATEGORY 9']);
+});
+
+test('分類 label 可以用 --categories 覆寫（adapter 的分類 label 不是 bug、enhancement 時）', () => {
+  const { run } = fakeGh({ issues: [issue(7, { labels: ['ready-for-agent', 'type:feature'] }), issue(8, { labels: ['ready-for-agent', 'bug'] })] });
+  assert.equal(run('--categories', 'type:feature,type:bug').stdout, 'ready #7 標題 7\nready #8 標題 8\nNO_CATEGORY 8\n');
 });
 
 const HOST = (await import('node:os')).hostname();
