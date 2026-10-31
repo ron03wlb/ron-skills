@@ -2,7 +2,7 @@
 // 在 Orca 開一個新的 Claude session 並送出第一個 prompt：有 ORCA_TERMINAL_HANDLE 時 split 在呼叫者的 pane 旁邊（使用者的每個分頁各有用途，不另開新分頁），
 // 沒有時，或帶 `--tab`（新 session 要比呼叫者活得久，例如 coordinator 交接後使用者會關掉舊視窗）時，在主 checkout 新開分頁；
 // 帶 `--worktree <path>`（要在自己 worktree 跑的 session）時，在該 worktree 新開分頁；
-// 標題前面加上分頁狀態「處理中｜」（tab-state.mjs；已有狀態前綴就換掉）→ 命名 → 等 TUI 就緒（兩輪）→ 送出 prompt 並讀畫面確認送達（orca-session-send.mjs 的 waitTuiReady／sendPrompt）。
+// 標題前面加上分頁狀態「處理中｜」（tab-state.mjs；已有狀態前綴就換掉）→ 命名並記下標題（Orca 讀不回，見 tab-state.mjs） → 等 TUI 就緒（兩輪）→ 送出 prompt 並讀畫面確認送達（orca-session-send.mjs 的 waitTuiReady／sendPrompt）。
 // 送出不帶 `--wait-submit`：Orca 從 WSL 常因無法確認 prompt-delivery 回 runtime_unavailable 且完全不送出。
 // 任何「開新 session 接手」的交接都走這裡，不手動組 create／split／rename／wait／send。
 //
@@ -12,7 +12,7 @@
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { orca, sendPrompt, waitTuiReady } from './orca-session-send.mjs';
-import { withState } from './tab-state.mjs';
+import { recordTitle, withState } from './tab-state.mjs';
 
 const USAGE = '用法：node scripts/orca-session-split.mjs --title <分頁標題> --prompt <第一個 prompt> [--tab | --worktree <path>]（需要 ORCA_CLI_COMMAND）';
 
@@ -29,16 +29,17 @@ export function mainCheckout() {
  * @returns {Promise<{handle: string} | {stop: string, handle?: string, aborted?: boolean}>} 成功回 handle；失敗回 STOP 原因（不含 `STOP ` 前綴），
  *   分頁已開好時附 handle 讓呼叫者關掉；開分頁那一步被中止時 `aborted` 為真。
  */
-export async function openSession(ctx, { title: topic, prompt, main, self = process.env.ORCA_TERMINAL_HANDLE, newTab = false, createSignal = ctx.signal }) {
-  const title = withState(topic, '處理中');
+export async function openSession(ctx, { title, prompt, main, self = process.env.ORCA_TERMINAL_HANDLE, newTab = false, createSignal = ctx.signal }) {
+  const tabTitle = withState(title, '處理中');
   let handle;
   try {
     if (self && !newTab) {
       handle = (await orca({ ...ctx, signal: createSignal }, 'terminal', 'split', '--terminal', self, '--direction', 'vertical', '--command', 'claude')).split.handle;
-      await orca({ ...ctx, signal: createSignal }, 'terminal', 'rename', '--terminal', handle, '--title', title);
+      await orca({ ...ctx, signal: createSignal }, 'terminal', 'rename', '--terminal', handle, '--title', tabTitle);
     } else {
-      handle = (await orca({ ...ctx, signal: createSignal }, 'terminal', 'create', '--worktree', `path:${main}`, '--title', title, '--command', 'claude')).terminal.handle;
+      handle = (await orca({ ...ctx, signal: createSignal }, 'terminal', 'create', '--worktree', `path:${main}`, '--title', tabTitle, '--command', 'claude')).terminal.handle;
     }
+    recordTitle(handle, tabTitle);
   } catch (error) {
     return handle ? { stop: `create ${error.message}`, handle } : { stop: `create ${error.message}`, aborted: error.name === 'AbortError' };
   }

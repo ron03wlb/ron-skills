@@ -18,13 +18,17 @@ import { orca } from './orca-session-send.mjs';
 export const STATES = ['處理中', '待 Retro', '待關閉'];
 const SEP = '｜';
 const PREFIX = new RegExp(`^(?:${STATES.join('|')})${SEP}`);
-const ORCA_STEP_MS = 10000;
+/** 一次 tab-state 或 hook 呼叫裡全部 Orca 呼叫共用的上限。 */
+const ORCA_BUDGET_MS = 10000;
 
 /** 去掉標題最前面的狀態前綴。 */
 export const stripState = title => String(title ?? '').replace(PREFIX, '');
 
 /** 標題是否以合法的狀態前綴開頭。 */
 export const hasState = title => PREFIX.test(String(title ?? ''));
+
+/** 本腳本與 hook 的 Orca 呼叫環境：ORCA_CLI_COMMAND 沒設時用 PATH 上的 `orca`，全部呼叫共用 ORCA_BUDGET_MS。 */
+export const orcaContext = () => ({ cli: process.env.ORCA_CLI_COMMAND || 'orca', signal: AbortSignal.timeout(ORCA_BUDGET_MS) });
 
 /** 換成 `state` 的前綴，其他文字不動。 */
 export const withState = (title, state) => `${state}${SEP}${stripState(title)}`;
@@ -72,7 +76,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const handle = process.env.ORCA_TERMINAL_HANDLE;
   if (!handle) process.exit(0);
   try {
-    const title = await setState({ cli: process.env.ORCA_CLI_COMMAND || 'orca', signal: AbortSignal.timeout(ORCA_STEP_MS) }, handle, state);
+    const title = await setState(orcaContext(), handle, state);
     console.log(`TAB_STATE ${title}`);
   } catch {
     process.exit(0);

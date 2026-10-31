@@ -26,12 +26,14 @@ else if (b === 'send') { fs.appendFileSync(sentFile, arg('--text') + '\\n'); rep
 else if (b === 'read') reply('read', { terminal: { tail: sent().length > ${swallow} ? [sent().pop()] : ['❯'] } });
 `);
   chmodSync(cli, 0o755);
-  const open = args => run(repo, ['node', script, ...args], { env: { ORCA_CLI_COMMAND: cli, ...FAST, ORCA_TERMINAL_HANDLE: self ?? '' } });
-  return { repo, log, open };
+  const titles = join(temp, 'titles');
+  const open = args => run(repo, ['node', script, ...args], { env: { ORCA_CLI_COMMAND: cli, ...FAST, ORCA_TERMINAL_HANDLE: self ?? '', TAB_STATE_DIR: titles } });
+  const recorded = handle => readFileSync(join(titles, handle), 'utf8');
+  return { repo, log, open, recorded };
 }
 
 test('在 Orca pane 內：split 在呼叫者旁邊、命名、送出 prompt 且不帶 --wait-submit', t => {
-  const { log, open } = fixture(t, { self: 'term_self' });
+  const { log, open, recorded } = fixture(t, { self: 'term_self' });
   const result = open(['--title', '#12 交付', '--prompt', '/issue-run 12']);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), 'OPENED term_split');
@@ -40,6 +42,8 @@ test('在 Orca pane 內：split 在呼叫者旁邊、命名、送出 prompt 且�
   assert.match(calls, /terminal rename --terminal term_split --title 處理中｜#12 交付/);
   assert.match(calls, /terminal send --terminal term_split --text \/issue-run 12 --enter --json\n/);
   assert.doesNotMatch(calls, /terminal create|--wait-submit/);
+  // Orca 讀不回 rename 設的標題：新 session 的 tab-state 要靠這份記錄（tab-state.mjs）。
+  assert.equal(recorded('term_split'), '處理中｜#12 交付');
 });
 
 test('不在 Orca pane 內：在主 checkout 新開 terminal', t => {

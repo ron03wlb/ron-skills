@@ -151,3 +151,20 @@ test('docs/agents/tab-state.json：同名覆寫、null 停用、新增觸發條�
   hook(bash('node scripts/pilot-handoff.mjs', 'HANDED_OFF term_new'));
   assert.equal(recorded(), '待關閉｜#21 雙池採集｜收尾｜land');
 });
+
+// pilot 底下是 coordinator 以 `land.mjs pilot/integration --keep-branch` 落地，還在運作的 coordinator 分頁不能被切成待 Retro。
+test('landed：帶 --keep-branch 的 land.mjs（pilot coordinator 落地）不觸發', t => {
+  const { record, hook, calls } = fixture(t);
+  record('處理中｜[維運] issue-pilot coordinator');
+  const result = hook(bash('node scripts/land.mjs pilot/integration --keep-branch --title x --body-file .scratch/pilot/pr-body.md', `LANDED 140 ${SHA}\n`));
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(calls(), '');
+});
+
+test('PostToolUse：標題在引號裡含 & ; | 時照樣記下完整標題', t => {
+  const { recorded, hook } = fixture(t);
+  for (const title of ['處理中｜[研究] A & B', '處理中｜#21 x; y', '處理中｜#21 a | b']) {
+    hook(bash(`orca terminal rename --terminal "$ORCA_TERMINAL_HANDLE" --title "${title}" && echo ok`, ''));
+    assert.equal(recorded(), title);
+  }
+});

@@ -27,7 +27,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { orca, sendToSession } from './orca-session-send.mjs';
 import { openSession } from './orca-session-split.mjs';
-import { recordedTitle, sameTopic } from './tab-state.mjs';
+import { recordedTitle, sameTopic, withState } from './tab-state.mjs';
 
 const USAGE = '用法：node scripts/pilot-handoff.mjs --session <id> --pid <pid> --reason <原因> [--to <name|handle>] [--held-check <指令>]（需要 ORCA_CLI_COMMAND）';
 export const LOOP_COMMAND = '/loop /issue-pilot';
@@ -86,7 +86,7 @@ async function closeTerminal(cli, handle) {
  * 所以 create 是被中止而這裡沒關掉任何分頁時，一律提醒人去確認。
  */
 async function closeOrphans(cli, main, before, aborted) {
-  const remind = `（請確認有沒有留下標題 處理中｜${TITLE} 或剛由 create 開出的分頁）`;
+  const remind = `（請確認有沒有留下標題 ${withState(TITLE, '處理中')} 或剛由 create 開出的分頁）`;
   let note = '', closed = 0;
   try {
     for (const terminal of (await listTerminals(cli, main)).filter(terminal => !before.has(terminal.handle))) {
