@@ -38,8 +38,8 @@
     },
     "scripts/orca-session-send.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-send.mjs",
-      "commit": "ada628ad8ff233f859b6e1cd3cdb9965b4629871",
-      "sha256": "2f002e77b5f78eae66fcc9bd3be3bff3cd2e55b4e67f6ffaebd4096873d29754"
+      "commit": "83da9620ea10df471d7e6033673f2efa4f814b43",
+      "sha256": "67f1a71601a60e1c85df5abfd6c8c63acbac1ebb3c0c9146a6fcea75d1900d09"
     },
     "scripts/orca-session-split.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-split.mjs",

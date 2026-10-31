@@ -12,7 +12,8 @@ const script = new URL('../scripts/orca-session-send.mjs', import.meta.url).path
 // `draft` 為第一次送出前 composer 已有的文字（undefined 沿用樣本值、null 回應不帶 `draft` 欄位，如 composer 為空的真實輸出），
 // 送出 Enter 後連同送出的文字一起出現在畫面上。
 // `stuck` 次送出的文字進了輸入框卻沒提交：畫面最後一行是輸入框裡的 prompt，draft 也還是它。
-function fixture(t, { busy = 0, sendRejected = false, swallow = 0, stale = false, draft, stuck = 0 } = {}) {
+// `working` 模擬一直在跑的 worker：每次 read 的畫面都帶 `esc to interrupt`（要搭配夠大的 `busy`）。
+function fixture(t, { busy = 0, sendRejected = false, swallow = 0, stale = false, draft, stuck = 0, working = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'orca-session-send-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const log = join(temp, 'orca.log');
@@ -23,14 +24,15 @@ const fs = require('fs'); const [, b] = process.argv.slice(2); const arg = k => 
 const sentFile = ${JSON.stringify(log)} + '.sent'; const sent = () => fs.existsSync(sentFile) ? fs.readFileSync(sentFile, 'utf8').split('\\n').slice(0, -1) : [];
 fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 ${orcaReplySource()}
+const spinner = ${working} ? ['✻ Working… (esc to interrupt)'] : [];
 if (${stale}) { fail('terminal_handle_stale'); process.exit(1); }
 if (b === 'wait') reply('wait', { wait: { satisfied: (fs.readFileSync(${JSON.stringify(log)}, 'utf8').match(/terminal wait/g) || []).length > ${busy} } });
 else if (b === 'send') { fs.appendFileSync(sentFile, arg('--text') + '\\n'); reply('send', { send: { accepted: ${!sendRejected} } }); }
-else if (b === 'read' && sent().length && sent().length <= ${stuck}) reply('read', { terminal: { tail: ['● 先前的報告', '> ' + sent()[0]], draft: sent()[0] } });
+else if (b === 'read' && sent().length && sent().length <= ${stuck}) reply('read', { terminal: { tail: [...spinner, '● 先前的報告', '> ' + sent()[0]], draft: sent()[0] } });
 else if (b === 'read') {
   const draft = ${JSON.stringify(draft ?? '')};
   const typed = sent().length ? draft + (sent().filter(Boolean).pop() ?? '') : '';
-  const terminal = { tail: ['● 先前的報告', sent().length > ${swallow} ? '> ' + typed : '❯'] };
+  const terminal = { tail: [...spinner, '● 先前的報告', sent().length > ${swallow} ? '> ' + typed : '❯'] };
   if (${draft === null}) {
     const result = mergeSample(ORCA_SAMPLES.read, { terminal }, 'read');
     delete result.terminal.draft;
@@ -103,6 +105,31 @@ test('文字進了輸入框卻沒提交：不算送達，只補 Enter 一次後�
   const { log, send } = fixture(t, { stuck: 1 });
   const result = send(['--terminal', 'term_w', '--prompt', PROMPT]);
   assert.equal(result.stdout.trim(), 'SENT term_w');
+  const sends = readFileSync(log, 'utf8').split('\n').filter(line => line.startsWith('terminal send '));
+  assert.deepEqual(sends, [`terminal send --terminal term_w --text ${PROMPT} --enter --json`, 'terminal send --terminal term_w --text  --enter --json']);
+});
+
+// 真實發生過的錯：coordinator 補範圍時 worker 一直在跑，兩次都卡在等 tui-idle 逾時，訊息沒進輸入框（#133）。
+test('忙碌中的 session：沒有 --queue 照舊逾時 STOP；有 --queue 不等 tui-idle，送出並確認排隊後印 QUEUED <handle>', t => {
+  const plain = fixture(t, { busy: 99, working: true }).send(['--terminal', 'term_w', '--prompt', PROMPT]);
+  assert.equal(plain.status, 4);
+  assert.equal(plain.stdout.trim(), 'STOP tui-timeout term_w');
+  const { log, send } = fixture(t, { busy: 99, working: true });
+  const result = send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'QUEUED term_w');
+  const calls = readFileSync(log, 'utf8');
+  assert.doesNotMatch(calls, /terminal wait/);
+  assert.ok(calls.includes(`terminal send --terminal term_w --text ${PROMPT} --enter --json\n`), calls);
+});
+
+// 忙碌畫面本來就有 `esc to interrupt`，送出被吞或停在輸入框都不能算排隊。
+test('--queue：送出被吞三次 STOP send；文字停在輸入框時只補 Enter，再 QUEUED', t => {
+  const swallowed = fixture(t, { busy: 99, working: true, swallow: 3 }).send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']);
+  assert.equal(swallowed.status, 4);
+  assert.equal(swallowed.stdout.trim(), 'STOP send term_w');
+  const { log, send } = fixture(t, { busy: 99, working: true, stuck: 1 });
+  assert.equal(send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']).stdout.trim(), 'QUEUED term_w');
   const sends = readFileSync(log, 'utf8').split('\n').filter(line => line.startsWith('terminal send '));
   assert.deepEqual(sends, [`terminal send --terminal term_w --text ${PROMPT} --enter --json`, 'terminal send --terminal term_w --text  --enter --json']);
 });
