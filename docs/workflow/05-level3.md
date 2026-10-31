@@ -68,7 +68,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Agent rows | 每個派出的 agent 記在哪 |
 | Probe | 每輪對帳的指令或步驟 |
 | Hold flag | 哪個合入步驟在合入前檢查 `hold` |
-| Stage | 開批次分支、依序合入 `DONE` 的成員；哪些衝突 coordinator 可以自己解 |
+| Stage | 開批次分支、依序合入 `DONE` 的成員；哪些衝突 coordinator 可以自己解，哪些改成重派 fresh worker（例如兩邊改了同一條目），重派後又衝突才開 gate |
 | Regression | 在 staged SHA 跑什麼、怎樣算過 |
 | Integrate | 合進整合分支的條件與指令 |
 | Push gate | 整合分支 tip 等於最後通過回歸的 SHA 時要跑的 push 指令：交給人，或 adapter 允許時由 coordinator 依序 push、開 PR／MR、合併，再讓整合分支跟上主線 |
