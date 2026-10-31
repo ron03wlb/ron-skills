@@ -1,6 +1,6 @@
 # 03 L1 導入
 
-L1 的目標：在一個還沒有 adapter 的 repo 裡，把第一張 Issue 用 `/issue-run` 跑到本機 candidate commit。照下面的 checklist 由上往下做，每一步都有「做完的樣子」，對不上就停在那一步。
+L1 的目標：在一個還沒有 adapter 的 repo 裡，把第一張 Issue 用 `/issue-run` 跑到本機 candidate commit，之後用 `/issue-queue` 看池子、用 `/loop /issue-run --pool` 一張接一張跑。照下面的 checklist 由上往下做，每一步都有「做完的樣子」，對不上就停在那一步。
 
 實例：ron-skills 的 adapter [`docs/agents/issue-run.md`](../agents/issue-run.md) 只看 Tracker、Readiness、Checks、Candidate and acceptance、Evidence and closing 五段，就是一份 L1 adapter；其餘段落屬於 L3。唯一檢查入口是 `bin/check`。
 
@@ -145,6 +145,24 @@ git branch -d issue/<n>-<slug> && git push origin --delete issue/<n>-<slug>
 ```
 
 做完的樣子：Issue 關閉，candidate 在 `origin/main` 上，本機與遠端都沒有工作分支。
+
+### 9. `/issue-queue`
+
+第一張單跑順之後，用 `/issue-queue` 看所有開著的 Issue 怎麼分桶。它跑 `scripts/issue-pool.mjs`（`/setup-workflow` 在 L1 一定會複製這支；手動備用時自己跑 `copy-templates.mjs <repo> issue-pool`。tracker 要是 GitHub 或 GitLab，本機 Markdown tracker 沒有池子），第一行是 `進行中 <N>／上限 <M>`（L1 沒有 Pilot 段，上限顯示 `不限`），接著依 `ready`、`parent`、`human`、`stale`、`claimed`…的順序列出分桶，`ready` 桶的順序就是開工順序。`needs-triage`、`unlabeled` 的單，以及上次分級後有新留言的 `needs-info` 單，它照 `/triage` 的規則逐張細化，每一則改動都等你確認；過期的認領（`stale`）只列出來，放不放由你決定。
+
+做完的樣子：`/issue-queue` 印出上限行與分桶，你要開工的單在 `ready` 桶。
+
+### 10. `/issue-run --pool`
+
+池子裡有幾張 `ready` 的單時，不必逐張打 `/issue-run <n>`：
+
+```text
+/loop /issue-run --pool 3
+```
+
+它在同一個 session 照 `ready` 的順序先 `node scripts/issue-pool.mjs claim <n>` 認領、再照 `/issue-run <n>` 跑，一次一張、不開新分頁；別的 session 已認領的單略過。停下的單在 Issue 留言寫明停在哪一步、記成 `stopped`，被它擋住的單記成 `skipped`，其餘照跑；你在那張單留言回覆後，下一次醒來會接著做。不帶數字時不設上限，loop 只在你停掉時結束。每張單的 push 與結案照 adapter 的 Evidence and closing，L1 預設由你做（第 8 步）。
+
+做完的樣子：`.scratch/issue-run-pool/state.md` 每張經手的單一列（認領過的，加上沒認領就略過的 `skipped`：別的 session 已認領，或被停下的單擋住），`done` 的單有 candidate SHA，`stopped` 的單有停點留言的網址。
 
 ## 什麼時候會停
 

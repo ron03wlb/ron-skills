@@ -5,13 +5,13 @@ description: "Show the human the tracker pool by bucket with the in-progress cou
 
 The human's view of the pool. `/issue-pilot` and `/issue-run --pool` take Issues from it unattended; `/issue-queue` shows the human what is in it, what is stuck, and what still needs a decision, and changes the tracker only when the human says so. Run it by hand or under `/loop /issue-queue`.
 
-Project facts come from the repo adapter `docs/agents/issue-run.md`: its **Tracker** section gives the tracker commands (on GitHub, `gh` reads as below; writes through the adapter's wrapper when it names one), its **Readiness** section the ready state, its **Pilot** section (or the file it points to) the worker cap, and its **Issue queue** section whether parent hints are on. The buckets come only from the repo's `scripts/issue-pool.mjs`, the same list the pilot and `--pool` read. When the repo has no `scripts/issue-pool.mjs`, stop and tell the human to run `/setup-workflow`; never bucket Issues another way.
+Project facts come from the repo adapter `docs/agents/issue-run.md`: its **Tracker** section gives the tracker commands (on GitHub, `gh` reads as below; writes through the adapter's wrapper when it names one), its **Readiness** section the ready state, its **Pilot** section (or the file it points to) the worker cap, its **Pool** section the claim timeout and category labels, and its **Issue queue** section whether parent hints are on. The buckets come only from the repo's `scripts/issue-pool.mjs`, the same list the pilot and `--pool` read. When the repo has no `scripts/issue-pool.mjs`, stop and tell the human to run `/setup-workflow`; never bucket Issues another way.
 
 The pilot's own refinement (its Pool and Probe steps relabelling and reopening on their own) is unchanged: this skill adds a human entry beside it and never edits the pilot, `/triage`, or any other skill.
 
 ## Steps
 
-1. **Pool.** Run `node scripts/issue-pool.mjs` and keep its output: one `<bucket> #<n> <title>` line per open Issue, then any `NO_CATEGORY <n>` lines. Done when the command exited 0; on any other exit, report its stderr and stop.
+1. **Pool.** Run `node scripts/issue-pool.mjs`, with `--stale-hours <h>` when the adapter's Pool section sets `Claim timeout: <h> hours` and `--categories <label>,...` when it sets `Categories: <label>,...`, and keep its output: one `<bucket> #<n> <title>` line per open Issue, then any `NO_CATEGORY <n>` lines. Done when the command exited 0; on any other exit, report its stderr and stop.
 
 2. **Limit line.** The report's first line is `進行中 <N>／上限 <M>`. `<N>` is the number of step 1 lines starting with `claimed ` (count them with `grep -c '^claimed '`, not by eye; a `stale` claim and an assigned `ready-for-human` Issue, which the script puts in `stale` and `human`, are listed in their buckets, not counted). `<M>` is the adapter's worker cap, the concurrent-worker limit in its Pilot section's defaults; when the adapter names no cap, or says the count is unlimited, `<M>` is `不限`. Done when the line holds both values.
 

@@ -18,7 +18,7 @@
 <main class="content">
 <article>
 <h1>03 L1 導入</h1>
-<p>L1 的目標：在一個還沒有 adapter 的 repo 裡，把第一張 Issue 用 <code>/issue-run</code> 跑到本機 candidate commit。照下面的 checklist 由上往下做，每一步都有「做完的樣子」，對不上就停在那一步。</p>
+<p>L1 的目標：在一個還沒有 adapter 的 repo 裡，把第一張 Issue 用 <code>/issue-run</code> 跑到本機 candidate commit，之後用 <code>/issue-queue</code> 看池子、用 <code>/loop /issue-run --pool</code> 一張接一張跑。照下面的 checklist 由上往下做，每一步都有「做完的樣子」，對不上就停在那一步。</p>
 <p>實例：ron-skills 的 adapter <a href="../../agents/issue-run.md"><code>docs/agents/issue-run.md</code></a> 只看 Tracker、Readiness、Checks、Candidate and acceptance、Evidence and closing 五段，就是一份 L1 adapter；其餘段落屬於 L3。唯一檢查入口是 <code>bin/check</code>。</p>
 <h2 id="checklist">Checklist</h2>
 <p>第 1～3 步是 <code>/setup-workflow</code> 開頭的三站：環境 → Host → 等級。每一站都只讀不寫，先列出證據、問這一站的問題，然後停下來等你確認，確認了才進下一站；三站都確認之後它才列出要寫的檔案（第 4 步），你再確認一次才寫入。哪一站停在「不寫檔、只給修正指令」，修好之後重跑 <code>/setup-workflow</code>，從第一站重新開始。</p>
@@ -116,6 +116,14 @@ gh pr create --base main --fill            # GitLab：glab mr create --target-br
 gh issue close &lt;n&gt; --comment &quot;已合進 main：&lt;merge commit&gt;&quot;   # GitLab：glab issue close &lt;n&gt;
 git branch -d issue/&lt;n&gt;-&lt;slug&gt; &amp;&amp; git push origin --delete issue/&lt;n&gt;-&lt;slug&gt;</code></pre>
 <p>做完的樣子：Issue 關閉，candidate 在 <code>origin/main</code> 上，本機與遠端都沒有工作分支。</p>
+<h3 id="9-issue-queue">9. <code>/issue-queue</code></h3>
+<p>第一張單跑順之後，用 <code>/issue-queue</code> 看所有開著的 Issue 怎麼分桶。它跑 <code>scripts/issue-pool.mjs</code>（<code>/setup-workflow</code> 在 L1 一定會複製這支；手動備用時自己跑 <code>copy-templates.mjs &lt;repo&gt; issue-pool</code>。tracker 要是 GitHub 或 GitLab，本機 Markdown tracker 沒有池子），第一行是 <code>進行中 &lt;N&gt;／上限 &lt;M&gt;</code>（L1 沒有 Pilot 段，上限顯示 <code>不限</code>），接著依 <code>ready</code>、<code>parent</code>、<code>human</code>、<code>stale</code>、<code>claimed</code>…的順序列出分桶，<code>ready</code> 桶的順序就是開工順序。<code>needs-triage</code>、<code>unlabeled</code> 的單，以及上次分級後有新留言的 <code>needs-info</code> 單，它照 <code>/triage</code> 的規則逐張細化，每一則改動都等你確認；過期的認領（<code>stale</code>）只列出來，放不放由你決定。</p>
+<p>做完的樣子：<code>/issue-queue</code> 印出上限行與分桶，你要開工的單在 <code>ready</code> 桶。</p>
+<h3 id="10-issue-run---pool">10. <code>/issue-run --pool</code></h3>
+<p>池子裡有幾張 <code>ready</code> 的單時，不必逐張打 <code>/issue-run &lt;n&gt;</code>：</p>
+<pre><code class="language-text">/loop /issue-run --pool 3</code></pre>
+<p>它在同一個 session 照 <code>ready</code> 的順序先 <code>node scripts/issue-pool.mjs claim &lt;n&gt;</code> 認領、再照 <code>/issue-run &lt;n&gt;</code> 跑，一次一張、不開新分頁；別的 session 已認領的單略過。停下的單在 Issue 留言寫明停在哪一步、記成 <code>stopped</code>，被它擋住的單記成 <code>skipped</code>，其餘照跑；你在那張單留言回覆後，下一次醒來會接著做。不帶數字時不設上限，loop 只在你停掉時結束。每張單的 push 與結案照 adapter 的 Evidence and closing，L1 預設由你做（第 8 步）。</p>
+<p>做完的樣子：<code>.scratch/issue-run-pool/state.md</code> 每張經手的單一列（認領過的，加上沒認領就略過的 <code>skipped</code>：別的 session 已認領，或被停下的單擋住），<code>done</code> 的單有 candidate SHA，<code>stopped</code> 的單有停點留言的網址。</p>
 <h2 id="什麼時候會停">什麼時候會停</h2>
 <p><code>/issue-run</code> 只在這些情況停下來交回給你，同時把其他不受影響的 ticket 繼續做完：</p>
 <ul>
