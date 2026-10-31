@@ -112,7 +112,7 @@ adapter 有 **Retro collect** 條目時，任何 session 跑 `/retro`（退役 c
 
 ## 專案自訂的分級
 
-L1／L2 的分級入口一律是 `/triage`。專案的分級規則多到 `/triage` 裝不下時，可以做一個專案層 skill 取代它，並在 adapter 的 Readiness 段指向它。例子是 L3 實例的 `/issue-queue`：先列出待補關聯、待釐清、可開工、阻塞中四區總覽，再逐張釐清，並在 ready 前檢查本文的固定區塊。這是專案擴充，不是 L3 的必要條件。
+L1／L2 的分級入口一律是 `/triage`。專案的分級規則多到 `/triage` 裝不下時，可以做一個專案層 skill 取代它，並在 adapter 的 Readiness 段指向它。例子是 L3 實例的專案層 issue queue：先列出待補關聯、待釐清、可開工、阻塞中四區總覽，再逐張釐清，並在 ready 前檢查本文的固定區塊。這是專案擴充，不是 L3 的必要條件。ron-skills 另有使用者層的 `/issue-queue`（照 `issue-pool.mjs` 分桶、照 `/triage` 的規則細化，不取代 `/triage`）；專案層 skill 不要再取名 `issue-queue`，同名會和它撞名。
 
 ## L3 實例的其他擴充
 
