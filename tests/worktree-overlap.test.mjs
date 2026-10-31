@@ -92,3 +92,38 @@ test('還沒有 commit 的 orphan worktree 略過，不擋住其他 worktree', t
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(result.stdout.trim().split('\n'), ['OVERLAP_WT issue/2-b scripts/x.mjs']);
 });
+
+// #224：retro worktree 用 `$(git diff --name-only main HEAD)` 當清單，本機 main 已被別的 session 推進（#220），
+// 清單多了 main 自己改的檔（24 檔，本次只改 14 檔），印出跟本次無關的 OVERLAP_WT。
+// --mine 改取目前 worktree 自己從 merge-base 起改的檔（含未 commit、未追蹤），只比其他 worktree。
+test('--mine：本機 main 在 merge-base 之後前進時，只拿自己改過的檔比對其他 worktree，自己不列', t => {
+  const { main, a, b } = fixture(t);
+  // main 在 a 的 merge-base 之後改了 y.mjs（b 的工作樹也改了它），b 另外改了 a 也改過的 README.md。
+  writeFileSync(join(main, 'scripts/y.mjs'), 'export const y = 3;\n');
+  git(main, 'commit', '-q', '-am', 'main moved y');
+  writeFileSync(join(b, 'README.md'), '# app\n\nb 的說明\n');
+  // a 自己還有一個未追蹤的 scripts/x.mjs：未 commit 的改動也算 a 的。
+  writeFileSync(join(a, 'scripts/x.mjs'), 'export const x = 2;\n');
+
+  // 重現原本的做法：清單混進 main 自己改的 y.mjs，多印一行 b 的無關重疊。
+  const listed = git(a, 'diff', '--name-only', 'main', 'HEAD').trim().split('\n');
+  assert.ok(listed.includes('scripts/y.mjs'), listed.join('\n'));
+  assert.ok(run(a, ...listed).stdout.includes('OVERLAP_WT issue/2-b scripts/y.mjs'));
+
+  const result = run(join(a, 'docs'), '--mine');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    'OVERLAP_WT issue/2-b README.md',
+    'OVERLAP_WT issue/2-b scripts/x.mjs',
+  ]);
+});
+
+test('--mine：自己沒有改動時不輸出；和檔案參數一起給時 exit 2', t => {
+  const { main, a } = fixture(t);
+  const c = join(main, '..', 'c');
+  git(main, 'worktree', 'add', '-q', '-b', 'issue/3-c', c, 'main');
+  const none = run(c, '--mine');
+  assert.equal(none.status, 0, none.stderr);
+  assert.equal(none.stdout, '');
+  assert.equal(run(a, '--mine', PILOT).status, 2);
+});
