@@ -29,6 +29,12 @@
 //   prior 依序找 `-prior`、`-prior2`…：手動重派留下的 `-prior` 也算，那張 Issue 第一次跑 --fresh 就是 refresh-twice。
 //   prior 已在、分支又有了 commit 就是第二次重派：印 `STOP refresh-twice <n>`，由 coordinator 開 gate；gate 選了再重派時帶 --again，另存成 `-prior2`（依序編號）。
 //   認領不在這裡做：coordinator 照 Dispatch 先跑 claim；這裡只在動手前同樣檢查認領，不是這個 session 的就 `STOP <n> not-claimed`，什麼都不動。
+//   沒帶 --note（#227）時只寫 `<主 checkout>/.scratch/pilot/fresh-<n>.md` 草稿、印 `NOTE_DRAFT <path>`，不派工：唯讀（只有 gh 讀 Issue 標題），
+//   不檢查認領與 --capacity、不需要 ORCA_CLI_COMMAND，不改名分支、不開關分頁、不留言；草稿已在時覆寫。內容：原 Issue 號碼與標題；
+//   prior 分支與 SHA（batch-<key>.md 那列的 candidate，空的取分支 tip）與 `git merge-base <分支> <整合分支>`；成員（prior SHA）與整合分支
+//   自 merge-base 以來共同改過的檔，各附兩邊的 `git diff --stat` 那一行，`.md` 再附兩邊改到的 `- **<名稱>.**` 條目（pilot-probe 的 changedUnits），不印完整 diff；
+//   worker checkpoint（`<worktree>/.scratch/issue-run-<n>/state.md`）從 `final review-only round` 那行到結果行（`DONE|STOP <n>`）的原文，
+//   沒有這段時寫明要補 worker 分頁尾段；最後一段空白的「怎麼整併」給 coordinator 補，補完再帶 --note 重跑。
 //
 // 全機上限（#178）：帶 --capacity 時，動手前先以同目錄 pilot-capacity.mjs 的 check 合計全機帳本、加上這次要派的人數（--fresh 是 1）：
 //   超過 $PILOT_MACHINE_WORKER_CAP 就只印 `STOP capacity <合計>/<上限>`、exit 4，不寫 checkpoint、不建 worktree、不開分頁；沒超過先印 `CAPACITY ok <合計>/<上限>`。
@@ -36,11 +42,12 @@
 //
 // 用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--integration <分支>] [--stuck-after <分鐘>m]（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
 //       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--integration <分支>] [--stuck-after <分鐘>m]
+//       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--integration <分支>]（草稿，不需要 ORCA_CLI_COMMAND）
 //   --integration worktree 的 base 與表頭的整合分支，預設 pilot/integration；--stuck-after 成員行的 stuck-after，預設 90m。
 // stdout：每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
 //   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop；running、overlap 的 STOP 不改寫那一列），STOP 原因只在 stdout。
-//   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
+//   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> title …`（exit 4）；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
 // exit：0 全部派出；4 有成員 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -49,12 +56,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { claimedBy, defaultSession } from './issue-pool.mjs';
 import { orca, sendToSession } from './orca-session-send.mjs';
 import { closeIfAllMoved } from './lib/pilot-store.mjs';
-import { memberOverlaps } from './pilot-probe.mjs';
+import { changedUnits, memberOverlaps } from './pilot-probe.mjs';
 import { check as capacityCheck, ledgerPath, machineCap } from './pilot-capacity.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
 
 const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--integration <分支>] [--stuck-after <分鐘>m]（需要 ORCA_CLI_COMMAND）\n'
-  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--integration <分支>] [--stuck-after <分鐘>m]';
+  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--integration <分支>] [--stuck-after <分鐘>m]\n'
+  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--integration <分支>]（只寫 fresh-<n>.md 草稿、不派工）';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const WORKTREE_CREATE = fileURLToPath(new URL('./orca-worktree-create.mjs', import.meta.url));
 const BUDGET_MS = Number(process.env.PILOT_DISPATCH_BUDGET_MS || 510000);
@@ -321,6 +329,66 @@ async function refresh(cli, main, key, integration, { n, branch }, note, again, 
   return { checkpoint, prior, sha, worktree };
 }
 
+/**
+ * 沒帶 --note 的 --fresh：寫 fresh-<n>.md 草稿（內容見檔頭），傳回 `{ path }` 或 `{ stop }`（不含 `STOP `）。只讀 git、gh 與檔案，不改任何狀態。
+ */
+function freshDraft(main, key, integration, { n, branch }) {
+  if (!hasBranch(main, branch)) return { stop: `${n} git 沒有分支 ${branch}` };
+  const git = (...args) => run('git', ['-C', main, ...args]);
+  const viewed = run('gh', ['issue', 'view', n, '--json', 'title']);
+  let title;
+  try { title = viewed.status === 0 && JSON.parse(viewed.stdout).title; } catch { title = undefined; }
+  if (!title) return { stop: `${n} title ${(viewed.stderr ?? '').trim().replace(/\s*\n\s*/g, ' ') || 'gh issue view 讀不到標題'}` };
+  const candidate = rowOf(join(main, `.scratch/pilot/batch-${key}.md`), n)?.[8];
+  const prior = candidate || git('rev-parse', branch).stdout.trim();
+  const merged = git('merge-base', branch, integration);
+  if (merged.status !== 0) return { stop: `${n} git merge-base ${merged.stderr.trim()}` };
+  const base = merged.stdout.trim();
+  let member, other;
+  try {
+    [member, other] = [prior, integration].map(ref => changedUnits(main, base, ref, { adjacent: false }));
+  } catch (error) {
+    return { stop: `${n} git ${error.message}` };
+  }
+  const stat = (ref, path) => git('diff', '--stat=200', base, ref, '--', path).stdout.split('\n')[0].trim();
+  const side = (label, ref, unit, path) => `- ${label}：\`${stat(ref, path)}\``
+    + (unit.whole || !unit.entries.size ? '' : `；條目：${[...unit.entries].sort().join('、')}`);
+  const common = [...member.keys()].filter(path => other.has(path)).sort()
+    .map(path => [`### ${path}`, '', side('成員', prior, member.get(path), path), side('整合分支', integration, other.get(path), path)].join('\n'));
+  const worktree = worktreeOf(main, branch);
+  const state = worktree && join(worktree, `.scratch/issue-run-${n}/state.md`);
+  const lines = state && existsSync(state) ? readFileSync(state, 'utf8').split('\n') : [];
+  const from = lines.findIndex(line => /final review-only round/i.test(line));
+  const to = from < 0 ? -1 : lines.findIndex((line, i) => i > from && new RegExp(`\\b(DONE|STOP) ${n}\\b`).test(line));
+  const review = from < 0 ? 'checkpoint 沒有 review-only 段，補 worker 分頁尾段。'
+    : lines.slice(from, to < 0 ? undefined : to + 1).join('\n').trim();
+  const path = join(main, `.scratch/pilot/fresh-${n}.md`);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, [
+    `# fresh-${n}：#${n} ${title}`,
+    '',
+    '## 原 Issue 與 prior',
+    '',
+    `- 原 Issue：#${n} ${title}`,
+    `- prior：${branch} @ ${prior}（${candidate ? `batch-${key}.md 的 candidate` : '分支 tip'}）`,
+    `- merge-base ${branch} ${integration}：${base}`,
+    '',
+    '## 共同改過的檔',
+    '',
+    common.length ? common.join('\n\n') : '沒有。',
+    '',
+    '## 最後一輪 review-only',
+    '',
+    `來源：${state ?? `找不到 ${branch} 的 worktree`}`,
+    '',
+    review,
+    '',
+    '## 怎麼整併',
+    '',
+  ].join('\n'));
+  return { path };
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const positional = [];
@@ -340,11 +408,13 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (!/^\d+m$/.test(options.stuckAfter)) bad = true;
   const [key, ...specs] = positional;
   const fresh = 'fresh' in given;
-  // --fresh 只帶一個成員、一定要有 --note；--note 與 --again 只跟 --fresh 一起用。
-  if (fresh ? specs.length || !given.note || !existsSync(given.note) : 'note' in given || given.again) bad = true;
+  // --fresh 只帶一個成員；沒帶 --note 是草稿（#227），不能再帶派工才用的旗標；--note 與 --again 只跟 --fresh 一起用。
+  const draft = fresh && !('note' in given);
+  if (draft ? given.again || given.allowOverlap || given.capacity || 'stuckAfter' in given : 'note' in given && !existsSync(given.note)) bad = true;
+  if (fresh ? specs.length : 'note' in given || given.again) bad = true;
   const members = (fresh ? [given.fresh] : specs).map(spec => spec.match(/^(\d+):([a-z0-9][a-z0-9-]*)$/)).map(m => m && { n: m[1], branch: `issue/${m[1]}-${m[2]}` });
   const cli = process.env.ORCA_CLI_COMMAND;
-  if (bad || !key || !members.length || members.some(m => !m) || !cli || (given.capacity && machineCap() === undefined)) {
+  if (bad || !key || !members.length || members.some(m => !m) || (!cli && !draft) || (given.capacity && machineCap() === undefined)) {
     console.error(USAGE);
     process.exit(2);
   }
@@ -357,6 +427,12 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     if (run('git', ['-C', main, 'rev-parse', '--verify', '-q', `refs/heads/${options.integration}`]).status !== 0) {
       console.error(`整合分支 ${options.integration} 不存在\n${USAGE}`);
       process.exit(2);
+    }
+    if (draft) {
+      const written = freshDraft(main, key, options.integration, members[0]);
+      console.log(written.stop ? `STOP ${written.stop}` : `NOTE_DRAFT ${written.path}`);
+      clearTimeout(budget);
+      process.exit(written.stop ? 4 : 0);
     }
     if (given.capacity) {
       const { ok, total, cap } = capacityCheck(ledgerPath(), members.length);
