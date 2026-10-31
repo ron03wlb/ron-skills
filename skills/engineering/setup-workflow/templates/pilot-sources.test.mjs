@@ -114,6 +114,15 @@ test('沒有舊快照（舊格式紀錄）時只印 SOURCE_CHANGED，不報錯�
   assert.equal(run(dir, ...SOURCES, skill).stdout, `SOURCE_CHANGED ${skill}\n  entry Extra\n`);
 });
 
+test('code fence 裡的 ## 與條目行不算標題或條目，算在所在的單位', t => {
+  const dir = checkout(t);
+  const text = '## Format\n\n```\n## fake\n- **Fake.** x\n```\n';
+  writeFileSync(join(dir, 'docs/agents/pilot.md'), text);
+  run(dir, '--record', ...SOURCES);
+  writeFileSync(join(dir, 'docs/agents/pilot.md'), text.replace('x\n', 'y\n'));
+  assert.equal(run(dir, ...SOURCES).stdout, 'SOURCE_CHANGED docs/agents/pilot.md\n  heading Format\n');
+});
+
 test('--record 只留這次清單的快照', t => {
   const dir = checkout(t);
   run(dir, '--record', ...SOURCES);
