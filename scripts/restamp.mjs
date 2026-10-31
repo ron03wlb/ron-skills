@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // 合併中途只有戳記檔衝突時重算戳記（#173）：land.mjs（setup-workflow 正本）在 PR 和 main 衝突時、pilot-land.mjs 的 Stage 共用。
 // land.mjs 的契約：repo 有 scripts/restamp.mjs 時，衝突檔全在 STAMP_FILES 裡就呼叫 restamp(tree, files)；它解完並 git add，回傳 true，
 // 解不了回傳 false（呼叫端 merge --abort）。只處理 files 裡的戳記檔，沒衝突的不動。
@@ -22,28 +21,25 @@ const run = (cwd, command, args) => spawnSync(command, args, { cwd, encoding: 'u
 const git = (tree, ...args) => run(tree, 'git', args);
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 
-/** 合併中途某一邊（2 ours、3 theirs）的清單 copies；那一邊沒有這個檔或讀不懂時是空的。 */
-function copiesAt(tree, stage) {
+/** 合併中途某一邊（2 ours、3 theirs）的清單；那一邊沒有這個檔或讀不懂時 copies 是空的。 */
+function manifestAt(tree, stage) {
   const shown = git(tree, 'show', `:${stage}:${MANIFEST}`);
-  if (shown.status !== 0) return {};
   try {
-    return JSON.parse(shown.stdout).copies ?? {};
+    return { copies: {}, ...(shown.status === 0 ? JSON.parse(shown.stdout) : {}) };
   } catch {
-    return {};
+    return { copies: {} };
   }
 }
 
 function restampManifest(tree) {
-  const ours = copiesAt(tree, 2);
-  const theirs = copiesAt(tree, 3);
-  const shown = git(tree, 'show', `:3:${MANIFEST}`);
-  const base = shown.status === 0 ? JSON.parse(shown.stdout) : JSON.parse(git(tree, 'show', `:2:${MANIFEST}`).stdout);
+  const ours = manifestAt(tree, 2);
+  const theirs = manifestAt(tree, 3);
   const copies = {};
-  for (const path of [...new Set([...Object.keys(theirs), ...Object.keys(ours)])].sort((a, b) => a.localeCompare(b))) {
+  for (const path of [...new Set([...Object.keys(theirs.copies), ...Object.keys(ours.copies)])].sort((a, b) => a.localeCompare(b))) {
     const file = join(tree, path);
     if (!existsSync(file)) continue;
     const actual = sha256(file);
-    const sides = [theirs[path], ours[path]].filter(Boolean);
+    const sides = [theirs.copies[path], ours.copies[path]].filter(Boolean);
     const match = sides.find(side => side.sha256 === actual);
     if (match) {
       copies[path] = match;
@@ -53,7 +49,8 @@ function restampManifest(tree) {
     const commit = git(tree, 'log', '-1', '--format=%H', 'HEAD', 'MERGE_HEAD', '--', template).stdout.trim() || sides[0].commit;
     copies[path] = { template, commit, sha256: actual };
   }
-  writeFileSync(join(tree, MANIFEST), `${JSON.stringify({ ...base, copies }, null, 2)}\n`);
+  // 其他欄位（source）取目標分支那邊的。
+  writeFileSync(join(tree, MANIFEST), `${JSON.stringify({ ...ours, ...theirs, copies }, null, 2)}\n`);
   return git(tree, 'add', MANIFEST).status === 0;
 }
 

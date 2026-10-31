@@ -568,7 +568,10 @@ test('PR 只有戳記檔和 main 衝突：合入 origin/main、restamp、跑檢�
   assert.equal(Number(restamped[1]), pr.number);
   // 檢查入口在 restamp 之後的 tip、工作樹乾淨時跑；CI 等的是那個 tip。
   assert.match(calls(), new RegExp(`^check --upstream ${restamped[2]} dirty=\\[\\]$`, 'm'));
-  assert.ok(calls().indexOf(`check --upstream ${restamped[2]}`) < calls().lastIndexOf('gh pr merge'));
+  // 在等 CI 之前就先合入 main：只等一輪 CI（Bash 600 秒內放得下）、只送一次合併。
+  const checkAt = calls().indexOf(`check --upstream ${restamped[2]}`);
+  assert.ok(checkAt < calls().search(CHECK_POLL), calls());
+  assert.equal((calls().match(/^gh pr merge /gm) || []).length, 1);
   assert.equal(last(result), `LANDED ${pr.number} ${pr.mergeCommit.oid}`);
   // 合併後 main 的戳記是 restamp 以合併後的來源重算的，不是任何一邊的舊戳記。
   assert.equal(sh(origin, 'show', 'main:stamp.json') + '\n', stamp({ 'a.txt': 'a1\n', 'b.txt': 'b1\n' }));
