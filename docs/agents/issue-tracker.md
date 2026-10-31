@@ -2,7 +2,7 @@
 
 Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for reads; this repo's tracker writes go through `scripts/gh-tracker.mjs` (below).
 
-本 repo 的留言、label 與 assignee、關單、重開、開單、sub-issue、依賴一律在 repo 根目錄以 `node scripts/gh-tracker.mjs` 寫入（allow 規則比對的是這個相對路徑）：`.claude/settings.json` 的 tracker 寫入只放行它（其他放行規則見 [pilot-exceptions.md](pilot-exceptions.md) 的 Permissions），直接跑 gh 的留言、關單在 auto mode 會被當成 External System Writes 擋下（#96）。它固定寫 github.com 上的 `ron03wlb/ron-skills`、只收數字 Issue 號碼和白名單旗標（用法見腳本開頭），其他 repo 的寫入照舊用 `gh … --repo <owner>/<repo>`，交給人核准；wrapper 沒涵蓋的寫入（如 `gh issue transfer`）在 auto mode 仍會被擋或詢問。讀取不受影響，照下列 `gh` 指令。
+本 repo 的留言、label 與 assignee、關單、重開、開單、sub-issue、依賴一律在 repo 根目錄以 `node scripts/gh-tracker.mjs` 寫入（allow 規則比對的是這個相對路徑）：`.claude/settings.json` 的 tracker 寫入只放行它（其他放行規則見 [pilot-exceptions.md](pilot-exceptions.md) 的 Permissions），直接跑 gh 的留言、關單在 auto mode 會被當成 External System Writes 擋下（#96）。它是 setup-workflow 正本的副本（#244），寫入目標讀 [issue-run.md](issue-run.md#tracker) 的 Tracker 段（github.com 上的 `ron03wlb/ron-skills`），命令列改不了；只收數字 Issue 號碼和白名單旗標（用法見腳本開頭），其他 repo 的寫入照舊用 `gh … --repo <owner>/<repo>`，交給人核准；wrapper 沒涵蓋的寫入（如 `gh issue transfer`）在 auto mode 仍會被擋或詢問。讀取不受影響，照下列 `gh` 指令。
 
 ## Conventions
 
@@ -15,7 +15,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for reads
 - **Close**: `node scripts/gh-tracker.mjs close <number> --comment "..."`
 - **Reopen**: `node scripts/gh-tracker.mjs reopen <number> [--comment "..."]`
 
-Reads infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone. Writes need no inference: `scripts/gh-tracker.mjs` always passes `--repo github.com/ron03wlb/ron-skills` (and `gh api --hostname github.com`), so neither the remote nor the gh config's default host can redirect them.
+Reads infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone. Writes need no inference: `scripts/gh-tracker.mjs` takes the host and repo from the adapter's Tracker section and always passes `--repo github.com/ron03wlb/ron-skills` (and `gh api --hostname github.com`), so neither the remote, the gh config's default host, nor `GH_HOST`/`GH_REPO` can redirect them.
 
 ## Pull requests as a triage surface
 

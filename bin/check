@@ -27,8 +27,8 @@ bin/sync-skills --check
 node scripts/check-links.mjs
 # auto mode 放行的 tracker 寫入（#96）靠 permissions.allow；格式錯的規則 Claude Code 只略過不報錯。
 node scripts/check-claude-settings.mjs
-# coordinator 自己跑、會寫外部系統的腳本都要有放行規則，缺了就只能交給人跑（#131）。
-node scripts/check-coordinator-permissions.mjs
+# coordinator 自己跑、會寫外部系統的腳本都要有放行規則，缺了就只能交給人跑（#131）；本 repo 讓 coordinator 自己 push，所以帶 --push（#244）。
+node scripts/check-coordinator-permissions.mjs --push
 node scripts/build-workflow-site.mjs --check
 node scripts/check-workflow-strings.mjs
 node scripts/check-workflow-secrets.mjs
