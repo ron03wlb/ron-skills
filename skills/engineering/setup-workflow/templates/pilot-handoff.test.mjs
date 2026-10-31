@@ -19,6 +19,7 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !ke
 // `orphanLate` 為真時 `terminal list` 看不到 create 開的分頁（create 被殺時 Orca 還沒建好）。
 // 主 checkout 另有既有 session（`--to` 的對象）：term_peer（標題 ron-skills-peer）、兩個標題都是 twin 的分頁；
 // 別的 repo 也有一個標題 ron-skills-peer 的分頁，`--to` 不能選到它。`terminal list --worktree path:<p>` 只回那個 worktree 的分頁。
+// term_peer 在 TAB_STATE_DIR 另有記錄的標題 `處理中｜[維運] renamed-peer`（Orca 讀不回 rename 設的標題，見 tab-state.mjs）。
 function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true, lateTakeover = false, waitHangs = false, createDelayMs = 0, orphanLate = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-handoff-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
@@ -32,6 +33,9 @@ function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = fa
   writeFileSync(coordinator, original);
   const log = join(temp, 'orca.log');
   writeFileSync(log, '');
+  const titles = join(temp, 'titles');
+  mkdirSync(titles);
+  writeFileSync(join(titles, 'term_peer'), '處理中｜[維運] renamed-peer');
   const cli = join(temp, 'orca');
   writeFileSync(cli, `#!/usr/bin/env node
 const fs = require('fs'); const [, b] = process.argv.slice(2); const arg = k => process.argv[process.argv.indexOf(k) + 1];
@@ -65,7 +69,7 @@ else if (b === 'read') {
 `);
   chmodSync(cli, 0o755);
   const args = (pid, more = []) => [script, '--session', SESSION, '--pid', pid, '--reason', '已合入 2 批', ...more];
-  const options = extra => ({ cwd: repo, encoding: 'utf8', env: { ...env, ORCA_CLI_COMMAND: cli, ...FAST, PILOT_HANDOFF_WAIT_MS: '300', PILOT_HANDOFF_POLL_MS: '10', ORCA_TERMINAL_HANDLE: '', ...extra } });
+  const options = extra => ({ cwd: repo, encoding: 'utf8', env: { ...env, ORCA_CLI_COMMAND: cli, ...FAST, PILOT_HANDOFF_WAIT_MS: '300', PILOT_HANDOFF_POLL_MS: '10', ORCA_TERMINAL_HANDLE: '', TAB_STATE_DIR: titles, ...extra } });
   const handoff = (pid = '42', extra = {}, more = []) => spawnSync('node', args(pid, more), { ...options(extra), timeout: 30000 });
   // 背景執行，給要在中途送訊號的測試用。
   const start = (extra = {}) => spawn('node', args('42'), options(extra));
@@ -88,7 +92,7 @@ test('交接：改寫為 handoff 行、在主 checkout 開分頁並送出 /loop 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), 'HANDED_OFF term_pilot');
   const calls = readFileSync(log, 'utf8');
-  assert.ok(calls.startsWith(`terminal list --worktree path:${repo} --json\nterminal create --worktree path:${repo} --title issue-pilot coordinator --command claude --json\n`), calls);
+  assert.ok(calls.startsWith(`terminal list --worktree path:${repo} --json\nterminal create --worktree path:${repo} --title 處理中｜[維運] issue-pilot coordinator --command claude --json\n`), calls);
   assert.match(calls, /^terminal wait --terminal term_pilot --for tui-idle /m);
   assert.match(calls, /^terminal send --terminal term_pilot --text \/loop \/issue-pilot --enter --json$/m);
   assert.doesNotMatch(calls, /terminal split/);
@@ -141,7 +145,7 @@ test('--held-check 回報沒有合併：照常 HANDED_OFF，指令在主 checkou
 });
 
 // spay2 的 `--to <name|handle>`：交給已經開著的 session，不開新分頁；只找本 repo（任一 worktree）的分頁，handle 或標題完全相同才算。
-for (const target of ['term_peer', 'ron-skills-peer']) {
+for (const target of ['term_peer', 'ron-skills-peer', '處理中｜ron-skills-peer', '[維運] renamed-peer']) {
   test(`--to ${target}：送 /loop /issue-pilot 給既有 session、不開新分頁，HANDED_OFF term_peer 並記進 sessions.md`, t => {
     const { coordinator, sessions, log, handoff } = fixture(t);
     const result = handoff('42', {}, ['--to', target]);
@@ -290,7 +294,7 @@ test('terminal create 超過上限、list 還看不到分頁：STOP create 附�
   const { coordinator, original, log, handoff } = fixture(t, { createDelayMs: 2000, orphanLate: true });
   const result = handoff('42', { PILOT_HANDOFF_CREATE_MS: '300' });
   assert.equal(result.status, 4, result.stderr);
-  assert.match(result.stdout.trim().split('\n').pop(), /^STOP create .*請確認有沒有留下標題 issue-pilot coordinator 或剛由 create 開出的分頁/);
+  assert.match(result.stdout.trim().split('\n').pop(), /^STOP create .*請確認有沒有留下標題 處理中｜\[維運\] issue-pilot coordinator 或剛由 create 開出的分頁/);
   assert.equal(readFileSync(coordinator, 'utf8'), original);
   assert.doesNotMatch(readFileSync(log, 'utf8'), /^terminal close /m);
 });

@@ -37,7 +37,7 @@ test('在 Orca pane 內：split 在呼叫者旁邊、命名、送出 prompt 且�
   assert.equal(result.stdout.trim(), 'OPENED term_split');
   const calls = readFileSync(log, 'utf8');
   assert.match(calls, /terminal split --terminal term_self --direction vertical --command claude/);
-  assert.match(calls, /terminal rename --terminal term_split --title #12 交付/);
+  assert.match(calls, /terminal rename --terminal term_split --title 處理中｜#12 交付/);
   assert.match(calls, /terminal send --terminal term_split --text \/issue-run 12 --enter --json\n/);
   assert.doesNotMatch(calls, /terminal create|--wait-submit/);
 });
@@ -45,14 +45,14 @@ test('在 Orca pane 內：split 在呼叫者旁邊、命名、送出 prompt 且�
 test('不在 Orca pane 內：在主 checkout 新開 terminal', t => {
   const { repo, log, open } = fixture(t);
   assert.equal(open(['--title', 'x', '--prompt', 'y']).stdout.trim(), 'OPENED term_new');
-  assert.match(readFileSync(log, 'utf8'), new RegExp(`terminal create --worktree path:${repo} --title x --command claude`));
+  assert.match(readFileSync(log, 'utf8'), new RegExp(`terminal create --worktree path:${repo} --title 處理中｜x --command claude`));
 });
 
 test('--tab：即使在 pane 內也在主 checkout 新開分頁，不 split', t => {
   const { repo, log, open } = fixture(t, { self: 'term_self' });
   assert.equal(open(['--title', 'x', '--prompt', 'y', '--tab']).stdout.trim(), 'OPENED term_new');
   const calls = readFileSync(log, 'utf8');
-  assert.match(calls, new RegExp(`terminal create --worktree path:${repo} --title x --command claude`));
+  assert.match(calls, new RegExp(`terminal create --worktree path:${repo} --title 處理中｜x --command claude`));
   assert.doesNotMatch(calls, /terminal split/);
 });
 
@@ -60,7 +60,7 @@ test('--worktree：在指定 worktree 新開分頁，不 split；stdout 只有 O
   const { log, open } = fixture(t, { self: 'term_self' });
   assert.equal(open(['--title', 'fix-x', '--prompt', 'y', '--worktree', '/w/fix-x']).stdout, 'OPENED term_new\n');
   const calls = readFileSync(log, 'utf8');
-  assert.match(calls, /terminal create --worktree path:\/w\/fix-x --title fix-x --command claude/);
+  assert.match(calls, /terminal create --worktree path:\/w\/fix-x --title 處理中｜fix-x --command claude/);
   assert.doesNotMatch(calls, /terminal split/);
 });
 
