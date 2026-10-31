@@ -54,7 +54,7 @@ function mergeAdjacentEdits(t, content) {
   return git('merge', '--no-edit', 'b');
 }
 
-test('pilot.md 條目之間空一行：兩條分支各改相鄰條目可以自動合併', t => {
+test('pilot 各檔條目之間空一行：兩條分支各改相鄰條目可以自動合併', t => {
   for (const { path, text } of pilotDocs) assert.doesNotMatch(text, /^- \*\*.*\n- \*\*/m, `${path}：相鄰兩個條目之間要空一行`);
   assert.match(pilot, /^- \*\*Close\.\*\*.*\n\n- \*\*Handoff\.\*\*/m, 'Close 與 Handoff 要相鄰');
   const merge = mergeAdjacentEdits(t, pilot);
@@ -134,7 +134,7 @@ test('Probe 在主 checkout 跑 pilot-probe.mjs，並處理 NOT_MAIN', () => {
 });
 
 // 重現 #93：pilot.md 寫死 WSL 的 /home/ron/... 與 orca-ide，macOS 上 Probe、Dispatch、Stage 第一步就失敗。
-test('pilot.md 不寫死機器路徑與 Orca 指令名：Orca 一律 "$ORCA_CLI_COMMAND"', () => {
+test('pilot 各檔不寫死機器路徑與 Orca 指令名：Orca 一律 "$ORCA_CLI_COMMAND"', () => {
   for (const { path, text } of pilotDocs) {
     assert.doesNotMatch(text, /\/home\/|\/Users\//, `${path}：不寫機器專屬的絕對路徑`);
     assert.doesNotMatch(text, /orca-ide/, `${path}：Orca 指令寫 "$ORCA_CLI_COMMAND"`);
