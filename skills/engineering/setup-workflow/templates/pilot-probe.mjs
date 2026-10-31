@@ -12,7 +12,8 @@
 //            母單：PARENT_LABEL 補上 `parent` label、移除它掛著的 triage label，PARENT_REOPEN 重開母單；同目錄有專案自備的 gh-tracker.mjs
 //            （`edit <n> --add-label …`、`reopen <n>`，參數同 `gh issue`）時經它寫，沒有就直接跑 `gh issue`，都在主 checkout 跑。
 //            寫入失敗印 PARENT_APPLY_FAILED <n> <錯誤>，其他母單照修，exit 1。
-//   --status：最後從 checkpoint、gates.md、requests.md、coordinator 與 git 重寫 `.scratch/pilot/status.md`（格式見 PILOT-STORE.md），不印任何行。
+//   --status：最後從 checkpoint、gates.md、requests.md、coordinator 與 git 重寫 `.scratch/pilot/status.md`（格式見 PILOT-STORE.md），不印任何行；
+//            batch 那行附最後一行 regression 的結果（`，regression <sha 前 7 碼> exit <code 或 none>`，staged 而沒有 regression 行時 `，regression none`）。
 //   --capacity <repo>（#178）：把這一輪還在跑的成員數（各 batch 的 running 列，扣掉這一輪讀到 DONE、STOP 的）以 <repo> 寫進全機帳本
 //            （同目錄 pilot-capacity.mjs 的 report：$PILOT_WORKERS_LEDGER，預設 ~/.local/state/pilot-workers.tsv）；所有 repo 的合計超過
 //            $PILOT_MACHINE_WORKER_CAP（預設 4）時最後印 OVER_CAP <合計> <上限>。只回報，不改派工；沒帶時不碰帳本。
@@ -36,6 +37,8 @@
 //   batch：dispatched 的 batch 沒有 running 成員時（這一輪剛讀到 DONE／STOP 的照結果算；moved（含 `moved batch-<n>`）的成員已移到別的 batch，不算）：
 //          每個成員都 done 印 STAGEABLE <key>；有 done 也有 stop、parked 印 MOVE <key> <不是 done 的成員…>（先用 pilot-batch 移走）；
 //          沒有 done 印 PARKED <key> <n…>（#163：只剩 stop 的 batch 照跑 pilot-land 只得到 STOP member）；
+//          current 是 `staged <sha>` 的 batch，最後一行 regression 不是這個 staged SHA 的 exit 0 時印 RESTAGE <key> regression-failed <code 或 none>
+//          （#191：Regression 沒過、batch 停在 staged，probe 卻什麼都不印；none 是沒有 regression 行、SHA 是先前那次 stage 的，或 SHA 後面沒緊接 exit <code>）；
 //          沒關的 batch 裡 `parked after #<m>` 的成員，在 #m 以 done 留在 `closed` 的 batch 之後印 UNPARK <n>；
 //          current 是 merged／pushed 的 batch 在 git fetch 後比 origin/<主分支>，印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
 //          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA，且那一行是 exit 0），
@@ -421,6 +424,19 @@ export function stageLines(key, active, results) {
 }
 
 /**
+ * staged batch 的 Regression 判斷（#191）：最後一行 regression 是這個 staged SHA 的 exit 0 才算過（pilot-land 接著做 Integrate，或 hold 擋著），
+ * 其他情況（exit 不是 0、沒寫 exit、SHA 是先前那次 stage 的、沒有 regression 行）印 RESTAGE，coordinator 讀 reg-<key>.log 後重跑 pilot-land。
+ * SHA 兩邊都可能是縮寫，以前綴比對。
+ */
+export function restageLines(key, current, regression, regressionExit) {
+  const staged = current.match(/^staged ([0-9a-f]{7,40})\b/)?.[1];
+  if (!staged) return [];
+  const same = regression && (regression.startsWith(staged) || staged.startsWith(regression));
+  if (same && regressionExit === '0') return [];
+  return [`RESTAGE ${key} regression-failed ${(same && regressionExit) || 'none'}`];
+}
+
+/**
  * 沒關的 batch 裡 `parked after #<m>` 的成員：#m 以 done 留在已經 `closed`（合入並收尾）的 batch 時印 UNPARK <n>（#163）。
  * #m 被移走的舊 batch（`closed moved`）裡那一列是 moved、batch 關了卻沒合入的那一列是 stop，都不算。
  */
@@ -614,10 +630,12 @@ export function statusReport(checkout, { integration = 'pilot/integration', main
   const out = [`# pilot status（${now(at)}，coordinator ${coordinator}）`, ''];
   let open = 0;
   for (const file of batchFiles(pilot)) {
-    const { current, members } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
+    const { current, members, regression, regressionExit } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
     if (/^closed\b/.test(current)) continue;
     open++;
-    out.push(`- batch ${file.slice('batch-'.length, -'.md'.length)}：${current || '(沒有 current:)'}`);
+    // #191：只寫 `staged <sha>` 看不出 Regression 沒過。
+    const result = regression ? `，regression ${regression.slice(0, 7)} exit ${regressionExit ?? 'none'}` : /^staged\b/.test(current) ? '，regression none' : '';
+    out.push(`- batch ${file.slice('batch-'.length, -'.md'.length)}：${current || '(沒有 current:)'}${result}`);
     for (const m of members) out.push(`  - #${m.n} ${m.state}${m.candidate ? ` ${/^[0-9a-f]{7,40}$/.test(m.candidate) ? m.candidate.slice(0, 7) : m.candidate}` : ''}`);
   }
   if (!open) out.push('- 沒有開著的 batch');
@@ -659,6 +677,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     }
     if (apply && results.length) out.push(...applyResults(join(pilot, file), key, results));
     if (/^dispatched\b/.test(current)) out.push(...stageLines(key, active, results));
+    out.push(...restageLines(key, current, regression, regressionExit));
     if (/^(merged|pushed)\b/.test(current)) landing.push({ key, sha, regression, regressionExit, merged: /^merged\b/.test(current) });
   }
   out.push(...unparkLines(batches));
