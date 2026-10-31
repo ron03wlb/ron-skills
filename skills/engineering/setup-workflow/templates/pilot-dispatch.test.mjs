@@ -38,6 +38,8 @@ function fixture(t, { modes = {}, waitHangs = false, guard } = {}) {
   const log = join(temp, 'orca.log');
   writeFileSync(log, '');
   const root = join(temp, 'workspaces');
+  // 開著的分頁 `[{ handle, worktreePath }]`：create 加一筆、close 移除，list 依 --worktree 過濾。
+  const terminals = join(temp, 'terminals.json');
   const cli = join(temp, 'orca');
   writeFileSync(cli, `#!/usr/bin/env node
 const fs = require('fs'); const { execFileSync } = require('child_process');
@@ -47,6 +49,7 @@ fs.appendFileSync(${JSON.stringify(log)}, args.join(' ') + '\\n');
 fs.appendFileSync(${JSON.stringify(log)} + '.stdin', stdin + '\\n');
 ${orcaReplySource()}
 const modes = ${JSON.stringify(modes)};
+const terminals = ${JSON.stringify(terminals)};
 if (a === 'worktree' && b === 'create') {
   const n = arg('--issue'); const mode = modes[n] ?? 'ok'; const path = ${JSON.stringify(root)} + '/' + arg('--name');
   if (mode !== 'fail') execFileSync('git', ['-C', ${JSON.stringify(repo)}, 'worktree', 'add', '-q', '-b', arg('--branch'), path, arg('--base-branch')], { stdio: 'ignore' });
@@ -54,7 +57,24 @@ if (a === 'worktree' && b === 'create') {
   if (mode === 'ok' || mode === 'bare') console.log(JSON.stringify({ ok: true, result: { worktree: { path } } }));
   else fail(mode === 'late' ? 'request_timeout' : 'invalid_argument');
 }
-else if (b === 'create') reply('create', { terminal: { handle: 'term_' + arg('--title').replace(/^.*#/, '') } });
+else if (b === 'create') {
+  // 同一個 Issue 第二個分頁起加上序號（term_46、term_46_2），關掉的 handle 不重用，--fresh 才分得出新舊分頁。
+  const terms = fs.existsSync(terminals) ? JSON.parse(fs.readFileSync(terminals, 'utf8')) : [];
+  const base = 'term_' + arg('--title').replace(/^.*#/, '');
+  const count = fs.readFileSync(${JSON.stringify(log)}, 'utf8').split('\\n').filter(line => line.startsWith('terminal create ') && line.includes('#' + base.slice(5) + ' ')).length;
+  const handle = count > 1 ? base + '_' + count : base;
+  fs.writeFileSync(terminals, JSON.stringify([...terms, { handle, worktreePath: arg('--worktree').replace(/^path:/, '') }]));
+  reply('create', { terminal: { handle } });
+}
+else if (b === 'list') {
+  const terms = (fs.existsSync(terminals) ? JSON.parse(fs.readFileSync(terminals, 'utf8')) : []).filter(t => 'path:' + t.worktreePath === arg('--worktree'));
+  reply('list', { terminals: terms, totalCount: terms.length });
+}
+else if (b === 'close') {
+  const terms = JSON.parse(fs.readFileSync(terminals, 'utf8'));
+  fs.writeFileSync(terminals, JSON.stringify(terms.filter(t => t.handle !== arg('--terminal'))));
+  reply('close', { close: { handle: arg('--terminal') } });
+}
 else if (b === 'wait' && ${waitHangs}) setInterval(() => {}, 1000);
 else if (b === 'wait') reply('wait', { wait: { satisfied: true } });
 else if (b === 'send') { fs.appendFileSync(${JSON.stringify(log)} + '.sent', arg('--text') + '\\n'); reply('send', { send: { accepted: true } }); }
@@ -65,6 +85,21 @@ else if (b === 'read') {
 else fail('unknown');
 `);
   chmodSync(cli, 0o755);
+  // 假 gh：留言存在 comments.json，`issue view --json comments` 讀、`issue comment --body` 加一則，每次呼叫記進 gh.log。
+  const bin = join(temp, 'bin');
+  mkdirSync(bin);
+  const comments = join(temp, 'comments.json');
+  writeFileSync(comments, '[]');
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2); const arg = k => args[args.indexOf(k) + 1];
+fs.appendFileSync(${JSON.stringify(join(temp, 'gh.log'))}, args.join(' ') + '\\n');
+const comments = JSON.parse(fs.readFileSync(${JSON.stringify(comments)}, 'utf8'));
+if (args[0] === 'issue' && args[1] === 'view') console.log(JSON.stringify({ comments: comments.filter(c => c.issue === args[2]).map(({ body }) => ({ body })) }));
+else if (args[0] === 'issue' && args[1] === 'comment') fs.writeFileSync(${JSON.stringify(comments)}, JSON.stringify([...comments, { issue: args[2], body: arg('--body') }]));
+else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
+`);
+  chmodSync(join(bin, 'gh'), 0o755);
   let dispatchScript = script;
   if (guard !== undefined) {
     const scripts = join(temp, 'scripts');
@@ -76,12 +111,15 @@ else fail('unknown');
   }
   const dispatch = (args, extra = {}) => spawnSync('node', [dispatchScript, ...args], {
     cwd: repo, encoding: 'utf8', input: 'leftover-line\nanother-line\n', timeout: 60000,
-    env: { ...env, ORCA_CLI_COMMAND: cli, ORCA_BIN: '', ...FAST, TAB_STATE_DIR: join(root, 'titles'), ...extra },
+    env: { ...env, PATH: `${bin}:${env.PATH}`, ORCA_CLI_COMMAND: cli, ORCA_BIN: '', ...FAST, TAB_STATE_DIR: join(root, 'titles'), ...extra },
   });
   const checkpoint = key => readFileSync(join(repo, `.scratch/pilot/batch-${key}.md`), 'utf8');
   const calls = () => readFileSync(log, 'utf8');
   const sent = () => (existsSync(`${log}.sent`) ? readFileSync(`${log}.sent`, 'utf8') : '');
-  return { repo, root, log, dispatch, checkpoint, calls, sent };
+  const open = () => (existsSync(terminals) ? JSON.parse(readFileSync(terminals, 'utf8')) : []);
+  const posted = () => JSON.parse(readFileSync(comments, 'utf8'));
+  const ghCalls = () => (existsSync(join(temp, 'gh.log')) ? readFileSync(join(temp, 'gh.log'), 'utf8') : '');
+  return { temp, repo, root, log, cli, dispatch, checkpoint, calls, sent, open, posted, ghCalls };
 }
 
 const lines = result => result.stdout.trim().split('\n');
@@ -192,7 +230,7 @@ test('重跑時 worktree 已存在：不再呼叫 worktree create，直接開分
   assert.equal(dispatch(['46', '46:pilot-dispatch']).status, 0);
   const result = dispatch(['46', '46:pilot-dispatch']);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.equal(lines(result).pop(), 'DISPATCHED 46 term_46');
+  assert.equal(lines(result).pop(), 'DISPATCHED 46 term_46_2');
   assert.equal(calls().match(/^worktree create /gm).length, 1);
 });
 
@@ -225,4 +263,153 @@ test('整合分支不存在時 exit 2，不寫 checkpoint、不派工', t => {
   assert.match(result.stderr, /pilot\/integ/);
   assert.equal(existsSync(join(repo, '.scratch/pilot/batch-46.md')), false);
   assert.equal(calls(), '');
+});
+
+// --fresh（#124）：Stage 的同一條目衝突之後，把成員重派成 fresh worker。
+// 起點重現 batch 77-124 前的情況：batch 23-46 兩個成員都 done，46 在 Stage 跟整合分支衝突；46 的 worktree 除了 worker 分頁，
+// 還有一個 checkpoint 沒記到的分頁；整合分支在派工之後前進了一個 commit；worker 留下自己的 checkpoint 目錄。
+function conflicted(t) {
+  const fx = fixture(t);
+  // 照 issue-run 的 adapter，.scratch/ 不 commit。
+  writeFileSync(join(fx.repo, '.gitignore'), '.scratch/\n');
+  git(fx.repo, 'add', '.gitignore');
+  git(fx.repo, 'commit', '-qm', 'ignore scratch');
+  git(fx.repo, 'branch', '-f', 'pilot/integration', 'main');
+  assert.equal(fx.dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']).status, 0);
+  const tree = join(fx.root, 'issue-46');
+  writeFileSync(join(tree, 'work.txt'), 'worker\n');
+  git(tree, 'add', '.');
+  git(tree, 'commit', '-qm', 'worker');
+  mkdirSync(join(tree, '.scratch/issue-run-46'), { recursive: true });
+  writeFileSync(join(tree, '.scratch/issue-run-46/state.md'), 'old checkpoint\n');
+  const extra = spawnSync(fx.cli, ['terminal', 'create', '--worktree', `path:${tree}`, '--title', 'shell #46', '--json'], { encoding: 'utf8' });
+  assert.equal(extra.status, 0, extra.stderr);
+  const file = join(fx.repo, '.scratch/pilot/batch-23-46.md');
+  writeFileSync(file, readFileSync(file, 'utf8').replace(/ running \| \|$/gm, ' done | abc1234 |'));
+  git(fx.repo, 'commit', '-q', '--allow-empty', '-m', 'integration moved');
+  git(fx.repo, 'branch', '-f', 'pilot/integration', 'main');
+  const note = join(fx.temp, 'note.md');
+  writeFileSync(note, '重派：與 pilot/integration 的 Stage 條目衝突，從新 base 整併。\n');
+  const head = git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch');
+  return { ...fx, tree, note, head, file };
+}
+
+const fresh = (fx, ...extra) => fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch', '--note', fx.note, ...extra]);
+
+test('--fresh：-prior 留住原分支，新分支從目前的整合分支開出，worktree 裡的分頁都關掉、拆成自己的 batch 再派出', t => {
+  const fx = conflicted(t);
+  const result = fresh(fx);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['DISPATCHED 46 term_46_3', `PRIOR 46 issue/46-pilot-dispatch-prior ${fx.head}`]);
+  assert.equal(git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch-prior'), fx.head);
+  assert.equal(git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch'), git(fx.repo, 'rev-parse', 'pilot/integration'));
+  assert.equal(git(fx.tree, 'branch', '--show-current'), 'issue/46-pilot-dispatch');
+  // 每個舊分頁都關掉（含 checkpoint 沒記到的那個），只剩新派的 worker。
+  assert.match(fx.calls(), /^terminal close --terminal term_46 --json$/m);
+  assert.match(fx.calls(), /^terminal close --terminal term_46_2 --json$/m);
+  assert.deepEqual(fx.open().filter(t => t.worktreePath === fx.tree).map(t => t.handle), ['term_46_3']);
+  // 舊 checkpoint 改名，fresh worker 才不會讀到。
+  assert.equal(readFileSync(join(fx.tree, '.scratch/issue-run-46-prior/state.md'), 'utf8'), 'old checkpoint\n');
+  assert.equal(existsSync(join(fx.tree, '.scratch/issue-run-46')), false);
+  // 原 batch 的那一列標成 moved，自己的 batch 是表頭加一列。
+  assert.match(fx.checkpoint('23-46'), /^\| 46 \| issue\/46-pilot-dispatch \| .* \| moved batch-46 \| abc1234 \|$/m);
+  assert.match(fx.checkpoint('23-46'), /^\| 23 \| .* \| done \| abc1234 \|$/m);
+  const sha = git(fx.repo, 'rev-parse', '--short', 'pilot/integration');
+  assert.match(fx.checkpoint('46'), new RegExp([
+    '^# batch 46',
+    `current: dispatched ${ISO}`,
+    `integration: pilot/integration @ ${sha}`,
+    '',
+    '\\| Issue \\| branch \\| worktree \\| handle \\| started \\| stuck-after \\| state \\| candidate \\|',
+    '\\|---\\|---\\|---\\|---\\|---\\|---\\|---\\|---\\|',
+    `\\| 46 \\| issue/46-pilot-dispatch \\| ${fx.tree} \\| term_46_3 \\| ${ISO} \\| 90m \\| running \\| \\|`,
+    '$',
+  ].join('\n')));
+  assert.equal(fx.sent().trim().split('\n').pop(), `/issue-run 46 --worker ${fx.repo}/.scratch/pilot/batch-46.md`);
+  assert.deepEqual(fx.posted(), [{ issue: '46', body: `重派：與 pilot/integration 的 Stage 條目衝突，從新 base 整併。\n\nprior: issue/46-pilot-dispatch-prior @ ${fx.head}` }]);
+});
+
+test('--fresh：工作樹有未提交改動時 STOP dirty，分支、worktree、分頁、checkpoint 與 Issue 都不動', t => {
+  const fx = conflicted(t);
+  writeFileSync(join(fx.tree, 'stray.txt'), 'uncommitted\n');
+  const before = fx.checkpoint('23-46');
+  const result = fresh(fx);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['STOP dirty 46']);
+  assert.equal(git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch'), fx.head);
+  assert.equal(git(fx.repo, 'branch', '--list', '*-prior*'), '');
+  assert.equal(git(fx.tree, 'branch', '--show-current'), 'issue/46-pilot-dispatch');
+  assert.ok(existsSync(join(fx.tree, 'stray.txt')));
+  assert.ok(existsSync(join(fx.tree, '.scratch/issue-run-46/state.md')));
+  assert.doesNotMatch(fx.calls(), /^terminal close /m);
+  assert.equal(fx.checkpoint('23-46'), before);
+  assert.equal(existsSync(join(fx.repo, '.scratch/pilot/batch-46.md')), false);
+  assert.equal(fx.ghCalls(), '');
+});
+
+test('--fresh：重派過的 Issue 再衝突時 STOP refresh-twice、什麼都不動；--again 另存成 -prior2', t => {
+  const fx = conflicted(t);
+  assert.equal(fresh(fx).status, 0);
+  writeFileSync(join(fx.tree, 'work.txt'), 'fresh worker\n');
+  git(fx.tree, 'add', '.');
+  git(fx.tree, 'commit', '-qm', 'fresh worker');
+  const second = git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch');
+  const closes = fx.calls().match(/^terminal close /gm).length;
+  const result = fresh(fx);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['STOP refresh-twice 46']);
+  assert.equal(git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch'), second);
+  assert.equal(git(fx.repo, 'branch', '--list', '*-prior2'), '');
+  assert.equal(fx.calls().match(/^terminal close /gm).length, closes);
+  assert.equal(fx.posted().length, 1);
+  // gate 選了「再重派一次」：
+  const again = fresh(fx, '--again');
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.equal(lines(again).pop(), `PRIOR 46 issue/46-pilot-dispatch-prior2 ${second}`);
+  assert.equal(git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch-prior'), fx.head);
+  assert.equal(git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch'), git(fx.repo, 'rev-parse', 'pilot/integration'));
+  assert.equal(fx.posted().length, 2);
+});
+
+// 每一步都能從中斷處重跑：已改名、已開新分支、已留言、已拆 batch 的都略過，不再另存一份 prior，也不重複留言。
+test('--fresh：中斷在改名之後時重跑接著做；派出之前中斷的重跑不重複留言、不另存 prior', t => {
+  const fx = conflicted(t);
+  git(fx.tree, 'branch', '-m', 'issue/46-pilot-dispatch', 'issue/46-pilot-dispatch-prior');
+  const result = fresh(fx);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(lines(result).pop(), `PRIOR 46 issue/46-pilot-dispatch-prior ${fx.head}`);
+  assert.equal(git(fx.tree, 'branch', '--show-current'), 'issue/46-pilot-dispatch');
+  // 中斷在送出 worker 指令之前：分頁沒開成，batch-46 那列是 stop。
+  const file = join(fx.repo, '.scratch/pilot/batch-46.md');
+  writeFileSync(file, readFileSync(file, 'utf8').replace(/ running \| \|$/m, ' stop | |'));
+  const rerun = fresh(fx);
+  assert.equal(rerun.status, 0, rerun.stdout + rerun.stderr);
+  assert.equal(lines(rerun).pop(), `PRIOR 46 issue/46-pilot-dispatch-prior ${fx.head}`);
+  assert.equal(git(fx.repo, 'branch', '--list', '*-prior2'), '');
+  assert.equal(fx.posted().length, 1);
+  assert.equal(fx.checkpoint('46').split('\n').filter(line => /^\| \d+ \|/.test(line)).length, 1);
+  assert.deepEqual(fx.open().filter(t => t.worktreePath === fx.tree).length, 1);
+});
+
+// fresh worker 已經在跑、還沒 commit：同一行再跑一次不能把它的分頁關掉重派（例如 handoff 後下一任 coordinator 重跑）。
+test('--fresh：已派出的 fresh worker 還在跑時 STOP running，不關分頁', t => {
+  const fx = conflicted(t);
+  assert.equal(fresh(fx).status, 0);
+  const closes = fx.calls().match(/^terminal close /gm).length;
+  const result = fresh(fx);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['STOP 46 running term_46_3']);
+  assert.equal(fx.calls().match(/^terminal close /gm).length, closes);
+  assert.deepEqual(fx.open().filter(t => t.worktreePath === fx.tree).map(t => t.handle), ['term_46_3']);
+});
+
+test('--fresh 的參數錯誤時 exit 2，不動任何東西', t => {
+  const fx = conflicted(t);
+  for (const args of [['23-46', '--fresh', '46:pilot-dispatch'], ['23-46', '--fresh', '46:pilot-dispatch', '--note', join(fx.temp, 'missing.md')],
+    ['23-46', '23:pilot-probe', '--fresh', '46:pilot-dispatch', '--note', fx.note], ['23-46', '46:pilot-dispatch', '--note', fx.note], ['23-46', '46:pilot-dispatch', '--again']]) {
+    const result = fx.dispatch(args);
+    assert.equal(result.status, 2, `${args.join(' ')}：${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /^用法：/);
+  }
+  assert.equal(git(fx.repo, 'branch', '--list', '*-prior*'), '');
 });

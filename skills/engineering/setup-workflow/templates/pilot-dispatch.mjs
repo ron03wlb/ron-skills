@@ -8,20 +8,36 @@
 // 總時間有上限（比照 pilot-handoff.mjs）：Bash 工具最多等 600 秒，被殺就來不及寫 checkpoint，所以預算到了（timeout）或收到 SIGTERM、SIGINT（signal <名稱>）
 // 都中止進行中的步驟，進行中與還沒派的成員都 STOP 並寫進 checkpoint。預設預算 510 秒，加上收尾的 git 與寫檔，在 540 秒內結束。
 //
+// --fresh（#124）把一個成員重派成 fresh worker（Stage 的同一條目衝突之後），worktree 與分支名稱不變，舊分支就地另存：
+//   工作樹有未提交改動 → `STOP dirty <n>`，什麼都不動；關掉 worktree 裡每個 terminal（checkpoint 可能只記了其中一個）；
+//   `branch -m <分支> <分支>-prior`；`switch -c <分支> <整合分支>`；worker 的 `.scratch/issue-run-<n>` 改名成 `issue-run-<n>-prior`（fresh worker 才不讀到舊 checkpoint）；
+//   在 Issue 留言 --note 的內容加一行 `prior: <prior 分支> @ <sha>`（gh）；把成員拆到自己的 batch（原 batch 那列記 `moved batch-<n>`，batch-<n>.md 是表頭加一列；
+//   原 batch 就是 `<n>` 時就地改寫 `current:` 與 `integration:`）；最後照一般 Dispatch 開分頁、送出 `/issue-run <n> --worker <batch-<n>.md>`。
+//   不刪 worktree、不 `branch -D`（auto mode 擋 reset --hard 這類指令，就地改名也不必重建 worktree 與分頁），不刪 prior 分支。
+//   每一步先看做過沒有：已有 prior、分支還沒有自己的 commit（相對整合分支）時是同一次重派中斷了，同一行指令接著做；留言已含 `prior:` 行就不再留。
+//   batch-<n>.md 那列已是 running、它的分頁還開在這個 worktree 時，這次重派已經做完、fresh worker 正在跑：印 `STOP <n> running <handle>`，不關分頁。
+//   留言用 gh，所以 --fresh 只支援 GitHub tracker（同 issue-pool.mjs）。
+//   prior 依序找 `-prior`、`-prior2`…：手動重派留下的 `-prior` 也算，那張 Issue 第一次跑 --fresh 就是 refresh-twice。
+//   prior 已在、分支又有了 commit 就是第二次重派：印 `STOP refresh-twice <n>`，由 coordinator 開 gate；gate 選了再重派時帶 --again，另存成 `-prior2`（依序編號）。
+//   認領不在這裡做：coordinator 照 Dispatch 先跑 claim。
+//
 // 用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--integration <分支>] [--stuck-after <分鐘>m]（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
+//       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--integration <分支>] [--stuck-after <分鐘>m]
 //   --integration worktree 的 base 與表頭的整合分支，預設 pilot/integration；--stuck-after 成員行的 stuck-after，預設 90m。
 // stdout：每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
 //   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop），STOP 原因只在 stdout。
+//   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
 // exit：0 全部派出；4 有成員 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { orca, sendToSession } from './orca-session-send.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
 
-const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--integration <分支>] [--stuck-after <分鐘>m]（需要 ORCA_CLI_COMMAND）';
+const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--integration <分支>] [--stuck-after <分鐘>m]（需要 ORCA_CLI_COMMAND）\n'
+  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--integration <分支>] [--stuck-after <分鐘>m]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const WORKTREE_CREATE = fileURLToPath(new URL('./orca-worktree-create.mjs', import.meta.url));
 const BUDGET_MS = Number(process.env.PILOT_DISPATCH_BUDGET_MS || 510000);
@@ -63,6 +79,26 @@ function writeHeader(main, checkpoint, key, integration) {
   mkdirSync(dirname(checkpoint), { recursive: true });
   writeFileSync(checkpoint, `# batch ${key}\ncurrent: dispatched ${now()}\nintegration: ${integration} @ ${sha}\n\n`
     + '| Issue | branch | worktree | handle | started | stuck-after | state | candidate |\n|---|---|---|---|---|---|---|---|\n');
+}
+
+/** --fresh 拆出的 batch：沒有就照 writeHeader 寫；已有（中斷後重跑、原 batch 就是 `<n>`）時改寫 `current:` 與 `integration:`。 */
+function freshHeader(main, checkpoint, key, integration) {
+  if (!existsSync(checkpoint)) return writeHeader(main, checkpoint, key, integration);
+  const sha = run('git', ['-C', main, 'rev-parse', '--short', integration]).stdout.trim();
+  writeFileSync(checkpoint, readFileSync(checkpoint, 'utf8')
+    .replace(/^current:.*$/m, `current: dispatched ${now()}`).replace(/^integration:.*$/m, `integration: ${integration} @ ${sha}`));
+}
+
+/** 把成員行的 state 欄改成 `state`；沒有這一行就不動。 */
+function setRowState(checkpoint, n, state) {
+  if (!existsSync(checkpoint)) return;
+  const lines = readFileSync(checkpoint, 'utf8').split('\n');
+  const i = lines.findIndex(line => line.startsWith(`| ${n} |`));
+  if (i < 0) return;
+  const cells = lines[i].split('|');
+  cells[7] = ` ${state} `;
+  lines[i] = cells.join('|');
+  writeFileSync(checkpoint, lines.join('\n'));
 }
 
 /** 寫入成員行：同一個 Issue 已有一行就就地換掉，否則接在最後。 */
@@ -128,6 +164,76 @@ async function dispatchMember(cli, main, checkpoint, integration, { n, branch },
   return { worktree, handle, ...(sent.stop && signal.aborted ? { stop: signal.reason } : sent) };
 }
 
+const priorName = (branch, k) => `${branch}-prior${k > 1 ? k : ''}`;
+const hasBranch = (main, branch) => run('git', ['-C', main, 'rev-parse', '--verify', '-q', `refs/heads/${branch}`]).status === 0;
+
+/**
+ * --fresh 的重派前置：做到「worktree 停在從整合分支新開的分支、batch-<n>.md 準備好」為止（步驟見檔頭）。
+ * 傳回 `{ checkpoint, prior, sha, worktree }`，或 `{ stop }`（整段 STOP 字串，不含 `STOP `）。
+ */
+async function refresh(cli, main, key, integration, { n, branch }, note, again, signal) {
+  const priors = [];
+  while (hasBranch(main, priorName(branch, priors.length + 1))) priors.push(priorName(branch, priors.length + 1));
+  const latest = priors.at(-1);
+  // 同一次重派中斷了：prior 已在，分支還沒開或還沒有 fresh worker 的 commit。
+  const resuming = latest && (!hasBranch(main, branch)
+    || run('git', ['-C', main, 'rev-list', '--count', `${integration}..${branch}`]).stdout.trim() === '0');
+  if (latest && !resuming && !again) return { stop: `refresh-twice ${n}` };
+  if (!latest && !hasBranch(main, branch)) return { stop: `${n} git 沒有分支 ${branch}` };
+  const prior = resuming ? latest : priorName(branch, priors.length + 1);
+  const worktree = worktreeOf(main, branch) ?? (resuming ? worktreeOf(main, prior) : undefined);
+  if (!worktree) return { stop: `${n} worktree 找不到 ${branch} 的 worktree` };
+  const checkpoint = join(main, `.scratch/pilot/batch-${n}.md`);
+  const ctx = { cli, signal };
+  let open;
+  try {
+    open = (await orca(ctx, 'terminal', 'list', '--worktree', `path:${worktree}`)).terminals.map(({ handle }) => handle);
+  } catch (error) {
+    return { stop: signal.aborted ? `${n} ${signal.reason}` : `${n} terminal-close ${error.message}` };
+  }
+  const row = resuming && existsSync(checkpoint)
+    ? readFileSync(checkpoint, 'utf8').split('\n').find(line => line.startsWith(`| ${n} |`))?.split('|').map(cell => cell.trim()) : undefined;
+  if (row?.[7] === 'running' && open.includes(row[4])) return { stop: `${n} running ${row[4]}` };
+  const git = (...args) => run('git', ['-C', worktree, ...args]);
+  const status = git('status', '--porcelain');
+  if (status.status !== 0) return { stop: `${n} git status ${status.stderr.trim()}` };
+  if (status.stdout.trim()) return { stop: `dirty ${n}` };
+
+  try {
+    for (const handle of open) await orca(ctx, 'terminal', 'close', '--terminal', handle);
+  } catch (error) {
+    return { stop: signal.aborted ? `${n} ${signal.reason}` : `${n} terminal-close ${error.message}` };
+  }
+  for (const [check, args] of [
+    [() => hasBranch(main, prior), ['branch', '-m', branch, prior]],
+    [() => hasBranch(main, branch), ['switch', '-q', '-c', branch, integration]],
+    [() => git('branch', '--show-current').stdout.trim() === branch, ['switch', '-q', branch]],
+  ]) {
+    if (check()) continue;
+    const result = git(...args);
+    if (result.status !== 0) return { stop: `${n} git ${args[0]} ${result.stderr.trim()}` };
+  }
+  const sha = run('git', ['-C', main, 'rev-parse', prior]).stdout.trim();
+  const suffix = prior.slice(branch.length);
+  const [oldState, priorState] = [`issue-run-${n}`, `issue-run-${n}${suffix}`].map(name => join(worktree, '.scratch', name));
+  if (existsSync(oldState) && !existsSync(priorState)) renameSync(oldState, priorState);
+
+  const marker = `prior: ${prior} @ ${sha}`;
+  const gh = (...args) => run('gh', args);
+  const viewed = gh('issue', 'view', n, '--json', 'comments');
+  if (viewed.status !== 0) return { stop: `${n} comment ${viewed.stderr.trim()}` };
+  let comments;
+  try { comments = JSON.parse(viewed.stdout).comments; } catch { return { stop: `${n} comment gh issue view 的輸出不是 JSON` }; }
+  if (!comments.some(({ body }) => body.includes(marker))) {
+    const posted = gh('issue', 'comment', n, '--body', `${note.replace(/\s+$/, '')}\n\n${marker}`);
+    if (posted.status !== 0) return { stop: `${n} comment ${posted.stderr.trim()}` };
+  }
+
+  if (key !== n) setRowState(join(main, `.scratch/pilot/batch-${key}.md`), n, `moved batch-${n}`);
+  freshHeader(main, checkpoint, n, integration);
+  return { checkpoint, prior, sha, worktree };
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const positional = [];
@@ -135,7 +241,8 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   let bad = false;
   for (let i = 0; i < args.length; i++) {
     if (!args[i].startsWith('--')) { positional.push(args[i]); continue; }
-    const name = { '--integration': 'integration', '--stuck-after': 'stuckAfter' }[args[i]];
+    if (args[i] === '--again') { bad ||= 'again' in given; given.again = true; continue; }
+    const name = { '--integration': 'integration', '--stuck-after': 'stuckAfter', '--fresh': 'fresh', '--note': 'note' }[args[i]];
     const value = args[++i];
     if (!name || !value || value.startsWith('--') || name in given) bad = true;
     else given[name] = value;
@@ -143,7 +250,10 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const options = { integration: 'pilot/integration', stuckAfter: '90m', ...given };
   if (!/^\d+m$/.test(options.stuckAfter)) bad = true;
   const [key, ...specs] = positional;
-  const members = specs.map(spec => spec.match(/^(\d+):([a-z0-9][a-z0-9-]*)$/)).map(m => m && { n: m[1], branch: `issue/${m[1]}-${m[2]}` });
+  const fresh = 'fresh' in given;
+  // --fresh 只帶一個成員、一定要有 --note；--note 與 --again 只跟 --fresh 一起用。
+  if (fresh ? specs.length || !given.note || !existsSync(given.note) : 'note' in given || given.again) bad = true;
+  const members = (fresh ? [given.fresh] : specs).map(spec => spec.match(/^(\d+):([a-z0-9][a-z0-9-]*)$/)).map(m => m && { n: m[1], branch: `issue/${m[1]}-${m[2]}` });
   const cli = process.env.ORCA_CLI_COMMAND;
   if (bad || !key || !members.length || members.some(m => !m) || !cli) {
     console.error(USAGE);
@@ -158,6 +268,21 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     if (run('git', ['-C', main, 'rev-parse', '--verify', '-q', `refs/heads/${options.integration}`]).status !== 0) {
       console.error(`整合分支 ${options.integration} 不存在\n${USAGE}`);
       process.exit(2);
+    }
+    if (fresh) {
+      const [member] = members;
+      const started = now();
+      const ready = await refresh(cli, main, key, options.integration, member, readFileSync(given.note, 'utf8'), Boolean(given.again), controller.signal);
+      if (ready.stop) {
+        console.log(`STOP ${ready.stop}`);
+        clearTimeout(budget);
+        process.exit(4);
+      }
+      const result = await dispatchMember(cli, main, ready.checkpoint, options.integration, member, controller.signal);
+      writeRow(ready.checkpoint, member.n, [member.branch, result.worktree ?? ready.worktree, result.handle ?? '', started, options.stuckAfter, result.stop ? 'stop' : 'running']);
+      console.log(result.stop ? `STOP ${member.n} ${result.stop}` : `DISPATCHED ${member.n} ${result.handle}\nPRIOR ${member.n} ${ready.prior} ${ready.sha}`);
+      clearTimeout(budget);
+      process.exit(result.stop ? 4 : 0);
     }
     const checkpoint = join(main, `.scratch/pilot/batch-${key}.md`);
     writeHeader(main, checkpoint, key, options.integration);
