@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeSample } from './test/fake-orca.mjs';
@@ -42,8 +42,9 @@ const view = ({ assignees = [], comments = [] } = {}) => mergeSample(VIEW, {
 }, 'view');
 
 /** PATH 上的假 gh：`api graphql` 回 issues 頁面；`issue view` 依序回 views 的第 i 個（用完就一直回最後一個），其餘只記錄 argv；
- * 每次呼叫一行 JSON 寫進 calls.log。script 在暫存的 git repo 裡跑，sessions 給了就寫成它的 `.scratch/pilot/sessions.md`。 */
-function fakeGh({ issues = [], views = [view()], sessions } = {}) {
+ * 每次呼叫一行 JSON 寫進 calls.log。script 在暫存的 git repo 裡跑，sessions 給了就寫成它的 `.scratch/pilot/sessions.md`。
+ * CLAUDE_CONFIG_DIR 指向暫存目錄，不讀使用者的 ~/.claude；transcripts 是 { <session>: [最後寫入幾小時前, 內容] }。 */
+function fakeGh({ issues = [], views = [view()], sessions, transcripts = {} } = {}) {
   const dir = mkdtempSync(join(realTmpdir(), 'issue-pool-'));
   const repo = join(dir, 'repo');
   mkdirSync(repo);
@@ -51,6 +52,14 @@ function fakeGh({ issues = [], views = [view()], sessions } = {}) {
   if (sessions !== undefined) {
     mkdirSync(join(repo, '.scratch/pilot'), { recursive: true });
     writeFileSync(join(repo, '.scratch/pilot/sessions.md'), sessions);
+  }
+  const projects = join(dir, 'claude/projects/-Users-ron-Documents-Workspace-ron-skills');
+  mkdirSync(projects, { recursive: true });
+  for (const [session, [hours, body]] of Object.entries(transcripts)) {
+    const file = join(projects, `${session}.jsonl`);
+    writeFileSync(file, body);
+    const at = new Date(Date.now() - hours * 3600_000);
+    utimesSync(file, at, at);
   }
   const page = mergeSample(SAMPLE, { data: { repository: { issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: issues } } } }, 'page');
   writeFileSync(join(dir, 'page.json'), JSON.stringify(page));
@@ -70,10 +79,10 @@ else if (args[0] === 'issue' && args[1] === 'view') {
 }
 `);
   chmodSync(join(dir, 'gh'), 0o755);
-  const runAt = (cwd, ...args) => spawnSync('node', [SCRIPT, '--repo', 'acme/app', ...args], { cwd, encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+  const runAt = (cwd, ...args) => spawnSync('node', [SCRIPT, '--repo', 'acme/app', ...args], { cwd, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, 'claude'), PATH: `${dir}:${process.env.PATH}` } });
   const run = (...args) => runAt(repo, ...args);
   // 不帶 --repo：tracker 專案由 script 自己判定。
-  const runBare = (...args) => spawnSync('node', [SCRIPT, ...args], { cwd: repo, encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+  const runBare = (...args) => spawnSync('node', [SCRIPT, ...args], { cwd: repo, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, 'claude'), PATH: `${dir}:${process.env.PATH}` } });
   const calls = () => { try { return readFileSync(join(dir, 'calls.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line)); } catch { return []; } };
   return { run, runAt, runBare, calls, repo };
 }
@@ -341,6 +350,49 @@ for (const [why, claimer, sessions] of STOP_CASES) {
   });
 }
 
+// #212：#201 的認領者 6e451c5c 在 09:57 認領、一分鐘後被使用者中斷，之後沒有動靜；指派還在，--stale-hours 也不釋放，retro-collect 每次都 STOP 略過它。
+const DEAD = '6e451c5c-21e4-47de-bf1b-83122cbcb781';
+const INTERRUPTED = '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}\n';
+
+test('claim：本機認領者的 transcript 超過 1 小時沒寫入時，STOP 前先印 STALE_CLAIM 與最後寫入時間，不改 Issue', () => {
+  const { run, calls } = fakeGh({ transcripts: { [DEAD]: [3, INTERRUPTED] }, views: [view({ assignees: ['ron'], comments: [['ron', `認領：${HOST}／${DEAD}`]] })] });
+  const result = run('claim', '7', '--session', 'sess-1');
+  assert.equal(result.status, 4);
+  assert.match(result.stdout, new RegExp(`^STALE_CLAIM 7 ${HOST}／${DEAD} \\d{4}-\\d\\d-\\d\\dT[\\d:.]+Z\nSTOP 7 claimed ${HOST}／${DEAD}\n$`));
+  assert.deepEqual(writes(calls()), []);
+});
+
+test('claim --take-stale：本機認領者已無活動時改以這個 session 認領，印 CLAIMED <n> stale <session>', () => {
+  const mine = `認領：${HOST}／sess-1`;
+  const theirs = `認領：${HOST}／${DEAD}`;
+  const { run, calls } = fakeGh({ transcripts: { [DEAD]: [3, INTERRUPTED] }, views: [
+    view({ assignees: ['ron'], comments: [['ron', theirs]] }),
+    view({ assignees: ['ron'], comments: [['ron', theirs], ['ron', mine]] }),
+  ] });
+  const result = run('claim', '7', '--session', 'sess-1', '--take-stale');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`^STALE_CLAIM 7 .*\nCLAIMED 7 stale ${DEAD}\n$`));
+  assert.deepEqual(writes(calls()), [
+    ['issue', 'comment', '7', '--repo', 'acme/app', '--body', mine],
+    ['issue', 'edit', '7', '--repo', 'acme/app', '--add-assignee', '@me'],
+  ]);
+});
+
+const LIVE_CASES = [
+  ['本機認領者 1 小時內還有寫入 transcript', `${HOST}／${DEAD}`, { [DEAD]: [0.5, INTERRUPTED] }],
+  ['找不到本機認領者的 transcript（例如 session 是 terminal handle）', `${HOST}／term_1`, { [DEAD]: [3, INTERRUPTED] }],
+  ['認領者在別台機器（看不到它的 transcript），即使本機有同名的舊檔', `other-box／${DEAD}`, { [DEAD]: [3, INTERRUPTED] }],
+];
+for (const [why, claimer, transcripts] of LIVE_CASES) {
+  test(`claim --take-stale：${why}時照舊停下，不印 STALE_CLAIM、不改 Issue`, () => {
+    const { run, calls } = fakeGh({ transcripts, views: [view({ assignees: ['ron'], comments: [['ron', `認領：${claimer}`]] })] });
+    const result = run('claim', '7', '--session', 'sess-1', '--take-stale');
+    assert.equal(result.status, 4);
+    assert.equal(result.stdout, `STOP 7 claimed ${claimer}\n`);
+    assert.deepEqual(writes(calls()), []);
+  });
+}
+
 // GitLab tracker（#108）：docs/agents/issue-tracker.md 寫 glab 時改用 glab。樣本 test/fixtures/gitlab/ 不是實際回應：本機沒有 glab，
 // 欄位依 GitLab GraphQL reference（WorkItemWidgetLabels、Assignees、Hierarchy、LinkedItems、Notes）與 REST issues、notes 文件組成，
 // 只取 script 讀的欄位；列表的 `comments`、`activity` 是 query 裡 notes 的別名。
@@ -415,7 +467,7 @@ else if (/\\/issues\\/\\d+$/.test(endpoint ?? '')) process.stdout.write(JSON.str
 else if (endpoint) process.stdout.write(JSON.stringify(read('samples.json').project));
 `);
   chmodSync(join(dir, 'glab'), 0o755);
-  const run = (...args) => spawnSync('node', [SCRIPT, ...args], { cwd: repo, encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+  const run = (...args) => spawnSync('node', [SCRIPT, ...args], { cwd: repo, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, 'claude'), PATH: `${dir}:${process.env.PATH}` } });
   const calls = () => { try { return readFileSync(join(dir, 'calls.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line)); } catch { return []; } };
   return { run, calls, repo };
 }
