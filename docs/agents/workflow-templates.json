@@ -43,7 +43,7 @@
     "scripts/lib/pilot-store.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/pilot-store.mjs",
       "commit": "76eb90190bc130315ec18c68075bc3dc7f3e415c",
-      "sha256": "caf2ca784ce32b02a11629ffdbd397b1b287e31ed2afe87212581720d03f5d2b"
+      "sha256": "41ec403267648a888f7d7d4d96d32a2a8c9b583592f92e2ab818aaa47c28117c"
     },
     "scripts/orca-session-send.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-send.mjs",
@@ -63,7 +63,7 @@
     "scripts/pilot-batch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-batch.mjs",
       "commit": "9dba2117986d3b2858b8c220b984893bb0ec4e38",
-      "sha256": "dc9c3e027576bbb08f0f78e42952bc0d978eeb407d55eb9cc1bec93ea14c17da"
+      "sha256": "15e632d233901137904d0ab264b556ad30c821abee04aa6361291398c121a3d5"
     },
     "scripts/pilot-counterpart.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-counterpart.mjs",
@@ -78,7 +78,7 @@
     "scripts/pilot-dispatch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-dispatch.mjs",
       "commit": "242f934e492520462ce6590ee45045379017c762",
-      "sha256": "aa488e1893b4cb5c037a20a3bcce5015c5df0c50cf98150de1ec35b53edd3768"
+      "sha256": "340f6b93d25d256e8b27322981e86ba3a1ac61363e82bc473f535468a8228d2a"
     },
     "scripts/pilot-gate.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-gate.mjs",

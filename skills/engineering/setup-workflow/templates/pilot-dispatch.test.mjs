@@ -485,6 +485,21 @@ test('--fresh：-prior 留住原分支，新分支從目前的整合分支開出
   assert.deepEqual(fx.posted(), [{ issue: '46', body: `重派：與 pilot/integration 的 Stage 條目衝突，從新 base 整併。\n\nprior: issue/46-pilot-dispatch-prior @ ${fx.head}` }]);
 });
 
+test('--fresh 把原 batch 的成員全部搬走：原 batch 的 current: 寫成 closed moved，只搬走一個時不動（#205）', t => {
+  const fx = conflicted(t);
+  const tree23 = join(fx.root, 'issue-23');
+  writeFileSync(join(tree23, 'work23.txt'), 'worker\n');
+  git(tree23, 'add', '.');
+  git(tree23, 'commit', '-qm', 'worker 23');
+  assert.equal(fresh(fx).status, 0);
+  assert.match(fx.checkpoint('23-46'), new RegExp(`^current: dispatched ${ISO}$`, 'm'));
+  const result = fx.dispatch(['23-46', '--fresh', '23:pilot-probe', '--note', fx.note]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(fx.checkpoint('23-46'), /^current: closed moved$/m);
+  assert.match(fx.checkpoint('23-46'), /^\| 23 \| .* \| moved batch-23 \| abc1234 \|$/m);
+  assert.match(fx.checkpoint('23'), new RegExp(`^current: dispatched ${ISO}$`, 'm'));
+});
+
 test('--fresh：工作樹有未提交改動時 STOP dirty，分支、worktree、分頁、checkpoint 與 Issue 都不動', t => {
   const fx = conflicted(t);
   writeFileSync(join(fx.tree, 'stray.txt'), 'uncommitted\n');

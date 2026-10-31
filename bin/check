@@ -15,6 +15,12 @@ if [[ ${1:-} == --upstream ]]; then
   export MATT_SKILLS=$up/matt PSTACK_SKILLS=$up/pstack
 fi
 
+# 測試不讀使用者的全域與系統 git 設定，本機與 CI 一樣沒有 identity（#204：#173 的測試在 fixture repo 裡 commit 沒帶 user.name，本機兩次 Regression 都過，
+# CI 才 `fatal: empty ident name`）。只把 GIT_CONFIG_GLOBAL 換成空檔不夠：macOS 的 git 會從帳號名稱與主機名猜出 identity，所以再設 useConfigOnly。
+# HOME 不動，--upstream 的 clone 照常用使用者的設定。
+printf '[user]\n\tuseConfigOnly = true\n' > "$tmp/gitconfig"
+isolated=(env GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1)
+
 node scripts/check-node-version.mjs
 node scripts/check-conflict-markers.mjs
 bin/sync-skills --check
@@ -30,14 +36,14 @@ node scripts/check-workflow-sync.mjs
 # 本 repo 與 setup-workflow 的 templates/ 都要在 macOS 與 Linux 上跑（#86）；從 repo 根掃，templates/ 也在範圍內。
 node scripts/check-portability.mjs
 # 每組測試各印一行 `ℹ tests <n>`，只看尾段會漏掉前面幾組（retro a6：PR #63、#64 只記到第二組的 120），所以最後彙總成一行。
-node --test --test-reporter=spec --test-force-exit tests/*.test.mjs | tee "$tmp/tests.log"
+"${isolated[@]}" node --test --test-reporter=spec --test-force-exit tests/*.test.mjs | tee "$tmp/tests.log"
 # setup-workflow 的 script 正本與測試：先列出檔名（node --test 的輸出不帶檔名），再以正本的 node-test-guarded 跑，它會補跑靜默遺失的測試。
 templates=(skills/engineering/setup-workflow/templates/*.test.mjs)
 echo "TEMPLATE_TESTS ${#templates[@]}: ${templates[*]##*/}"
-node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-force-exit "${templates[@]}" | tee -a "$tmp/tests.log"
+"${isolated[@]}" node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-force-exit "${templates[@]}" | tee -a "$tmp/tests.log"
 # 用到假 Orca 的測試再以 macOS 樣本跑一次（樣本見 templates/test/fake-orca.mjs 檔頭，#101）。
 orca_tests=($(grep -l orcaReplySource tests/*.test.mjs "${templates[@]}"))
 echo "FAKE_ORCA_PLATFORM=macos ${#orca_tests[@]}: ${orca_tests[*]##*/}"
-FAKE_ORCA_PLATFORM=macos node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-force-exit "${orca_tests[@]}" | tee -a "$tmp/tests.log"
+"${isolated[@]}" FAKE_ORCA_PLATFORM=macos node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-force-exit "${orca_tests[@]}" | tee -a "$tmp/tests.log"
 # paste 要帶 `-`：macOS 的 BSD paste 沒有檔案參數時不讀 stdin，只印 usage，數字整段消失（#98）。
 echo "CHECK_PASS tests $(sed -n 's/^ℹ tests \([0-9]*\)$/\1/p' "$tmp/tests.log" | paste -sd+ -)"

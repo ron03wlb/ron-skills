@@ -9,7 +9,7 @@
 //   park   同 move，但新行的 state 寫 `parked after #<m>`、candidate 保留，表格下方加一行 `parked: after #<m> <time> <原因>`；
 //          成員要是 done（暫緩已完成、等 #m 先合入的成員）。<key> 就是 <n> 時就地改 state，不搬；這時 batch 要只有它一個成員。
 //   unpark 把 batch-<n>.md 裡 `parked after #<m>` 的成員 #n 改回 done（probe 印 UNPARK <n> 之後），candidate 不動。
-//   搬完舊 batch 的成員全是 moved 時，把 `current:` 寫成 `closed moved`。
+//   搬完舊 batch 的成員全是 moved 時，把 `current:` 寫成 `closed moved`（重跑已做完的 move 也補寫，pilot-dispatch --fresh 共用同一個函式，#205）。
 // stdout：`MOVED <key> <n> batch-<n>`，舊 batch 因此關閉時行尾加 ` closed`；park 就地改時印 `PARKED_MEMBER <n> after #<m>`；`UNPARKED <n>`。
 //   重跑已做完的 move／park 照樣印同一行（中斷在寫新檔與改舊行之間時只補完舊行，目標檔已有這個成員就不重寫）。
 //   重跑以目標檔已有這個成員為準，不核對那一列的 state（probe --apply 可能已改過它）：中斷後要換成另一個子命令或 --state 時，先看目標檔。
@@ -18,7 +18,7 @@
 // exit：0 成功；4 STOP；2 用法錯誤（--reason 不能空白、含換行、三個連續空白或 `|`）。
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { isField, now, storeDir, tableCells, usage } from './lib/pilot-store.mjs';
+import { closeIfAllMoved, isField, now, storeDir, tableCells, usage } from './lib/pilot-store.mjs';
 
 const USAGE = '用法：node scripts/pilot-batch.mjs <checkout> move <key> <n> [--state stop] | <checkout> park <key> <n> --after <m> --reason <原因> | <checkout> unpark <n>';
 
@@ -50,16 +50,6 @@ const isMember = line => tableCells(line).length >= 8 && /^\d+$/.test(tableCells
 const stateOf = line => tableCells(line)[6];
 const isMoved = line => /^moved\b/.test(stateOf(line));
 
-/** 舊 batch 的成員都是 moved 時把 current: 寫成 `closed moved`；傳回是否關閉。 */
-function closeIfEmpty(lines) {
-  const members = lines.filter(isMember);
-  if (!members.length || !members.every(isMoved)) return false;
-  const i = lines.findIndex(line => /^current:/.test(line));
-  if (i < 0 || /^current:\s*closed moved$/.test(lines[i])) return false;
-  lines[i] = 'current: closed moved';
-  return true;
-}
-
 /** move 與 park 的搬移：`state` 是新行的 state，`candidate` 給了就換掉 candidate 格，`note` 是加在新檔表格下方的一行。 */
 function move(pilot, key, n, { state, candidate, note, requireDone }) {
   const file = join(pilot, `batch-${key}.md`);
@@ -71,7 +61,12 @@ function move(pilot, key, n, { state, candidate, note, requireDone }) {
   const memberState = stateOf(source.lines[i]);
   // 目標檔已有這個成員：之前的 move 寫好了新檔（之後 probe --apply 可能改過它），這次只補舊行，不重寫目標檔。
   const copied = existsSync(target) && load(target).rows(n).length === 1;
-  if (memberState === moved && copied) return `MOVED ${key} ${n} batch-${n}`;
+  // 重跑已做完的搬移時也補關舊 batch：#205 之前 --fresh 搬走全部成員卻沒寫 `closed moved` 的舊 batch，對任一成員重跑就關掉。
+  if (memberState === moved && copied) {
+    const closed = closeIfAllMoved(source.lines);
+    if (closed) writeFileSync(file, source.lines.join('\n'));
+    return `MOVED ${key} ${n} batch-${n}${closed ? ' closed' : ''}`;
+  }
   if (isMoved(source.lines[i])) throw new Stop(`${n} state ${memberState}`);
   if (existsSync(target) && !copied) throw new Stop(`${n} target batch-${n}.md`);
   if (!copied) {
@@ -81,7 +76,7 @@ function move(pilot, key, n, { state, candidate, note, requireDone }) {
     writeFileSync(target, `${[...header, member, ...(note ? [note] : [])].join('\n')}\n`);
   }
   source.lines[i] = setCells(source.lines[i], moved);
-  const closed = closeIfEmpty(source.lines);
+  const closed = closeIfAllMoved(source.lines);
   writeFileSync(file, source.lines.join('\n'));
   return `MOVED ${key} ${n} batch-${n}${closed ? ' closed' : ''}`;
 }

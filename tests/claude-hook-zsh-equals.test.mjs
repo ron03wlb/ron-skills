@@ -1,0 +1,54 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { equalsWords } from '../scripts/claude-hook-zsh-equals.mjs';
+
+const HOOK = fileURLToPath(new URL('../scripts/claude-hook-zsh-equals.mjs', import.meta.url));
+const run = input => spawnSync('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8' });
+const bash = command => run({ tool_name: 'Bash', tool_input: { command } });
+
+// session 2ebf77bf 的原指令形狀：`echo ===` 當分隔線，zsh 印 `(eval):1: == not found`，後面的 pilot-probe 沒跑（#203）。
+test('未加引號、以 = 開頭的字被擋下，exit 2 並說明 EQUALS 展開與改法', () => {
+  const result = bash('node scripts/pilot-register.mjs . ; echo ===; node scripts/pilot-probe.mjs . --apply --status');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /EQUALS/);
+  assert.match(result.stderr, /`===`/);
+  assert.match(result.stderr, /echo '==='/);
+  assert.deepEqual(equalsWords('cat a.md; echo === ; grep x b'), ['===']);
+  assert.deepEqual(equalsWords('for f in a b; do echo "$f"; echo ==; done'), ['==']);
+  assert.deepEqual(equalsWords('ls =node'), ['=node']);
+  assert.deepEqual(equalsWords('[ "$a" == b ]'), ['==']);
+});
+
+test('引號、heredoc、註解、[[ ]]、(( )) 裡的 == 與 VAR=x、--opt=x、單獨的 = 放行', () => {
+  for (const command of [
+    "echo '==='",
+    'echo "==="',
+    'echo ---',
+    '[[ $a == b ]] && echo ok',
+    'if [[ "$x" == y ]]; then echo ok; fi',
+    'echo $((1 == 1)); (( a == b ))',
+    'A=1 node x.mjs --opt=x a==b',
+    '[ "$a" = b ]',
+    "python3 - <<'EOF'\nif a == b:\n    print('===')\nEOF\necho done",
+    'cat <<-END\n\t== x\n\tEND\necho ok',
+    'echo ok # === 註解',
+    'echo \\=\\=\\=',
+  ]) {
+    assert.deepEqual(equalsWords(command), [], command);
+    assert.equal(bash(command).status, 0, command);
+  }
+});
+
+test('heredoc 結束之後的字照樣檢查', () => {
+  assert.deepEqual(equalsWords("cat <<'EOF'\n==\nEOF\necho ==="), ['===']);
+});
+
+test('不是 Bash、沒有 command 或輸入不是 JSON 時 exit 0 不輸出', () => {
+  for (const input of [{ tool_name: 'Edit', tool_input: { command: 'echo ===' } }, { tool_name: 'Bash', tool_input: {} }, 'not json']) {
+    const result = run(input);
+    assert.equal(result.status, 0);
+    assert.equal(result.stderr, '');
+  }
+});
