@@ -21,7 +21,7 @@
 | **L2 守門** | 每張 Issue 一個 worktree、一條整合分支、合入有 lock、push 前 hook 重驗、兩段式結案、`/retro` 把失誤變成檢查 | L1 已交付過幾張；開始同時開好幾個 session，或已經發生過「繞過檢查」「合錯分支」「狀態對不上」 | [04 L2 導入](04-level2.md) |
 | **L3 常駐** | `/loop /issue-pilot` 常駐 coordinator 自己挑單、派 worker、整批回歸、合入整合分支；人只剩產品決策、共用環境操作，以及 adapter 沒交給 coordinator 的 push 與合併 | L2 的入口都有固定 exit code；裝了 Orca；願意讓 agent 在無人值守時跑 git | [05 L3 導入](05-level3.md) |
 
-等級相同的專案靠「擴充」區分：tracker 種類、卡關單、外部測試環境、自訂分級入口這類特性與等級無關，可以分別勾選。
+等級相同的專案靠「擴充」區分：卡關單、外部測試環境、自訂分級入口這類特性與等級無關，可以分別勾選。tracker 與程式碼放在 GitHub 還是 GitLab 不算擴充，由 `/setup-workflow` 的 Host 站另外確認。
 
 ## 兩個實例
 

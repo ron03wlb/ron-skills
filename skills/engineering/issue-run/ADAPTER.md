@@ -9,8 +9,13 @@ Default: the platform `/setup-workflow` ran on.
 
 ## Tracker
 
-How to read an Issue with comments and its blocking relations, and the write rules for bodies and comments.
+How to read an Issue with comments and its blocking relations, and the write rules for bodies and comments. Name the tracker host `/setup-workflow`'s Host station confirmed (`github`, `gitlab` or `local`, with its hostname) and take each command from the `gh`/`glab` table in [HOSTS.md](../setup-workflow/HOSTS.md); `glab` flags differ (`glab issue note` takes only `-m`, no `--body-file`).
 Default: `docs/agents/issue-tracker.md` from `/setup-matt-pocock-skills`.
+
+## Delivery
+
+How a candidate reaches the shared branch on the code host: the code host the Host station confirmed (`github` or `gitlab`, with its hostname; it may differ from the tracker host), its CLI, the PR or MR create, read, wait-for-CI and merge commands from [HOSTS.md](../setup-workflow/HOSTS.md), and where CI is configured (`.github/workflows/` or `.gitlab-ci.yml`).
+Default: none when the code host is `local` (no remote): there is no PR, MR or remote CI, and the human merges locally.
 
 ## Readiness
 

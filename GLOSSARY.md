@@ -9,8 +9,16 @@
 _Avoid_: 方案、模式、tier
 
 **擴充**:
-與導入等級正交、可分別勾選的專案特性，例如 tracker 種類、卡關單、外部測試環境、自訂分級入口；等級相同的兩個專案靠擴充區分。
+與導入等級正交、可分別勾選的專案特性，例如卡關單、外部測試環境、自訂分級入口；等級相同的兩個專案靠擴充區分。tracker host 與程式碼 host 不是擴充，由 `/setup-workflow` 的 Host 站確認。
 _Avoid_: 外掛、preset、專案原型
+
+**tracker host**:
+Issue 所在的平台，`github`、`gitlab` 或 `local`（repo 裡的 Markdown Issue），由 `docs/agents/issue-tracker.md` 判斷；可以和程式碼 host 不同。
+_Avoid_: tracker 種類
+
+**程式碼 host**:
+`origin` 所在的平台，`github`、`gitlab`（含 http、IP 的自架 GitLab）或 `local`（沒有 remote，沒有 PR／MR 與遠端 CI）；adapter 的 Delivery 段依它寫指令。
+_Avoid_: remote 種類、git host
 
 **adapter**:
 專案寫給 agent 讀的一份設定，記錄自己的 tracker、檢查、交付指令，以及 L3 的 Pilot 段。
