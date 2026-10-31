@@ -11,7 +11,7 @@
 // detached worktree（工作樹必定乾淨）重跑 `bin/check --upstream`，exit 0 而且印出 CHECK_PASS 行才繼續，合併前在 PR 留言註明。
 // 直接重跑而不驗證 pilot 的 regression 記錄：land 也給非 pilot 的分支用，不綁 checkpoint 格式。
 // CI 失敗而失敗的 job 全都 0 個 step（帳務或 spending limit 擋下、沒有啟動，#132）時印 ci-not-started，帶 check-run annotation
-// 的第一句與 repo 可見性：log 讀不到，重跑也沒用；只有這種才能改用 `--local-checks`，有 step 的失敗照舊是 ci-failed。
+// 的第一句與 repo 可見性：log 讀不到，重跑也沒用；原因是帳務時 Push gate 才改用 `--local-checks`，有 step 的失敗照舊是 ci-failed。
 // Orca 從 WSL 移除 worktree 會把主 checkout 設成 bare，所以移除後一律跑 pilot-unbare.sh。
 //
 // 用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--body-file <file>] [--title <title>]
