@@ -480,7 +480,7 @@ test('--apply 把 DONE、STOP 寫回成員列的 state 與 candidate，其他行
   assert.equal(readFileSync(file, 'utf8').split('\n').filter(line => line.startsWith('| 23 |'))[0], row23.replace(/\| running \| +\|$/, `| done | ${SHA} |`));
 });
 
-// retro ron-skills-cf：sed 沒對到成員列時沒有輸出也沒報錯。`--apply` 寫不回去時印出是哪一列，exit 1。
+// coordinator 的 retro：sed 沒對到成員列時沒有輸出也沒報錯。`--apply` 寫不回去時印出是哪一列，exit 1。
 test('--apply 對不到唯一的成員列時印 APPLY_MISS 並 exit 1', t => {
   const { batch, pilot, probe } = fixture(t, { screens: { term_23: { status: 'running', tail: [`DONE 23 ${SHA}`] } } });
   batch('23', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 23 }, { n: 23 }]);
@@ -493,7 +493,7 @@ test('--apply 對不到唯一的成員列時印 APPLY_MISS 並 exit 1', t => {
   assert.equal(readFileSync(file, 'utf8'), before);
 });
 
-// retro ron-skills-5b：Push gate 印 LANDED 之後沒有指令把 `current: merged` 改成 `pushed`。
+// coordinator 的 retro：Push gate 印 LANDED 之後沒有指令把 `current: merged` 改成 `pushed`。
 // `--apply` 看到 merged 的 batch 已在 origin/<主分支>（IN_MAIN）時寫成 `pushed <sha>`，後面的附註照留；pushed 的 batch 不動。
 test('--apply 把已進 origin/main 的 merged batch 寫成 pushed <sha>', t => {
   const { batch, pilot, probe, git } = fixture(t);
