@@ -86,6 +86,11 @@
       "commit": "181e7833a1ca1708d798ffd6acb040cef203581b",
       "sha256": "f53e8b3c0e8638e38d37b5e7bc39e73cf4be73dc49499007592c4b60603e23b7"
     },
+    "scripts/pilot-pr-body.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/pilot-pr-body.mjs",
+      "commit": "76467e4bfdff49cb4816d43f2cdc6b30367a6651",
+      "sha256": "60d65f070d719a2acbc082295309e5fcddbb2bcebce8974ca3b40be54ad52cdd"
+    },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",
       "commit": "1b7d278f28d32abb5be891b570d151e1b8bcb4ff",
