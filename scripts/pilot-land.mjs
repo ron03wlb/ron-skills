@@ -30,7 +30,7 @@
 // 用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>]（在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）
 // stdout：最後一行是 `MERGED <key> <sha>`，或 `STOP regression <exit>`、`STOP hold`、`STOP drift`（tip 變了，下一輪重新 stage）、
 //   `STOP conflict <n> <檔>=<來源>:<種類> …`（已 abort，stage worktree 乾淨；每個衝突檔一項，#192）：來源是 `member <m>`（本次 stage
-//     依號碼先合入、自己的分支改過這個檔的成員）、`integration`（成員開分支之後整合分支改過）多個來源以 + 相連（`member 79+integration`、`member 1+member 3`），
+//     依號碼先合入、自己的分支改過這個檔的成員）、`integration`（成員開分支之後整合分支改過），或以 + 相連的多個來源（`member 79+integration`、`member 1+member 3`），
 //     都看不出來（不該發生）時是 `unknown`；種類是 `entry <名稱>`（Markdown 檔解不了的 hunk 裡兩邊都改的 `- **<名稱>.**` 條目，
 //     一邊增刪了條目、條目對不齊時是 hunk 碰到的每個條目，多個以、相連）、`code`（程式檔）或 `other`。
 //     例：`STOP conflict 108 scripts/lib/hosts.mjs=member 79:code docs/agents/pilot.md=integration:entry Pool`。以及 `STOP checkpoint …`、`STOP member <n> <state>`、`STOP dirty <worktree>`、
