@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // 把開著的 Issue 逐張分桶，pilot 的 Pool 從 ready 桶依序挑；第一版只支援 GitHub（gh CLI）。
-// 用法：node scripts/issue-pool.mjs [--repo <owner>/<name>] [--stale-hours <h>]
+// 用法：node scripts/issue-pool.mjs [--repo <owner>/<name>] [--stale-hours <h>] [--categories <label>,...]
 //       node scripts/issue-pool.mjs claim <n> [--repo <owner>/<name>] [--session <id>]
 // 一張只歸一個桶，依序取第一個符合的：parent（有 sub-issue）、human（`ready-for-human`，指派給人不算認領）、
 // stale（已指派，超過 --stale-hours（預設 24）沒有新留言或新指派）、claimed（已指派）、retro-candidates（`retro-candidates` label：retro 的候選清單，等 `/retro-collect`）、blocked（有開著的 blocked_by）、
 // needs-info、needs-triage、ready（`ready-for-agent`）、unlabeled。所以 ready 桶就是池子。過期的認領只歸到 stale，不自動釋放。
 // 輸出順序：ready 桶先印，依 `retro` label 的先（retro 判定太複雜、交給 worker 的單）、`priority` label 的先、直接或間接 block 最多開著的單的先（關鍵路徑）、號碼小的先；
 // 其餘依上面的桶順序、桶內號碼小的先。
-// stdout：每張一行 `<桶> #<n> <標題>`；exit 0。gh 失敗時 stderr 印原因、exit 1；用法錯誤 exit 2。
+// stdout：每張一行 `<桶> #<n> <標題>`；之後對開著、有 triage 狀態 label（TRIAGE_STATES）卻沒有分類 label 的單各印一行 `NO_CATEGORY <n>`（號碼小的先），
+// 母單（有 sub-issue 或 `parent` label）與 `retro-candidates` 不算。分類 label 預設是 DEFAULT_CATEGORIES（triage 的 `bug`、`enhancement`），
+// adapter 用的 label 不同時以 `--categories` 覆寫（逗號分隔）。exit 0。gh 失敗時 stderr 印原因、exit 1；用法錯誤 exit 2。
 // claim 是 session 開始處理一張 Issue 前的認領：先留「認領：<機器>／<session>」（整則留言只有這一行；session 預設
 // $CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE），再 `--add-assignee @me`，印 `CLAIMED <n>`。同一個帳號會在好幾台機器上跑，
 // 指派分不出是誰，所以看認領留言：
@@ -23,7 +25,7 @@ import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const USAGE = '用法：node scripts/issue-pool.mjs [--repo <owner>/<name>] [--stale-hours <h>] | claim <n> [--repo <owner>/<name>] [--session <id>]';
+const USAGE = '用法：node scripts/issue-pool.mjs [--repo <owner>/<name>] [--stale-hours <h>] [--categories <label>,...] | claim <n> [--repo <owner>/<name>] [--session <id>]';
 const QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{number title labels(first:50){nodes{name}} assignees(first:20){nodes{login}} subIssuesSummary{total} blockedBy(first:50){nodes{number state repository{nameWithOwner}}} blocking(first:50){nodes{number state repository{nameWithOwner}}} comments(last:1){nodes{createdAt}} timelineItems(last:1,itemTypes:[ASSIGNED_EVENT]){nodes{... on AssignedEvent{createdAt}}}}}}}`;
 
 class GhError extends Error {}
@@ -95,6 +97,19 @@ export function pool(issues, { repo, ...options }) {
     || a.issue.number - b.issue.number);
 }
 
+/** triage 的五個狀態 label 與兩個分類 label 預設值（Matt 的 `/triage`：每張一個分類加一個狀態）。 */
+export const TRIAGE_STATES = ['needs-triage', 'needs-info', 'ready-for-agent', 'ready-for-human', 'wontfix'];
+export const DEFAULT_CATEGORIES = ['bug', 'enhancement'];
+
+/** 有 triage 狀態卻沒有分類的單，號碼小的先；母單與 retro 候選清單本來就不掛分類，不算。 */
+export function missingCategory(issues, categories = DEFAULT_CATEGORIES) {
+  return issues.filter(issue => {
+    const labels = new Set(issue.labels.nodes.map(({ name }) => name));
+    if (issue.subIssuesSummary.total > 0 || labels.has('parent') || labels.has('retro-candidates')) return false;
+    return TRIAGE_STATES.some(name => labels.has(name)) && !categories.some(name => labels.has(name));
+  }).map(({ number }) => number).sort((a, b) => a - b);
+}
+
 /** 沒人指派時，這段時間內別人留的認領留言算進行中（留言與指派之間的空檔）；更舊的視為已被取消指派。 */
 const IN_FLIGHT_MS = 5 * 60_000;
 
@@ -153,11 +168,12 @@ function claim(n, repo, session) {
 }
 
 function main(argv) {
-  let repo, staleHours = 24, session = process.env.CLAUDE_CODE_SESSION_ID || process.env.ORCA_TERMINAL_HANDLE || 'unknown';
+  let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, session = process.env.CLAUDE_CODE_SESSION_ID || process.env.ORCA_TERMINAL_HANDLE || 'unknown';
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--repo' && argv[i + 1]) repo = argv[++i];
     else if (argv[i] === '--stale-hours' && Number(argv[i + 1]) > 0) staleHours = Number(argv[++i]);
+    else if (argv[i] === '--categories' && argv[i + 1]) categories = argv[++i].split(',').filter(Boolean);
     else if (argv[i] === '--session' && argv[i + 1]) session = argv[++i];
     else if (!argv[i].startsWith('-')) positional.push(argv[i]);
     else { console.error(USAGE); return 2; }
@@ -167,7 +183,9 @@ function main(argv) {
   try {
     if (command === 'claim') return claim(n, repo, session);
     repo ??= gh('repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim();
-    for (const { issue, bucket } of pool(openIssues(repo), { repo, staleHours })) console.log(`${bucket} #${issue.number} ${issue.title}`);
+    const issues = openIssues(repo);
+    for (const { issue, bucket } of pool(issues, { repo, staleHours })) console.log(`${bucket} #${issue.number} ${issue.title}`);
+    for (const n of missingCategory(issues, categories)) console.log(`NO_CATEGORY ${n}`);
     return 0;
   } catch (error) {
     if (!(error instanceof GhError)) throw error;
