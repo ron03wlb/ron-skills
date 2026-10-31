@@ -108,8 +108,8 @@ else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
   let dispatchScript = script;
   if (guard !== undefined) {
     const scripts = join(temp, 'scripts');
-    mkdirSync(scripts);
-    for (const name of ['pilot-dispatch.mjs', 'issue-pool.mjs', 'orca-session-send.mjs', 'orca-worktree-create.mjs', 'tab-state.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+    mkdirSync(join(scripts, 'lib'), { recursive: true });
+    for (const name of ['pilot-dispatch.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'orca-session-send.mjs', 'orca-worktree-create.mjs', 'tab-state.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
     writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
     chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
     dispatchScript = join(scripts, 'pilot-dispatch.mjs');
