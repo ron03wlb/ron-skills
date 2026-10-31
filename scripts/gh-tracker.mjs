@@ -3,6 +3,7 @@
 // 前綴規則 Bash(gh issue comment:*) 也放行 -R other/repo、Issue URL 與 -wR 這類短旗標串，所以這裡固定 repo、只收白名單旗標與數字 Issue 號碼。
 // 用法：node scripts/gh-tracker.mjs comment <n> (--body|-b <text> | --body-file|-F <file>)
 //       node scripts/gh-tracker.mjs close <n> [--comment|-c <text>] [--reason|-r <reason>]
+//       node scripts/gh-tracker.mjs reopen <n> [--comment|-c <text>]
 //       node scripts/gh-tracker.mjs edit <n> [--title|-t、--body|-b、--body-file|-F、--add-label、--remove-label、--add-assignee、--remove-assignee <值>]...
 //       node scripts/gh-tracker.mjs create --title|-t <title> (--body|-b | --body-file|-F) [--label|-l、--assignee|-a <值>]...
 //       node scripts/gh-tracker.mjs sub-issue add|remove <parent> <child>
@@ -21,6 +22,7 @@ const REPO = 'ron03wlb/ron-skills';
 const ISSUE_COMMANDS = {
   comment: { numbers: 1, flags: { '--body': '-b', '--body-file': '-F' } },
   close: { numbers: 1, flags: { '--comment': '-c', '--reason': '-r' } },
+  reopen: { numbers: 1, flags: { '--comment': '-c' } },
   edit: { numbers: 1, flags: { '--title': '-t', '--body': '-b', '--body-file': '-F', '--add-label': null, '--remove-label': null, '--add-assignee': null, '--remove-assignee': null } },
   create: { numbers: 0, flags: { '--title': '-t', '--body': '-b', '--body-file': '-F', '--label': '-l', '--assignee': '-a' } },
 };
