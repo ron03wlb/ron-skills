@@ -1,6 +1,11 @@
 {
   "source": "ron03wlb/ron-skills",
   "copies": {
+    "scripts/check-claude-settings.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/check-claude-settings.mjs",
+      "commit": "ada628ad8ff233f859b6e1cd3cdb9965b4629871",
+      "sha256": "5687084db5e564cd08a3d763fcf09d69261b76763ae2a1e50a211d38ab69b1c6"
+    },
     "scripts/claude-hook-language.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-language.mjs",
       "commit": "ada628ad8ff233f859b6e1cd3cdb9965b4629871",

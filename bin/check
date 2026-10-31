@@ -18,6 +18,8 @@ fi
 node scripts/check-node-version.mjs
 bin/sync-skills --check
 node scripts/check-links.mjs
+# auto mode 放行的 tracker 寫入（#96）靠 permissions.allow；格式錯的規則 Claude Code 只略過不報錯。
+node scripts/check-claude-settings.mjs
 node scripts/build-workflow-site.mjs --check
 node scripts/check-workflow-strings.mjs
 node scripts/check-workflow-secrets.mjs
