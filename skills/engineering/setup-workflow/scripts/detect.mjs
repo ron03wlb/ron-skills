@@ -3,13 +3,121 @@
 // 用法：node detect.mjs [<repo>] [--json]（repo 預設 cwd）
 // 文字輸出每個訊號一行 `SIGNAL <name> met|missing <value>`、每項擴充一行 `EXTENSION <name> <value> ...`，
 // 接著 `RECOMMEND <等級>|none`，最後一行 `LEVEL <等級>`；--json 印同樣內容的物件。exit 0；不是 git repo 時 exit 2。
+//
+// 環境站：node detect.mjs [<repo>] --env [--copy <template>...] [--json]，只看這台機器，repo 只讀它的 CI 設定，不必是 git repo。
+// 每項一行：`ENV platform <macos|wsl|linux|…>`、必要工具 `REQUIRED <name> met|missing|skipped <value>`、
+// 選用工具 `OPTIONAL <name> met|missing <value>`（缺了只記錄，它解鎖的等級或擴充列入 unavailable）；
+// 每個停點一行 `STOP <name> <原因>` 加一行 `FIX <name> <修正指令>`，最後一行 `ENV ok`（exit 0）或 `ENV stop <n>`（exit 1）。
+// --copy 是這次要複製的正本，含 `.py` 時才檢查 Python。測試以 DETECT_PLATFORM、DETECT_PROC_VERSION（檔案路徑）、DETECT_NODE_VERSION
+// 取代 process.platform、/proc/version 與 process.versions.node。
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { accessSync, constants, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { delimiter, isAbsolute, join, resolve } from 'node:path';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
-const root = resolve(args.find(arg => !arg.startsWith('--')) ?? '.');
+const copyAt = args.indexOf('--copy');
+const copyEnd = copyAt < 0 ? -1 : args.findIndex((arg, i) => i > copyAt && arg.startsWith('--'));
+const copy = copyAt < 0 ? [] : args.slice(copyAt + 1, copyEnd < 0 ? undefined : copyEnd);
+const root = resolve(args.find((arg, i) => !arg.startsWith('--') && !(copyAt >= 0 && i > copyAt && (copyEnd < 0 || i < copyEnd))) ?? '.');
+
+if (args.includes('--env')) process.exit(environment());
+
+/** PATH 上（或絕對路徑）可執行的檔案；沒有時 null。 */
+function which(name) {
+  const executable = path => {
+    try { accessSync(path, constants.X_OK); return statSync(path).isFile(); } catch { return false; }
+  };
+  if (name.includes('/')) return executable(name) ? name : null;
+  return (process.env.PATH ?? '').split(delimiter).filter(Boolean).map(dir => join(dir, name)).find(executable) ?? null;
+}
+
+/** `<command> --version` 的第一行（python 2 印在 stderr）；失敗時 null。 */
+function versionOf(command) {
+  const result = spawnSync(command, ['--version'], { encoding: 'utf8', timeout: 10_000 });
+  return result.status === 0 ? `${result.stdout}${result.stderr}`.trim().split('\n')[0] || null : null;
+}
+
+// 環境站：平台、必要工具（node、git、要複製 .py 時的 Python）與選用工具（Orca、Codex）。setup 不安裝、不切換 runtime，不符只給修正指令。
+function environment() {
+  const name = process.env.DETECT_PLATFORM ?? process.platform;
+  const procPath = process.env.DETECT_PROC_VERSION ?? '/proc/version'; // portability-ok: 只在 process.platform 是 linux 時讀，WSL 判定的依據
+  const wsl = name === 'linux' && existsSync(procPath) && /microsoft/i.test(readFileSync(procPath, 'utf8'));
+  const platform = name === 'darwin' ? { value: 'macos', evidence: ['process.platform darwin'] }
+    : name === 'linux' ? { value: wsl ? 'wsl' : 'linux', evidence: [`process.platform linux；${procPath} ${wsl ? '含' : '不含'} microsoft`] }
+    : { value: name, evidence: [`process.platform ${name}`] };
+  const install = { git: { macos: 'xcode-select --install', other: 'sudo apt install git' }, python: { macos: 'brew install python', other: 'sudo apt install python3' } };
+  const installHint = tool => install[tool][platform.value === 'macos' ? 'macos' : 'other'];
+
+  // node：以 CI 鎖定的版本為準，同 ron-skills scripts/check-node-version.mjs 的規則（各 workflow 一致、主版本等於本機）。
+  function nodeRuntime() {
+    const local = process.env.DETECT_NODE_VERSION ?? process.versions.node;
+    const dir = join(root, '.github/workflows');
+    const pins = (existsSync(dir) && statSync(dir).isDirectory() ? readdirSync(dir).filter(file => /\.ya?ml$/.test(file)).sort() : [])
+      .flatMap(file => [...readFileSync(join(dir, file), 'utf8').matchAll(/node-version:\s*['"]?([\d.]+)['"]?/g)].map(([, version]) => ({ file, version })));
+    if (!pins.length) return { met: true, value: local, required: null, evidence: ['.github/workflows 沒有鎖定 node-version'] };
+    const split = pins.find(pin => pin.version !== pins[0].version);
+    if (split) {
+      return { met: false, value: local, required: null, evidence: pins.map(pin => `${pin.file} ${pin.version}`),
+        reason: `CI 的 node-version 不一致：${split.file} 是 ${split.version}，${pins[0].file} 是 ${pins[0].version}`, fix: '把所有 workflow 的 node-version 改成同一版，再重跑環境站' };
+    }
+    const required = pins[0].version;
+    const met = required.split('.')[0] === local.split('.')[0];
+    return { met, value: local, required, evidence: [`.github/workflows/${pins[0].file} node-version ${required}`],
+      ...(!met && { reason: `本機 Node ${local}，CI 鎖定 ${required}，主版本要相同`, fix: `nvm install ${required} && nvm use ${required}` }) };
+  }
+
+  // git：detect 與正本都用 `rev-parse --path-format`，要 2.31 以上。
+  function gitTool() {
+    const path = which('git');
+    const value = path && versionOf(path);
+    const [, major, minor] = value?.match(/(\d+)\.(\d+)/) ?? [];
+    if (!major) return { met: false, value: null, evidence: ['PATH 上沒有 git'], reason: '找不到 git', fix: installHint('git') };
+    const met = Number(major) > 2 || (Number(major) === 2 && Number(minor) >= 31);
+    return { met, value, evidence: [`${path} --version；需要 2.31 以上`], ...(!met && { reason: `git ${major}.${minor} 低於 2.31`, fix: installHint('git') }) };
+  }
+
+  function python() {
+    const scripts = copy.filter(file => file.endsWith('.py'));
+    if (!scripts.length) return { met: null, value: null, evidence: ['要複製的正本沒有 .py'] };
+    // 只認 python3：pilot_git.py 的 allow rule 與 adapter 指令都寫 `python3 scripts/pilot_git.py`。
+    const path = which('python3');
+    const value = path && versionOf(path);
+    if (/^Python 3\./.test(value ?? '')) return { met: true, value, evidence: [`${path}；要複製 ${scripts.join('、')}`] };
+    return { met: false, value: null, evidence: [path ? `${path} --version 失敗或不是 Python 3` : 'PATH 上沒有 python3'], reason: `要複製的 ${scripts.join('、')} 需要 Python 3`, fix: installHint('python') };
+  }
+
+  const orcaCommand = process.env.ORCA_CLI_COMMAND;
+  const orcaPath = orcaCommand ? which(orcaCommand) : null;
+  const codexPath = which('codex');
+  const optional = {
+    orca: { met: Boolean(orcaPath), value: orcaPath, unlocks: 'L3',
+      evidence: [orcaPath ? 'ORCA_CLI_COMMAND' : orcaCommand ? `ORCA_CLI_COMMAND 指向的 ${orcaCommand} 不存在或不可執行` : 'ORCA_CLI_COMMAND 未設定'] },
+    codex: { met: Boolean(codexPath), value: codexPath && (versionOf(codexPath) ?? codexPath), unlocks: 'codex', evidence: [codexPath ?? 'PATH 上沒有 codex'] },
+  };
+  const required = { node: nodeRuntime(), git: gitTool(), python: python() };
+  const stops = [
+    ...(name === 'win32' ? [{ name: 'platform', reason: '原生 Windows 不支援', fix: '改在 WSL2 裡執行（wsl --install），在 WSL2 的 checkout 重跑 /setup-workflow' }]
+      : !['macos', 'wsl', 'linux'].includes(platform.value) ? [{ name: 'platform', reason: `不支援的平台 ${name}`, fix: '改在 macOS、WSL2 或一般 Linux 上執行' }] : []),
+    ...Object.entries(required).filter(([, tool]) => tool.met === false).map(([tool, { reason, fix }]) => ({ name: tool, reason, fix })),
+  ];
+  const unavailable = Object.values(optional).filter(tool => !tool.met).map(tool => tool.unlocks);
+  const result = { root, platform, required, optional, unavailable, stops, ok: stops.length === 0 };
+
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(`ENV platform ${platform.value}  # ${platform.evidence.join('; ')}`);
+    for (const [tool, s] of Object.entries(required)) {
+      const state = s.met === null ? 'skipped' : s.met ? 'met' : 'missing';
+      console.log(`REQUIRED ${tool} ${state} ${s.value ?? '-'}  # ${[...s.evidence, ...(s.required ? [`需要 ${s.required.split('.')[0]}.x`] : [])].join('; ')}`);
+    }
+    for (const [tool, s] of Object.entries(optional)) console.log(`OPTIONAL ${tool} ${s.met ? 'met' : 'missing'} ${s.value ?? '-'}  # ${s.evidence.join('; ')}${s.met ? '' : `；${s.unlocks} 不可選`}`);
+    for (const stop of stops) console.log(`STOP ${stop.name} ${stop.reason}\nFIX ${stop.name} ${stop.fix}`);
+    console.log(stops.length ? `ENV stop ${stops.length}` : 'ENV ok');
+  }
+  return stops.length ? 1 : 0;
+}
 
 const git = (...rest) => {
   const result = spawnSync('git', ['-C', root, ...rest], { encoding: 'utf8', maxBuffer: 64 << 20 });
