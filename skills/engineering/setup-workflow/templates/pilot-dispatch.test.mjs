@@ -251,12 +251,13 @@ test('重跑同一個 batch：已有的成員行就地換掉，其他列不動',
 });
 
 // Bash 工具最多等 600 秒，被殺就來不及寫 checkpoint：預算到了中止進行中的步驟，剩下的成員都 STOP timeout。
+// 預算要夠 #23 走完 worktree create、Bare guard、terminal create，在永遠不回的 wait 用完：1500 ms 在 7、8 個 worker 同時跑時
+// 會在 create 或 terminal 階段就用完（handle 空白，或多出分頁提示），整批 bin/check 不穩定（#156、#157、#160）。
 test('總預算用完：進行中與還沒派的成員都 STOP timeout，照樣寫進 checkpoint', t => {
   const { dispatch, checkpoint } = fixture(t, { waitHangs: true });
   const begin = Date.now();
-  // 預算要夠第一個成員跑完認領檢查（假 gh）與 create、開到分頁，再卡在 wait；整套測試並行時 1.5 秒不夠。
-  const result = dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch'], { PILOT_DISPATCH_BUDGET_MS: '4000', SESSION_TUI_WAIT_MS: '60000' });
-  assert.ok(Date.now() - begin < 20000, `${Date.now() - begin} ms`);
+  const result = dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch'], { PILOT_DISPATCH_BUDGET_MS: '8000', SESSION_TUI_WAIT_MS: '60000' });
+  assert.ok(Date.now() - begin < 30000, `${Date.now() - begin} ms`);
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.deepEqual(lines(result), ['STOP 23 timeout', 'STOP 46 timeout']);
   assert.match(checkpoint('23-46'), /^\| 23 \| .* \| term_23 \| .* \| stop \| \|$/m);

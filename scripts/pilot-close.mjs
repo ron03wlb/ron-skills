@@ -37,13 +37,17 @@ class Stop extends Error {
   }
 }
 
-/** 同步跑子行程：stdin 接 /dev/null（有 `input` 時改送它），stderr 濾掉 crashpad 行後照常寫到本行程的 stderr。 */
-function run(command, args, input) {
+/** 同步跑子行程：stdin 接 /dev/null（有 `input` 時改送它），stderr 濾掉 crashpad 行後照常寫到本行程的 stderr（`echo: false` 時由呼叫端決定要不要印）。 */
+function run(command, args, input, { echo = true } = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', input, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], timeout: 120000 });
   const stderr = (result.stderr ?? '').split('\n').filter(line => !line.includes('registration_protocol_win.cc')).join('\n');
-  if (stderr.trim()) process.stderr.write(stderr.endsWith('\n') ? stderr : `${stderr}\n`);
+  if (echo) writeStderr(stderr);
   const reason = stderr.trim().split('\n').pop() || (result.error?.message ?? `exit ${result.status}`);
   return { status: result.status, stdout: result.stdout ?? '', stderr, reason };
+}
+
+function writeStderr(text) {
+  if (text.trim()) process.stderr.write(text.endsWith('\n') ? text : `${text}\n`);
 }
 
 /** 跑子行程，exit 非 0 就以 `step` STOP。 */
@@ -202,9 +206,11 @@ function counterpart({ main, sha, n }, refs) {
 
 /** 成員有母單、母單還開著而且子單全部結束，就留言列出每張子單的 state_reason 再關母單。 */
 function closeParent(n) {
-  const found = run('gh', ['api', `repos/${REPO}/issues/${n}/parent`]);
+  // 沒有母單時 gh 印 `No parent issue found (HTTP 404)`，是預期結果，不轉印（#172）。
+  const found = run('gh', ['api', `repos/${REPO}/issues/${n}/parent`], undefined, { echo: false });
   if (found.status !== 0) {
     if (/HTTP 404/.test(found.stderr)) return 'SKIP';
+    writeStderr(found.stderr);
     throw new Stop('parent', found.reason);
   }
   const parent = JSON.parse(found.stdout).number;

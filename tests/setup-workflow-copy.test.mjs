@@ -90,6 +90,32 @@ test('既有檔案內容不同時列出差異並以 exit 3 停下、不覆蓋；
   assert.equal(readFileSync(join(target, 'scripts/b.mjs'), 'utf8'), 'export const b = 1;\n');
 });
 
+// 副本的 sha256 與清單記錄一致就是沒手改過的上一版：正本更新後重新複製不必再要人確認（#156：tab-state 正本 commit 後還要 --yes）。
+test('既有副本與清單記錄的 sha256 一致時直接覆寫，印 UPDATE 不要求確認', t => {
+  const { source, target, copier } = fixture(t);
+  assert.equal(run(copier, target, '--no-tests', 'a').status, 0);
+  write(join(source, 'skills/engineering/setup-workflow/templates'), { 'b.mjs': 'export const b = 3;\n' });
+  git(source, 'commit', '-qam', 'b 3');
+  const result = run(copier, target, '--no-tests', 'a');
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /^UPDATE scripts\/b\.mjs$/m);
+  assert.equal(result.stdout.trim().split('\n').pop(), 'COPIED 3');
+  assert.equal(readFileSync(join(target, 'scripts/b.mjs'), 'utf8'), 'export const b = 3;\n');
+  const { copies } = JSON.parse(readFileSync(join(target, MANIFEST), 'utf8'));
+  assert.equal(copies['scripts/b.mjs'].sha256, sha256(join(target, 'scripts/b.mjs')));
+});
+
+test('既有副本與清單記錄不一致（手改過）時仍 CONFIRM_OVERWRITE', t => {
+  const { source, target, copier } = fixture(t);
+  assert.equal(run(copier, target, '--no-tests', 'a').status, 0);
+  write(target, { 'scripts/b.mjs': 'export const b = 2;\n' });
+  write(join(source, 'skills/engineering/setup-workflow/templates'), { 'b.mjs': 'export const b = 3;\n' });
+  git(source, 'commit', '-qam', 'b 3');
+  const result = run(copier, target, '--no-tests', 'a');
+  assert.equal(result.status, 3, result.stdout);
+  assert.equal(result.stdout.trim().split('\n').pop(), 'CONFIRM_OVERWRITE scripts/b.mjs');
+});
+
 test('內容相同的既有檔案不算覆蓋，直接記錄', t => {
   const { target, copier } = fixture(t);
   write(target, { 'scripts/b.mjs': 'export const b = 1;\n' });

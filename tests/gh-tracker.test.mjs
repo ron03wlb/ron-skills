@@ -98,6 +98,8 @@ test('sub-issue、blocked-by：stdout 只印一行結果，不印 API 回應', (
   ]) {
     const result = run(...args);
     assert.equal(result.status, 0, result.stderr);
+    // 先比長度：直接比內容時，印出 API 回應的舊程式會讓失敗訊息倒出整段 40KB（#156）。
+    assert.ok(result.stdout.length < 200, `stdout ${result.stdout.length} bytes`);
     assert.equal(result.stdout, `${line}\n`);
   }
 });

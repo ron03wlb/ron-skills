@@ -3,8 +3,8 @@
 // 並在 docs/agents/workflow-templates.json 記錄每個副本的正本路徑、ron-skills commit 與 sha256（體檢以此判斷分歧）。
 // 用法：node copy-templates.mjs <repo> [--dry-run] [--no-tests] [--yes] <template>...（template 為 templates/ 下的檔名，可省略 .mjs）
 //       node copy-templates.mjs <repo> --verify
-// 輸出每檔一行 `COPY|SAME|DIFF <副本路徑>`（DIFF 後接 unified diff），最後一行：
-//   PLANNED <n>（--dry-run）、COPIED <n>、CONFIRM_OVERWRITE <路徑...>（exit 3：既有檔內容不同，人確認後加 --yes 重跑）、
+// 輸出每檔一行 `COPY|SAME|UPDATE|DIFF <副本路徑>`（UPDATE、DIFF 後接 unified diff；UPDATE 是 sha256 與清單記錄一致、沒手改過的舊副本，直接覆寫），最後一行：
+//   PLANNED <n>（--dry-run）、COPIED <n>、CONFIRM_OVERWRITE <路徑...>（exit 3：既有檔內容不同且與清單記錄不一致，人確認後加 --yes 重跑）、
 //   VERIFIED <n>（--verify 全部一致；有 MISMATCH／MISSING 或沒有清單時 exit 1）。參數或旗標錯誤、正本不存在或有未提交改動時 exit 2。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -76,15 +76,16 @@ const plan = [...files].sort().map(file => {
   if (git('status', '--porcelain', '--', join(TEMPLATES, file)).stdout.trim()) fail(`正本有未提交改動：${template}（先 commit，記錄的 commit 才對得上內容）`);
   const dest = join('scripts', file);
   const target = join(repo, dest);
-  const state = !existsSync(target) ? 'COPY' : sha256(target) === sha256(join(TEMPLATES, file)) ? 'SAME' : 'DIFF';
+  const current = existsSync(target) && sha256(target);
+  const state = !current ? 'COPY' : current === sha256(join(TEMPLATES, file)) ? 'SAME' : current === manifest.copies[dest]?.sha256 ? 'UPDATE' : 'DIFF';
   return { file, template, dest, target, state };
 });
 
 const diffs = [];
 for (const { file, dest, target, state } of plan) {
   console.log(`${state} ${dest}`);
-  if (state === 'DIFF') {
-    diffs.push(dest);
+  if (state === 'DIFF') diffs.push(dest);
+  if (state === 'DIFF' || state === 'UPDATE') {
     process.stdout.write(spawnSync('git', ['diff', '--no-index', '--', target, join(TEMPLATES, file)], { encoding: 'utf8' }).stdout);
   }
 }
