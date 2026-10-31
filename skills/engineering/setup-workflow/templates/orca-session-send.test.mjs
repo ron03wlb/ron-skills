@@ -12,8 +12,9 @@ const script = new URL('./orca-session-send.mjs', import.meta.url).pathname;
 // `draft` 為第一次送出前 composer 已有的文字（undefined 沿用樣本值、null 回應不帶 `draft` 欄位，如 composer 為空的真實輸出），
 // 送出 Enter 後連同送出的文字一起出現在畫面上。
 // `stuck` 次送出的文字進了輸入框卻沒提交：畫面最後一行是輸入框裡的 prompt，draft 也還是它。
-// `working` 模擬一直在跑的 worker：每次 read 的畫面都帶 `esc to interrupt`（要搭配夠大的 `busy`）。
-function fixture(t, { busy = 0, sendRejected = false, swallow = 0, stale = false, draft, stuck = 0, working = false } = {}) {
+// `working` 模擬一直在跑的 worker：每次 read 的畫面都帶 `esc to interrupt`（要搭配夠大的 `busy`）；
+// `echoed` 讓畫面一直留著先前送過、開頭相同的一則提醒。
+function fixture(t, { busy = 0, sendRejected = false, swallow = 0, stale = false, draft, stuck = 0, working = false, echoed = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'orca-session-send-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const log = join(temp, 'orca.log');
@@ -24,7 +25,7 @@ const fs = require('fs'); const [, b] = process.argv.slice(2); const arg = k => 
 const sentFile = ${JSON.stringify(log)} + '.sent'; const sent = () => fs.existsSync(sentFile) ? fs.readFileSync(sentFile, 'utf8').split('\\n').slice(0, -1) : [];
 fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 ${orcaReplySource()}
-const spinner = ${working} ? ['✻ Working… (esc to interrupt)'] : [];
+const spinner = [...(${echoed} ? ['> ' + ${JSON.stringify(PROMPT)} + '（上一則）'] : []), ...(${working} ? ['✻ Working… (esc to interrupt)'] : [])];
 if (${stale}) { fail('terminal_handle_stale'); process.exit(1); }
 if (b === 'wait') reply('wait', { wait: { satisfied: (fs.readFileSync(${JSON.stringify(log)}, 'utf8').match(/terminal wait/g) || []).length > ${busy} } });
 else if (b === 'send') { fs.appendFileSync(sentFile, arg('--text') + '\\n'); reply('send', { send: { accepted: ${!sendRejected} } }); }
@@ -123,11 +124,14 @@ test('忙碌中的 session：沒有 --queue 照舊逾時 STOP；有 --queue 不�
   assert.ok(calls.includes(`terminal send --terminal term_w --text ${PROMPT} --enter --json\n`), calls);
 });
 
-// 忙碌畫面本來就有 `esc to interrupt`，送出被吞或停在輸入框都不能算排隊。
+// 忙碌畫面本來就有 `esc to interrupt`，畫面上也可能還留著開頭相同的上一則提醒：送出被吞或停在輸入框都不能算排隊。
 test('--queue：送出被吞三次 STOP send；文字停在輸入框時只補 Enter，再 QUEUED', t => {
-  const swallowed = fixture(t, { busy: 99, working: true, swallow: 3 }).send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']);
-  assert.equal(swallowed.status, 4);
-  assert.equal(swallowed.stdout.trim(), 'STOP send term_w');
+  for (const echoed of [false, true]) {
+    const swallowed = fixture(t, { busy: 99, working: true, swallow: 3, echoed }).send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']);
+    assert.equal(swallowed.status, 4, `echoed ${echoed}`);
+    assert.equal(swallowed.stdout.trim(), 'STOP send term_w');
+  }
+  assert.equal(fixture(t, { busy: 99, working: true, echoed: true }).send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']).stdout.trim(), 'QUEUED term_w');
   const { log, send } = fixture(t, { busy: 99, working: true, stuck: 1 });
   assert.equal(send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']).stdout.trim(), 'QUEUED term_w');
   const sends = readFileSync(log, 'utf8').split('\n').filter(line => line.startsWith('terminal send '));
