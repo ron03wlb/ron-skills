@@ -5,6 +5,11 @@
       "commit": "ada628ad8ff233f859b6e1cd3cdb9965b4629871",
       "sha256": "5687084db5e564cd08a3d763fcf09d69261b76763ae2a1e50a211d38ab69b1c6"
     },
+    "scripts/check-coordinator-permissions.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/check-coordinator-permissions.mjs",
+      "commit": "507238548fdd01b6e541aab97aea2de675e002b7",
+      "sha256": "ad61a3d1a31558f60f32823db6344ec469eaeb0f57be6c8c9f2d670ff5a3f4b7"
+    },
     "scripts/check-portability.mjs": {
       "template": "skills/engineering/setup-workflow/templates/check-portability.mjs",
       "commit": "9e12a94ca2ec43953199f5fa700e40efaaf21c14",
@@ -24,6 +29,11 @@
       "template": "skills/engineering/setup-workflow/templates/claude-hook-tab-state.mjs",
       "commit": "29065acca08058992a98e2b8febc1e5e0a5a9dd9",
       "sha256": "6229de428d798acbfb3ef577883d44460541caf7e6c361e3b28507b51f3cf1f9"
+    },
+    "scripts/gh-tracker.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/gh-tracker.mjs",
+      "commit": "507238548fdd01b6e541aab97aea2de675e002b7",
+      "sha256": "ac307038b74a94a88b279ec492885b94c968bc2e10c67bbcd84859a2b7aa51ca"
     },
     "scripts/issue-pool.mjs": {
       "template": "skills/engineering/setup-workflow/templates/issue-pool.mjs",
@@ -107,8 +117,8 @@
     },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",
-      "commit": "373e06b3dacbb92f9b06562c354fd85b9e8b2fd5",
-      "sha256": "cb2b9254766291201dd7525a57590b6efeda051b761880e1980481dc2ed26013"
+      "commit": "bdb336396badc11b24b6f409a683e7507fe2b38c",
+      "sha256": "82ea175540c86c01721d3128abd031a21052ba7b272af50b2d5e0ec268c55400"
     },
     "scripts/pilot-register.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-register.mjs",

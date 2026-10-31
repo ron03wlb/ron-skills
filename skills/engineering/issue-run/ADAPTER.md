@@ -11,6 +11,7 @@ Default: the platform `/setup-workflow` ran on.
 
 How to read an Issue with comments and its blocking relations, and the write rules for bodies and comments. Name the tracker host `/setup-workflow`'s Host station confirmed (`github`, `gitlab` or `local`, with its hostname) and take each command from the `gh`/`glab` table in [HOSTS.md](../setup-workflow/HOSTS.md); `glab` flags differ (`glab issue note` takes only `-m`, no `--body-file`).
 Default: `docs/agents/issue-tracker.md` from `/setup-matt-pocock-skills`.
+On a GitHub tracker at L3, also write the tracker project's URL (`https://<host>/<owner>/<repo>`) here as the section's only GitHub project URL: the setup-workflow `gh-tracker.mjs` copy reads its write target from it, and exits 2 without one.
 
 ## Delivery
 
@@ -104,6 +105,8 @@ Default: no Pilot section; `/issue-pilot` stops and says so.
 
 The `.claude/settings.json` allow rules an unattended `/issue-pilot` tick needs, and where git runs.
 Default: none; every git write prompts.
+
+Tracker writes and the push decision use the setup-workflow templates (its `gh-tracker.mjs` row): allow `Bash(node scripts/gh-tracker.mjs:*)` for the coordinator's comments, labels and closes, and allow `Bash(node scripts/land.mjs:*)` and `Bash(node scripts/pilot-close.mjs:*)` only when the human answered yes to `/setup-workflow`'s push question; `node scripts/check-coordinator-permissions.mjs [--push]` in the check entry keeps the rules matching that answer.
 
 When the pilot runs git in worktrees other than its cwd, do not write `Bash(git -C * <subcommand>)`. A `*` before the subcommand also matches extra git options, so `git -C <path> -c core.sshCommand=<cmd> fetch origin` passes, and Claude Code warns "allows any option at its `*`" on every session start; anchoring the path (`git -C /root/feature-ron-* …`) still warns. Keep each `*` at the end of a rule, after the arguments git parses as options:
 
