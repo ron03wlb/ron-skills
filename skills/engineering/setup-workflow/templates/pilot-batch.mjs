@@ -7,13 +7,13 @@
 //   move   把 batch-<key> 的成員 #n 搬到 batch-<n>.md：表頭（標題換成 `# batch <n>`、current:、integration:）與成員行照抄，
 //          `--state stop` 時新行的 state 寫 stop、candidate 清空；舊行的 state 改成 `moved batch-<n>`，其他格不動。
 //   park   同 move，但新行的 state 寫 `parked after #<m>`、candidate 保留，表格下方加一行 `parked: after #<m> <time> <原因>`；
-//          成員要是 done（暫緩已完成、等 #m 先合入的成員）。<key> 就是 <n>（batch 只有它）時就地改 state，不搬。
+//          成員要是 done（暫緩已完成、等 #m 先合入的成員）。<key> 就是 <n> 時就地改 state，不搬；這時 batch 要只有它一個成員。
 //   unpark 把 batch-<n>.md 裡 `parked after #<m>` 的成員 #n 改回 done（probe 印 UNPARK <n> 之後），candidate 不動。
 //   搬完舊 batch 的成員全是 moved 時，把 `current:` 寫成 `closed moved`。
 // stdout：`MOVED <key> <n> batch-<n>`，舊 batch 因此關閉時行尾加 ` closed`；park 就地改時印 `PARKED_MEMBER <n> after #<m>`；`UNPARKED <n>`。
-//   重跑已做完的 move／park 照樣印同一行（中斷在寫新檔與改舊行之間時補完舊行）。
+//   重跑已做完的 move／park 照樣印同一行（中斷在寫新檔與改舊行之間時只補完舊行，目標檔已有這個成員就不重寫）。
 //   STOP（檔案不動）：`STOP <key> missing`（沒有 batch-<key>.md）、`STOP <n> rows <列數>`（成員列不是剛好一列）、`STOP <n> same-batch`（move 的 <key> 就是 <n>）、
-//   `STOP <n> state <state>`（park 的成員不是 done、unpark 的不是 parked、move／park 的成員已移到別處）、`STOP <n> target batch-<n>.md`（目標檔已存在卻沒有這個成員）。
+//   `STOP <n> members <數目>`（就地 park 的 batch 還有別的成員）、`STOP <n> state <state>`（park 的成員不是 done、unpark 的不是 parked、move／park 的成員已移到別處）、`STOP <n> target batch-<n>.md`（目標檔已存在卻沒有這個成員）。
 // exit：0 成功；4 STOP；2 用法錯誤（--reason 不能空白、含換行、三個連續空白或 `|`）。
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -45,11 +45,13 @@ function setCells(line, state, candidate) {
   return parts.join('|');
 }
 
-const isMoved = line => /^moved\b/.test(tableCells(line)[6]);
+const isMember = line => tableCells(line).length >= 8 && /^\d+$/.test(tableCells(line)[0]);
+const stateOf = line => tableCells(line)[6];
+const isMoved = line => /^moved\b/.test(stateOf(line));
 
 /** 舊 batch 的成員都是 moved 時把 current: 寫成 `closed moved`；傳回是否關閉。 */
 function closeIfEmpty(lines) {
-  const members = lines.filter(line => tableCells(line).length >= 8 && /^\d+$/.test(tableCells(line)[0]));
+  const members = lines.filter(isMember);
   if (!members.length || !members.every(isMoved)) return false;
   const i = lines.findIndex(line => /^current:/.test(line));
   if (i < 0 || /^current:\s*closed moved$/.test(lines[i])) return false;
@@ -65,16 +67,15 @@ function move(pilot, key, n, { state, candidate, note, requireDone }) {
   const i = onlyRow(source, n);
   const target = join(pilot, `batch-${n}.md`);
   const moved = `moved batch-${n}`;
-  const current = tableCells(source.lines[i])[6];
-  const done = existsSync(target) && load(target).rows(n).length === 1;
-  if (current === moved && done) return `MOVED ${key} ${n} batch-${n}`;
-  if (current !== moved && isMoved(source.lines[i])) throw new Stop(`${n} state ${current}`);
-  if (current === moved || (existsSync(target) && !done)) {
-    if (!done) throw new Stop(`${n} target batch-${n}.md`);
-  } else {
-    if (requireDone && current !== 'done') throw new Stop(`${n} state ${current}`);
-    const header = source.lines.slice(0, source.lines.findIndex(line => tableCells(line).length >= 8 && /^\d+$/.test(tableCells(line)[0])))
-      .map(line => (/^# batch /.test(line) ? `# batch ${n}` : line));
+  const memberState = stateOf(source.lines[i]);
+  // 目標檔已有這個成員：之前的 move 寫好了新檔（之後 probe --apply 可能改過它），這次只補舊行，不重寫目標檔。
+  const copied = existsSync(target) && load(target).rows(n).length === 1;
+  if (memberState === moved && copied) return `MOVED ${key} ${n} batch-${n}`;
+  if (isMoved(source.lines[i])) throw new Stop(`${n} state ${memberState}`);
+  if (existsSync(target) && !copied) throw new Stop(`${n} target batch-${n}.md`);
+  if (!copied) {
+    if (requireDone && memberState !== 'done') throw new Stop(`${n} state ${memberState}`);
+    const header = source.lines.slice(0, source.lines.findIndex(isMember)).map(line => (/^# batch /.test(line) ? `# batch ${n}` : line));
     const member = state === undefined ? source.lines[i] : setCells(source.lines[i], state, candidate);
     writeFileSync(target, `${[...header, member, ...(note ? [note] : [])].join('\n')}\n`);
   }
@@ -90,7 +91,9 @@ function parkInPlace(pilot, n, after, note) {
   if (!existsSync(file)) throw new Stop(`${n} missing`);
   const batch = load(file);
   const i = onlyRow(batch, n);
-  const state = tableCells(batch.lines[i])[6];
+  const members = batch.lines.filter(isMember).length;
+  if (members !== 1) throw new Stop(`${n} members ${members}`);
+  const state = stateOf(batch.lines[i]);
   const parked = `parked after #${after}`;
   if (state === parked) return `PARKED_MEMBER ${n} after #${after}`;
   if (state !== 'done') throw new Stop(`${n} state ${state}`);
@@ -105,7 +108,7 @@ function unpark(pilot, n) {
   if (!existsSync(file)) throw new Stop(`${n} missing`);
   const batch = load(file);
   const i = onlyRow(batch, n);
-  const state = tableCells(batch.lines[i])[6];
+  const state = stateOf(batch.lines[i]);
   if (!/^parked\b/.test(state)) throw new Stop(`${n} state ${state}`);
   batch.lines[i] = setCells(batch.lines[i], 'done');
   writeFileSync(file, batch.lines.join('\n'));
@@ -139,7 +142,8 @@ if (command === 'move') {
 } else if (command === 'park') {
   const [key, n, ...more] = rest;
   const { after, reason } = flags(more, ['after', 'reason']);
-  if (!isKey(key) || !isNumber(n) || !isNumber(after) || after === n || !isField(reason) || reason.includes('|')) usage(USAGE);
+  if (!isKey(key) || !isNumber(n) || !isNumber(after) || after === n) usage(USAGE);
+  if (!isField(reason) || reason.includes('|')) usage(USAGE, '--reason 要是一行，不能空白、含三個連續空白或 |');
   const note = `parked: after #${after} ${now()} ${reason}`;
   run = key === n ? () => parkInPlace(pilot, n, after, note) : () => move(pilot, key, n, { state: `parked after #${after}`, note, requireDone: true });
 } else if (command === 'unpark') {

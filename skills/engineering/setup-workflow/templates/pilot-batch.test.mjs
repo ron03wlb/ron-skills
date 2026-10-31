@@ -123,3 +123,25 @@ test('用法錯誤 exit 2：--state 只收 stop，park 要 --after 與一行沒�
     ['nope'],
   ]) assert.equal(run(...args).status, 2, args.join(' '));
 });
+
+// review：中斷在寫好新檔、還沒改舊行時，probe --apply 可能已經改了新檔的列；重跑只補舊行，不能用舊列蓋回去。
+test('move 重跑時目標檔已有這個成員就不重寫目標檔', t => {
+  const { run, read } = fixture(t, {
+    '53-55': batchText('53-55', 'dispatched 2026-10-31T11:29:04+08:00', [row(53, 'done', A), row(55, 'running')]),
+    55: `${batchText('55', 'dispatched 2026-10-31T11:29:04+08:00', [row(55, 'done', B)])}regression: ${B} exit 0\n`,
+  });
+  const result = run('move', '53-55', '55');
+  assert.equal(result.stdout, 'MOVED 53-55 55 batch-55\n');
+  assert.equal(read('55'), `${batchText('55', 'dispatched 2026-10-31T11:29:04+08:00', [row(55, 'done', B)])}regression: ${B} exit 0\n`);
+  assert.match(read('53-55'), /\| 55 \|.*\| moved batch-55 \|/);
+});
+
+// review：batch-<n> 還有別的成員時就地 park，probe 會印 MOVE <n> <n>，move 又是 same-batch，沒有指令能解開。
+test('park 的 <key> 是 <n> 但 batch 還有別的成員時 STOP 不動檔', t => {
+  const text = batchText('94', 'dispatched 2026-10-31T13:57:05+08:00', [row(94, 'done', A), row(95, 'done', B)]);
+  const { run, read } = fixture(t, { 94: text });
+  const result = run('park', '94', '94', '--after', '123', '--reason', '等 #123');
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, 'STOP 94 members 2\n');
+  assert.equal(read('94'), text);
+});

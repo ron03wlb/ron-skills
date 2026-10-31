@@ -421,14 +421,18 @@ test('只有 stop 成員的 batch 不印 STAGEABLE，改印 PARKED <key> <n…>'
 });
 
 // #163：#94 與 #123 改同一列，#94 暫緩到 #123 合入；#123 所在的 batch closed 之後才印 UNPARK，#123 被移走的舊 batch 關了不算。
-test('parked after #m 的成員在 #m 所在的 batch closed 後印 UNPARK <n>', t => {
+test('parked after #m 的成員在 #m 以 done 留在 closed 的 batch 後印 UNPARK <n>', t => {
   const { batch, probe } = fixture(t);
   batch('94', 'dispatched 2026-10-31T13:57:05+08:00', [{ n: 94, state: 'parked after #123', candidate: SHA }]);
   batch('88', 'dispatched 2026-10-31T13:57:05+08:00', [{ n: 88, state: 'parked after #124', candidate: SHA }]);
   batch('123-131', 'closed moved', [{ n: 123, state: 'moved batch-123' }, { n: 131, state: 'moved batch-131' }]);
   batch('123', 'closed', [{ n: 123, state: 'done', candidate: SHA }]);
   batch('124', 'dispatched 2026-10-31T13:57:05+08:00', [{ n: 124, state: 'done', candidate: SHA }]);
+  // review：#125 的 batch 關了卻沒合入（stop），不算 #125 合入。
+  batch('77', 'dispatched 2026-10-31T13:57:05+08:00', [{ n: 77, state: 'parked after #125', candidate: SHA }]);
+  batch('125', 'closed not dispatchable', [{ n: 125, state: 'stop' }]);
   const out = lines(probe());
+  assert.ok(!out.includes('UNPARK 77'), out.join('\n'));
   assert.ok(out.includes('PARKED 94 94'), out.join('\n'));
   assert.ok(out.includes('UNPARK 94'), out.join('\n'));
   assert.ok(!out.includes('UNPARK 88'), out.join('\n'));

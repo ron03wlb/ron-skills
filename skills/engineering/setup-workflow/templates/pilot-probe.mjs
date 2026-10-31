@@ -24,7 +24,7 @@
 //   batch：dispatched 的 batch 沒有 running 成員時（這一輪剛讀到 DONE／STOP 的照結果算；moved（含 `moved batch-<n>`）的成員已移到別的 batch，不算）：
 //          每個成員都 done 印 STAGEABLE <key>；有 done 也有 stop、parked 印 MOVE <key> <不是 done 的成員…>（先用 pilot-batch 移走）；
 //          沒有 done 印 PARKED <key> <n…>（#163：只剩 stop 的 batch 照跑 pilot-land 只得到 STOP member）；
-//          沒關的 batch 裡 `parked after #<m>` 的成員，在 #m（沒 moved 的那一列）所在的 batch `closed` 之後印 UNPARK <n>；
+//          沒關的 batch 裡 `parked after #<m>` 的成員，在 #m 以 done 留在 `closed` 的 batch 之後印 UNPARK <n>；
 //          current 是 merged／pushed 的 batch 在 git fetch 後比 origin/<主分支>，印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
 //          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA），
 //          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
@@ -299,12 +299,12 @@ export function stageLines(key, active, results) {
 }
 
 /**
- * 沒關的 batch 裡 `parked after #<m>` 的成員：#m 沒有 moved 的那一列所在的 batch 已經 `closed`（合入並收尾）時印 UNPARK <n>（#163）。
- * #m 被移走的舊 batch（`closed moved`）裡那一列是 moved，不算。
+ * 沒關的 batch 裡 `parked after #<m>` 的成員：#m 以 done 留在已經 `closed`（合入並收尾）的 batch 時印 UNPARK <n>（#163）。
+ * #m 被移走的舊 batch（`closed moved`）裡那一列是 moved、batch 關了卻沒合入的那一列是 stop，都不算。
  */
 export function unparkLines(batches) {
   const closedMembers = new Set(batches.filter(b => /^closed\b/.test(b.current))
-    .flatMap(b => b.members.filter(m => !/^moved\b/.test(m.state)).map(m => m.n)));
+    .flatMap(b => b.members.filter(m => m.state === 'done').map(m => m.n)));
   return batches.filter(b => !/^closed\b/.test(b.current)).flatMap(b => b.members)
     .filter(m => closedMembers.has(m.state.match(/^parked after #(\d+)\b/)?.[1]))
     .map(m => `UNPARK ${m.n}`);
