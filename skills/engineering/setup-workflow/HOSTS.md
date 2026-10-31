@@ -56,7 +56,7 @@ Checked 2026-10-31 for #89. `gh`: `gh version 2.92.0 (2026-04-28)` on macOS, eac
 | `glab issue view --help` | `-c, --comments`, `-F, --output text\|json`, `-R, --repo` |
 | `glab issue list --help` | `-l, --label`, `-O, --output text\|json`, `-F, --output-format details\|ids\|urls` |
 | `glab issue create --help` | `-t, --title`, `--description-file`, `-y, --yes` |
-| `glab issue note --help` | `-m, --message` only (plus `--attach`, `--internal`); no `--body-file`; inherits `-R, --repo` |
+| `glab issue note --help` | `-m, --message` only (plus `--attach`, `--internal`); no `--body-file`; inherits `-R, --repo` (`OWNER/REPO`, `GROUP/NAMESPACE/REPO`, or the full URL or Git URL; rechecked for #79, which passes the project URL so a self-hosted http host such as `http://192.168.200.202/spay/spay2` resolves) |
 | `glab issue update --help` | `-l, --label`, `-u, --unlabel` |
 | `glab issue close --help` | `<id>` positional and `-R, --repo` only; no comment flag |
 | `glab label create --help` | `-n, --name`, `-d, --description` |

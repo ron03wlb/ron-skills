@@ -457,3 +457,11 @@ test('對應單留言失敗：印 HANDOFF 與 ! 指令、該步 MANUAL，batch �
   assert.match(result.stderr, /403 Forbidden/);
   assert.equal(f.issues()[SPAY2].comments.length, 0);
 });
+
+// 裸的 <owner>/<repo>#<m> 是 github.com：GitLab 的 spay/spay2#692 寫成裸 ref 時 gh 讀不到，STOP 要指出改寫成 issue 網址（#79 review）。
+test('裸 ref 在 GitHub 讀不到：STOP 指出 GitLab 對應單要寫成 issue 網址', t => {
+  const f = fixture(t, { body: '## 背景\nspay2 對應單：spay/spay2#692\n' });
+  const result = f.close();
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(lines(result).pop(), /^STOP 76 counterpart spay\/spay2#692 .*issue 網址/);
+});

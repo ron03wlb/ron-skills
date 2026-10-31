@@ -196,11 +196,11 @@ function counterpart({ main, sha, n }, body) {
   const posted = text => text.includes(sha) && namesMember.test(text);
   const refs = must('counterpart', 'node', [join(here, 'pilot-counterpart.mjs'), '--file', file], body);
   let outcome = 'SKIP';
-  for (const [, ref, m, kind, host, command] of refs.matchAll(/^COUNTERPART (\S+#(\d+))(?: (github|gitlab) (\S+))?\nCOMMAND (.+)$/gm)) {
-    const repo = host ?? ref.replace(/#\d+$/, '');
+  for (const [, ref, m, kind, repoArg, command] of refs.matchAll(/^COUNTERPART (\S+#(\d+))(?: (github|gitlab) (\S+))?\nCOMMAND (.+)$/gm)) {
+    const repo = repoArg ?? ref.replace(/#\d+$/, '');
     // GitLab 的已留言檢查讀 glab issue view --comments 的文字；讀不到（沒裝 glab、沒登入、連不到）就交給人，人看得到對應單上有沒有留過。
     const read = kind === 'gitlab' ? run('glab', ['issue', 'view', m, '-R', repo, '--comments']) : undefined;
-    const done = read ? read.status === 0 && posted(read.stdout) : issueView('counterpart', m, repo, 'comments').comments.some(c => posted(c.body));
+    const done = read ? read.status === 0 && posted(read.stdout) : githubComments(ref, m, repo, kind).some(c => posted(c.body));
     if (done) continue;
     if (!existsSync(file)) throw new Stop('counterpart', `${ref} 缺 ${file}`);
     if (!posted(readFileSync(file, 'utf8'))) throw new Stop('counterpart', `${ref} ${file} 要寫出 merge ${sha} 與成員 ${member}`);
@@ -210,6 +210,16 @@ function counterpart({ main, sha, n }, body) {
     } else if (outcome === 'SKIP') outcome = 'DONE';
   }
   return outcome;
+}
+
+/** GitHub 對應單的留言；裸 ref 讀不到時多半是寫成裸 ref 的 GitLab 對應單，STOP 指出要改寫成 issue 網址。 */
+function githubComments(ref, m, repo, kind) {
+  try {
+    return issueView('counterpart', m, repo, 'comments').comments;
+  } catch (error) {
+    if (kind || !(error instanceof Stop)) throw error;
+    throw new Stop('counterpart', `${ref} ${error.message}（裸的 <owner>/<repo>#<m> 是 github.com；GitLab 或 GitHub Enterprise 的對應單要在本文寫成 issue 網址）`);
+  }
 }
 
 /** 成員有母單、母單還開著而且子單全部結束，就留言列出每張子單的 state_reason 再關母單。 */

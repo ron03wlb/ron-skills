@@ -19,7 +19,6 @@ test('沒有對應單：跨 repo 引用不算，不輸出、exit 0', () => {
   assert.equal(result.stdout, '');
 });
 
-
 // #79 的驗收：spay2 在自架 GitLab（http、IP），對應單寫成 issue 網址；Close 要用 glab issue note -m，glab 沒有 -F／--body-file。
 test('GitLab 對應單（spay/spay2#692）：印出 gitlab 與專案網址，COMMAND 是 glab issue note -R … -m', () => {
   const file = '/repo/.scratch/pilot/counterpart-30.md';
