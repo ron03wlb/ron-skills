@@ -50,7 +50,6 @@ test('沒有 adapter 的 repo 是 L0，建議 L1，並列出 L1 缺的條件', t
   assert.equal(result.level, 'L0');
   assert.equal(result.recommend, 'L1');
   assert.deepEqual(result.levels.L1.missing, ['tracker', 'adapter', 'check']);
-  assert.equal(result.extensions.tracker.value, 'none');
 });
 
 test('還沒有 adapter 時，現成的檢查入口（bin/check、npm run check、make check）也認得出來', t => {
@@ -67,13 +66,12 @@ test('檢查指令中選項的值（--base origin/main）不當成 repo 內路�
   assert.equal(detect(repo(t, { ...L1_FILES, 'docs/agents/issue-run.md': adapter })).level, 'L1');
 });
 
-test('有 adapter 與單一檢查入口是 L1；tracker 從 issue-tracker.md 認出 GitHub', t => {
+test('有 adapter 與單一檢查入口是 L1', t => {
   const result = detect(repo(t, L1_FILES));
   assert.equal(result.level, 'L1');
   assert.equal(result.recommend, 'L2');
   assert.equal(result.signals.check.value, 'bin/check');
   assert.deepEqual(result.levels.L2.missing, ['integration', 'hook', 'worktrees']);
-  assert.equal(result.extensions.tracker.value, 'github');
 });
 
 test('有 adapter 與檢查入口但沒有 tracker 設定時仍是 L0', t => {
@@ -139,7 +137,7 @@ test('adapter 有 Pilot 段且近期有 pilot／stage commit 是 L3，不再建�
   assert.equal(result.recommend, null);
 });
 
-test('擴充：GitLab tracker、卡關單、外部測試環境、多模組、自訂分級入口、Codex', t => {
+test('擴充：卡關單、外部測試環境、多模組、自訂分級入口、Codex；tracker 不再是擴充（改由 Host 站判定）', t => {
   const result = detect(repo(t, {
     'docs/agents/issue-tracker.md': 'Read an Issue: `glab issue view <n>`\n',
     'db/migration/V1__init.sql': 'create table t (id int);\n',
@@ -150,7 +148,7 @@ test('擴充：GitLab tracker、卡關單、外部測試環境、多模組、自
     'AGENTS.md': 'Codex implements tickets.\n',
   }));
   const ext = result.extensions;
-  assert.equal(ext.tracker.value, 'gitlab');
+  assert.deepEqual(Object.keys(ext), ['gated', 'externalEnv', 'multiModule', 'customTriage', 'codex']);
   assert.match(ext.gated.evidence.join(), /db\/migration\/V1__init\.sql/);
   assert.match(ext.externalEnv.evidence.join(), /docker-compose\.yml/);
   assert.deepEqual(ext.multiModule.evidence, ['api/package.json', 'web/package.json']);
@@ -163,9 +161,8 @@ test('擴充：GitLab tracker、卡關單、外部測試環境、多模組、自
   }
 });
 
-test('沒有擴充訊號時每項 detected 為 false；本機 Markdown tracker 認得出', t => {
+test('沒有擴充訊號時每項 detected 為 false', t => {
   const result = detect(repo(t, { 'docs/agents/issue-tracker.md': 'Issues live as Markdown files under `.scratch/issues/`.\n' }));
-  assert.equal(result.extensions.tracker.value, 'local');
   for (const key of ['gated', 'externalEnv', 'multiModule', 'customTriage', 'codex']) assert.equal(result.extensions[key].detected, false, key);
 });
 

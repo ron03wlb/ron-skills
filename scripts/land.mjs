@@ -10,11 +10,13 @@
 // `--local-checks <sha>`（只在 GitHub Actions 沒啟動時用，#137）：不等 CI；push 前確認分支 tip 是 <sha>，在 <sha> 的暫時
 // detached worktree（工作樹必定乾淨）重跑 `bin/check --upstream`，exit 0 而且印出 CHECK_PASS 行才繼續，合併前在 PR 留言註明。
 // 直接重跑而不驗證 pilot 的 regression 記錄：land 也給非 pilot 的分支用，不綁 checkpoint 格式。
+// CI 失敗而失敗的 job 全都 0 個 step（帳務或 spending limit 擋下、沒有啟動，#132）時印 ci-not-started，帶 check-run annotation
+// 的第一句與 repo 可見性：log 讀不到，重跑也沒用；原因是帳務時 Push gate 才改用 `--local-checks`，有 step 的失敗照舊是 ci-failed。
 // Orca 從 WSL 移除 worktree 會把主 checkout 設成 bare，所以移除後一律跑 pilot-unbare.sh。
 //
 // 用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--body-file <file>] [--title <title>]
 // stdout：每步一行進度；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
-//   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、ci-failed、checks-timeout、local-checks-sha、local-checks-failed、merge、not-merged、worktree-rm）。
+//   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、merge、not-merged、worktree-rm）。
 // 合入之後的收尾問題（main 沒跟上、sync-skills 失敗）印 WARN，不影響 LANDED。
 // exit：0 已合入；4 STOP；2 用法錯誤；1 其他失敗。
 import { spawnSync } from 'node:child_process';
@@ -108,14 +110,60 @@ export function rollupChecks(view, head) {
   return [...latest.values()];
 }
 
+/** 文字的第一句（到後面接空白或結尾的 . ! ?），空白壓成一格；沒有句尾就整段，空的回 null。 */
+export function firstSentence(text) {
+  const flat = (text ?? '').replace(/\s+/g, ' ').trim();
+  if (!flat) return null;
+  return flat.match(/^.*?[.!?](?= |$)/)?.[0] ?? flat;
+}
+
+/** Actions job 的網址（`/actions/runs/<run>/job/<job>`）裡的 job id，它也是 check run id；不是 Actions 的 check 回 null。 */
+const jobId = link => link?.match(/\/actions\/runs\/\d+\/job\/(\d+)/)?.[1] ?? null;
+
+/** `gh` 的 JSON 回應；失敗或不是 JSON 時回 null（只用在讀不到也有退路的查詢）。 */
+function ghJson(cwd, ...args) {
+  const result = run('gh', args, cwd);
+  if (result.status !== 0) return null;
+  try {
+    return JSON.parse(result.stdout);
+  } catch {
+    return null;
+  }
+}
+
+/** job 確定沒有啟動（讀得到、0 個 step）才回 true；讀不到不能確認，照一般失敗。 */
+const jobNotStarted = (cwd, id) => ghJson(cwd, 'api', `repos/{owner}/{repo}/actions/jobs/${id}`)?.steps?.length === 0;
+
+/**
+ * 失敗的 check 全都是沒啟動的 Actions job 時，回傳 ci-not-started 的原因（annotation 第一句與 repo 可見性），否則 null。
+ * 取消（cancel）的不算：沒啟動就取消的 job 也是 0 個 step，但它不是帳務問題，不能放寬成 `--local-checks`。
+ * 0 個 step 也可能是帳務以外的原因（runner 沒接單、policy），所以原因照實印出，要不要改用本機結果由 Push gate 看原因決定。
+ */
+function notStartedReason(cwd, failed) {
+  const ids = failed.map(check => check.bucket === 'fail' && jobId(check.link));
+  if (!ids.every(id => id && jobNotStarted(cwd, id))) return null;
+  let reason = null;
+  for (const id of ids) {
+    const annotations = ghJson(cwd, 'api', `repos/{owner}/{repo}/check-runs/${id}/annotations`) ?? [];
+    reason = firstSentence((annotations.find(item => item.annotation_level === 'failure') ?? annotations[0])?.message);
+    if (reason) break;
+  }
+  const visibility = ghJson(cwd, 'repo', 'view', '--json', 'visibility')?.visibility?.toLowerCase() ?? 'unknown';
+  // 根因（#132 留言）：GitHub Free 的 Actions 分鐘數由帳號所有 private repo 共用，billing API 回 404 查不到。
+  const hint = visibility === 'private' ? '（帳號下所有 private repo 共用 Actions 額度，到 Billing & plans → Usage 查看）' : '';
+  return `${reason ?? 'unknown'} repo ${visibility}${hint}`;
+}
+
 async function waitChecks(cwd, number, head) {
   const deadline = Date.now() + CHECKS_TIMEOUT_MS;
   for (;;) {
     const checks = rollupChecks(JSON.parse(gh(cwd, 'pr', 'view', String(number), '--json', 'headRefOid,statusCheckRollup')), head);
     const verdict = checksVerdict(checks);
     if (verdict === 'fail') {
-      const failed = checks.filter(check => check.bucket === 'fail' || check.bucket === 'cancel').map(check => check.link || check.name);
-      throw new Stop(`ci-failed ${number} ${failed.join(' ')}`);
+      const failed = checks.filter(check => check.bucket === 'fail' || check.bucket === 'cancel');
+      const links = failed.map(check => check.link || check.name).join(' ');
+      const reason = notStartedReason(cwd, failed);
+      throw new Stop(reason ? `ci-not-started ${number} ${reason} ${links}` : `ci-failed ${number} ${links}`);
     }
     if (verdict === 'pass') return checks.length;
     if (Date.now() >= deadline) throw new Stop(`checks-timeout ${number}`);

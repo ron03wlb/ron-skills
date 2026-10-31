@@ -4,7 +4,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, re
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { mergeSample } from './helpers/fake-orca.mjs';
-import { checksVerdict, pickMergedPr, pickPr, rollupBucket, rollupChecks } from '../scripts/land.mjs';
+import { checksVerdict, firstSentence, pickMergedPr, pickPr, rollupBucket, rollupChecks } from '../scripts/land.mjs';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../scripts/land.mjs', import.meta.url).pathname;
@@ -29,8 +29,11 @@ const CHECK_POLL = /^gh pr view \S+ --json headRefOid,statusCheckRollup/gm;
  * `{ head, checks }` 是 PR 的 head 還沒更新到剛 push 的 SHA），最後一筆重複使用。
  * 假 gh 的 `pr merge` 真的在 remote 上做 --no-ff 合併；假 Orca 的 `worktree rm` 照真實行為把主 checkout 設成 bare、一起刪掉本機分支。
  * branchSelectorMissing：照 `orca-ide worktree create --branch` 開的 worktree，`branch:` 選擇器回 selector_not_found，只認 `path:`（#49）。
+ * unstartedJobs：0 個 step 的 job id（帳務擋下，#132，樣本是 run 41164091250 的 job），missingJobs：jobs API 讀不到的 job id，
+ * 其他 job 照有 step 的樣本；annotations 是那個 check run 的 annotations
+ * （預設是 run 41164091250 的真實樣本，`'error'` 是讀不到）；visibility 是 `gh repo view --json visibility` 的值。
  */
-function fixture(t, { checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false, localCheckExit = 0 } = {}) {
+function fixture(t, { checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false, localCheckExit = 0, unstartedJobs = [], missingJobs = [], annotations = GH_SAMPLES['check-run-annotations'], visibility = 'PUBLIC' } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'land-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const sh = (cwd, ...args) => {
@@ -87,8 +90,20 @@ const save = () => fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s))
 const out = pr => { const { head, ...fields } = pr; return mergeSample(SAMPLES['pr-view'], fields, 'pr'); };
 const find = ref => s.prs.find(pr => pr.number === Number(String(ref).split('/').pop()));
 const git = (...a) => execFileSync('git', ['-C', ${JSON.stringify(merger)}, ...a], { encoding: 'utf8' }).trim();
-const [, sub] = args;
-if (sub === 'list') console.log(JSON.stringify(s.prs.filter(pr => pr.head === arg('--head')).map(out)));
+const [cmd, sub] = args;
+// 失敗 job 的 step 與 annotations（#132）。
+if (cmd === 'api' && sub.includes('/actions/jobs/')) {
+  const id = Number(sub.split('/').pop());
+  if (${JSON.stringify(missingJobs)}.includes(id)) { console.error('gh: Not Found (HTTP 404)'); process.exit(1); }
+  console.log(JSON.stringify(SAMPLES[${JSON.stringify(unstartedJobs)}.includes(id) ? 'actions-job-not-started' : 'actions-job']));
+}
+else if (cmd === 'api' && sub.endsWith('/annotations')) {
+  const annotations = ${JSON.stringify(annotations)};
+  if (annotations === 'error') { console.error('gh: Not Found (HTTP 404)'); process.exit(1); }
+  console.log(JSON.stringify(mergeSample(SAMPLES['check-run-annotations'], annotations, 'annotations')));
+}
+else if (cmd === 'repo' && sub === 'view') console.log(JSON.stringify(mergeSample(SAMPLES['repo-view'], { visibility: ${JSON.stringify(visibility)} }, 'repo')));
+else if (sub === 'list') console.log(JSON.stringify(s.prs.filter(pr => pr.head === arg('--head')).map(out)));
 else if (sub === 'create') {
   const head = arg('--head'); git('fetch', '-q', 'origin');
   const pr = { head, number: 40 + s.prs.length, state: 'OPEN', url: 'https://github.com/o/r/pull/' + (40 + s.prs.length), headRefOid: git('rev-parse', 'origin/' + head), mergeCommit: null };
@@ -256,6 +271,63 @@ test('CI 紅燈：STOP ci-failed，附新 head 的 run 網址，不合併、不�
   assert.equal(prs()[0].state, 'OPEN');
   assert.equal(existsSync(wt), true);
   assert.equal(remoteHas('feature'), true);
+});
+
+// G4（#132）：帳務或 spending limit 擋下的 job 是 0 個 step 的 failure，log 讀不到，原因只在 check-run annotations。
+const BILLING = 'The job was not started because recent account payments have failed or your spending limit needs to be increased.';
+const PRIVATE_HINT = /帳號下所有 private repo 共用 Actions 額度.*Billing & plans → Usage/;
+
+test('CI 沒啟動（0 個 step）：STOP ci-not-started 帶 annotation 第一句與 repo 可見性，不合併', t => {
+  const { wt, body, land, calls, prs, last } = fixture(t, { checks: [FAIL], unstartedJobs: [2] });
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 4);
+  assert.equal(last(result), `STOP ci-not-started 40 ${BILLING} repo public ${FAIL[0].detailsUrl}`);
+  assert.doesNotMatch(result.stdout, PRIVATE_HINT);
+  assert.match(calls(), /^gh api repos\/\{owner\}\/\{repo\}\/check-runs\/2\/annotations/m);
+  assert.doesNotMatch(calls(), /^gh pr merge /m);
+  assert.equal(prs()[0].state, 'OPEN');
+  assert.equal(existsSync(wt), true);
+});
+
+test('CI 沒啟動、repo 是 private：提示帳號下 private repo 共用 Actions 額度', t => {
+  const { body, land, last } = fixture(t, { checks: [FAIL], unstartedJobs: [2], visibility: 'PRIVATE' });
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 4);
+  assert.match(last(result), new RegExp(`^STOP ci-not-started 40 ${BILLING.replace(/\./g, '\\.')} repo private`));
+  assert.match(last(result), PRIVATE_HINT);
+});
+
+test('CI 沒啟動、讀不到 annotations：仍是 ci-not-started，原因寫 unknown', t => {
+  const { body, land, last } = fixture(t, { checks: [FAIL], unstartedJobs: [2], annotations: 'error' });
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 4);
+  assert.equal(last(result), `STOP ci-not-started 40 unknown repo public ${FAIL[0].detailsUrl}`);
+});
+
+test('一個 job 沒啟動、另一個有 step 而失敗：照 ci-failed，不能改用本機結果', t => {
+  const started = { ...FAIL[0], detailsUrl: 'https://github.com/o/r/actions/runs/3/job/3' };
+  const { body, land, last } = fixture(t, { checks: [[FAIL[0], started]], unstartedJobs: [2] });
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 4);
+  assert.equal(last(result), `STOP ci-failed 40 ${FAIL[0].detailsUrl} ${started.detailsUrl}`);
+});
+
+test('讀不到失敗 job 的 step：不能確認沒啟動，照 ci-failed', t => {
+  const { body, land, last } = fixture(t, { checks: [FAIL], missingJobs: [2] });
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 4);
+  assert.equal(last(result), `STOP ci-failed 40 ${FAIL[0].detailsUrl}`);
+});
+
+test('firstSentence：取到第一個句點（後面接空白或結尾）；沒有內容回 null', () => {
+  assert.equal(firstSentence(`${BILLING} Please check the 'Billing & plans' section in your settings`), BILLING);
+  assert.equal(firstSentence('no period here'), 'no period here');
+  assert.equal(firstSentence('see ubuntu-latest v1.2 now. next'), 'see ubuntu-latest v1.2 now.');
+  assert.equal(firstSentence('  '), null);
 });
 
 // 真實發生過的錯（#128，PR #125）：push 後 PR 的 head 還停在前一個 SHA，讀到它失敗的 run 就 STOP ci-failed；重跑才 LANDED。
