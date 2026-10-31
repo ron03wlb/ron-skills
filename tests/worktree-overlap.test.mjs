@@ -33,7 +33,9 @@ function fixture(t) {
   const b = join(root, 'b');
   git(main, 'worktree', 'add', '-q', '-b', 'issue/1-a', a, 'main');
   git(main, 'worktree', 'add', '-q', '-b', 'issue/2-b', b, 'main');
-  writeFileSync(join(a, PILOT), pilotMd.replace('- **Probe.** ', '- **Probe.** 改了。'));
+  // fixture 用本 repo 真正的 pilot.md；條目改名時 replace 不會報錯，先確認兩個條目都在。
+  for (const entry of ['- **Probe.** ', '- **Handoff.** ']) assert.ok(pilotMd.includes(entry), `pilot.md 沒有 ${entry}`);
+  writeFileSync(join(a, PILOT), pilotMd.replace('- **Probe.** ', '- **Probe.** 改了。').replace(/^# .*/, '# 標題也改了'));
   writeFileSync(join(a, 'README.md'), '# app\n\n說明\n');
   git(a, 'commit', '-q', '-am', '#1');
   writeFileSync(join(b, 'scripts/x.mjs'), 'export const x = 1;\n');
@@ -56,7 +58,7 @@ test('帶兩個檔：已 commit 的條目改動與工作樹的未追蹤檔各印
   ]);
 });
 
-test('不帶檔案：列出每個非主 checkout worktree 的所有改動檔；條目以外的改動不附條目，main 自己的改動不列', t => {
+test('不帶檔案：列出每個非主 checkout worktree 的所有改動檔；.md 同時改了條目外的標題仍附條目，main 自己的改動不列', t => {
   const { main } = fixture(t);
   const result = run(main);
   assert.equal(result.status, 0, result.stderr);

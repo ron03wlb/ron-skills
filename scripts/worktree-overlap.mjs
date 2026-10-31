@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 其他 worktree 的未合入改動碰到哪些檔、哪些條目（#194）。唯讀。
+// 各 worktree 的未合入改動碰到哪些檔、哪些條目（#194）。唯讀。
 // /retro-collect 判斷候選 covered 或衝突、retro 的 concurrent-edit 步驟，原本各自手寫迴圈對每個 worktree 跑
 // `git diff --name-only $(merge-base …)`，再另一個迴圈 grep 改到 pilot.md 哪些條目（1031c、1031d 各寫一次）。
 //
@@ -13,7 +13,10 @@
 //   列出 merge-base 到工作樹之間的改動（已 commit、暫存、未暫存與未追蹤的新檔，ignore 的不算）碰到的檔；給了檔案時只列這些檔。
 // stdout 一檔一行，依 worktree 清單順序、再依檔名：
 //   OVERLAP_WT <分支> <檔案> [**<條目>.**…]
-//   `.md` 的改動都在 `- **<名稱>.**` 條目裡時附條目名稱（同 OVERLAP 的包法：名稱可能有空格，以 `**`…`.**` 切分），有條目以外的改動就不附。
+//   `.md` 檔附改到的 `- **<名稱>.**` 條目名稱（同 OVERLAP 的包法：名稱可能有空格，以 `**`…`.**` 切分）；條目以外的改動不另標，
+//   所以附了條目也可能還改了標題或段落，沒附條目就是改動都不在條目裡。
+//   呼叫者自己所在的 worktree 也列（它的分支名稱看得出來）；主 checkout 不列。
+//   基準預設是 main：從 pilot/integration 開的 worktree，整合分支上還沒進 main 的改動也會算進去，只看各自的改動時帶 --main pilot/integration。
 //   detached HEAD 的 worktree，<分支> 寫成 `detached@<HEAD 前 7 碼>`。和主分支沒有共同祖先的 worktree 略過。沒有命中時不輸出。
 // exit：0 印完（不論有無命中）；2 用法錯誤；1 git 失敗。
 import { spawnSync } from 'node:child_process';
@@ -23,9 +26,14 @@ import { changedUnits } from './pilot-probe.mjs';
 
 const USAGE = '用法：node scripts/worktree-overlap.mjs [--main <分支>] [<檔案>…]';
 
-function git(cwd, ...args) {
+/** 清掉繼承的 GIT_DIR 等再跑 git（從 hook 呼叫時會讀到別的 repo，同 pilot-probe.mjs）。 */
+function spawnGit(cwd, ...args) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'].includes(key)));
-  const result = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
+  return spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+function git(cwd, ...args) {
+  const result = spawnGit(cwd, ...args);
   if (result.status !== 0) throw new Error(`git ${args.join(' ')} exit ${result.status}：${(result.stderr ?? '').trim()}`);
   return result.stdout;
 }
@@ -45,12 +53,12 @@ export function worktreeOverlaps(cwd, files = [], { main = 'main' } = {}) {
   const out = [];
   for (const tree of others) {
     if (!tree.path || !existsSync(tree.path)) continue;
-    const base = spawnSync('git', ['-C', tree.path, 'merge-base', 'HEAD', main], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const base = spawnGit(tree.path, 'merge-base', 'HEAD', main);
     if (base.status === 1) continue;
     if (base.status !== 0) throw new Error(`git merge-base HEAD ${main} exit ${base.status}（${tree.path}）：${(base.stderr ?? '').trim()}`);
     const name = tree.branch ?? `detached@${tree.head.slice(0, 7)}`;
-    for (const [path, { whole, entries }] of changedUnits(tree.path, base.stdout.trim(), null, { paths: files, adjacent: false })) {
-      out.push(['OVERLAP_WT', name, path, ...(whole ? [] : [...entries].map(entry => `**${entry}.**`))].join(' '));
+    for (const [path, { entries }] of changedUnits(tree.path, base.stdout.trim(), null, { paths: files, adjacent: false })) {
+      out.push(['OVERLAP_WT', name, path, ...([...entries].map(entry => `**${entry}.**`))].join(' '));
     }
   }
   return out;
@@ -78,4 +86,3 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     process.exit(1);
   }
 }
-
