@@ -13,31 +13,26 @@ function jobs(text) {
   return result;
 }
 
-const all = jobs(workflow);
-const byRunner = runner => Object.values(all).find(block => new RegExp(`^ {4}runs-on: ${runner}$`, 'm').test(block));
-const steps = block => block.slice(block.indexOf('    steps:\n'));
+const all = Object.values(jobs(workflow));
+const byRunner = runner => {
+  const found = all.filter(block => new RegExp(`^ {4}runs-on: ${runner}$`, 'm').test(block));
+  assert.equal(found.length, 1, `checks.yml 要剛好一個 ${runner} job`);
+  return found[0];
+};
+// 兩個 job 只該差在 if 與 runs-on。
+const shared = block => block.replace(/^ {4}(?:if|runs-on):.*\n/gm, '');
 
 test('ubuntu job 沒有 if，每種觸發都跑', () => {
-  const ubuntu = byRunner('ubuntu-latest');
-  assert.ok(ubuntu, 'checks.yml 沒有 ubuntu-latest job');
-  assert.doesNotMatch(ubuntu, /^ {4}if:/m);
+  assert.doesNotMatch(byRunner('ubuntu-latest'), /^ {4}if:/m);
 });
 
-test('macOS job 只在 pull_request、schedule、workflow_dispatch 跑，push 不跑', () => {
-  const macos = byRunner('macos-latest');
-  assert.ok(macos, 'checks.yml 沒有 macos-latest job');
-  assert.match(macos, /^ {4}if: github\.event_name != 'push'$/m);
-  for (const event of ['push', 'pull_request', 'schedule', 'workflow_dispatch']) {
-    assert.match(workflow, new RegExp(`^  ${event}:`, 'm'), `on: 少了 ${event}，if 的排除就不等於只跑另外三種`);
-  }
-  const on = workflow.match(/^on:\n((?: .*\n|\n)*)/m)[1];
-  assert.doesNotMatch(on, /^ {2}(?!push|pull_request|schedule|workflow_dispatch)[\w-]+:/m, 'on: 多了別的觸發，macOS 也會跟著跑');
+test('macOS job 只在 pull_request、schedule、workflow_dispatch 跑：以正向清單寫，on: 新增觸發也不會跟著跑', () => {
+  const [, condition] = byRunner('macos-latest').match(/^ {4}if: (.*)$/m) ?? [];
+  assert.equal(condition, `contains(fromJSON('["pull_request", "schedule", "workflow_dispatch"]'), github.event_name)`);
 });
 
-test('macOS job 的 steps（含 node-version）與 ubuntu job 相同', () => {
-  const ubuntu = byRunner('ubuntu-latest');
-  const macos = byRunner('macos-latest');
-  assert.ok(ubuntu && macos);
-  assert.equal(steps(macos), steps(ubuntu));
-  assert.match(steps(macos), /node-version: /);
+test('macOS job 除了 if 與 runs-on，內容（steps、node-version）與 ubuntu job 相同', () => {
+  const ubuntu = shared(byRunner('ubuntu-latest'));
+  assert.match(ubuntu, /^ {4}steps:\n/m);
+  assert.equal(shared(byRunner('macos-latest')), ubuntu);
 });
