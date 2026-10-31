@@ -68,7 +68,7 @@ pilot 已達標，2026-10-21 起是唯一編排：`deliver-batch`、`deliver-spe
 
 ## issue-queue
 
-`/issue-queue`（手動，或 `/loop /issue-queue` 定時跑）：人看池子的入口。第一行是「進行中 N／上限 M」（M 是 adapter Pilot 段的 worker cap，沒寫顯示「不限」），接著照 `scripts/issue-pool.mjs` 分桶列出開著的單；`stale` 桶附認領者與最後一次留言，釋放或保留由人決定，agent 不搶回。`needs-triage`、`needs-info`、沒標的單逐張照 `/triage` 的規則提出狀態與 brief，人確認後才寫入，所以只有人能把單改成 `ready-for-agent` 或 `ready-for-human`；pilot 自己的細化不變。最後對每張母單印提示（子單全關母單還開著、母單掛 triage label、子單內文寫依賴卻沒設 `blocked_by`（沿用 `pilot-probe` 的 `proseDeps`）、子單沒有「## 驗收」、母單的決策編號沒出現在任何子單），只提示不擋流程，adapter 寫 `Parent hints: off` 可關閉，再逐張母單請人判斷細節與邊界有沒有漏。沒有 `scripts/issue-pool.mjs` 的 repo 先跑 `/setup-workflow`。
+`/issue-queue`（手動，或 `/loop /issue-queue` 定時跑）：人看池子的入口。第一行是「進行中 N／上限 M」（M 是 adapter Pilot 段的 worker cap，沒寫顯示「不限」），接著照 `scripts/issue-pool.mjs` 分桶列出開著的單；`stale` 桶附認領者與最後一次留言，釋放或保留由人決定，agent 不搶回。`needs-triage`、`needs-info`、沒標的單逐張照 `/triage` 的規則提出狀態與 brief，人確認後才寫入，所以這個 skill 只在人確認後把單改成 `ready-for-agent` 或 `ready-for-human`；pilot 自己的細化不變。最後對每張母單印提示（子單全關母單還開著、母單掛 triage label、子單內文寫依賴卻沒設 `blocked_by`（沿用 `pilot-probe` 的 `proseDeps`）、子單沒有「## 驗收」、母單的決策編號沒出現在任何子單），只提示不擋流程，adapter 的 Issue queue 段寫 `Parent hints: off` 可關閉，再逐張母單請人判斷細節與邊界有沒有漏。沒有 `scripts/issue-pool.mjs` 的 repo 先跑 `/setup-workflow`。
 
 ## retro-collect
 

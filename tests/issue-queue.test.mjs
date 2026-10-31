@@ -79,6 +79,18 @@ test('第 3 條提示從暫存腳本檔匯入 proseDeps，不用 node -e', () =>
   assert.match(hints, /prose-deps\.mjs/);
 });
 
+// 第 1 輪 review：/triage 是 user-invoked，要直接讀它的檔；wontfix 也是 triage 的出口；N 用指令數，實跑時目測數錯（8 張印成 7）；
+// 跨輪範圍展不開，不能只算兩端；關閉提示的設定要寫在 ADAPTER.md。
+test('細化直接讀 triage 檔、含 wontfix，N 以 grep 計數，跨輪範圍請人列出，Parent hints 設定在 ADAPTER.md', () => {
+  const refine = paragraph('**Refine.**');
+  assert.match(refine, /~\/\.claude\/skills\/triage\/SKILL\.md/);
+  assert.match(refine, /`wontfix`/);
+  assert.match(paragraph('**Limit line.**'), /grep -c '\^claimed '/);
+  assert.match(paragraph('**Parent hints.**'), /range across rounds cannot be expanded/);
+  const adapter = readFileSync(new URL('../skills/engineering/issue-run/ADAPTER.md', import.meta.url), 'utf8');
+  assert.match(adapter, /^## Issue queue\n\n.*`Parent hints: off`/m);
+});
+
 test('README 有 issue-queue 一段', () => {
   assert.match(readme, /^## issue-queue\n\n`\/issue-queue`/m);
 });
