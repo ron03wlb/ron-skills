@@ -567,6 +567,36 @@ test('一邊改條目 A、另一邊在條目 A 後面插入新條目 C：不同�
   assert.equal(git(f.repo, 'show', `${f.tip()}:x.md`) + '\n', 'intro\n- **A.** 規則二。\n- **C.** c\n- **B.** b\n');
 });
 
+// review 2（f4fdf22）：改動的刪除與新增部分能各自滑動（被刪或換上的行等於旁邊沒動的行），兩種最短 diff 合出不同順序。
+for (const [name, base, ours, theirs] of [
+  ['被刪的行和旁邊的行相同', 'P\nQ\nc\nc\nR\nS\n', 'P\nQ\nX\nc\nR\nS\n', 'P\nQ\nc\nY\nc\nR\nS\n'],
+  ['換上的行和旁邊的行相同', 'P\nQ\nA\nB\nR\nS\n', 'P\nQ\nB\nB\nR\nS\n', 'P\nQ\nA\nY\nB\nR\nS\n'],
+  ['換成空行、旁邊也是空行', '# T\n\nold note\n\n## S\n', '# T\n\n\n\n## S\n', '# T\n\nold note\nnew line\n\n## S\n'],
+]) {
+  test(`改動的一部分能滑動（${name}）：結果取決於對齊，STOP conflict`, t => {
+    const f = fixture(t, {
+      base: { 'x.txt': base },
+      members: [
+        { n: 1, slug: 'a', files: { 'x.txt': ours } },
+        { n: 2, slug: 'b', files: { 'x.txt': theirs } },
+      ],
+    });
+    assert.equal(f.land().last, 'STOP conflict 2 x.txt');
+  });
+}
+
+// review 2（f4fdf22）：插在條目 X 的標頭和內文之間的新條目把 X 切成兩半，另一邊改的 X 內文會接到新條目底下。
+test('插入的新條目切開另一邊正在改的條目：同一條目衝突，STOP conflict', t => {
+  const f = fixture(t, {
+    base: { 'x.md': '- **X.** head\n  body old\n' },
+    members: [
+      { n: 1, slug: 'a', files: { 'x.md': '- **X.** head\n  body new\n' } },
+      { n: 2, slug: 'b', files: { 'x.md': '- **X.** head\n- **N.** n\n  body old\n' } },
+    ],
+  });
+  assert.equal(f.land().last, 'STOP conflict 2 x.md');
+});
+
 test('插入點落在另一邊改的連續幾行中間：重疊，STOP conflict', t => {
   const base = 'a\nb\nc\nd\n';
   const f = fixture(t, {

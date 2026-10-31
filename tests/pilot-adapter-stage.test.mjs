@@ -86,7 +86,7 @@ test('Stage：允許的衝突解法（不同條目、只新增、表格的不同
   assert.match(stage, /Markdown 表格列.*以第一格為鍵.*（`rows`，#162/);
   assert.match(stage, /一邊只改了 base 的某幾行、另一邊只在 base 行之間插入新行.*（`adjacent`，#175/);
   assert.match(stage, /（`adjacent`，#175.*純刪除不算改動.*兩邊動到同一個 `- \*\*<名稱>\.\*\*` 條目/);
-  assert.match(stage, /`adjacent`.*插入的行裡有被改的 base 行.*換上的行和插入的行相同/);
+  assert.match(stage, /`adjacent`.*切開另一邊正在改的條目.*對齊不只一種而合出不同結果.*換上的行和插入的行相同/);
   assert.match(stage, /新增不重疊的段落/);
   assert.match(stage, /解完的 staged SHA 一樣要跑 Regression/);
 });

@@ -10,9 +10,9 @@
 //                 rows       衝突 hunk 三份的行都是 Markdown 表格列（`|` 開頭）、以第一格為鍵兩邊改的是不同列：各取各的版本、
 //                            依原順序排好，新增的列都留下；同一列兩邊都改照樣 abort（#162）。
 //                 adjacent   衝突 hunk 裡一邊只改了 base 的某幾行、另一邊只在 base 行之間插入新行（沒改任何 base 行），插入點不在
-//                            改動的那幾行中間：兩邊都套用；純刪除、兩邊動到同一個 `- **<名稱>.**` 條目、兩邊都改了同一個 base 行、改動或插入碰到表格列（歸 rows）、
-//                            改動或插入的重複行能滑到另一側或滑出 hunk、插入的行裡有被改的 base 行、換上的行和插入的行相同
-//                            （非空行或同名條目）、碰到檔尾沒換行的行照樣 abort（#175）。
+//                            改動的那幾行中間：兩邊都套用；純刪除、兩邊動到同一個 `- **<名稱>.**` 條目（含插入的新條目切開它）、
+//                            兩邊都改了同一個 base 行、改動或插入碰到表格列（歸 rows）、最短 diff 的對齊不只一種而合出不同結果
+//                            （接上 hunk 前後各一行）、換上的行和插入的行相同（非空行或同名條目）、碰到檔尾沒換行的行照樣 abort（#175）。
 //               additions、entries、rows 與 adjacent 只解三個版本都是 UTF-8 文字的檔案，其他的照樣 abort。
 //               staged SHA 與 stage 時的 integration tip 寫成 checkpoint 的 `current: staged <sha> onto <tip>`。
 //   Regression  在 staged SHA 跑 <stage worktree>/bin/check --upstream，完整輸出寫到 <主 checkout>/.scratch/pilot/reg-<key>.log，
@@ -212,65 +212,67 @@ function resolveEntries(base, ours, theirs) {
   return merged.includes(undefined) ? undefined : merged.join('');
 }
 
-/** 一邊相對 base 的改動：以最長共同子序列對齊，傳回 `{ start, end, lines }` 清單（換掉 base 的 [start, end) 行；start === end 是純插入）。 */
-function diffLines(base, side) {
+/** 對齊數超過這個值就不自己解：重複行很多的 hunk 不值得逐一比對。 */
+const ALIGNMENTS = 64;
+
+/**
+ * 一邊相對 base 的所有最長共同子序列對齊；每種對齊是一份 `{ start, end, lines }` 清單（換掉 base 的 [start, end) 行，
+ * start === end 是純插入）。超過 ALIGNMENTS 種傳回 undefined。
+ */
+function alignments(base, side) {
   const [n, m] = [base.length, side.length];
   const lcs = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--)
     for (let j = m - 1; j >= 0; j--) lcs[i][j] = base[i] === side[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
-  const edits = [];
-  let [i, j] = [0, 0];
-  let open;
-  const close = () => {
-    if (open) edits.push({ ...open, end: i });
-    open = undefined;
-  };
-  while (i < n || j < m) {
-    if (i < n && j < m && base[i] === side[j]) {
-      close();
-      i++;
-      j++;
-    } else {
-      open ??= { start: i, lines: [] };
-      if (j < m && (i === n || lcs[i][j + 1] >= lcs[i + 1][j])) open.lines.push(side[j++]);
-      else i++;
+  const found = [];
+  // 從 (i, j) 起，下一個對上的行可以是任何不減少共同行數的 (k, l)；中間沒對上的就是一個改動。
+  const walk = (i, j, edits) => {
+    if (found.length > ALIGNMENTS) return;
+    const step = (k, l) => (k > i || l > j ? [...edits, { start: i, end: k, lines: side.slice(j, l) }] : edits);
+    if (lcs[i][j] === 0) {
+      found.push(step(n, m));
+      return;
     }
-  }
-  close();
-  return edits;
+    for (let k = i; k < n; k++)
+      for (let l = j; l < m; l++)
+        if (base[k] === side[l] && lcs[k][l] === lcs[i][j] && lcs[k + 1][l + 1] === lcs[i][j] - 1) walk(k + 1, l + 1, step(k, l));
+  };
+  walk(0, 0, []);
+  return found.length > ALIGNMENTS ? undefined : found;
 }
 
 /**
- * 一個改動（把 base 的 [start, end) 換成 lines）所有等價的位置，傳回 `[start, end]` 清單：
- * 往前一行等價的條件是「前一行 base + lines」以 base[end - 1] 結尾，往後一行是「lines + 後一行 base」以 base[start] 開頭（插入時 start === end）。
- */
-function shifts(base, { start, end, lines }) {
-  const ranges = [[start, end]];
-  for (let [s, e, moving] = [start, end, lines]; s > 0; s--, e--) {
-    const next = [base[s - 1], ...moving];
-    if (next.at(-1) !== base[e - 1]) break;
-    moving = next.slice(0, -1);
-    ranges.push([s - 1, e - 1]);
-  }
-  for (let [s, e, moving] = [start, end, lines]; e < base.length; s++, e++) {
-    const next = [...moving, base[e]];
-    if (next[0] !== base[s]) break;
-    moving = next.slice(1);
-    ranges.push([s + 1, e + 1]);
-  }
-  return ranges;
-}
-
-/**
- * adjacent：一邊只改了 hunk 裡 base 的某幾行（每個改動都把至少一行 base 換成至少一行新行，純刪除不算），另一邊只在 base 行之間插入新行、沒改任何 base 行，
- * 插入點都不在改動的那幾行中間（落在改動的開頭或結尾就是相鄰）時兩邊都套用（#175）。同一點的插入排在改動之前。其他情況傳回 undefined。
+ * adjacent：一邊只改了 hunk 裡 base 的某幾行（每個改動都把至少一行 base 換成至少一行新行，純刪除不算），另一邊只在 base 行之間
+ * 插入新行、沒改任何 base 行，插入點都不在改動的那幾行中間（落在改動的開頭或結尾就是相鄰）時兩邊都套用（#175）。
+ * 同一點的插入排在改動之前。兩邊各自所有最長共同子序列對齊（接上 hunk 前後各一行）的每種組合都要成立、合出同一個結果，
+ * 不然結果取決於對齊方式（重複行能滑動、拆段插入），不自己解；對齊動到 hunk 外那一行時也不解：hunk 外的對齊看不到。
  */
 function resolveAdjacent(base, ours, theirs, { before, after, entry = '' } = {}) {
   // 檔尾沒有換行的行接上插入行會黏成同一行：hunk 碰到這種行就不自己解。
   if (![base, ours, theirs].every(text => text === '' || text.endsWith('\n'))) return undefined;
   const split = text => (text === '' ? [] : text.split(/(?<=\n)/));
+  const lead = before === undefined ? [] : [before];
+  const tail = after === undefined ? [] : [after];
   const b = split(base);
-  const [o, t] = [ours, theirs].map(text => diffLines(b, split(text)));
+  const [o, t] = [ours, theirs].map(text => alignments([...lead, ...b, ...tail], [...lead, ...split(text), ...tail]));
+  if (!o || !t) return undefined;
+  const inHunk = edits => {
+    const shifted = edits.map(({ start, end, lines }) => ({ start: start - lead.length, end: end - lead.length, lines }));
+    return shifted.every(({ start, end }) => start >= 0 && end <= b.length) ? shifted : undefined;
+  };
+  const results = new Set();
+  for (const ourEdits of o)
+    for (const theirEdits of t) {
+      const [oe, te] = [ourEdits, theirEdits].map(inHunk);
+      const merged = oe && te && applyAdjacent(b, oe, te, { after, entry });
+      if (merged === undefined) return undefined;
+      results.add(merged);
+    }
+  return results.size === 1 ? [...results][0] : undefined;
+}
+
+/** adjacent 的一種對齊：兩邊的改動清單合得起來就傳回結果，不然 undefined。`after` 是 hunk 後一行，`entry` 是 hunk 之前所在的條目。 */
+function applyAdjacent(b, o, t, { after, entry }) {
   const inserts = edits => edits.length > 0 && edits.every(({ start, end }) => start === end);
   const modifies = edits => edits.length > 0 && edits.every(({ start, end, lines }) => start < end && lines.length > 0);
   const [changed, inserted] = modifies(o) && inserts(t) ? [o, t] : modifies(t) && inserts(o) ? [t, o] : [];
@@ -279,37 +281,23 @@ function resolveAdjacent(base, ours, theirs, { before, after, entry = '' } = {})
   const touched = [...changed, ...inserted].flatMap(({ start, end, lines }) => [...b.slice(start, end), ...lines]);
   if (touched.some(line => line.startsWith('|'))) return undefined;
   // 兩邊動到同一個 `- **<名稱>.**` 條目是同一條目衝突（Stage 條目要 Fresh redispatch），不自己解。
-  // 每個 base 行歸到它所在的條目（hunk 之前的條目接續下來）；插入歸到它接著的那一行的條目，自己以條目開頭時就是新條目。
+  // 每個 base 行歸到它所在的條目（hunk 之前的條目接續下來）。插入歸到它接著的那一行的條目；自己以條目開頭時是新條目，
+  // 但後面接的還是前一個條目的內文（不是下一個條目的開頭）時，等於把前一個條目切開，也算動到它。
   const owner = [];
   for (const line of b) owner.push(entryName(line) ?? owner.at(-1) ?? entry);
   const edited = changed.flatMap(({ start, end }) => owner.slice(start, end));
-  const homes = inserted.map(({ start, lines }) => entryName(lines[0]) ?? (start ? owner[start - 1] : entry));
+  const homes = inserted.map(({ start, lines }) => {
+    const previous = start ? owner[start - 1] : entry;
+    const next = start < b.length ? b[start] : after;
+    return entryName(lines[0]) === undefined || (next !== undefined && entryName(next) === undefined) ? previous : '';
+  });
   if (homes.some(name => name && edited.includes(name))) return undefined;
-  const added = inserted.flatMap(({ lines }) => lines);
-  // 插入那一邊含有被改的 base 行的另一份副本時，base 行對齊哪一份都說得通（拆成兩段插入），結果不唯一；整塊平移的檢查看不到。
-  if (changed.some(({ start, end }) => b.slice(start, end).some(line => added.includes(line)))) return undefined;
   // 換上的行和插入的行相同（非空行或同名條目），兩邊都套用就重複了，同 additions 的判斷。
+  const added = inserted.flatMap(({ lines }) => lines);
   const replacing = changed.flatMap(({ lines }) => lines);
   const names = lines => entries(lines.join('')).map(p => p.name).filter(Boolean);
   if (replacing.some(line => line.trim() && added.includes(line)) || names(replacing).some(name => names(added).includes(name))) return undefined;
-  // 改動或插入碰到重複行時可以前後滑動（刪掉兩個相同行的哪一個、插在重複行的前面或後面都說得通）：
-  // 每個插入的每個可能位置，對每個改動的每個可能區間都要落在同一側（不在中間），不然結果取決於對齊方式，不自己解。
-  // 滑動接上 hunk 前後各一行一起算；能滑出 hunk 的（例如 hunk 外緊鄰一行相同的行）也不自己解：hunk 外的對齊看不到。
-  const lead = before === undefined ? 0 : 1;
-  const around = [...(lead ? [before] : []), ...b, ...(after === undefined ? [] : [after])];
-  const moves = ({ start, end, lines }) => shifts(around, { start: start + lead, end: end + lead, lines });
-  const outside = ([start, end]) => start < lead || end > lead + b.length;
-  const side = (at, [start, end]) => (at <= start ? 'before' : at >= end ? 'after' : 'inside');
-  for (const insert of inserted) {
-    const spots = moves(insert);
-    if (spots.some(outside)) return undefined;
-    for (const edit of changed) {
-      const ranges = moves(edit);
-      if (ranges.some(outside)) return undefined;
-      const sides = new Set(ranges.flatMap(range => spots.map(([at]) => side(at, range))));
-      if (sides.size > 1 || sides.has('inside')) return undefined;
-    }
-  }
+  if (inserted.some(({ start: at }) => changed.some(({ start, end }) => start < at && at < end))) return undefined;
   let out = '';
   for (let i = 0; i <= b.length; ) {
     for (const edit of inserted) if (edit.start === i) out += edit.lines.join('');
