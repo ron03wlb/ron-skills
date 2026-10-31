@@ -6,10 +6,14 @@
 // 單獨一個 `=`（`[ a = b ]`）、`VAR=x`、`--opt=x`、`a==b` 都不是以 `=` 開頭的字，放行。
 // NOMATCH：沒加引號、含 `*`／`?` 的 `--<opt>=<pattern>` 字（`--include=*.md`）zsh 會當檔名展開，找不到就印
 // `no matches found: --include=*.md` 並中止整串指令（session 19341230，#209）。一般的 `*.md` 參數多半是刻意展開，放行。
+// 分支 pattern 同理：沒加引號、含 `*`／`?`、以 `issue/`、`pilot/`、`retro/`、`origin/` 開頭的字（`git merge-base issue/193-* …`）
+// 不是檔案，zsh 一樣印 `no matches found` 中止（session cbef7b39，#218）。
 // 命中時 exit 2，stderr 說明原因與改法；輸入不合法或不是 Bash 時 exit 0 不輸出。
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+/** 萬用字元出現在這些字裡會被 zsh 當檔名展開而 NOMATCH：`--opt=` 的值，或像分支名稱的字。 */
+const GLOB_WORD = /^(--[\w-]+=|(issue|pilot|retro|origin)\/)/;
 const BREAK = new Set([' ', '\t', ';', '|', '&', '(', ')', '<', '>', '\n']);
 
 /** 指令裡會被 zsh EQUALS 展開的字（依出現順序）。 */
@@ -25,7 +29,7 @@ export function nomatchWords(command) {
 function scan(command) {
   const found = [];
   const nomatch = [];
-  let glob = false; // 目前的字在 `--opt=` 之後有沒有加引號的 * 或 ?
+  let glob = false; // 目前的字在 `--opt=` 之後、或像 ref 的字裡，有沒有沒加引號的 * 或 ?
   const heredocs = [];
   let i = 0;
   let word = '';
@@ -93,7 +97,7 @@ function scan(command) {
     }
     if (BREAK.has(c)) { end(); i++; continue; }
     if (wordStart && c === '=') startsWithEquals = true;
-    if ((c === '*' || c === '?') && /^--[\w-]+=/.test(word)) glob = true;
+    if ((c === '*' || c === '?') && GLOB_WORD.test(word)) glob = true;
     word += c;
     wordStart = false;
     i++;
@@ -118,11 +122,11 @@ if (isMain) {
     "分隔線改成 `echo '==='` 或 `echo ---`；要傳以 = 開頭的參數時加引號。",
   );
   if (nomatch.length) {
-    const quoted = nomatch.map(w => { const k = w.indexOf('='); return `${w.slice(0, k + 1)}'${w.slice(k + 1)}'`; });
+    const quoted = nomatch.map(w => { const k = w.startsWith('--') ? w.indexOf('=') : -1; return `${w.slice(0, k + 1)}'${w.slice(k + 1)}'`; });
     lines.push(
       `zsh 會把沒加引號、含 * 或 ? 的字當檔名展開：${nomatch.map(w => `\`${w}\``).join('、')}。`,
       '找不到相符檔案時 NOMATCH 印 `no matches found` 並中止整串指令，前後的輸出都作廢（#209）。',
-      `把 pattern 加引號：${quoted.map(w => `\`${w}\``).join('、')}。`,
+      `把 pattern 加引號：${quoted.map(w => `\`${w}\``).join('、')}；要找分支用 \`git branch --list '<pattern>'\`（#218）。`,
     );
   }
   console.error(lines.join('\n'));
