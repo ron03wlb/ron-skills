@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // 可攜性檢查：擋只在 Linux／GNU 能跑的寫法（macOS 是 BSD 工具與 bash 3.2），以及只差大小寫的兩個追蹤檔（macOS 預設檔案系統不分大小寫）。
-// 用法：在 repo 內執行 node check-portability.mjs。掃追蹤檔與沒被忽略的新檔，違規一行一個 `<file>:<line>: <規則> <改法>` 印到 stderr，exit 1。
+// 用法：在 repo 內執行 node check-portability.mjs [<path>...]。掃追蹤檔與沒被忽略的新檔，違規一行一個 `<file>:<line>: <規則> <改法>` 印到 stderr，exit 1。
+// 給了 <path>（相對 repo 根的檔案或目錄，照字面比對、不展開萬用字元）時只掃這些路徑，大小寫衝突也只比這些路徑裡的追蹤檔（health.mjs 只查 scripts/、bin/、hook）。
 // 例外：在同一行寫 `portability-ok: <理由>`；沒寫理由不算例外。
 // 範圍：shell 規則只掃 shell 檔（.sh、.bash 或 sh 系 shebang），JS 字串裡組出的指令、package.json 的 scripts 與 Markdown 不掃；註解不掃。
 import { spawnSync } from 'node:child_process';
@@ -87,7 +88,10 @@ function shellCode(line, keepQuoted = false) {
 }
 
 const root = git(['rev-parse', '--show-toplevel']).trim();
-const files = [...new Set(git(['ls-files', '-z', '--cached', '--others', '--exclude-standard']).split('\0').filter(Boolean))].sort();
+// 路徑參數在 repo 根比對；沒給時是整個 repo。
+const scope = process.argv.length > 2 ? ['--', ...process.argv.slice(2)] : [];
+const listed = args => git(['-C', root, '--literal-pathspecs', 'ls-files', '-z', ...args, ...scope]).split('\0').filter(Boolean);
+const files = [...new Set(listed(['--cached', '--others', '--exclude-standard']))].sort();
 const problems = [];
 let checked = 0;
 for (const path of files) {
@@ -109,7 +113,7 @@ for (const path of files) {
   });
 }
 const byLower = new Map();
-for (const path of git(['ls-files', '-z']).split('\0').filter(Boolean)) {
+for (const path of listed([])) {
   const key = path.toLowerCase();
   byLower.set(key, [...(byLower.get(key) ?? []), path]);
 }

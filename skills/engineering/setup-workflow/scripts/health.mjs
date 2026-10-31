@@ -110,11 +110,17 @@ for (const [path, entry] of Object.entries(copies)) {
 // 補法是重跑 /setup-workflow 逐站確認後補齊，不另寫遷移 script。
 const adapterText = isFile(join(root, adapterPath)) ? readOrWarn(adapterPath) : null;
 // 段落標題不分大小寫（`## platforms` 也算），標題後面可以接說明；回傳到下一個 `## ` 之前的內文，沒有這段時 null。
+// code fence（``` 或 ~~~ 開頭的行之間）裡的 `## ` 是範例，不是標題。
 const adapterLines = adapterText?.split('\n') ?? [];
+let fenced = false;
+const headings = adapterLines.map(text => {
+  if (/^\s*(?:```|~~~)/.test(text)) { fenced = !fenced; return false; }
+  return !fenced && /^##\s/.test(text);
+});
 const section = name => {
-  const start = adapterLines.findIndex(text => new RegExp(`^##\\s+${name}\\b`, 'i').test(text));
+  const start = adapterLines.findIndex((text, i) => headings[i] && new RegExp(`^##\\s+${name}\\b`, 'i').test(text));
   if (start < 0) return null;
-  const end = adapterLines.findIndex((text, i) => i > start && /^##\s/.test(text));
+  const end = headings.findIndex((heading, i) => i > start && heading);
   return adapterLines.slice(start + 1, end < 0 ? undefined : end).join('\n');
 };
 if (adapterText !== null) {
@@ -136,8 +142,11 @@ const unquote = text => text.replace(/\\?"/g, '').replace(/\.+$/, '');
 const hooksPath = git('config', 'core.hooksPath');
 const scriptDirs = ['scripts/', 'bin/', '.githooks/', '.husky/', ...(hooksPath && !hooksPath.startsWith('/') ? [`${hooksPath.replace(/\/?$/, '/')}`] : [])];
 const scanned = files.filter(file => file === adapterPath || file === '.claude/settings.json' || scriptDirs.some(dir => file.startsWith(dir)));
+const unreadable = new Set();
 for (const file of scanned) {
-  readOrWarn(file)?.split('\n').forEach((text, i) => {
+  const text = readOrWarn(file);
+  if (text === null) unreadable.add(file);
+  text?.split('\n').forEach((text, i) => {
     for (const match of text.matchAll(HOME_PATH)) {
       const path = unquote(match[0]);
       const segments = unquote(match[1]).split('/').filter(Boolean);
@@ -149,9 +158,11 @@ for (const file of scanned) {
 }
 
 // 平台：adapter 的 Platforms 列了 macOS 時，對 scripts/、bin/ 與 git hook 目錄跑可攜性規則。規則只在正本 templates/check-portability.mjs（#86），
-// 這裡在目標 repo 執行它、只留這些目錄的結果；它印 `<file>:<line>: <規則> <改法>`（只差大小寫的是 `<file>: case …`，沒有行號）。
-if (/\bmacOS\b/i.test(section('Platforms') ?? '')) {
-  const result = spawnSync('node', [join(here, '../templates/check-portability.mjs')], { cwd: root, encoding: 'utf8', maxBuffer: 64 << 20 });
+// 這裡在目標 repo 執行它，只把這些目錄裡讀得到的檔案當路徑參數交給它（讀不到的上面已在 stderr 略過；範圍外的檔案它不讀）；
+// 它印 `<file>:<line>: <規則> <改法>`（只差大小寫的是 `<file>: case …`，沒有行號）。沒有路徑時不跑：不帶參數它會掃整個 repo。
+const portable = scanned.filter(file => scriptDirs.some(dir => file.startsWith(dir)) && !unreadable.has(file));
+if (/\bmacOS\b/i.test(section('Platforms') ?? '') && portable.length) {
+  const result = spawnSync('node', [join(here, '../templates/check-portability.mjs'), ...portable], { cwd: root, encoding: 'utf8', maxBuffer: 64 << 20 });
   // 它拋例外（讀不到的檔案、git 失敗）時同樣 exit 1，stderr 是 stack trace：有任何一行不是違規格式就當成沒跑成。
   // Node 的執行期警告（`(node:<pid>) …Warning: …` 與接著的 `(Use \`node --trace-…\` …)`）不是它的輸出，先去掉；exit 0 時不看 stderr。
   const violations = result.status === 0 ? [] : lines(result.stderr).filter(text => !/^\((?:node:\d+\)|Use `node --trace-)/.test(text)).map(text => text.match(/^(.+?)(?::(\d+))?: (\S+) (.+)$/));

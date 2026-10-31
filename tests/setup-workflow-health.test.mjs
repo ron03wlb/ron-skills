@@ -352,12 +352,48 @@ test('平台：Platforms 沒有 macOS 時不跑可攜性規則', t => {
   assert.equal(lines.at(-1), 'HEALTHY', lines.join('\n'));
 });
 
-test('平台：check-portability.mjs 自己失敗（讀不到的檔案拋例外）時 exit 2，不說成 HEALTHY', { skip: process.getuid?.() === 0 && 'root 讀得到 000 的檔案' }, t => {
-  const root = repo(t, { 'docs/agents/issue-run.md': macAdapter, 'secret.txt': 'x\n' });
-  chmodSync(join(root, 'secret.txt'), 0o000);
-  const { status, stderr, lines } = health(root);
-  assert.equal(status, 2, lines.join('\n'));
-  assert.match(stderr, /check-portability\.mjs 失敗/);
+test('平台：check-portability.mjs 自己失敗（拋例外）時 exit 2，不說成 HEALTHY', t => {
+  const root = repo(t, { 'docs/agents/issue-run.md': macAdapter, 'scripts/probe.sh': '#!/usr/bin/env bash\necho ok\n' });
+  // 只讓 check-portability.mjs 這個程序在啟動時拋例外，health 與 detect 照常。
+  write(root, { '.fail.cjs': "if (process.argv[1]?.endsWith('check-portability.mjs')) throw new Error('boom');\n" });
+  const result = spawnSync('node', [script, root], { encoding: 'utf8', env: { ...env, NODE_OPTIONS: `--require ${join(root, '.fail.cjs')}` } });
+  assert.equal(result.status, 2, result.stdout);
+  assert.match(result.stderr, /check-portability\.mjs 失敗/);
+});
+
+// #92 review：可攜性規則只看 scripts/、bin/、hook；範圍外讀不到的檔案不讀，範圍內讀不到的照 stderr 略過，其他檔案照查。
+test('平台：讀不到的檔案在範圍外不影響，在 scripts/ 裡略過並在 stderr 註明', { skip: process.getuid?.() === 0 && 'root 讀得到 000 的檔案' }, t => {
+  const root = repo(t, {
+    'docs/agents/issue-run.md': macAdapter, 'notes.txt': 'x\n', 'scripts/locked.sh': '#!/usr/bin/env bash\necho ok\n',
+    'scripts/probe.sh': '#!/usr/bin/env bash\nxargs -r echo\n', // portability-ok: fixture 內容
+  });
+  const platform = lines => lines.filter(line => line.startsWith('FINDING ')).map(line => line.replace(/^FINDING (\S+ \S+) .*# (.*)$/, '$1 $2'));
+  chmodSync(join(root, 'notes.txt'), 0o000);
+  const outside = health(root);
+  assert.equal(outside.status, 1, outside.stderr);
+  assert.deepEqual(platform(outside.lines), ['platform xargs-r scripts/probe.sh:2']);
+  chmodSync(join(root, 'scripts/locked.sh'), 0o000);
+  const inside = health(root);
+  assert.equal(inside.status, 1, inside.stderr);
+  assert.match(inside.stderr, /略過讀不到的 scripts\/locked\.sh/);
+  assert.deepEqual(platform(inside.lines), ['platform xargs-r scripts/probe.sh:2']);
+});
+
+test('平台：scripts/ 裡只差大小寫的追蹤檔回報 platform case，證據是檔案（沒有行號）', t => {
+  const root = repo(t, { 'docs/agents/issue-run.md': macAdapter, 'scripts/run.sh': '#!/usr/bin/env bash\necho ok\n' });
+  // 不分大小寫的檔案系統放不下兩個檔，所以第二個直接寫進 index（同一個 blob）。
+  const blob = git(root, 'hash-object', '-w', 'scripts/run.sh');
+  git(root, 'update-index', '--add', '--cacheinfo', `100644,${blob},scripts/Run.sh`);
+  write(root, { 'scripts/Run.sh': '#!/usr/bin/env bash\necho ok\n' });
+  const platform = health(root).lines.filter(line => line.startsWith('FINDING platform'));
+  assert.equal(platform.length, 1, platform.join('\n'));
+  assert.match(platform[0], /^FINDING platform case .*# scripts\/Run\.sh$/);
+});
+
+test('缺段落：code fence 裡的 ## Platforms 不算', t => {
+  const adapter = '# issue-run adapter: acme\n\n## Checks\n\n```md\n## Platforms\n\nmacOS\n```\n';
+  const missing = health(repo(t, { 'docs/agents/issue-run.md': adapter })).lines.filter(line => line.startsWith('FINDING missing-section'));
+  assert.deepEqual(missing.map(line => line.split(' ')[2]), ['Platforms']);
 });
 
 test('平台：bin/ 與 git hook 目錄也掃，標題寫成小寫的 ## platforms 也認得', t => {

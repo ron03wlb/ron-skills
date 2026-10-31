@@ -39,7 +39,7 @@ _Avoid_: upstream、master copy、原版
 _Avoid_: drift、不同步
 
 **體檢**:
-對已導入的專案比對 adapter、文件與實際使用，找出等級標示錯誤、分歧與隱性跨 repo 依賴。
+對已導入的專案比對 adapter、文件與實際使用，找出等級標示錯誤、分歧、隱性跨 repo 依賴、adapter 缺段落（`## Platforms`、`## Delivery`），以及 Platforms 列了 macOS 時 scripts/、bin/、git hook 的可攜性違規。
 _Avoid_: audit、健檢、檢查
 
 **pilot 存檔**:
