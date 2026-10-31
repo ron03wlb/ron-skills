@@ -323,6 +323,73 @@ test('同一個條目兩邊都改：不是允許的解法，STOP conflict', t =>
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
 });
 
+// #162：PILOT-STORE.md canonical scripts 表格的真實衝突（base a15d600、#123 996b0f8、整合分支 60fb3fb、#94 9a36665），只取 `## Canonical scripts` 這段。
+const STORE = 'skills/engineering/issue-pilot/PILOT-STORE.md';
+const STORE_AT = name => readFileSync(new URL(`fixtures/pilot-land-rows/${name}.md`, import.meta.url), 'utf8');
+
+/** 成員 n 從 base 的 STORE 開分支改成 member，之後 pilot/integration 改成 integration（成員之前合入的那一邊）。 */
+function storeFixture(t, n, integration) {
+  const f = fixture(t, { base: { [STORE]: STORE_AT('base') }, members: [{ n, slug: 'store', files: { [STORE]: STORE_AT(`member-${n}`) } }] });
+  write(f.stageTree, { [STORE]: STORE_AT(integration) });
+  git(f.stageTree, 'commit', '-qam', integration);
+  return f;
+}
+
+const row = (text, script) => text.split('\n').find(line => line.startsWith(`| \`${script}\` |`));
+
+test('衝突 hunk 都是表格列、兩邊改不同列（#123 改 pilot-probe、#124 改 pilot-dispatch）：各取各的版本，RESOLVED rows', t => {
+  const f = storeFixture(t, 123, 'integration-124');
+  const result = f.land();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.lines.includes(`RESOLVED 123 rows ${STORE}`), result.stdout);
+  const merged = git(f.repo, 'show', `${f.tip()}:${STORE}`) + '\n';
+  assert.equal(row(merged, 'pilot-probe.mjs'), row(STORE_AT('member-123'), 'pilot-probe.mjs'));
+  assert.equal(row(merged, 'pilot-dispatch.mjs'), row(STORE_AT('integration-124'), 'pilot-dispatch.mjs'));
+  assert.notEqual(row(merged, 'pilot-probe.mjs'), row(STORE_AT('base'), 'pilot-probe.mjs'));
+  assert.notEqual(row(merged, 'pilot-dispatch.mjs'), row(STORE_AT('base'), 'pilot-dispatch.mjs'));
+  assert.equal(merged, STORE_AT('integration-124').replace(row(STORE_AT('base'), 'pilot-probe.mjs'), row(STORE_AT('member-123'), 'pilot-probe.mjs')));
+  assert.equal(f.checks(), 1, '解完在新的 staged SHA 跑 Regression');
+});
+
+test('表格的同一列兩邊都改（#123 與 #94 都改 pilot-probe）：STOP conflict，stage worktree 乾淨', t => {
+  const f = storeFixture(t, 94, 'member-123');
+  const tip = f.tip();
+  const result = f.land();
+  assert.equal(result.last, `STOP conflict 94 ${STORE}`);
+  assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
+  assert.equal(f.tip(), tip);
+  assert.equal(f.checks(), 0);
+});
+
+const TABLE = '| Script | Note |\n| --- | --- |\n| `a.mjs` | a v1 |\n| `b.mjs` | b v1 |\n| `c.mjs` | c v1 |\n';
+
+test('表格兩邊各改一列、各新增一列：改過的列各取各的版本，新增的列接在它前一列之後都留下', t => {
+  const f = fixture(t, {
+    base: { 'table.md': TABLE },
+    members: [
+      { n: 1, slug: 'a', files: { 'table.md': TABLE.replace('a v1', 'a v2').replace('| `b.mjs` | b v1 |\n', '| `b.mjs` | b v1 |\n| `b2.mjs` | from 1 |\n') } },
+      { n: 2, slug: 'b', files: { 'table.md': TABLE.replace('b v1', 'b v2').replace('| `a.mjs` | a v1 |\n', '| `a.mjs` | a v1 |\n| `a2.mjs` | from 2 |\n') } },
+    ],
+  });
+  const result = f.land();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.lines.includes('RESOLVED 2 rows table.md'), result.stdout);
+  assert.equal(git(f.repo, 'show', `${f.tip()}:table.md`) + '\n',
+    '| Script | Note |\n| --- | --- |\n| `a.mjs` | a v2 |\n| `a2.mjs` | from 2 |\n| `b.mjs` | b v2 |\n| `b2.mjs` | from 1 |\n| `c.mjs` | c v1 |\n');
+});
+
+test('表格兩邊新增同一個第一格的列：STOP conflict', t => {
+  const f = fixture(t, {
+    base: { 'table.md': TABLE },
+    members: [
+      { n: 1, slug: 'a', files: { 'table.md': TABLE.replace('a v1', 'a v2').replace('| `c.mjs`', '| `d.mjs` | from 1 |\n| `c.mjs`') } },
+      { n: 2, slug: 'b', files: { 'table.md': TABLE.replace('b v1', 'b v2').replace('| `c.mjs`', '| `d.mjs` | from 2 |\n| `c.mjs`') } },
+    ],
+  });
+  assert.equal(f.land().last, 'STOP conflict 2 table.md');
+  assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
+});
+
 /** 兩個成員各改一個 check-workflow-sync 追蹤的來源並各自 restamp：戳記檔裡相鄰兩行各變一行，git 判成同一個 hunk 衝突（#72）。 */
 function syncMembers(extra = {}) {
   const restamp = tree => {
@@ -358,6 +425,19 @@ test('workflow-doc-sync.json 和解不了的檔一起衝突：STOP conflict，�
 });
 
 // batch-56（retro ron-skills-ac）：戳記檔和 pilot.md 的 entries 衝突同時出現，coordinator 手解後 Regression 通過，照舊規則卻要開 gate。
+test('workflow-doc-sync.json 和表格列衝突一起：rows 解完再 restamp，印 rows+restamp', t => {
+  const f = syncFixture(t, syncMembers({
+    a: { 'table.md': TABLE.replace('a v1', 'a v2') },
+    b: { 'table.md': TABLE.replace('b v1', 'b v2') },
+  }), { 'table.md': TABLE });
+  const result = f.land();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.lines.includes('RESOLVED 2 rows+restamp scripts/workflow-doc-sync.json table.md'), result.stdout);
+  assert.equal(git(f.repo, 'show', `${f.tip()}:table.md`) + '\n', TABLE.replace('a v1', 'a v2').replace('b v1', 'b v2'));
+  const check = spawnSync('node', [join(f.stageTree, 'scripts/check-workflow-sync.mjs')], { cwd: f.stageTree, encoding: 'utf8' });
+  assert.equal(check.status, 0, check.stdout + check.stderr);
+});
+
 test('workflow-doc-sync.json 和可自己解的檔一起衝突：先解那些檔再 restamp，check-workflow-sync 在結果上通過', t => {
   const f = syncFixture(t, syncMembers({
     a: { 'pilot.md': ENTRIES.replace('close v1', 'close v2') },
