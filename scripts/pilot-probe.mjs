@@ -22,6 +22,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isOpenRequest } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 
 const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>]';
@@ -43,7 +44,7 @@ function git(checkout, ...args) {
 function bareGuard(checkout, when) {
   if (!existsSync(GUARD)) return [];
   const unbare = spawnSync(GUARD, [checkout, when], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  if (unbare.status !== 0) throw new Error(`pilot-unbare.sh exit ${unbare.status ?? unbare.error?.code}：${(unbare.stderr ?? '').trim()}`);
+  if (unbare.status !== 0) throw new Error(`pilot-unbare.sh ${(unbare.stderr ?? '').trim() ? `exit ${unbare.status}：${unbare.stderr.trim()}` : `exit ${unbare.status ?? unbare.error?.code}`}`);
   return unbare.stdout.split('\n').filter(Boolean);
 }
 
@@ -117,7 +118,7 @@ export function adapterAhead(checkout, { integration = 'pilot/integration', main
 export function openRows(pilot) {
   const read = name => (existsSync(join(pilot, name)) ? readFileSync(join(pilot, name), 'utf8') : '');
   const out = read('requests.md').split('\n')
-    .filter(line => line.trim() && !line.startsWith('#') && !/\s(?:applied|declined)\s+\S/.test(line.split(/\ssource\s/).slice(1).at(-1) ?? ''))
+    .filter(isOpenRequest)
     .map(line => `REQUEST ${line.trim()}`);
   for (const line of read('gates.md').split('\n')) {
     const cells = tableCells(line);
@@ -229,15 +230,20 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [checkout, ...rest] = process.argv.slice(2);
+  const args = process.argv.slice(2);
   const cli = process.env.ORCA_CLI_COMMAND;
+  const positional = [];
   const options = {};
-  for (let i = 0; i < rest.length; i += 2) {
-    const name = { '--integration': 'integration', '--main': 'main' }[rest[i]];
-    if (!name || !rest[i + 1] || name in options) options.bad = true;
-    else options[name] = rest[i + 1];
+  let bad = false;
+  for (let i = 0; i < args.length; i++) {
+    if (!args[i].startsWith('--')) { positional.push(args[i]); continue; }
+    const name = { '--integration': 'integration', '--main': 'main' }[args[i]];
+    const value = args[++i];
+    if (!name || !value || value.startsWith('--') || name in options) bad = true;
+    else options[name] = value;
   }
-  if (!checkout || checkout.startsWith('--') || options.bad) {
+  const [checkout] = positional;
+  if (bad || positional.length !== 1) {
     console.error(USAGE);
     process.exit(2);
   }
