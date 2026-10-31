@@ -400,6 +400,7 @@ function entryAt(lines, i) {
 /**
  * `from..to` 改了哪些檔：Map<檔案, { whole, entries }>。`.md` 檔的改動行（空行不算）都落在條目裡時只記條目名稱
  * （刪掉的行看 from 的版本、加上的行看 to 的版本），有任何一行不在條目裡，或不是 `.md`，就記整個檔（whole）。
+ * `to` 是 null 時比 `checkout` 的工作樹（含暫存區與未追蹤、沒被 ignore 的新檔；worktree-overlap 用，#194）。
  * `paths` 只比這些檔；`adjacent`（預設開）把緊鄰改動、git 合併時會一起衝突的條目也算進去，只想知道改了哪些條目時關掉。
  */
 export function changedUnits(checkout, from, to, { paths = [], adjacent = true } = {}) {
@@ -408,14 +409,25 @@ export function changedUnits(checkout, from, to, { paths = [], adjacent = true }
     if (result.status !== 0) throw new Error(`git ${args[0]} exit ${result.status}：${result.stderr.trim()}`);
     return result.stdout;
   };
+  const refs = to === null ? [from] : [from, to];
+  const names = text => text.split('\0').filter(Boolean);
+  const untracked = new Set(to === null ? names(run('ls-files', '-z', '--others', '--exclude-standard', '--', ...paths)) : []);
+  const after = path => {
+    if (to !== null) return show(checkout, to, path);
+    const file = join(checkout, path);
+    return existsSync(file) ? readFileSync(file, 'utf8') : '';
+  };
   const units = new Map();
-  for (const path of run('diff', '--name-only', '-z', '--no-renames', from, to, '--', ...paths).split('\0').filter(Boolean)) {
+  const changed = names(run('diff', '--name-only', '-z', '--no-renames', ...refs, '--', ...paths));
+  for (const path of untracked.size ? [...changed, ...untracked].sort() : changed) {
     const unit = { whole: !path.endsWith('.md'), entries: new Set() };
     units.set(path, unit);
     if (unit.whole) continue;
-    const versions = { '-': show(checkout, from, path).split('\n'), '+': show(checkout, to, path).split('\n') };
-    for (const [, oldStart, oldCount = '1', newStart, newCount = '1'] of run('diff', '-U0', '--no-color', '--no-renames', '--diff-algorithm=histogram', from, to, '--', path)
-      .matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
+    const versions = { '-': show(checkout, from, path).split('\n'), '+': after(path).split('\n') };
+    // 未追蹤的新檔沒有 diff 可讀，整份都是加上的行。
+    const hunks = untracked.has(path) ? `@@ -0,0 +1,${versions['+'].length} @@`
+      : run('diff', '-U0', '--no-color', '--no-renames', '--diff-algorithm=histogram', ...refs, '--', path);
+    for (const [, oldStart, oldCount = '1', newStart, newCount = '1'] of hunks.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
       for (const [side, start, count] of [['-', oldStart, oldCount], ['+', newStart, newCount]]) {
         for (let i = Number(start) - 1; i < Number(start) - 1 + Number(count); i++) {
           if (!versions[side][i]?.trim()) continue;

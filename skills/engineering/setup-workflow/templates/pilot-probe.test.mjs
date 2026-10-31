@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
+import { changedUnits } from './pilot-probe.mjs';
 
 const script = new URL('./pilot-probe.mjs', import.meta.url).pathname;
 // pre-commit hook 匯出的 GIT_DIR 等會讓暫存 repo 的 git 指令寫到本 repo。
@@ -951,4 +952,34 @@ test('已關閉的母單同時缺 parent label 時一起印 PARENT_LABEL，一�
     ['issue', 'reopen', '40'],
   ]);
   assert.equal(probe().stdout, '');
+});
+
+// #194：worktree-overlap 以 `to` 為 null 比對工作樹：已 commit、暫存、未暫存的改動與未追蹤的新檔都算，ignore 的檔不算。
+test('changedUnits：to 為 null 時比對工作樹，未追蹤的 .md 新檔也細到條目', t => {
+  const repo = mkdtempSync(join(realTmpdir(), 'pilot-probe-worktree-'));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  const run = (...args) => {
+    const result = spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8', env });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  run('init', '-q', '-b', 'main');
+  writeFileSync(join(repo, '.gitignore'), 'ignored.md\n');
+  writeFileSync(join(repo, 'rules.md'), '# rules\n\n- **A.** 一\n\n- **B.** 二\n');
+  writeFileSync(join(repo, 'staged.txt'), '1\n');
+  run('add', '.');
+  run('commit', '-q', '-m', 'base');
+  const base = run('rev-parse', 'HEAD');
+  writeFileSync(join(repo, 'staged.txt'), '2\n');
+  run('commit', '-q', '-am', 'committed');
+  writeFileSync(join(repo, 'rules.md'), '# rules\n\n- **A.** 一\n\n- **B.** 改了\n');
+  writeFileSync(join(repo, 'new.md'), '- **C.** 新條目\n');
+  writeFileSync(join(repo, 'ignored.md'), '- **D.** x\n');
+  const units = changedUnits(repo, base, null, { adjacent: false });
+  assert.deepEqual([...units].map(([path, { whole, entries }]) => [path, whole, [...entries]]), [
+    ['new.md', false, ['C']],
+    ['rules.md', false, ['B']],
+    ['staged.txt', true, []],
+  ]);
+  assert.deepEqual([...changedUnits(repo, base, null, { paths: ['new.md'] }).keys()], ['new.md']);
 });
