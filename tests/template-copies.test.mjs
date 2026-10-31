@@ -32,9 +32,9 @@ test('scripts/pilot-handoff.mjs 與它 import 的 orca-session-send、orca-sessi
   for (const path of ['scripts/pilot-handoff.mjs', 'scripts/orca-session-send.mjs', 'scripts/orca-session-split.mjs']) assert.ok(copies[path], `清單沒有 ${path}`);
 });
 
-// pilot 存檔的寫入者由副本負責，adapter 的 Pilot 段不再要求手寫（#56；gates.md 的 pilot-gate，#134）。
-test('清單涵蓋寫 pilot 存檔的 6 個副本與它們的共用 lib', () => {
-  for (const name of ['pilot-register', 'pilot-decision', 'pilot-request', 'pilot-hold', 'pilot-sources', 'pilot-gate', 'lib/pilot-store']) {
+// pilot 存檔的寫入者由副本負責，adapter 的 Pilot 段不再要求手寫（#56；gates.md 的 pilot-gate，#134；batch 成員搬移的 pilot-batch，#163）。
+test('清單涵蓋寫 pilot 存檔的 7 個副本與它們的共用 lib', () => {
+  for (const name of ['pilot-register', 'pilot-decision', 'pilot-request', 'pilot-hold', 'pilot-sources', 'pilot-gate', 'pilot-batch', 'lib/pilot-store']) {
     assert.ok(copies[`scripts/${name}.mjs`], `清單沒有 scripts/${name}.mjs`);
   }
 });
