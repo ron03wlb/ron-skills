@@ -32,7 +32,7 @@ const CHECK_POLL = /^gh pr view \S+ --json headRefOid,statusCheckRollup/gm;
  * 其他 job 照有 step 的樣本；annotations 是那個 check run 的 annotations
  * （預設是 run 41164091250 的真實樣本，`'error'` 是讀不到）；visibility 是 `gh repo view --json visibility` 的值。
  */
-function fixture(t, { checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false, localCheckExit = 0, unstartedJobs = [], missingJobs = [], annotations = GH_SAMPLES['check-run-annotations'], visibility = 'PUBLIC' } = {}) {
+function fixture(t, { seed = {}, checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false, localCheckExit = 0, unstartedJobs = [], missingJobs = [], annotations = GH_SAMPLES['check-run-annotations'], visibility = 'PUBLIC' } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'land-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const sh = (cwd, ...args) => {
@@ -48,6 +48,12 @@ function fixture(t, { checks = [PASS], orcaFails = false, selfHosted = false, br
   sh(temp, 'clone', '-q', origin, main);
   writeFileSync(join(main, '.gitignore'), '.scratch/\n');
   sh(main, 'add', '.gitignore');
+  // seed：init commit 一起帶的檔案（例如 repo 的 scripts/restamp.mjs 與戳記檔）。
+  for (const [path, content] of Object.entries(seed)) {
+    mkdirSync(join(main, path, '..'), { recursive: true });
+    writeFileSync(join(main, path), content);
+    sh(main, 'add', path);
+  }
   // selfHosted：repo 自己帶 land.mjs 等腳本，從要被移除的 worktree 裡執行（land 合入自己的分支就是這樣）。
   if (selfHosted) {
     mkdirSync(join(main, 'scripts'));
@@ -87,8 +93,13 @@ fs.appendFileSync(${JSON.stringify(log)}, 'gh ' + args.join(' ') + '\\n');
 const s = JSON.parse(fs.readFileSync(${JSON.stringify(state)}, 'utf8'));
 const save = () => fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
 const out = pr => { const { head, ...fields } = pr; return mergeSample(SAMPLES['pr-view'], fields, 'pr'); };
-const find = ref => s.prs.find(pr => pr.number === Number(String(ref).split('/').pop()));
 const git = (...a) => execFileSync('git', ['-C', ${JSON.stringify(merger)}, ...a], { encoding: 'utf8' }).trim();
+// 開著的 PR，head 跟著 origin 上的分支走（push 新 commit 後 GitHub 會更新 headRefOid）。
+const find = ref => {
+  const pr = s.prs.find(pr => pr.number === Number(String(ref).split('/').pop()));
+  if (pr?.state === 'OPEN') { git('fetch', '-q', 'origin'); pr.headRefOid = git('rev-parse', 'origin/' + pr.head); save(); }
+  return pr;
+};
 const [cmd, sub] = args;
 // 失敗 job 的 step 與 annotations（#132）。
 if (cmd === 'api' && sub.includes('/actions/jobs/')) {
@@ -121,7 +132,9 @@ else if (sub === 'comment') { s.comments.push({ number: Number(args[2]), body: a
 else if (sub === 'merge') {
   const pr = find(args[2]);
   git('fetch', '-q', 'origin'); git('checkout', '-q', '-B', 'main', 'origin/main');
-  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '-q', '--no-ff', '-m', 'Merge pull request #' + pr.number, 'origin/' + pr.head);
+  // 和 main 衝突時 GitHub 拒絕合併（retro 1031b，PR #168 的真實訊息）。
+  try { git('-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '-q', '--no-ff', '-m', 'Merge pull request #' + pr.number, 'origin/' + pr.head); }
+  catch { git('merge', '--abort'); console.error('GraphQL: Pull Request has merge conflicts'); process.exit(1); }
   git('push', '-q', 'origin', 'main');
   Object.assign(pr, { state: 'MERGED', mergeCommit: { oid: git('rev-parse', 'HEAD') } }); save();
 }
@@ -157,7 +170,28 @@ console.log(JSON.stringify({ ok: true, result: {} }));
   const comments = () => JSON.parse(readFileSync(state, 'utf8')).comments;
   const remoteHas = branch => spawnSync('git', ['-C', origin, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0;
   const last = result => result.stdout.trim().split('\n').pop();
-  return { temp, main, wt, origin, body, sh, land, calls, prs, comments, remoteHas, last };
+  /** 在 origin/main 上直接 commit 這些檔案（別的 PR 先合入了）。 */
+  const pushMain = files => {
+    sh(merger, 'fetch', '-q', 'origin');
+    sh(merger, 'checkout', '-q', '-B', 'main', 'origin/main');
+    for (const [path, content] of Object.entries(files)) {
+      mkdirSync(join(merger, path, '..'), { recursive: true });
+      writeFileSync(join(merger, path), content);
+      sh(merger, 'add', path);
+    }
+    sh(merger, 'commit', '-q', '-m', 'main moves on');
+    sh(merger, 'push', '-q', 'origin', 'main');
+  };
+  /** 在 feature worktree commit 這些檔案。 */
+  const commitFeature = files => {
+    for (const [path, content] of Object.entries(files)) {
+      mkdirSync(join(wt, path, '..'), { recursive: true });
+      writeFileSync(join(wt, path), content);
+      sh(wt, 'add', path);
+    }
+    sh(wt, 'commit', '-q', '-m', 'feature moves on');
+  };
+  return { temp, main, wt, origin, body, sh, land, calls, prs, comments, remoteHas, last, pushMain, commitFeature };
 }
 
 test('手動分支：push、開 PR、等 CI 登記並通過、合併、收尾、main 跟上', t => {
@@ -504,6 +538,73 @@ test('worktree 有未提交的改動：STOP dirty-worktree，連 push 都不做'
   assert.equal(result.status, 4);
   assert.match(last(result), /^STOP dirty-worktree /);
   assert.equal(remoteHas('feature'), false);
+});
+
+// #173：retro 1031b（PR #168）兩次 STOP merge，衝突都只在戳記檔，手動 checkout --theirs、restamp、重跑檢查。
+// repo 的 scripts/restamp.mjs（選配，同 pilot-unbare.sh）宣告戳記檔並負責重算；這裡的替身把 src/ 底下每個檔的內容記成一行。
+const STAMP_HOOK = `import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
+export const STAMP_FILES = ['stamp.json'];
+export function restamp(tree, files) {
+  const sources = Object.fromEntries(readdirSync(join(tree, 'src')).sort().map(name => [name, readFileSync(join(tree, 'src', name), 'utf8')]));
+  writeFileSync(join(tree, 'stamp.json'), JSON.stringify({ files, sources }, null, 2) + '\\n');
+  return spawnSync('git', ['-C', tree, 'add', 'stamp.json']).status === 0;
+}
+`;
+const stamp = (sources, files = ['stamp.json']) => `${JSON.stringify({ files, sources }, null, 2)}\n`;
+const STAMP_SEED = { 'scripts/restamp.mjs': STAMP_HOOK, 'src/a.txt': 'a0\n', 'src/b.txt': 'b0\n', 'stamp.json': stamp({ 'a.txt': 'a0\n', 'b.txt': 'b0\n' }) };
+
+test('PR 只有戳記檔和 main 衝突：合入 origin/main、restamp、跑檢查入口、push，印 RESTAMPED 後等 CI 並合併', t => {
+  const { main, wt, origin, body, sh, land, calls, prs, last, pushMain, commitFeature } = fixture(t, { seed: STAMP_SEED });
+  commitFeature({ 'src/a.txt': 'a1\n', 'stamp.json': stamp({ 'a.txt': 'a1\n', 'b.txt': 'b0\n' }) });
+  pushMain({ 'src/b.txt': 'b1\n', 'stamp.json': stamp({ 'a.txt': 'a0\n', 'b.txt': 'b1\n' }) });
+
+  const result = land(['feature', '--body-file', body, '--check-command', 'bin/check --upstream']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [pr] = prs();
+  const restamped = result.stdout.match(/^RESTAMPED (\d+) ([0-9a-f]{40})$/m);
+  assert.ok(restamped, result.stdout);
+  assert.equal(Number(restamped[1]), pr.number);
+  // 檢查入口在 restamp 之後的 tip、工作樹乾淨時跑；CI 等的是那個 tip。
+  assert.match(calls(), new RegExp(`^check --upstream ${restamped[2]} dirty=\\[\\]$`, 'm'));
+  assert.ok(calls().indexOf(`check --upstream ${restamped[2]}`) < calls().lastIndexOf('gh pr merge'));
+  assert.equal(last(result), `LANDED ${pr.number} ${pr.mergeCommit.oid}`);
+  // 合併後 main 的戳記是 restamp 以合併後的來源重算的，不是任何一邊的舊戳記。
+  assert.equal(sh(origin, 'show', 'main:stamp.json') + '\n', stamp({ 'a.txt': 'a1\n', 'b.txt': 'b1\n' }));
+  assert.equal(sh(main, 'rev-parse', 'HEAD'), pr.mergeCommit.oid);
+  assert.equal(existsSync(wt), false);
+});
+
+test('戳記檔和其他檔一起衝突：merge --abort，STOP merge 列出衝突檔，分支不留合併中途狀態、不 push', t => {
+  const { wt, origin, body, sh, land, prs, last, pushMain, commitFeature } = fixture(t, { seed: { ...STAMP_SEED, 'other.txt': 'o0\n' } });
+  commitFeature({ 'other.txt': 'o1\n', 'stamp.json': stamp({ 'a.txt': 'a1\n', 'b.txt': 'b0\n' }) });
+  pushMain({ 'other.txt': 'o2\n', 'stamp.json': stamp({ 'a.txt': 'a0\n', 'b.txt': 'b1\n' }) });
+  const tip = sh(wt, 'rev-parse', 'HEAD');
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  const [pr] = prs();
+  assert.equal(last(result), `STOP merge ${pr.number} conflict other.txt stamp.json`);
+  assert.doesNotMatch(result.stdout, /^RESTAMPED /m);
+  assert.equal(pr.state, 'OPEN');
+  assert.equal(sh(wt, 'rev-parse', 'HEAD'), tip);
+  assert.equal(sh(wt, 'status', '--porcelain'), '');
+  assert.equal(spawnSync('git', ['-C', wt, 'rev-parse', '-q', '--verify', 'MERGE_HEAD']).status, 1);
+  assert.equal(sh(origin, 'rev-parse', 'feature'), tip);
+});
+
+test('repo 沒有 scripts/restamp.mjs：衝突照舊 STOP merge，分支不留合併中途狀態', t => {
+  const { wt, body, sh, land, prs, last, pushMain, commitFeature } = fixture(t, { seed: { 'stamp.json': 'x\n' } });
+  commitFeature({ 'stamp.json': 'feature\n' });
+  pushMain({ 'stamp.json': 'main\n' });
+  const tip = sh(wt, 'rev-parse', 'HEAD');
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(last(result), `STOP merge ${prs()[0].number} conflict stamp.json`);
+  assert.equal(sh(wt, 'rev-parse', 'HEAD'), tip);
+  assert.equal(sh(wt, 'status', '--porcelain'), '');
 });
 
 test('pickPr：開著的優先；已合入只在 head 等於 tip 時沿用', () => {

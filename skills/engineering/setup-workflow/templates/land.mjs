@@ -15,11 +15,15 @@
 // CI 失敗而失敗的 job 全都 0 個 step（帳務或 spending limit 擋下、沒有啟動，#132）時印 ci-not-started，帶 check-run annotation
 // 的第一句與 repo 可見性：log 讀不到，重跑也沒用；原因是帳務時 Push gate 才改用 `--local-checks`，有 step 的失敗照舊是 ci-failed。
 // Orca 從 WSL 移除 worktree 會把主 checkout 設成 bare，所以移除後一律還原：有 scripts/pilot-unbare.sh 就交給它，沒有就自己還原並印 UNBARE。
+// 合併因 PR 和 main 衝突被拒時（#173）：fetch、把 origin/main 合入分支（在分支的 worktree，沒有就開暫時 worktree）。repo 有
+// scripts/restamp.mjs、衝突檔全在它 export 的 STAMP_FILES 裡時，呼叫它的 restamp(tree, files)（在合併中途：取目標分支版本、重算並 git add，
+// 回傳 false 表示解不了），commit，在新 tip 以 sh 跑 `--check-command`（預設 bin/check），通過才 push、印 RESTAMPED，再等 CI、合併一次。
+// 其他衝突（或 repo 沒有 restamp.mjs）照舊 merge --abort，STOP merge <pr> conflict <檔案…>，分支停在原來的 tip。
 //
-// 用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha> [--check-command <command>]] [--body-file <file>] [--title <title>]
-// stdout：每步一行進度（PUSHED、PR、CHECKS_PASSED，`--local-checks` 時是 LOCAL_CHECKS <pr> <sha> <結果行>，收尾的 UNBARE、
+// 用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--check-command <command>] [--body-file <file>] [--title <title>]
+// stdout：每步一行進度（PUSHED、PR、CHECKS_PASSED、RESTAMPED <pr> <新 tip>，`--local-checks` 時是 LOCAL_CHECKS <pr> <sha> <結果行>，收尾的 UNBARE、
 //   WORKTREE_REMOVED、BRANCH_DELETED，最後 MAIN、SYNC_SKILLS）；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
-//   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、merge、not-merged、worktree-rm）。
+//   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、restamp-checks-failed、merge、not-merged、worktree-rm）。
 // 合入之後的收尾問題（main 沒跟上、sync-skills 失敗）印 WARN，不影響 LANDED。
 // exit：0 已合入；4 STOP；2 用法錯誤；1 其他失敗。
 import { spawnSync } from 'node:child_process';
@@ -30,7 +34,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { orca } from './orca-session-send.mjs';
 
-const USAGE = '用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha> [--check-command <command>]] [--body-file <file>] [--title <title>]';
+const USAGE = '用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--check-command <command>] [--body-file <file>] [--title <title>]';
 
 /** CI 輪詢：剛 push 時 PR 的 head 可能還沒更新、checks 可能還沒登記（空陣列），都照 pending 處理到逾時。 */
 const CHECKS_POLL_MS = Number(process.env.LAND_CHECKS_POLL_MS || 10000);
@@ -206,6 +210,58 @@ function runLocalChecks(main, branch, tip, expected, command) {
   }
 }
 
+/** 衝突檔全是 repo 宣告的戳記檔時交給 `<tree>/scripts/restamp.mjs` 重算，回傳是否解完；repo 沒有這支時回 false。 */
+async function restampConflicts(tree, files) {
+  const hook = join(tree, 'scripts/restamp.mjs');
+  if (!files.length || !existsSync(hook)) return false;
+  const { STAMP_FILES = [], restamp } = await import(pathToFileURL(hook).href);
+  if (!files.every(file => STAMP_FILES.includes(file))) return false;
+  return (await restamp(tree, files)) !== false;
+}
+
+/**
+ * PR 和 main 衝突：把 origin/main 合入分支，只有戳記檔衝突時 restamp、commit、在新 tip 跑檢查入口、push，回傳新 tip。
+ * 其他衝突（或 restamp、commit 途中失敗）merge --abort 後 Stop，分支不留合併中途狀態；檢查失敗時合併 commit 留在本機分支、不 push。
+ */
+async function restampBranch(main, branch, tree, number, command) {
+  git(main, 'fetch', 'origin', 'main');
+  const temp = tree ? null : mkdtempSync(join(tmpdir(), 'land-restamp-'));
+  const path = tree?.path ?? join(temp, 'tree');
+  try {
+    if (temp) {
+      const added = spawnSync('git', ['worktree', 'add', '-q', path, branch], { cwd: main, encoding: 'utf8', env: childEnv });
+      if (added.status !== 0) throw new Error(`git worktree add 失敗：${added.stderr.trim()}`);
+    }
+    const merge = spawnSync('git', ['merge', '--no-edit', 'origin/main'], { cwd: path, encoding: 'utf8', env: childEnv });
+    if (merge.status !== 0) {
+      const conflicted = git(path, 'diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean);
+      try {
+        if (!(await restampConflicts(path, conflicted))) throw new Stop(`merge ${number} conflict ${conflicted.join(' ') || merge.stderr.trim().split('\n').pop()}`);
+        const commit = spawnSync('git', ['commit', '--no-edit'], { cwd: path, encoding: 'utf8', env: childEnv });
+        if (commit.status !== 0) throw new Error(`git commit 失敗：${(commit.stderr || commit.stdout).trim()}`);
+      } catch (error) {
+        if (run('git', ['rev-parse', '-q', '--verify', 'MERGE_HEAD'], path).status === 0) git(path, 'merge', '--abort');
+        throw error;
+      }
+    }
+    const sha = git(path, 'rev-parse', 'HEAD');
+    const result = spawnSync('sh', ['-c', command], { cwd: path, encoding: 'utf8', env: childEnv, timeout: LOCAL_CHECKS_TIMEOUT_MS });
+    mkdirSync(join(main, '.scratch'), { recursive: true });
+    const log = join(main, '.scratch', `land-restamp-checks-${sha}.log`);
+    writeFileSync(log, `${result.stdout ?? ''}${result.stderr ?? ''}`);
+    if (result.status !== 0) throw new Stop(`restamp-checks-failed ${sha} exit ${result.error?.code ?? result.status} ${log}`);
+    const push = run('git', ['push', 'origin', branch], main);
+    if (push.status !== 0) throw new Stop(`push ${push.stderr.trim().split('\n').pop()}`);
+    return sha;
+  } finally {
+    if (temp) {
+      run('git', ['worktree', 'remove', '--force', path], main);
+      rmSync(temp, { recursive: true, force: true });
+      run('git', ['worktree', 'prune'], main);
+    }
+  }
+}
+
 /** 主 checkout 在 main 而且乾淨才 --ff-only；否則回傳原因（WARN，不擋）。 */
 function syncMain(main) {
   const current = run('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], main).stdout.trim();
@@ -306,7 +362,13 @@ export async function land({ branch, keepBranch = false, localChecksSha, checkCo
     } else {
       console.log(`CHECKS_PASSED ${pr.number} ${await waitChecks(main, pr.number, tip)}`);
     }
-    const merged = run('gh', ['pr', 'merge', String(pr.number), '--merge'], main);
+    let merged = run('gh', ['pr', 'merge', String(pr.number), '--merge'], main);
+    if (merged.status !== 0 && /merge conflicts/i.test(merged.stderr)) {
+      const head = await restampBranch(main, branch, tree, pr.number, checkCommand);
+      console.log(`RESTAMPED ${pr.number} ${head}`);
+      console.log(`CHECKS_PASSED ${pr.number} ${await waitChecks(main, pr.number, head)}`);
+      merged = run('gh', ['pr', 'merge', String(pr.number), '--merge'], main);
+    }
     if (merged.status !== 0) throw new Stop(`merge ${pr.number} ${merged.stderr.trim().split('\n').pop()}`);
     pr = JSON.parse(gh(main, 'pr', 'view', String(pr.number), '--json', 'number,state,url,headRefOid,mergeCommit'));
     if (pr.state !== 'MERGED') throw new Stop(`not-merged ${pr.number} ${pr.state}`);
