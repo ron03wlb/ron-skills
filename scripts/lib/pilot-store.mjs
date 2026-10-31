@@ -29,6 +29,21 @@ export const isOpenRequest = line => Boolean(line.trim()) && !line.startsWith('#
 
 /** Markdown 表格一列的各欄（去掉首尾的 `|` 與空白）；不是表格列時回空陣列。 */
 export const tableCells = line => line.split('|').slice(1, -1).map(cell => cell.trim());
+
+const isMemberRow = line => tableCells(line).length >= 8 && /^\d+$/.test(tableCells(line)[0]);
+
+/**
+ * batch checkpoint 的行陣列裡成員全是 `moved …` 時，把 `current:` 就地寫成 `closed moved`；傳回這次是否改了。
+ * pilot-batch 的 move／park 與 pilot-dispatch 的 --fresh 共用（#205：--fresh 搬走全部成員的舊 batch 留在 dispatched，status.md 一直列成開著）。
+ */
+export function closeIfAllMoved(lines) {
+  const members = lines.filter(isMemberRow);
+  if (!members.length || !members.every(line => /^moved\b/.test(tableCells(line)[6]))) return false;
+  const i = lines.findIndex(line => /^current:/.test(line));
+  if (i < 0 || /^current:\s*closed moved$/.test(lines[i])) return false;
+  lines[i] = 'current: closed moved';
+  return true;
+}
 /** gates.md 的每個 `## G<n>` 段落：id、標題行（不含 `## `）、內文、段落在檔案中的起訖位置（訖點是下一個 `## ` 或檔尾）。 */
 export const gateSections = text => [...text.matchAll(/^## (G\d+\b.*)\n([\s\S]*?)(?=^## |(?![\s\S]))/gm)]
   .map(match => ({ id: match[1].match(/^G\d+/)[0], title: match[1].trim(), body: match[2], start: match.index, end: match.index + match[0].length }));

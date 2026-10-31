@@ -46,6 +46,18 @@ test('最後一個成員搬走時舊 batch 的 current: 寫成 closed moved，�
   assert.equal(read('133-134'), batchText('133-134', 'closed moved', [row(133, 'moved batch-133'), row(134, 'moved batch-134')]));
 });
 
+// batch 123-131 的兩個成員都由 pilot-dispatch --fresh 搬走，current: 卻還是 dispatched，status.md 一直列成開著（#205）。
+test('move 重跑已做完的搬移：舊 batch 成員全是 moved 卻沒關時補寫 closed moved，結果行加 closed', t => {
+  const stale = batchText('123-131', 'dispatched 2026-10-31T12:34:02+08:00', [row(123, 'moved batch-123'), row(131, 'moved batch-131')]);
+  const { run, read } = fixture(t, { '123-131': stale, 123: batchText('123', 'dispatched 2026-10-31T13:00:00+08:00', [row(123, 'running')]) });
+  const result = run('move', '123-131', '123');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'MOVED 123-131 123 batch-123 closed\n');
+  assert.equal(read('123-131'), batchText('123-131', 'closed moved', [row(123, 'moved batch-123'), row(131, 'moved batch-131')]));
+  assert.equal(read('123'), batchText('123', 'dispatched 2026-10-31T13:00:00+08:00', [row(123, 'running')]));
+  assert.equal(run('move', '123-131', '123').stdout, 'MOVED 123-131 123 batch-123\n');
+});
+
 // #94 與 #123 改同一列：#94 已 done（candidate 7246dfe），只能寫成 stop 並清掉 candidate，事實記錄失真（#163）。
 test('park：done 成員搬到 batch-<n>，state 記 parked after #<m>、candidate 保留，表格下方記原因', t => {
   const { run, read } = fixture(t, { '88-94': batchText('88-94', 'dispatched 2026-10-31T13:57:05+08:00', [row(88, 'done', A), row(94, 'done', B)]) });

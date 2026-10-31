@@ -20,7 +20,7 @@
 // --fresh（#124）把一個成員重派成 fresh worker（Stage 的同一條目衝突之後），worktree 與分支名稱不變，舊分支就地另存：
 //   工作樹有未提交改動 → `STOP dirty <n>`，什麼都不動；關掉 worktree 裡每個 terminal（checkpoint 可能只記了其中一個）；
 //   `branch -m <分支> <分支>-prior`；`switch -c <分支> <整合分支>`；worker 的 `.scratch/issue-run-<n>` 改名成 `issue-run-<n>-prior`（fresh worker 才不讀到舊 checkpoint）；
-//   在 Issue 留言 --note 的內容加一行 `prior: <prior 分支> @ <sha>`（gh）；把成員拆到自己的 batch（原 batch 那列記 `moved batch-<n>`，batch-<n>.md 是表頭加一列；
+//   在 Issue 留言 --note 的內容加一行 `prior: <prior 分支> @ <sha>`（gh）；把成員拆到自己的 batch（原 batch 那列記 `moved batch-<n>`，成員因此全是 moved 時原 batch 的 `current:` 寫成 `closed moved`，#205；batch-<n>.md 是表頭加一列；
 //   原 batch 就是 `<n>` 時就地改寫 `current:` 與 `integration:`）；最後照一般 Dispatch 開分頁、送出 `/issue-run <n> --worker <batch-<n>.md>`。
 //   不刪 worktree、不 `branch -D`（auto mode 擋 reset --hard 這類指令，就地改名也不必重建 worktree 與分頁），不刪 prior 分支。
 //   每一步先看做過沒有：已有 prior、分支還沒有自己的 commit（相對整合分支）時是同一次重派中斷了，同一行指令接著做；留言已含 `prior:` 行就不再留。
@@ -44,6 +44,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { claimedBy, defaultSession } from './issue-pool.mjs';
 import { orca, sendToSession } from './orca-session-send.mjs';
+import { closeIfAllMoved } from './lib/pilot-store.mjs';
 import { memberOverlaps } from './pilot-probe.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
 
@@ -101,7 +102,7 @@ function freshHeader(main, checkpoint, key, integration) {
     .replace(/^current:.*$/m, `current: dispatched ${now()}`).replace(/^integration:.*$/m, `integration: ${integration} @ ${sha}`));
 }
 
-/** 把成員行的 state 欄改成 `state`；沒有這一行就不動。 */
+/** 把成員行的 state 欄改成 `state`；沒有這一行就不動。改完成員全是 moved 時 `current:` 寫成 `closed moved`（同 pilot-batch，#205）。 */
 function setRowState(checkpoint, n, state) {
   if (!existsSync(checkpoint)) return;
   const lines = readFileSync(checkpoint, 'utf8').split('\n');
@@ -110,6 +111,7 @@ function setRowState(checkpoint, n, state) {
   const cells = lines[i].split('|');
   cells[7] = ` ${state} `;
   lines[i] = cells.join('|');
+  closeIfAllMoved(lines);
   writeFileSync(checkpoint, lines.join('\n'));
 }
 
