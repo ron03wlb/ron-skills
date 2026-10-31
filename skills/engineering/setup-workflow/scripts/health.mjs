@@ -144,9 +144,9 @@ const scriptDirs = ['scripts/', 'bin/', '.githooks/', '.husky/', ...(hooksPath &
 const scanned = files.filter(file => file === adapterPath || file === '.claude/settings.json' || scriptDirs.some(dir => file.startsWith(dir)));
 const unreadable = new Set();
 for (const file of scanned) {
-  const text = readOrWarn(file);
-  if (text === null) unreadable.add(file);
-  text?.split('\n').forEach((text, i) => {
+  const content = readOrWarn(file);
+  if (content === null) unreadable.add(file);
+  content?.split('\n').forEach((text, i) => {
     for (const match of text.matchAll(HOME_PATH)) {
       const path = unquote(match[0]);
       const segments = unquote(match[1]).split('/').filter(Boolean);
@@ -158,7 +158,7 @@ for (const file of scanned) {
 }
 
 // 平台：adapter 的 Platforms 列了 macOS 時，對 scripts/、bin/ 與 git hook 目錄跑可攜性規則。規則只在正本 templates/check-portability.mjs（#86），
-// 這裡在目標 repo 執行它，只把這些目錄裡讀得到的檔案當路徑參數交給它（讀不到的上面已在 stderr 略過；範圍外的檔案它不讀）；
+// 這裡在目標 repo 執行它，只把這些目錄裡讀得到的檔案當路徑參數交給它，所以它的結果都在範圍內（讀不到的上面已在 stderr 略過；範圍外的檔案它不讀）；
 // 它印 `<file>:<line>: <規則> <改法>`（只差大小寫的是 `<file>: case …`，沒有行號）。沒有路徑時不跑：不帶參數它會掃整個 repo。
 const portable = scanned.filter(file => scriptDirs.some(dir => file.startsWith(dir)) && !unreadable.has(file));
 if (/\bmacOS\b/i.test(section('Platforms') ?? '') && portable.length) {
@@ -168,7 +168,6 @@ if (/\bmacOS\b/i.test(section('Platforms') ?? '') && portable.length) {
   const violations = result.status === 0 ? [] : lines(result.stderr).filter(text => !/^\((?:node:\d+\)|Use `node --trace-)/.test(text)).map(text => text.match(/^(.+?)(?::(\d+))?: (\S+) (.+)$/));
   if (![0, 1].includes(result.status) || violations.some(match => !match)) fail(`check-portability.mjs 失敗：${result.stderr.trim()}`);
   for (const match of violations) {
-    if (!scriptDirs.some(dir => match[1].startsWith(dir))) continue;
     finding('platform', `${match[3]} ${match[4]}`, match[2] ? `${match[1]}:${match[2]}` : match[1]);
   }
 }
