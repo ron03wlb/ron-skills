@@ -3,4 +3,4 @@
 import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
-export const realTmpdir = () => realpathSync(tmpdir());
+export const realTmpdir = () => realpathSync(tmpdir()); // portability-ok: realTmpdir 本身，以 realpathSync 解開 symlink
