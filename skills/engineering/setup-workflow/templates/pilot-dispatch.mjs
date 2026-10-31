@@ -45,6 +45,7 @@ const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>..
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const WORKTREE_CREATE = fileURLToPath(new URL('./orca-worktree-create.mjs', import.meta.url));
 const BUDGET_MS = Number(process.env.PILOT_DISPATCH_BUDGET_MS || 510000);
+const DEADLINE = Date.now() + BUDGET_MS;
 
 /** 同步跑子行程；stdin 一律接 /dev/null。 */
 function run(command, args, options = {}) {
@@ -116,10 +117,13 @@ function writeRow(checkpoint, n, cells) {
 
 /**
  * 認領檢查：這個 session 的認領傳回 undefined，否則傳回 STOP 原因（不含 `STOP <n> ` 前綴）。
- * spawnSync 期間總預算的計時器不會觸發，所以 gh 自己限時 60 秒；原因壓成一行，stdout 才維持每個成員一行。
+ * spawnSync 期間總預算的計時器不會觸發，所以 gh 自己限時（60 秒與剩餘預算取小），預算用完就是 `timeout`；原因壓成一行，stdout 才維持每個成員一行。
  */
 function claimStop(n) {
-  const viewed = run('gh', ['issue', 'view', n, '--json', 'comments'], { timeout: 60000 });
+  const left = DEADLINE - Date.now();
+  if (left <= 0) return 'timeout';
+  const viewed = run('gh', ['issue', 'view', n, '--json', 'comments'], { timeout: Math.min(60000, left) });
+  if (Date.now() >= DEADLINE) return 'timeout';
   const detail = (viewed.stderr ?? '').trim().replace(/\s*\n\s*/g, ' ');
   if (viewed.status !== 0) return `claim-check ${detail || `exit ${viewed.status ?? viewed.error?.code}`}`;
   try {
