@@ -34,7 +34,8 @@
 //   草稿已在時覆寫，但它的「怎麼整併」已經有內容（coordinator 補過、漏帶 --note 重跑）時印 `STOP <n> draft-filled <path>`，不動它。內容：原 Issue 號碼與標題；
 //   prior 分支與 SHA（batch-<key>.md 那列的 candidate，空的取分支 tip）與 `git merge-base <分支> <整合分支>`；成員（prior SHA）與整合分支
 //   自 merge-base 以來共同改過的檔，各附兩邊的 `git diff --stat` 那一行，`.md` 再附兩邊改到的 `- **<名稱>.**` 條目（pilot-probe 的 changedUnits；有條目外的改動時另註明），不印完整 diff；
-//   worker checkpoint（`<worktree>/.scratch/issue-run-<n>/state.md`）最後一個 `final review-only round` 那行到結果行（`DONE|STOP <n>`）的原文，
+//   worker checkpoint（`<worktree>/.scratch/issue-run-<n>/state.md`）最後一個含 `review-only` 的行（如 `final review-only round`）到結果行（`DONE|STOP <n>`）的原文，
+//   沒有結果行時到下一個 `#`／`##` 標題（不含）或檔尾（worker 的 checkpoint 沒有固定寫法），
 //   沒有這段時寫明要補 worker 分頁尾段；最後一段空白的「怎麼整併」給 coordinator 補，補完再帶 --note 重跑。
 //
 // 全機上限（#178）：帶 --capacity 時，動手前先以同目錄 pilot-capacity.mjs 的 check 合計全機帳本、加上這次要派的人數（--fresh 是 1）：
@@ -335,6 +336,9 @@ async function refresh(cli, main, key, integration, { n, branch }, note, again, 
  */
 function freshDraft(main, key, integration, { n, branch }) {
   if (!hasBranch(main, branch)) return { stop: `${n} git 沒有分支 ${branch}` };
+  const path = join(main, `.scratch/pilot/fresh-${n}.md`);
+  const merge = existsSync(path) ? readFileSync(path, 'utf8').split(/^## 怎麼整併$/m)[1] : undefined;
+  if (merge?.trim()) return { stop: `${n} draft-filled ${path}` };
   const git = (...args) => run('git', ['-C', main, ...args]);
   const viewed = run('gh', ['issue', 'view', n, '--json', 'title']);
   let title;
@@ -370,13 +374,11 @@ function freshDraft(main, key, integration, { n, branch }) {
   const worktree = worktreeOf(main, branch);
   const state = worktree && join(worktree, `.scratch/issue-run-${n}/state.md`);
   const lines = state && existsSync(state) ? readFileSync(state, 'utf8').split('\n') : [];
-  const from = lines.findLastIndex(line => /final review-only round/i.test(line));
-  const to = from < 0 ? -1 : lines.findIndex((line, i) => i > from && new RegExp(`\\b(DONE|STOP) ${n}\\b`).test(line));
-  const review = from < 0 ? 'checkpoint 沒有 review-only 段，補 worker 分頁尾段。'
-    : lines.slice(from, to < 0 ? undefined : to + 1).join('\n').trim();
-  const path = join(main, `.scratch/pilot/fresh-${n}.md`);
-  const merge = existsSync(path) ? readFileSync(path, 'utf8').split(/^## 怎麼整併$/m)[1] : undefined;
-  if (merge?.trim()) return { stop: `${n} draft-filled ${path}` };
+  const from = lines.findLastIndex(line => /review-only/i.test(line));
+  const result = lines.findIndex((line, i) => i > from && new RegExp(`\\b(DONE|STOP) ${n}\\b`).test(line));
+  const heading = lines.findIndex((line, i) => i > from && /^#{1,2} /.test(line));
+  const to = result >= 0 ? result + 1 : heading >= 0 ? heading : undefined;
+  const review = from < 0 ? 'checkpoint 沒有 review-only 段，補 worker 分頁尾段。' : lines.slice(from, to).join('\n').trim();
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, [
     `# fresh-${n}：#${n} ${title}`,

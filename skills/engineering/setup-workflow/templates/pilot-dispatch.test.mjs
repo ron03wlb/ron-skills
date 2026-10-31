@@ -742,3 +742,13 @@ test('--fresh 不帶 --note 又帶派工才用的旗標時 exit 2，不寫草稿
   }
   assert.equal(existsSync(join(fx.repo, '.scratch/pilot/fresh-46.md')), false);
 });
+
+test('--fresh 不帶 --note：checkpoint 用別的寫法記 review-only、沒有結果行時，抄最後一個 review-only 段到下一個標題', t => {
+  const fx = drafted(t, { review: false });
+  writeFileSync(join(fx.tree, '.scratch/issue-run-46/state.md'),
+    '# issue-run 46\n\n## rulings\n- review 1：P2 已修。\n- review-only verifier round @ abc：P2 src.mjs:1 仍在。\n- P3 命名。\n\n## notes\n不該抄進來。\n');
+  assert.equal(fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch']).status, 0);
+  const draft = readFileSync(join(fx.repo, '.scratch/pilot/fresh-46.md'), 'utf8');
+  assert.ok(draft.includes('- review-only verifier round @ abc：P2 src.mjs:1 仍在。\n- P3 命名。\n\n## 怎麼整併'), draft);
+  assert.doesNotMatch(draft, /review 1|不該抄進來|沒有 review-only 段/);
+});
