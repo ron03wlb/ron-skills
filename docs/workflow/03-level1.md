@@ -29,7 +29,7 @@ git clone https://github.com/backnotprop/pstack ~/code/pstack
 
 ### 3. 設定 tracker 與 label（每個 repo 一次）
 
-第 2 步的檢查入口做好之後，在目標 repo 開 Claude Code，輸入 `/setup-workflow`。它先檢查這台機器的環境（平台、Node 版本、git；缺了就停下、不寫檔，只給修正指令；原生 Windows 請改用 WSL2），問團隊還有誰用哪些平台，記進 adapter 的 `## Platforms`；再偵測現況（等級、tracker 種類等擴充）並列出要寫的檔案，你確認後才寫入；tracker、triage label、domain docs 三段會在同一個流程裡照 `setup-matt-pocock-skills` 的步驟問完，不必另外執行。第 4 步的 adapter 也在同一次流程裡完成。
+第 2 步的檢查入口做好之後，在目標 repo 開 Claude Code，輸入 `/setup-workflow`。它先檢查這台機器的環境（平台、Node 版本、git；缺了就停下、不寫檔，只給修正指令；原生 Windows 請改用 WSL2），問團隊還有誰用哪些平台，記進 adapter 的 `## Platforms`；接著確認 tracker host 與程式碼 host（GitHub、GitLab 或沒有 remote 的 local，兩者可以不同；缺 `gh`／`glab` 或沒登入時同樣停下、只給修正指令，指令對照見 [HOSTS.md](../../skills/engineering/setup-workflow/HOSTS.md)）；再偵測現況（等級與擴充）並列出要寫的檔案，你確認後才寫入；tracker、triage label、domain docs 三段會在同一個流程裡照 `setup-matt-pocock-skills` 的步驟問完，不必另外執行。第 4 步的 adapter 也在同一次流程裡完成。
 
 手動備用：不用 `/setup-workflow` 時，輸入 `/setup-matt-pocock-skills`，依序回答 tracker、triage label、domain docs 三段。兩種做法都會寫出：
 
