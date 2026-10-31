@@ -17,9 +17,10 @@ const END = '(?=[\\s;&|)"`]|$)';
 const option = (name, short, long) => new RegExp(`${cmd(name)}${OPTS}\\s+(?:${short}|${long})${END}`);
 
 // 規則清單只在這裡（另有 case：只差大小寫的追蹤檔）。kinds 決定套用的檔案：js、test（js 的測試檔）、shell、bash（zsh、ksh 以外的 shell 檔）。
+// quoted：比對路徑字面值的規則在 shell 檔看保留引號內容的那一行（路徑常寫在引號裡），其他規則看清掉引號內容的那一行。
 const RULES = [
   { id: 'tmpdir', kinds: ['test'], pattern: /(?<![\w$])tmpdir\(\s*\)/, hint: 'macOS 的 tmpdir() 是 symlink，測試改用 realTmpdir()' },
-  { id: 'proc', kinds: ['js', 'shell'], pattern: /\/proc\//, hint: 'macOS 沒有 /proc，改用 process 或 ps 的資訊' },
+  { id: 'proc', kinds: ['js', 'shell'], quoted: true, pattern: /\/proc\//, hint: 'macOS 沒有 /proc，改用 process 或 ps 的資訊' },
   { id: 'declare-A', kinds: ['bash'], pattern: new RegExp(`${cmd('declare|typeset|local')}${OPTS}\\s+-[A-Za-z]*A`), hint: 'macOS 的 bash 3.2 沒有關聯陣列，改寫成 node' },
   // sed 的 script 常帶空白與 -i 字樣，引號內整段當參數的一部分（--expression='…'）。
   { id: 'sed-i', kinds: ['shell'], pattern: new RegExp(`${cmd('sed')}(?:\\s+(?:'[^']*'|"[^"]*"|[^\\s'"|;&)])+)*?\\s+(?:-[A-Za-z]*i|--in-place)(?=[\\s;&|)]|''|""|$)`),
@@ -61,19 +62,20 @@ function jsCode(line) {
   return line;
 }
 
-/** shell 的一行只留指令：單引號內容清成 ''，雙引號只留 $(…) 裡的指令，引號外的 # 起是註解。 */
-function shellCode(line) {
+/** shell 的一行只留指令：單引號內容清成 ''，雙引號只留 $(…) 裡的指令，引號外的 # 起是註解；keepQuoted 時只去註解、引號內容照留。 */
+function shellCode(line, keepQuoted = false) {
   let out = '';
   const stack = [{ dq: false, depth: 0 }];
   for (let i = 0; i < line.length; i++) {
     const c = line[i]; const top = stack.at(-1);
-    if (c === '\\') { if (!top.dq) out += c + (line[i + 1] ?? ''); i++; continue; }
+    if (c === '\\') { if (keepQuoted || !top.dq) out += c + (line[i + 1] ?? ''); i++; continue; }
     if (top.dq) {
       if (c === '"') { stack.pop(); out += c; }
       else if (c === '$' && line[i + 1] === '(') { stack.push({ dq: false, depth: 0 }); out += '$('; i++; }
+      else if (keepQuoted) out += c;
       continue;
     }
-    if (c === "'") { const close = line.indexOf("'", i + 1); out += "''"; i = close < 0 ? line.length : close; continue; }
+    if (c === "'") { const close = line.indexOf("'", i + 1); out += keepQuoted ? line.slice(i, close < 0 ? undefined : close + 1) : "''"; i = close < 0 ? line.length : close; continue; }
     if (c === '"') { stack.push({ dq: true }); out += c; continue; }
     if (c === '#' && (i === 0 || /[\s;&|(]/.test(line[i - 1]))) break;
     if (c === '(') top.depth++;
@@ -98,9 +100,11 @@ for (const path of files) {
   checked++;
   text.split('\n').forEach((line, index) => {
     if (/portability-ok:\s*\S/.test(line)) return;
-    const body = kinds.includes('js') ? jsCode(line) : shellCode(line);
+    const js = kinds.includes('js');
+    const body = js ? jsCode(line) : shellCode(line);
+    const quoted = js ? body : shellCode(line, true);
     for (const rule of RULES) {
-      if (rule.kinds.some(k => kinds.includes(k)) && rule.pattern.test(body)) problems.push(`${path}:${index + 1}: ${rule.id} ${rule.hint}`);
+      if (rule.kinds.some(k => kinds.includes(k)) && rule.pattern.test(rule.quoted ? quoted : body)) problems.push(`${path}:${index + 1}: ${rule.id} ${rule.hint}`);
     }
   });
 }
