@@ -73,7 +73,7 @@ else if (b === 'read') {
   const handoff = (pid = '42', extra = {}, more = []) => spawnSync('node', args(pid, more), { ...options(extra), timeout: 30000 });
   // 背景執行，給要在中途送訊號的測試用。
   const start = (extra = {}) => spawn('node', args('42'), options(extra));
-  return { repo, coordinator, original, sessions: join(pilot, 'sessions.md'), log, handoff, start };
+  return { repo, coordinator, original, sessions: join(pilot, 'sessions.md'), log, titles, handoff, start };
 }
 
 // 真實發生過的錯：coordinator 已換人（pid 不是呼叫者）時舊 session 照樣交接，會把新 coordinator 的 pid 行蓋掉。
@@ -158,6 +158,16 @@ for (const target of ['term_peer', 'ron-skills-peer', '處理中｜ron-skills-pe
     assert.match(readFileSync(sessions, 'utf8'), /handoff from-session \S+ → terminal term_peer   reason /);
   });
 }
+
+// 新開的 coordinator 分頁一律記成同一個標題，交接雙方因此同主題：先排除呼叫者自己，才判斷 ambiguous。
+test('--to 對到自己與另一個同標題分頁：排除自己，HANDED_OFF 另一個', t => {
+  const { titles, log, handoff } = fixture(t);
+  for (const handle of ['term_current', 'term_peer']) writeFileSync(join(titles, handle), '處理中｜[維運] issue-pilot coordinator');
+  const result = handoff('42', { ORCA_TERMINAL_HANDLE: 'term_current' }, ['--to', 'issue-pilot coordinator']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'HANDED_OFF term_peer');
+  assert.match(readFileSync(log, 'utf8'), /^terminal send --terminal term_peer --text \/loop \/issue-pilot --enter --json$/m);
+});
 
 for (const [name, to, extra, reason, cause] of [
   ['找不到', 'nobody', {}, 'to-not-found', /^STOP to-not-found nobody$/],
