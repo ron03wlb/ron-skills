@@ -120,28 +120,38 @@ export function firstSentence(text) {
 /** Actions job 的網址（`/actions/runs/<run>/job/<job>`）裡的 job id，它也是 check run id；不是 Actions 的 check 回 null。 */
 const jobId = link => link?.match(/\/actions\/runs\/\d+\/job\/(\d+)/)?.[1] ?? null;
 
-/** job 確定沒有啟動（讀得到、0 個 step）才回 true；讀不到不能確認，照一般失敗。 */
-function jobNotStarted(cwd, id) {
-  const result = run('gh', ['api', `repos/{owner}/{repo}/actions/jobs/${id}`], cwd);
-  if (result.status !== 0) return false;
-  return (JSON.parse(result.stdout).steps ?? []).length === 0;
+/** `gh` 的 JSON 回應；失敗或不是 JSON 時回 null（只用在讀不到也有退路的查詢）。 */
+function ghJson(cwd, ...args) {
+  const result = run('gh', args, cwd);
+  if (result.status !== 0) return null;
+  try {
+    return JSON.parse(result.stdout);
+  } catch {
+    return null;
+  }
 }
+
+/** job 確定沒有啟動（讀得到、0 個 step）才回 true；讀不到不能確認，照一般失敗。 */
+const jobNotStarted = (cwd, id) => ghJson(cwd, 'api', `repos/{owner}/{repo}/actions/jobs/${id}`)?.steps?.length === 0;
 
 /**
  * 失敗的 check 全都是沒啟動的 Actions job 時，回傳 ci-not-started 的原因（annotation 第一句與 repo 可見性），否則 null。
  * 取消（cancel）的不算：沒啟動就取消的 job 也是 0 個 step，但它不是帳務問題，不能放寬成 `--local-checks`。
+ * 0 個 step 也可能是帳務以外的原因（runner 沒接單、policy），所以原因照實印出，要不要改用本機結果由 Push gate 看原因決定。
  */
 function notStartedReason(cwd, failed) {
-  if (!failed.every(check => check.bucket === 'fail' && jobId(check.link) && jobNotStarted(cwd, jobId(check.link)))) return null;
-  const listed = run('gh', ['api', `repos/{owner}/{repo}/check-runs/${jobId(failed[0].link)}/annotations`], cwd);
-  const annotations = listed.status === 0 ? JSON.parse(listed.stdout) : [];
-  const annotation = annotations.find(item => item.annotation_level === 'failure') ?? annotations[0];
-  const reason = firstSentence(annotation?.message) ?? 'unknown';
-  const viewed = run('gh', ['repo', 'view', '--json', 'visibility'], cwd);
-  const visibility = viewed.status === 0 ? JSON.parse(viewed.stdout).visibility.toLowerCase() : 'unknown';
+  const ids = failed.map(check => check.bucket === 'fail' && jobId(check.link));
+  if (!ids.every(id => id && jobNotStarted(cwd, id))) return null;
+  let reason = null;
+  for (const id of ids) {
+    const annotations = ghJson(cwd, 'api', `repos/{owner}/{repo}/check-runs/${id}/annotations`) ?? [];
+    reason = firstSentence((annotations.find(item => item.annotation_level === 'failure') ?? annotations[0])?.message);
+    if (reason) break;
+  }
+  const visibility = ghJson(cwd, 'repo', 'view', '--json', 'visibility')?.visibility?.toLowerCase() ?? 'unknown';
   // 根因（#132 留言）：GitHub Free 的 Actions 分鐘數由帳號所有 private repo 共用，billing API 回 404 查不到。
   const hint = visibility === 'private' ? '（帳號下所有 private repo 共用 Actions 額度，到 Billing & plans → Usage 查看）' : '';
-  return `${reason} repo ${visibility}${hint}`;
+  return `${reason ?? 'unknown'} repo ${visibility}${hint}`;
 }
 
 async function waitChecks(cwd, number, head) {
@@ -152,8 +162,8 @@ async function waitChecks(cwd, number, head) {
     if (verdict === 'fail') {
       const failed = checks.filter(check => check.bucket === 'fail' || check.bucket === 'cancel');
       const links = failed.map(check => check.link || check.name).join(' ');
-      const notStarted = notStartedReason(cwd, failed);
-      throw new Stop(notStarted ? `ci-not-started ${number} ${notStarted} ${links}` : `ci-failed ${number} ${links}`);
+      const reason = notStartedReason(cwd, failed);
+      throw new Stop(reason ? `ci-not-started ${number} ${reason} ${links}` : `ci-failed ${number} ${links}`);
     }
     if (verdict === 'pass') return checks.length;
     if (Date.now() >= deadline) throw new Stop(`checks-timeout ${number}`);

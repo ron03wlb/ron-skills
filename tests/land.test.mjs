@@ -29,10 +29,11 @@ const CHECK_POLL = /^gh pr view \S+ --json headRefOid,statusCheckRollup/gm;
  * `{ head, checks }` 是 PR 的 head 還沒更新到剛 push 的 SHA），最後一筆重複使用。
  * 假 gh 的 `pr merge` 真的在 remote 上做 --no-ff 合併；假 Orca 的 `worktree rm` 照真實行為把主 checkout 設成 bare、一起刪掉本機分支。
  * branchSelectorMissing：照 `orca-ide worktree create --branch` 開的 worktree，`branch:` 選擇器回 selector_not_found，只認 `path:`（#49）。
- * unstartedJobs：0 個 step 的 job id（帳務擋下，#132），其他 job 照樣本有 step；annotations 是那個 check run 的 annotations
+ * unstartedJobs：0 個 step 的 job id（帳務擋下，#132，樣本是 run 41164091250 的 job），missingJobs：jobs API 讀不到的 job id，
+ * 其他 job 照有 step 的樣本；annotations 是那個 check run 的 annotations
  * （預設是 run 41164091250 的真實樣本，`'error'` 是讀不到）；visibility 是 `gh repo view --json visibility` 的值。
  */
-function fixture(t, { checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false, localCheckExit = 0, unstartedJobs = [], annotations = GH_SAMPLES['check-run-annotations'], visibility = 'PUBLIC' } = {}) {
+function fixture(t, { checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false, localCheckExit = 0, unstartedJobs = [], missingJobs = [], annotations = GH_SAMPLES['check-run-annotations'], visibility = 'PUBLIC' } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'land-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const sh = (cwd, ...args) => {
@@ -90,8 +91,12 @@ const out = pr => { const { head, ...fields } = pr; return mergeSample(SAMPLES['
 const find = ref => s.prs.find(pr => pr.number === Number(String(ref).split('/').pop()));
 const git = (...a) => execFileSync('git', ['-C', ${JSON.stringify(merger)}, ...a], { encoding: 'utf8' }).trim();
 const [cmd, sub] = args;
-// 失敗 job 的 step 與 annotations（#132）：0 個 step 時 runner_name 是空字串，同 run 41164091250。
-if (cmd === 'api' && sub.includes('/actions/jobs/')) console.log(JSON.stringify(mergeSample(SAMPLES['actions-job'], ${JSON.stringify(unstartedJobs)}.includes(Number(sub.split('/').pop())) ? { steps: [], runner_name: '' } : {}, 'job')));
+// 失敗 job 的 step 與 annotations（#132）。
+if (cmd === 'api' && sub.includes('/actions/jobs/')) {
+  const id = Number(sub.split('/').pop());
+  if (${JSON.stringify(missingJobs)}.includes(id)) { console.error('gh: Not Found (HTTP 404)'); process.exit(1); }
+  console.log(JSON.stringify(SAMPLES[${JSON.stringify(unstartedJobs)}.includes(id) ? 'actions-job-not-started' : 'actions-job']));
+}
 else if (cmd === 'api' && sub.endsWith('/annotations')) {
   const annotations = ${JSON.stringify(annotations)};
   if (annotations === 'error') { console.error('gh: Not Found (HTTP 404)'); process.exit(1); }
@@ -308,6 +313,14 @@ test('一個 job 沒啟動、另一個有 step 而失敗：照 ci-failed，不�
   const result = land(['feature', '--body-file', body]);
   assert.equal(result.status, 4);
   assert.equal(last(result), `STOP ci-failed 40 ${FAIL[0].detailsUrl} ${started.detailsUrl}`);
+});
+
+test('讀不到失敗 job 的 step：不能確認沒啟動，照 ci-failed', t => {
+  const { body, land, last } = fixture(t, { checks: [FAIL], missingJobs: [2] });
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 4);
+  assert.equal(last(result), `STOP ci-failed 40 ${FAIL[0].detailsUrl}`);
 });
 
 test('firstSentence：取到第一個句點（後面接空白或結尾）；沒有內容回 null', () => {
