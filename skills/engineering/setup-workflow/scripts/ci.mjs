@@ -89,7 +89,7 @@ function main(args) {
   const detected = spawnSync('node', [join(import.meta.dirname, 'detect.mjs'), root, '--json'], { encoding: 'utf8' });
   if (detected.status !== 0) return fail(`detect.mjs 失敗：${detected.stderr.trim()}`);
   const entry = JSON.parse(detected.stdout).signals.check.value;
-  if (!entry) return fail('沒有單一檢查入口：先建好它（docs/workflow/03-level1.md 第 2 步），再寫 CI');
+  if (!entry) return fail('沒有單一檢查入口：先建好它（docs/workflow/03-level1.md 第 3 步），再寫 CI');
 
   const origin = spawnSync('git', ['-C', root, 'remote', 'get-url', 'origin'], { encoding: 'utf8' });
   const host = codeHost(origin.status === 0 ? origin.stdout.trim() : null).value;

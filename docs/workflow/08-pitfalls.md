@@ -4,18 +4,39 @@
 
 ## 工具與環境
 
+依平台分組：WSL、macOS 專屬的坑各自一組，其餘放通用。原生 Windows 不支援（見[支援平台](01-tooling.md#支援平台)），不列在這裡。
+
+### WSL
+
+WSL 專屬的 workaround 在每個平台都無條件執行，其他平台無害，不必依平台分支。
+
+| 症狀 | 原因 | 做法 |
+| --- | --- | --- |
+| Orca `worktree create` 回 `runtime_unavailable` 或 `runtime_timeout`，重試後多出一個 `<name>-2` | 從 WSL 呼叫時，回應早於實際完成 | 只呼叫一次，用 `git worktree list` 輪詢確認；絕不重試 |
+| Orca `worktree create --repo path:<WSL 路徑>` 回 `repo_not_found`（帶 `--agent` 時變成 `agent_session_operation_unknown`） | WSL 下 Orca 以 Windows UNC 路徑記錄 repo | 不帶 `--repo`，在該 repo 的 checkout 執行，讓 Orca 從 cwd 推斷 |
+| Orca 的 worktree 操作（create、rm）之後，主 checkout 在 `git worktree list` 顯示 `(bare)`，`git status` 回 `must be run in a work tree` | 從 WSL 建立或移除 worktree 時，Orca 把主 repo `.git/config` 的 `core.bare` 改成 `true`，不一定在指令當下發生 | 每個 tick 開頭與每次 `worktree create`、`worktree rm` 之後，在主 checkout 跑 `git rev-parse --is-bare-repository`，印出 `true` 就執行 `git config core.bare false`（ron-skills 用 `scripts/pilot-unbare.sh`）；這個檢查在每個平台都無條件跑，其他平台無害 |
+| WSL 裡 headless Chromium 截圖的中文變方框 | WSL 預設沒有中文字型 | 把 Noto Sans TC 放進 `~/.local/share/fonts/`、在 fontconfig 加 fallback、`fc-cache -f` |
+
+### macOS
+
+| 症狀 | 原因 | 做法 |
+| --- | --- | --- |
+| 測試在 macOS 比對路徑失敗，期望 `/var/folders/…` 實際是 `/private/var/folders/…` | macOS 的 `os.tmpdir()` 在 `/var` 底下，而 `/var` 是 `/private/var` 的 symlink；`git` 與 `realpath` 回的是解開後的路徑 | 測試的暫存目錄先取 realpath 再比對（ron-skills 用 `realTmpdir()`） |
+| `bin/` 下的腳本在 macOS 報 `declare: -A: invalid option` 或 `mapfile: command not found` | macOS 內建的 `/bin/bash` 是 3.2 | `bin/` 只用 bash 3.2 語法；複雜的邏輯改寫成 node |
+| `sed -i 's/…/…/' <檔>` 在 macOS 失敗或多出備份檔，`paste -sd+` 讀不到 stdin | BSD 版 `sed -i` 要一個備份後綴參數（`sed -i ''`），BSD `paste` 要明寫 `-` 才讀 stdin | 用兩邊都通的寫法（`paste -sd+ -`），或改用 node；可攜性檢查擋 GNU 專屬寫法 |
+| 讀 `/proc` 的腳本在 macOS 拿不到資料 | macOS 沒有 `/proc` | 不讀 `/proc`；改用環境變數標記或 `ps`，平台判斷用 `process.platform` |
+| 兩個只差大小寫的檔名在 macOS checkout 後只剩一個 | macOS 預設的檔案系統不分大小寫 | 不讓 repo 裡出現只差大小寫的路徑；可攜性檢查會擋 |
+
+### 通用
+
 | 症狀 | 原因 | 做法 |
 | --- | --- | --- |
 | agent 讀 Issue 拿到空白 | `gh issue view <n> --comments` 在非 tty 環境（agent 的 Bash 工具）不輸出任何東西 | 一律 `gh issue view <n> --json number,title,body,labels,comments`；寫進 `docs/agents/issue-tracker.md` |
 | `which orca` 有東西，Orca 指令卻都失敗 | Linux 上的 `orca` 是 GNOME 螢幕閱讀器 | Orca 可用與否只看 `ORCA_CLI_COMMAND` 是否設定 |
-| Orca `worktree create` 回 `runtime_unavailable` 或 `runtime_timeout`，重試後多出一個 `<name>-2` | 從 WSL 呼叫時，回應早於實際完成 | 只呼叫一次，用 `git worktree list` 輪詢確認；絕不重試 |
-| Orca `worktree create --repo path:<WSL 路徑>` 回 `repo_not_found`（帶 `--agent` 時變成 `agent_session_operation_unknown`） | WSL 下 Orca 以 Windows UNC 路徑記錄 repo | 不帶 `--repo`，在該 repo 的 checkout 執行，讓 Orca 從 cwd 推斷 |
-| Orca 的 worktree 操作（create、rm）之後，主 checkout 在 `git worktree list` 顯示 `(bare)`，`git status` 回 `must be run in a work tree` | 從 WSL 建立或移除 worktree 時，Orca 把主 repo `.git/config` 的 `core.bare` 改成 `true`，不一定在指令當下發生 | 每個 tick 開頭與每次 `worktree create`、`worktree rm` 之後，在主 checkout 跑 `git rev-parse --is-bare-repository`，印出 `true` 就執行 `git config core.bare false`（ron-skills 用 `scripts/pilot-unbare.sh`） |
 | `orca terminal send` 回 accepted，worker 的輸入框卻是空的；重送後收到黏成兩份的 prompt | TUI 剛就緒時輸入停在 draft 沒提交，`--screen` 看不到 draft | 用會讀 draft、確認畫面出現 prompt 才回報送達的送出腳本；draft 已有 prompt 時只補 Enter |
 | `git stash pop` 套上了別的 session 的改動 | stash 清單是所有 worktree 共用的 | worktree 之間不用 stash 搬東西；要暫存就用 WIP commit，非用 stash 不可時加唯一訊息、記下 SHA、以 `git stash apply <sha>` 還原 |
 | 本機全綠，CI 一跑就紅 | 本機的上游 checkout（fork）落後上游 | acceptance 對上游最新版跑一次（ron-skills：`bin/check --upstream`） |
 | 背景工作看起來像 timeout | 背景行程繼承了忽略 SIGINT 的設定 | 先在前景與背景各單獨重跑一次，再判斷是不是負載 |
-| WSL 裡 headless Chromium 截圖的中文變方框 | WSL 預設沒有中文字型 | 把 Noto Sans TC 放進 `~/.local/share/fonts/`、在 fontconfig 加 fallback、`fc-cache -f` |
 | 貼到終端的 SQL 或多行設定執行結果不對 | 換行被轉成 CRLF，或被終端折行 | 以檔案交付，請人用檔案執行，不要貼上 |
 
 ## 權限與規則

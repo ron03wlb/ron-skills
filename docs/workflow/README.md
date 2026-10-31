@@ -17,9 +17,11 @@
 | 級 | 你得到什麼 | 進入條件 | 怎麼開始 |
 | --- | --- | --- | --- |
 | **L0 不導入** | 不寫 adapter，只用個別輔助 skill | 沒有 tracker，或不用 Issue 交付（例如只用輔助 skill 的知識庫） | 不需要開始 |
-| **L1 基本** | 一張 `ready-for-agent` Issue 不中斷地跑到本機 candidate commit，附驗證證據；人 push、開 PR／MR、合併、結案 | 有 tracker、能裝 skills、repo 有（或願意做）一條能跑完所有檢查的指令 | [03 L1 導入](03-level1.md) |
-| **L2 守門** | 每張 Issue 一個 worktree、一條整合分支、合入有 lock、push 前 hook 重驗、兩段式結案、`/retro` 把失誤變成檢查 | L1 已交付過幾張；開始同時開好幾個 session，或已經發生過「繞過檢查」「合錯分支」「狀態對不上」 | [04 L2 導入](04-level2.md) |
-| **L3 常駐** | `/loop /issue-pilot` 常駐 coordinator 自己挑單、派 worker、整批回歸、合入整合分支；人只剩產品決策、共用環境操作，以及 adapter 沒交給 coordinator 的 push 與合併 | L2 的入口都有固定 exit code；裝了 Orca；願意讓 agent 在無人值守時跑 git | [05 L3 導入](05-level3.md) |
+| **L1 基本** | 一張 `ready-for-agent` Issue 不中斷地跑到本機 candidate commit，附驗證證據；人 push、開 PR／MR、合併、結案 | 用 Issue tracker（GitHub、GitLab 或本機 Markdown）交付工作；這台機器能裝 ron-skills 的 skills；repo 有（或願意先做）一條能跑完所有檢查的指令 | [03 L1 導入](03-level1.md) |
+| **L2 守門** | 每張 Issue 一個 worktree、一條整合分支、合入有 lock、push 前 hook 重驗、兩段式結案、`/retro` 把失誤變成檢查 | 已用 L1 的 `/issue-run` 交付過幾張 Issue；而且同時開兩個以上 session，或已經發生過繞過檢查、合錯分支、狀態對不上（兩者擇一） | [04 L2 導入](04-level2.md) |
+| **L3 常駐** | `/loop /issue-pilot` 常駐 coordinator 自己挑單、派 worker、整批回歸、合入整合分支；人只剩產品決策、共用環境操作，以及 adapter 沒交給 coordinator 的 push 與合併 | L2 的入口（檢查、合入、push 前 hook）都有固定的 exit code；裝了 Orca；願意讓 agent 在無人值守時跑 git | [05 L3 導入](05-level3.md) |
+
+進入條件就是 `/setup-workflow` 等級站問的是非題，一個分號一題；量得到的（已有 tracker 設定、已有檢查入口、環境站偵測到 Orca）直接取證據，不再問。下一級的條件都符合才建議升一級，否則建議維持目前等級；一次最多升一級，跳級要人明說。
 
 等級相同的專案靠「擴充」區分：卡關單、外部測試環境、自訂分級入口這類特性與等級無關，可以分別勾選。tracker 與程式碼放在 GitHub 還是 GitLab 不算擴充，由 `/setup-workflow` 的 Host 站另外確認。
 
@@ -36,7 +38,7 @@
 | --- | --- |
 | [01 工具與角色](01-tooling.md) | Operator、coordinator、worker、subagent、Codex 各負責什麼；Claude Code、skills、hooks、tracker、Orca 的關係 |
 | [02 Issue 生命週期](02-lifecycle.md) | 五個 triage label 加 `in-progress`／`completed` 的狀態機與看板；從開單到結案；批次 |
-| [03 L1 導入](03-level1.md) | checklist：label、adapter、單一檢查入口、`/triage`、`/issue-run`、PR／MR |
+| [03 L1 導入](03-level1.md) | checklist：`/setup-workflow` 的環境、Host、等級三站（含單一檢查入口）、label、adapter、`/triage`、`/issue-run`、PR／MR |
 | [04 L2 導入](04-level2.md) | worktree、整合分支與 lock、pre-push、兩段式結案、`/retro`、權限規則；每個入口的契約 |
 | [05 L3 導入](05-level3.md) | `/loop /issue-pilot`、adapter 的 Pilot 段、tick hooks、Orca、Codex 跨模型 review、`/retro-collect` |
 | [06 品質校驗時間軸](06-quality-gates.md) | 強度分級；從編輯到結案每道校驗的觸發點、能證明與不能證明什麼 |
@@ -76,4 +78,4 @@ node scripts/build-workflow-site.mjs
 
 - `finalize` 會在 HTML 旁留下 `*.delivery.json` 收據，`visual-check --require-provenance` 靠它確認 HTML 是由 `finalize` 產生；收據含本機絕對路徑，已列在 `.gitignore`，不 commit。
 - `finalize` 會驗證版面，不過就失敗。一次過的限制：workflow 圖最多 6 欄（col 0–5）；畫布寬度上限 1240px，節點標籤要短（約 12 個中文字內，副標更短）；邊不能跨越泳道的垂直邊，跨欄回頭的邊改用虛線另畫或拆成兩個節點；跨泳道的垂直邊不要掛標籤（會把欄撐寬），狀態改寫在節點的 `tag`；先 `validate` 再 `finalize`，每次只改一處再重跑。
-- `finalize` 需要 Chrome／Chromium：`export ARCHIFY_CHROME=<chrome 路徑>`（例如 Playwright 快取裡的 `chromium-*/chrome-linux/chrome`）。WSL 預設沒有中文字型，截圖時中文會變方框，做法見 [08 常見坑](08-pitfalls.md#工具與環境)。
+- `finalize` 需要 Chrome／Chromium：`export ARCHIFY_CHROME=<chrome 路徑>`（例如 Playwright 快取裡的 `chromium-*/chrome-linux/chrome`）。WSL 預設沒有中文字型，截圖時中文會變方框，做法見 [08 常見坑](08-pitfalls.md#wsl)。

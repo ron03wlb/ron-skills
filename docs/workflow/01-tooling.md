@@ -30,6 +30,19 @@ controller 與 worker 是同一個 `/issue-run` skill 的兩種模式：沒有 c
 | **tracker** | Issue、狀態 label、看板、依賴關係 | GitHub 用 `gh`，GitLab 用 `glab`；讀寫指令寫在 `docs/agents/issue-tracker.md` |
 | **Orca** | 建立與移除 worktree、開 terminal 派 worker、交棒 | 可用性看環境變數 `ORCA_CLI_COMMAND`，不要用 `which orca`（那是 GNOME 螢幕閱讀器）。L1／L2 可不用；L3 的派工與監看靠它 |
 
+## 支援平台
+
+正本、測試與 `bin/` 在下面三種平台都要能通過檢查入口。`/setup-workflow` 的環境站會偵測這台機器的平台，並問團隊還有誰用哪些平台，記進 adapter 的 `## Platforms`。
+
+| 平台 | 支援 | 說明 |
+| --- | --- | --- |
+| WSL2 | 支援 | Windows 上的使用方式。Orca 從 WSL 呼叫時有幾個專屬的坑與 workaround，見 [08 常見坑](08-pitfalls.md#wsl) |
+| macOS | 支援 | Orca 指令是 Orca.app 內 `orca` 的絕對路徑，設在 `ORCA_CLI_COMMAND` |
+| Linux | 支援 | 一般發行版；`orca` 這個名稱可能是 GNOME 螢幕閱讀器，Orca 可用與否只看 `ORCA_CLI_COMMAND` |
+| 原生 Windows | 不支援 | 環境站在這裡停下、不寫檔，提示改用 WSL2 |
+
+WSL 專屬的 workaround（例如 worktree 操作後還原 `core.bare`）在每個平台都無條件執行，其他平台上無害，不必依平台分支。
+
 ## 三層 skill 怎麼疊
 
 | 層 | 來源 | 內容 | 誰改 |
