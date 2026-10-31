@@ -118,6 +118,8 @@ const IN_FLIGHT_MS = 5 * 60_000;
 
 /** 整則留言只有「認領：<機器>／<session>」一行時回傳認領者；引用或夾在其他文字裡的不算。 */
 const claimerOf = ({ body }) => body.trim().match(/^認領：([^\n]+)$/)?.[1];
+const latestClaimer = comments => claimerOf(comments.filter(claimerOf).at(-1) ?? { body: '' });
+const claimerName = session => `${hostname()}／${session}`;
 
 /** 主 checkout：`git worktree list` 的第一列，從任何 worktree 呼叫都指回同一處；不在 git repo 裡時是 undefined（claim 照舊 STOP，不像 pilot-dispatch 那樣丟錯）。 */
 function mainCheckout() {
@@ -143,15 +145,15 @@ export const defaultSession = () => process.env.CLAUDE_CODE_SESSION_ID || proces
 
 /** 最近一則認領留言是 `session` 的（含 claim 以前任 coordinator 的 session 接手的）時為真；沒有認領留言時為假。pilot-dispatch 派工前用（#165）。 */
 export function claimedBy(comments, session) {
-  const claimer = comments.map(claimerOf).filter(Boolean).at(-1);
-  return Boolean(claimer) && (claimer === `${hostname()}／${session}` || Boolean(takeoverSession(claimer, session)));
+  const claimer = latestClaimer(comments);
+  return Boolean(claimer) && (claimer === claimerName(session) || Boolean(takeoverSession(claimer, session)));
 }
 
 function claim(n, repo, session) {
   const target = [n, ...(repo ? ['--repo', repo] : [])];
   const read = () => JSON.parse(gh('issue', 'view', ...target, '--json', 'assignees,comments'));
   const stop = claimer => { console.log(`STOP ${n} claimed ${claimer}`); return 4; };
-  const mine = `${hostname()}／${session}`;
+  const mine = claimerName(session);
   const before = read();
   const last = before.comments.filter(claimerOf).at(-1);
   let blocker;

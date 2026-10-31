@@ -132,7 +132,7 @@ const lines = result => result.stdout.trim().split('\n');
 
 // 派工前讀 Issue 最近一則認領留言（格式同 issue-pool.mjs claim），不是這個 session 的就不派（#165）。
 test('最近一則認領是別的 session：STOP not-claimed，不開 worktree、不開分頁，成員記 stop；自己認領的照常派出', t => {
-  const { repo, dispatch, calls, checkpoint } = fixture(t, { claims: { 133: [MINE, `認領：other-box／${'their-session'}`] } });
+  const { repo, dispatch, calls, checkpoint } = fixture(t, { claims: { 133: [MINE, '認領：other-box／their-session'] } });
   const result = dispatch(['23-133', '23:pilot-probe', '133:pilot-dispatch']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.deepEqual(lines(result), ['DISPATCHED 23 term_23', 'STOP 133 not-claimed']);
