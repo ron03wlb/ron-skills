@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { permissionProblems } from '../scripts/check-coordinator-permissions.mjs';
 
 // scripts/check-coordinator-permissions.mjs 是 setup-workflow 正本的副本（#244），通用行為由正本的測試測；這裡只測本 repo 的設定：
@@ -12,8 +12,9 @@ test('bin/check 以 --push 檢查（本 repo 的 push 答是）', () => {
   assert.match(check, /^node scripts\/check-coordinator-permissions\.mjs --push$/m);
 });
 
-test('repo 自己的 .claude/settings.json 在 --push 下通過', () => {
-  assert.deepEqual(permissionProblems(settings, { push: true }), { missing: [], extra: [] });
+test('repo 自己的 .claude/settings.json 在 --push 下通過，放行的腳本都在 scripts/', () => {
+  const exists = name => existsSync(new URL(`../scripts/${name}`, import.meta.url));
+  assert.deepEqual(permissionProblems(settings, { push: true, exists }), { missing: [], extra: [], absent: [] });
 });
 
 test('pilot-exceptions.md 的 Permissions 條目列出 allow 的每條規則，且只列這些', () => {
