@@ -42,7 +42,7 @@
 //          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> regression-failed <code 或 none>
 //          （#130：最後一行 regression 的 exit 不是 0，或 SHA 後面沒緊接 exit <code>）｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
 //          gates.md 有開著的 gate 的 parked 以 `all-push` 開頭（擋住所有 push）時，上面所有 NOT_IN_MAIN／RESUME_PUSH 合成一行
-//          PUSH_PARKED <gate id> <batch 數> batches（多個這種 gate 取第一個；IN_MAIN、FETCH_FAILED 照印；#136）
+//          PUSH_PARKED <gate id> <batch 數> batches（多個這種 gate 取第一個：表格列先於 `## G<n>` 段落，各照檔案順序；IN_MAIN、FETCH_FAILED 照印；#136）
 //   重疊：OVERLAP <n> <m|integration> <檔案數> files [**<條目>.**…]（開著的 batch 裡 running、done 的成員分支已 commit 的內容，相對於與整合分支的 merge-base：
 //          兩個成員改到同一個檔，或整合分支自成員的 merge-base 以來也改了它改的檔；`.md` 檔的改動都在 `- **<名稱>.**` 條目裡時細到條目，
 //          相接的行與同一處的插入也算，git 合併時會衝突；同一對只印一行，後面列重疊的條目名稱，#176：條目不帶檔名、不同檔的同名條目只列一次，
