@@ -2,6 +2,11 @@
 
 Copy into a repo as `docs/agents/issue-run.md` and fill each section with commands that exist in that repo. Point at the repo's own docs and scripts rather than restating them; leave a section out to take its default.
 
+## Platforms
+
+The platforms the team runs this repo's workflow on, as `/setup-workflow`'s environment station confirmed them: any of `macOS`, `WSL2`, `Linux` (for example `macOS, WSL2`). Native Windows is not supported; use WSL2. Every command this adapter names must run on each listed platform, and a workaround for one platform says which.
+Default: the platform `/setup-workflow` ran on.
+
 ## Tracker
 
 How to read an Issue with comments and its blocking relations, and the write rules for bodies and comments.
