@@ -23,7 +23,7 @@ import { orca } from './orca-session-send.mjs';
 
 const USAGE = '用法：node scripts/land.mjs <branch> [--keep-branch] [--body-file <file>] [--title <title>]';
 
-/** CI 輪詢：剛 push 時 checks 可能還沒登記（空陣列或 `no checks reported`），照 pending 處理到逾時。 */
+/** CI 輪詢：剛 push 時 PR 的 head 可能還沒更新、checks 可能還沒登記（空陣列），都照 pending 處理到逾時。 */
 const CHECKS_POLL_MS = Number(process.env.LAND_CHECKS_POLL_MS || 10000);
 /** Bash 工具最多等 600 秒；逾時 STOP checks-timeout，重跑會沿用同一個 PR 接著等。 */
 const CHECKS_TIMEOUT_MS = Number(process.env.LAND_CHECKS_TIMEOUT_MS || 480000);
@@ -73,14 +73,27 @@ export function checksVerdict(checks) {
   return 'pending';
 }
 
-async function waitChecks(cwd, number) {
+/** statusCheckRollup 的一項（CheckRun 或 StatusContext）換成 `gh pr checks` 的 bucket，分類照 gh 的。 */
+export function rollupBucket(item) {
+  const state = item.state || (item.status === 'COMPLETED' ? item.conclusion : item.status);
+  if (state === 'SUCCESS') return 'pass';
+  if (state === 'SKIPPED' || state === 'NEUTRAL') return 'skipping';
+  if (['ERROR', 'FAILURE', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE'].includes(state)) return 'fail';
+  if (state === 'CANCELLED') return 'cancel';
+  return 'pending';
+}
+
+/**
+ * 等 PR 在 head 這個 SHA 上的 checks。headRefOid 與 statusCheckRollup 取自同一次查詢：
+ * `gh pr checks` 不帶 SHA，push 後 PR 的 head 還沒更新時會讀到前一個 head 的失敗 run（#128，PR #125）。
+ */
+async function waitChecks(cwd, number, head) {
   const deadline = Date.now() + CHECKS_TIMEOUT_MS;
   for (;;) {
-    const result = run('gh', ['pr', 'checks', String(number), '--json', 'name,bucket,state,link'], cwd);
-    // exit 8 是 pending，輸出照樣是 JSON；`no checks reported` 是 CI 還沒登記。
-    let checks = [];
-    if (result.stdout.trim()) checks = JSON.parse(result.stdout);
-    else if (!/no checks reported/i.test(result.stderr)) throw new Error(`gh pr checks 失敗：${result.stderr.trim()}`);
+    const view = JSON.parse(gh(cwd, 'pr', 'view', String(number), '--json', 'headRefOid,statusCheckRollup'));
+    const checks = view.headRefOid !== head ? [] : view.statusCheckRollup.map(item => ({
+      name: item.name || item.context, link: item.detailsUrl || item.targetUrl, bucket: rollupBucket(item),
+    }));
     const verdict = checksVerdict(checks);
     if (verdict === 'fail') {
       const failed = checks.filter(check => check.bucket === 'fail' || check.bucket === 'cancel').map(check => check.link || check.name);
@@ -177,7 +190,7 @@ export async function land({ branch, keepBranch = false, bodyFile, title, cwd = 
   }
 
   if (pr.state === 'OPEN') {
-    console.log(`CHECKS_PASSED ${pr.number} ${await waitChecks(main, pr.number)}`);
+    console.log(`CHECKS_PASSED ${pr.number} ${await waitChecks(main, pr.number, tip)}`);
     const merged = run('gh', ['pr', 'merge', String(pr.number), '--merge'], main);
     if (merged.status !== 0) throw new Stop(`merge ${pr.number} ${merged.stderr.trim().split('\n').pop()}`);
     pr = JSON.parse(gh(main, 'pr', 'view', String(pr.number), '--json', 'number,state,url,headRefOid,mergeCommit'));
