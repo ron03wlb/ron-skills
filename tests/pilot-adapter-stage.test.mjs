@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { env, write } from './helpers/git-fixture.mjs';
+import { env } from './helpers/git-fixture.mjs';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 // coordinator 照 adapter Pilot 段逐行執行；這裡驗的是它讀到的那幾行。Pilot 段只指向 pilot.md，內容都在那裡（#45）。
@@ -65,80 +65,30 @@ test('對照：去掉條目間空行的舊格式，同樣的修改會衝突', t 
   assert.match(merge.stdout, /CONFLICT/);
 });
 
-test('Stage：衝突 hunk 兩邊改的是不同條目時各取各的版本，並在新的 staged SHA 重跑 Regression', () => {
-  const stage = line('Stage');
-  assert.match(stage, /不同的 `- \*\*<名稱>\.\*\*` 條目/);
-  assert.match(stage, /重跑 Regression/);
+// Stage、Regression、Integrate 的 git 指令與 checkpoint 寫回都在 pilot-land.mjs 裡（#75），解法與 restamp 的行為由 tests/pilot-land.test.mjs 驗；
+// 這裡驗三條都指向它，沒有留下要 coordinator 自己手打的 merge 或 sed（batch-40-51 手寫的 drift 檢查數錯 parent）。
+test('Stage、Regression、Integrate 改成呼叫 pilot-land.mjs，不再列手打的 merge 與 checkpoint 寫回', () => {
+  assert.ok(line('Stage').includes('node scripts/pilot-land.mjs <key>'), 'Stage 要跑 pilot-land.mjs');
+  for (const name of ['Regression', 'Integrate']) assert.ok(line(name).includes('pilot-land.mjs'), `**${name}.** 要寫明由 pilot-land.mjs 做`);
+  for (const name of ['Stage', 'Regression', 'Integrate']) {
+    assert.doesNotMatch(line(name), /git -C <stage worktree> merge|`sed /, `**${name}.** 不再列手打的指令`);
+  }
+  for (const out of ['MERGED <key> <sha>', 'STOP regression <exit>', 'STOP hold', 'STOP drift', 'STOP conflict <n>']) {
+    assert.ok(pilot.includes(`\`${out}`), `pilot.md 要寫出 ${out}`);
+  }
 });
 
-// 重現真實歷史：#45、#47 各改了 check-workflow-sync 追蹤的來源並各自 restamp，stage 時 workflow-doc-sync.json 必定衝突，
-// 停一輪開 G9 問人，人選了 restamp 重算（#72）。這裡照 Stage 條目寫的指令原樣執行，驗證規則本身能解開這種衝突。
-// 來源清單取 repo 的戳記檔，不再抄一份：腳本加了來源而沒 restamp 時 bin/check 本來就會失敗。
-const SYNC_SOURCES = Object.keys(JSON.parse(readFileSync(new URL('../scripts/workflow-doc-sync.json', import.meta.url), 'utf8')).sources);
-
-test('Stage：只有 workflow-doc-sync.json 衝突時照條目 restamp 完成 merge，check-workflow-sync 通過', t => {
+test('Stage：允許的衝突解法（不同條目、只新增、戳記檔在其他檔解完後 restamp），解完照樣跑 Regression', () => {
   const stage = line('Stage');
-  const spans = [...stage.matchAll(/`([^`]+)`/g)].map(([, span]) => span);
-  const step = pattern => spans.find(span => pattern.test(span)) ?? assert.fail(`Stage 條目找不到符合 ${pattern} 的指令`);
-  const [listConflicts, ...resolve] = [
-    step(/diff --name-only --diff-filter=U$/),
-    step(/check-workflow-sync\.mjs --restamp$/),
-    step(/ add scripts\/workflow-doc-sync\.json$/),
-    step(/ commit --no-edit$/),
-  ];
-  assert.match(stage, /只有 `scripts\/workflow-doc-sync\.json`/);
-  assert.match(stage, /重跑 Regression/);
+  assert.match(stage, /不同的 `- \*\*<名稱>\.\*\*` 條目/);
+  assert.match(stage, /有 `scripts\/workflow-doc-sync\.json`.*其他衝突檔先用下兩種解法解完.*--restamp/);
+  assert.match(stage, /新增不重疊的段落/);
+  assert.match(stage, /解完的 staged SHA 一樣要跑 Regression/);
+});
 
-  const repo = mkdtempSync(join(realTmpdir(), 'pilot-stage-restamp-'));
-  t.after(() => rmSync(repo, { recursive: true, force: true }));
-  const sh = command => spawnSync('sh', ['-c', command.replaceAll(stageWorktree, repo)], { cwd: realTmpdir(), encoding: 'utf8', env });
-  const git = (...args) => {
-    const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', env });
-    if (args[0] !== 'merge') assert.equal(result.status, 0, `git ${args.join(' ')}：${result.stderr}`);
-    return result;
-  };
-  const check = (...args) => spawnSync('node', [join(repo, 'scripts/check-workflow-sync.mjs'), ...args], { cwd: realTmpdir(), encoding: 'utf8' });
-  const restamp = () => { const result = check('--restamp'); assert.equal(result.status, 0, result.stderr); };
-  const edit = (path, text) => write(repo, { [path]: text });
-
-  git('init', '-q', '-b', 'main');
-  git('config', 'user.email', 't@t');
-  git('config', 'user.name', 't');
-  mkdirSync(join(repo, 'scripts'));
-  cpSync(new URL('../scripts/check-workflow-sync.mjs', import.meta.url).pathname, join(repo, 'scripts/check-workflow-sync.mjs'));
-  for (const path of SYNC_SOURCES) edit(path, `# ${path}\n`);
-  restamp();
-  git('add', '.');
-  git('commit', '-qm', 'base');
-  // 兩條分支改不同的來源，戳記檔裡相鄰的兩行各變一行：git 判成同一個 hunk 衝突。
-  git('switch', '-qc', 'issue/a');
-  edit(SYNC_SOURCES[0], '# a\n');
-  restamp();
-  git('commit', '-qam', 'a');
-  git('switch', '-qc', 'issue/b', 'main');
-  edit(SYNC_SOURCES[1], '# b\n');
-  restamp();
-  git('commit', '-qam', 'b');
-  git('switch', '-qc', 'pilot/stage-a-b', 'issue/a');
-
-  const merge = git('merge', '--no-ff', '--no-edit', 'issue/b');
-  assert.notEqual(merge.status, 0, '兩邊各自 restamp 應該衝突');
-  const conflicted = sh(listConflicts);
-  assert.equal(conflicted.status, 0, conflicted.stderr);
-  assert.equal(conflicted.stdout, 'scripts/workflow-doc-sync.json\n', '衝突檔只有戳記檔');
-  assert.equal(check().status, 1, '沒照規則處理：戳記檔留著衝突標記，check 失敗');
-
-  for (const command of resolve) {
-    const result = sh(command);
-    assert.equal(result.status, 0, `${command}：${result.stderr}`);
-  }
-  assert.ok(!existsSync(join(repo, '.git/MERGE_HEAD')), 'merge 已完成');
-  assert.equal(git('rev-list', '--parents', '-n1', 'HEAD').stdout.trim().split(' ').length, 3, 'HEAD 是 merge commit');
-  assert.equal(git('status', '--porcelain').stdout, '');
-  assert.equal(readFileSync(join(repo, SYNC_SOURCES[0]), 'utf8'), '# a\n');
-  assert.equal(readFileSync(join(repo, SYNC_SOURCES[1]), 'utf8'), '# b\n');
-  const after = check();
-  assert.equal(after.status, 0, after.stdout);
+test('Integrate 比對 stage 時記下的 tip，不數 parent', () => {
+  assert.match(line('Integrate'), /`onto <tip>`.*`STOP drift`/);
+  assert.match(line('Stage'), /`current: staged <sha> onto <tip>`/);
 });
 
 // 重現真實歷史：stage #15 時主 checkout 切到 pilot/stage-<key>，工作樹帶出該分支的 .claude/settings.json，
