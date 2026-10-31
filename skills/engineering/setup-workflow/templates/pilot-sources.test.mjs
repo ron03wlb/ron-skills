@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { realTmpdir } from './test/real-tmpdir.mjs';
@@ -45,7 +45,7 @@ test('改過的來源印 SOURCE_CHANGED；不存在的來源印 SOURCE_MISSING�
   rmSync(join(dir, 'AGENTS.md'));
   const result = run(dir, ...SOURCES, 'skills/x/SKILL.md');
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, 'SOURCE_MISSING AGENTS.md\nSOURCE_CHANGED docs/agents/pilot.md\nSOURCE_MISSING skills/x/SKILL.md\n');
+  assert.equal(result.stdout, 'SOURCE_MISSING AGENTS.md\nSOURCE_CHANGED docs/agents/pilot.md\n  outside\nSOURCE_MISSING skills/x/SKILL.md\n');
 });
 
 test('來源從 checkout 解析，與呼叫者的 cwd 無關；也接受絕對路徑', t => {
@@ -68,6 +68,58 @@ test('經由 symlink 路徑執行仍會跑（macOS 的 /tmp 是 /private/tmp 的
   const result = spawnSync('node', [link, dir, 'AGENTS.md'], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'SOURCE_CHANGED AGENTS.md\n');
+});
+
+const PILOT = '# Pilot\n\n- **Sessions.** 跑 register\n  續行\n\n- **Handoff.** 手動附加一行\n\n## Notes\n\n一段說明\n\n- **Extra.** x\n';
+
+test('有快照時 SOURCE_CHANGED 下一行縮排列出改動的條目；重新記錄後不再印', t => {
+  const dir = checkout(t);
+  writeFileSync(join(dir, 'docs/agents/pilot.md'), PILOT);
+  run(dir, '--record', ...SOURCES);
+  writeFileSync(join(dir, 'docs/agents/pilot.md'), PILOT.replace('手動附加一行', 'pilot-handoff 已附加'));
+  assert.equal(run(dir, '--record', ...SOURCES).stdout, 'SOURCE_CHANGED docs/agents/pilot.md\n  entry Handoff\nRECORDED 2\n');
+  assert.equal(run(dir, '--record', ...SOURCES).stdout, 'RECORDED 2\n');
+});
+
+test('改了 ## 標題底下條目以外的內容列出該標題，第一個標題之前的列 outside；檔案沒變時不印任何行', t => {
+  const dir = checkout(t);
+  writeFileSync(join(dir, 'docs/agents/pilot.md'), PILOT);
+  run(dir, '--record', ...SOURCES);
+  assert.equal(run(dir, ...SOURCES).stdout, '');
+  writeFileSync(join(dir, 'docs/agents/pilot.md'), PILOT.replace('一段說明', '改過的說明').replace('# Pilot', '# Pilot v2'));
+  assert.equal(run(dir, ...SOURCES).stdout, 'SOURCE_CHANGED docs/agents/pilot.md\n  outside\n  heading Notes\n');
+});
+
+test('刪掉的條目與改名的標題取兩邊的名稱，刪掉的接在後面', t => {
+  const dir = checkout(t);
+  writeFileSync(join(dir, 'docs/agents/pilot.md'), PILOT);
+  run(dir, '--record', ...SOURCES);
+  writeFileSync(join(dir, 'docs/agents/pilot.md'), PILOT.replace('- **Handoff.** 手動附加一行\n\n', '').replace('## Notes', '## Remarks'));
+  assert.equal(run(dir, ...SOURCES).stdout, 'SOURCE_CHANGED docs/agents/pilot.md\n  heading Remarks\n  entry Handoff\n  heading Notes\n');
+});
+
+test('沒有舊快照（舊格式紀錄）時只印 SOURCE_CHANGED，不報錯；repo 外的來源也存快照', t => {
+  const dir = checkout(t);
+  const outside = mkdtempSync(join(realTmpdir(), 'pilot-sources-home-'));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  const skill = join(outside, 'SKILL.md');
+  writeFileSync(skill, PILOT);
+  mkdirSync(join(dir, '.scratch/pilot'), { recursive: true });
+  writeFileSync(join(dir, '.scratch/pilot/sources'), `${sha('rules\n')}   AGENTS.md\n${sha('pilot v0\n')}   docs/agents/pilot.md\n`);
+  const result = run(dir, '--record', ...SOURCES, skill);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `SOURCE_CHANGED docs/agents/pilot.md\nSOURCE_CHANGED ${skill}\nRECORDED 3\n`);
+  assert.equal(readFileSync(join(dir, '.scratch/pilot/source-snapshots', sha(PILOT)), 'utf8'), PILOT);
+  writeFileSync(skill, PILOT.replace('x\n', 'y\n'));
+  assert.equal(run(dir, ...SOURCES, skill).stdout, `SOURCE_CHANGED ${skill}\n  entry Extra\n`);
+});
+
+test('--record 只留這次清單的快照', t => {
+  const dir = checkout(t);
+  run(dir, '--record', ...SOURCES);
+  writeFileSync(join(dir, 'docs/agents/pilot.md'), 'pilot v2\n');
+  run(dir, '--record', ...SOURCES);
+  assert.deepEqual(readdirSync(join(dir, '.scratch/pilot/source-snapshots')).sort(), [sha('pilot v2\n'), sha('rules\n')].sort());
 });
 
 test('沒給來源：exit 2', t => {
