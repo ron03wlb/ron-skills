@@ -109,7 +109,7 @@ else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
   if (guard !== undefined) {
     const scripts = join(temp, 'scripts');
     mkdirSync(join(scripts, 'lib'), { recursive: true });
-    for (const name of ['pilot-dispatch.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'orca-session-send.mjs', 'orca-worktree-create.mjs', 'pilot-probe.mjs', 'lib/pilot-store.mjs', 'tab-state.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+    for (const name of ['pilot-dispatch.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'orca-session-send.mjs', 'orca-worktree-create.mjs', 'pilot-probe.mjs', 'pilot-capacity.mjs', 'lib/pilot-store.mjs', 'tab-state.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
     writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
     chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
     dispatchScript = join(scripts, 'pilot-dispatch.mjs');
@@ -135,6 +135,28 @@ const markRow = (repo, key, n, state) => {
   const file = join(repo, `.scratch/pilot/batch-${key}.md`);
   writeFileSync(file, readFileSync(file, 'utf8').replace(new RegExp(`^(\\| ${n} \\|.*) running \\| \\|$`, 'm'), `$1 ${state} | |`));
 };
+
+// 全機上限（#178）：--capacity 時先以全機帳本合計加上這次要派的人數（--fresh 是 1）比上限，超過就整批 STOP capacity，
+// 不寫 checkpoint、不建 worktree、不開分頁；沒帶旗標時不讀帳本。
+test('--capacity：帳本合計加上這批人數超過上限時 STOP capacity，什麼都不動；不超過照常派出', t => {
+  const { repo, temp, dispatch, calls } = fixture(t);
+  const ledger = join(temp, 'pilot-workers.tsv');
+  writeFileSync(ledger, `acme\t2\t${new Date().toISOString()}\ninvesting\t1\t${new Date().toISOString()}\n`);
+  const capped = { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '4' };
+  const over = dispatch(['23-133', '23:pilot-probe', '133:pilot-dispatch', '--capacity'], capped);
+  assert.equal(over.status, 4, over.stdout + over.stderr);
+  assert.deepEqual(lines(over), ['STOP capacity 5/4']);
+  assert.equal(calls(), '');
+  assert.equal(existsSync(join(repo, '.scratch/pilot/batch-23-133.md')), false);
+  const fresh = dispatch(['133', '--fresh', '133:pilot-dispatch', '--note', ledger, '--capacity'], { ...capped, PILOT_MACHINE_WORKER_CAP: '3' });
+  assert.deepEqual(lines(fresh), ['STOP capacity 4/3']);
+  assert.equal(calls(), '');
+  const ok = dispatch(['23', '23:pilot-probe', '--capacity'], capped);
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.deepEqual(lines(ok), ['CAPACITY ok 4/4', 'DISPATCHED 23 term_23']);
+  const uncapped = dispatch(['133', '133:pilot-dispatch'], { ...capped, PILOT_MACHINE_WORKER_CAP: '1' });
+  assert.equal(uncapped.status, 0, uncapped.stdout + uncapped.stderr);
+});
 
 // 派工前讀 Issue 最近一則認領留言（格式同 issue-pool.mjs claim），不是這個 session 的就不派（#165）。
 test('最近一則認領是別的 session：STOP not-claimed，不開 worktree、不開分頁，成員記 stop；自己認領的照常派出', t => {

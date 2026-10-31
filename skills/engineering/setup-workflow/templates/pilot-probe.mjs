@@ -3,7 +3,7 @@
 // 每個 running 成員的 terminal 與 tracker 上的母單，各印一行狀態，不必再手動拼 `orca terminal read` 的 JSON（手拼時漏過 exited 卻沒有結果行的 worker）。
 // 存檔格式照 issue-pilot 的 PILOT-STORE.md；專案不同的值由參數傳入。
 //
-// 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status]
+// 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>]
 //   --integration 整合分支，預設 pilot/integration；--main 主分支，預設 main。讀 running 成員要 ORCA_CLI_COMMAND，沒有時其他檢查照跑。
 //   --apply：把這一輪讀到的 `WORKER <n> DONE <sha>`、`STOP <cause>` 寫回 batch checkpoint 的成員列（state `done` 與 candidate SHA、
 //            state `stop`），只改那一列的這兩欄；`merged` 的 batch 印 IN_MAIN 時把 `current: merged` 改成 `pushed`（SHA 與附註不動）。
@@ -13,7 +13,10 @@
 //            （`edit <n> --add-label …`、`reopen <n>`，參數同 `gh issue`）時經它寫，沒有就直接跑 `gh issue`，都在主 checkout 跑。
 //            寫入失敗印 PARENT_APPLY_FAILED <n> <錯誤>，其他母單照修，exit 1。
 //   --status：最後從 checkpoint、gates.md、requests.md、coordinator 與 git 重寫 `.scratch/pilot/status.md`（格式見 PILOT-STORE.md），不印任何行。
-//   兩個旗標都不改其他輸出行，stdout 與不帶旗標時相同（APPLY_MISS、PARENT_APPLY_FAILED 除外）。
+//   --capacity <repo>（#178）：把這一輪還在跑的成員數（各 batch 的 running 列，扣掉這一輪讀到 DONE、STOP 的）以 <repo> 寫進全機帳本
+//            （同目錄 pilot-capacity.mjs 的 report：$PILOT_WORKERS_LEDGER，預設 ~/.local/state/pilot-workers.tsv）；所有 repo 的合計超過
+//            $PILOT_MACHINE_WORKER_CAP（預設 4）時最後印 OVER_CAP <合計> <上限>。只回報，不改派工；沒帶時不碰帳本。
+//   --apply、--status 都不改其他輸出行，stdout 與不帶旗標時相同（APPLY_MISS、PARENT_APPLY_FAILED 除外）。
 //   Bare guard：同目錄有 pilot-unbare.sh（專案自備，`<checkout> <時機>`，還原時印 UNBARE）時先跑它（時機 probe），沒有就略過。
 // stdout 每行一項，沒事的項目不印（全部正常且沒有 batch 時不輸出）：
 //   主 checkout：UNBARE <checkout>（Bare guard 剛還原 core.bare）｜NOT_MAIN <分支>｜HOLD｜DIRTY <git status --short 的一行>
@@ -40,6 +43,7 @@
 //          兩個成員改到同一個檔，或整合分支自成員的 merge-base 以來也改了它改的檔；`.md` 檔的改動都在 `- **<名稱>.**` 條目裡時細到條目，
 //          相接的行與同一處的插入也算，git 合併時會衝突；同一對只印一行，後面列重疊的條目名稱，#176：條目不帶檔名、不同檔的同名條目只列一次，
 //          名稱可能有空格，以 `**`…`.**` 切分；數量固定寫 files，1 也是）
+//   全機上限：OVER_CAP <合計> <上限>（帶 --capacity 時，見上）
 // exit：0 印完；2 用法錯誤；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS、PARENT_APPLY_FAILED 等）。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -47,9 +51,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gateLines, isOpenRequest, now, openGates, tableCells } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
+import { ledgerPath, report } from './pilot-capacity.mjs';
 
 const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{number body labels(first:50){nodes{name}} blockedBy(first:50){nodes{number repository{nameWithOwner}}} subIssuesSummary{total} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
-const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status]';
+const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const TRACKER = join(dirname(fileURLToPath(import.meta.url)), 'gh-tracker.mjs');
 
@@ -622,13 +627,14 @@ export function statusReport(checkout, { integration = 'pilot/integration', main
   return `${out.join('\n')}\n`;
 }
 
-export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false } = {}) {
+export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false, capacity } = {}) {
   const pilot = join(checkout, '.scratch/pilot');
   const tracker = trackerLines(checkout);
   const out = [...checkoutState(checkout, main), ...adapterAhead(checkout, { integration, main }), ...openRows(pilot), ...tracker.lines];
   if (apply) out.push(...applyParentFixes(checkout, tracker.fixes));
   const landing = [];
   const batches = [];
+  let running = 0;
   for (const file of batchFiles(pilot)) {
     const key = file.slice('batch-'.length, -'.md'.length);
     const { current, members, regression, sha } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
@@ -639,6 +645,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
       const state = await workerState(ctx, member);
       const [, kind, value] = state.match(/^(DONE|STOP) (.+)$/) ?? [];
       if (kind) results.push({ n: member.n, state: kind === 'DONE' ? 'done' : 'stop', sha: kind === 'DONE' ? value : undefined });
+      else running++;
       out.push(`WORKER ${member.n} ${state}`);
     }
     if (apply && results.length) out.push(...applyResults(join(pilot, file), key, results));
@@ -657,6 +664,10 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
         if (apply && merged) out.push(...applyPushed(join(pilot, `batch-${key}.md`), key));
       } else out.push(merged ? mergedNotInMain(checkout, integration, key, regression) : `NOT_IN_MAIN ${key}`);
     }
+  }
+  if (capacity) {
+    const { total, cap } = report(ledgerPath(), capacity, running);
+    if (total > cap) out.push(`OVER_CAP ${total} ${cap}`);
   }
   if (status) {
     mkdirSync(pilot, { recursive: true });
@@ -679,7 +690,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
       options[flag] = true;
       continue;
     }
-    const name = { '--integration': 'integration', '--main': 'main' }[args[i]];
+    const name = { '--integration': 'integration', '--main': 'main', '--capacity': 'capacity' }[args[i]];
     const value = args[++i];
     if (!name || !value || value.startsWith('--') || name in options) bad = true;
     else options[name] = value;

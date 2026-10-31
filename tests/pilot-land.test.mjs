@@ -11,6 +11,7 @@ const SYNC = new URL('../scripts/check-workflow-sync.mjs', import.meta.url).path
 const SYNC_SOURCES = Object.keys(JSON.parse(readFileSync(new URL('../scripts/workflow-doc-sync.json', import.meta.url), 'utf8')).sources);
 
 // 假 bin/check：每次呼叫在 $FAKE_CHECK_LOG 記一行；$FAKE_CHECK_EXIT 決定 exit code（預設 0，通過時印 CHECK_PASS）；
+// land() 預設 PILOT_LOAD_NOW=0：測試不受真機負載影響（load 關卡另有案例）。
 // $FAKE_CHECK_DRIFT 是主 checkout 時，跑的途中在 pilot/integration 多接一個 commit，模擬 stage 之後整合分支前進。
 const FAKE_CHECK = `#!/usr/bin/env bash
 echo "check $*" >> "$FAKE_CHECK_LOG"
@@ -64,7 +65,7 @@ function fixture(t, { members, base = {}, checkpoint = text => text, stage = tru
   const log = join(temp, 'check.log');
   writeFileSync(log, '');
   const land = (extra = {}, args = [key]) => {
-    const result = spawnSync('node', [script, ...args], { cwd: repo, encoding: 'utf8', env: { ...env, FAKE_CHECK_LOG: log, ...extra } });
+    const result = spawnSync('node', [script, ...args], { cwd: repo, encoding: 'utf8', env: { ...env, FAKE_CHECK_LOG: log, PILOT_LOAD_NOW: '0', ...extra } });
     const lines = result.stdout.trim().split('\n');
     return { ...result, lines, last: lines.at(-1) };
   };
@@ -99,6 +100,47 @@ test('兩個成員、integration 沒變：依號碼合入、跑 Regression、快
   assert.equal(f.checks(), 1);
   assert.match(readFileSync(join(f.repo, `.scratch/pilot/reg-${f.key}.log`), 'utf8'), /CHECK_PASS tests 3\+4\+5/);
   assert.equal(readFileSync(join(f.temp, 'check.log'), 'utf8'), 'check --upstream\n', 'Regression 跑 bin/check --upstream');
+});
+
+// 負載關卡（#178）：同時跑的 worker 多時 bin/check 被拖慢，計時測試失敗；Regression 前 1 分鐘 load 超過門檻就延到下一輪。
+test('load 超過門檻：STOP load <load> <門檻>，不 stage、不跑 Regression，checkpoint 與 integration 都不動；load 降下來重跑就 MERGED', t => {
+  const f = fixture(t, { members: TWO, stage: false });
+  const before = { tip: f.tip(), text: f.read() };
+  for (const [extra, args, expected] of [
+    [{ PILOT_LOAD_NOW: '45.678', PILOT_LOAD_MAX: '30' }, [f.key], 'STOP load 45.68 30'],
+    [{ PILOT_LOAD_NOW: '12', PILOT_LOAD_MAX: '30' }, [f.key, '--load-max', '10'], 'STOP load 12 10'],
+  ]) {
+    const result = f.land(extra, args);
+    assert.equal(result.status, 4, result.stdout + result.stderr);
+    assert.deepEqual(result.lines, [expected]);
+    assert.equal(f.tip(), before.tip);
+    assert.equal(f.read(), before.text);
+    assert.equal(f.checks(), 0);
+    assert.equal(git(f.repo, 'branch', '--list', 'pilot/stage-*'), '');
+    assert.equal(existsSync(f.stageTree), false, '沒有建 stage worktree');
+  }
+  // 沒設 PILOT_LOAD_MAX 時門檻是 3 × availableParallelism()。
+  const fallback = f.land({ PILOT_LOAD_NOW: '100000' });
+  assert.match(fallback.last, /^STOP load 100000 \d+$/);
+  assert.equal(Number(fallback.last.split(' ')[3]) % 3, 0);
+  const bad = f.land({ PILOT_LOAD_MAX: 'abc' });
+  assert.equal(bad.status, 2, bad.stdout + bad.stderr);
+  git(f.repo, 'worktree', 'add', '-q', f.stageTree, 'pilot/integration');
+  const merged = f.land({ PILOT_LOAD_NOW: '29.9', PILOT_LOAD_MAX: '30' });
+  assert.equal(merged.status, 0, merged.stdout + merged.stderr);
+  assert.match(merged.last, /^MERGED /);
+});
+
+test('Regression 已通過、只差 Integrate 的重跑不看 load：RESUME 後照常 MERGED', t => {
+  const f = fixture(t, { members: TWO });
+  writeFileSync(join(f.repo, '.scratch/pilot/hold'), '');
+  assert.equal(f.land().last, 'STOP hold');
+  rmSync(join(f.repo, '.scratch/pilot/hold'));
+  const result = f.land({ PILOT_LOAD_NOW: '99', PILOT_LOAD_MAX: '30' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.lines[0], /^RESUME /);
+  assert.match(result.last, /^MERGED /);
+  assert.equal(f.checks(), 1);
 });
 
 // 重現 batch-40-51：手寫的「stage 之後 integration 有沒有新 commit」用 `$SHA^1` 數 parent，兩個成員的 batch 判斷錯。
