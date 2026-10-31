@@ -7,8 +7,8 @@
     },
     "scripts/check-coordinator-permissions.mjs": {
       "template": "skills/engineering/setup-workflow/templates/check-coordinator-permissions.mjs",
-      "commit": "9702bd83cdde26adef789fe383681284129d5d57",
-      "sha256": "2bbb9953d2ddfa4287d098812302dcd3f1b0cafd47c00822728c75c247a8b7d2"
+      "commit": "507238548fdd01b6e541aab97aea2de675e002b7",
+      "sha256": "ad61a3d1a31558f60f32823db6344ec469eaeb0f57be6c8c9f2d670ff5a3f4b7"
     },
     "scripts/check-portability.mjs": {
       "template": "skills/engineering/setup-workflow/templates/check-portability.mjs",
@@ -32,8 +32,8 @@
     },
     "scripts/gh-tracker.mjs": {
       "template": "skills/engineering/setup-workflow/templates/gh-tracker.mjs",
-      "commit": "9702bd83cdde26adef789fe383681284129d5d57",
-      "sha256": "4618a57e822d6c3d2b9c36c99280d11c4a0c4018ec18ed88a0c810ce84e1843b"
+      "commit": "507238548fdd01b6e541aab97aea2de675e002b7",
+      "sha256": "ac307038b74a94a88b279ec492885b94c968bc2e10c67bbcd84859a2b7aa51ca"
     },
     "scripts/issue-pool.mjs": {
       "template": "skills/engineering/setup-workflow/templates/issue-pool.mjs",

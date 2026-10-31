@@ -56,6 +56,10 @@ const spawnGh = (args, stdio) => {
 };
 const gh = args => process.exit(spawnGh(args, 'inherit').status ?? 1);
 
+// GitHub 主機上不是專案的網址：文件站、API、gist、raw 等子網域，以及 orgs、users 這類保留的第一段路徑（審查 #244）。
+const NON_PROJECT_HOST = /^(?:docs|api|gist|raw|uploads|objects|codeload|status)\.|githubusercontent\.com$/;
+const RESERVED_OWNERS = new Set(['orgs', 'users', 'settings', 'enterprises', 'apps', 'marketplace', 'features', 'topics', 'sponsors', 'notifications', 'search', 'login', 'about']);
+
 /** adapter `## Tracker` 段裡唯一的 GitHub 專案：{ host, repo }；找不到或不唯一時 exit 2。 */
 function trackerTarget() {
   const where = 'docs/agents/issue-run.md 的 ## Tracker 段';
@@ -64,18 +68,16 @@ function trackerTarget() {
   const start = lines.findIndex(line => /^## Tracker\s*$/.test(line));
   if (start < 0) fail(`adapter 沒有 ## Tracker 段：寫入目標要寫在 ${where}`);
   const end = lines.findIndex((line, i) => i > start && /^## /.test(line));
-  const projects = new Set();
+  const projects = new Map();
   for (const [match] of lines.slice(start + 1, end < 0 ? undefined : end).join('\n').matchAll(/https?:\/\/[^\s`'")<>]+/g)) {
     const url = match.replace(/[.,;:]+$/, '');
     const host = remoteHostname(url);
-    if (!host || hostKind(host) !== 'github') continue;
+    if (!host || hostKind(host) !== 'github' || NON_PROJECT_HOST.test(host)) continue;
     const [owner, name] = new URL(url).pathname.replace(/\.git$/, '').split('/').filter(Boolean);
-    if (owner && name) projects.add(`${host}/${owner}/${name}`);
+    if (owner && name && !RESERVED_OWNERS.has(owner.toLowerCase())) projects.set(`${host}/${owner}/${name}`, { host, repo: `${owner}/${name}` });
   }
-  if (projects.size !== 1) fail(`${where}要恰好有一個 GitHub 專案網址（https://<host>/<owner>/<repo>），找到 ${projects.size} 個：${[...projects].join(' ') || '（無）'}`);
-  const [project] = projects;
-  const [host, ...repo] = project.split('/');
-  return { host, repo: repo.join('/') };
+  if (projects.size !== 1) fail(`${where}要恰好有一個 GitHub 專案網址（https://<host>/<owner>/<repo>），找到 ${projects.size} 個：${[...projects.keys()].join(' ') || '（無）'}`);
+  return [...projects.values()][0];
 }
 
 /** 依白名單拆出 Issue 號碼與旗標；旗標一律寫成 `--長名=值`（值以 - 開頭也不會被當成旗標），所以 gh 收到的參數裡不會出現白名單以外的旗標或位置參數。 */
