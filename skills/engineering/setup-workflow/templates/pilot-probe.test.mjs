@@ -212,7 +212,7 @@ test('dispatched 的 batch 每個成員都 done 時才印 STAGEABLE <key>；有 
 
 // #191：batch 94 停在 `current: staged`，兩次 Regression 都 exit 1（計時測試在高負載下 flake），成員 done；
 // probe 對 staged 的 batch 什麼都不印，接手的 coordinator 照 probe 行動就漏掉它。最後一行 regression 不是 staged SHA 的 exit 0
-// （exit 不是 0、沒寫 exit、SHA 是先前那次 stage 的，或根本沒有這行）時印 RESTAGE <key> regression-failed <exit 或 none>。
+// （exit 不是 0、沒寫 exit、SHA 是先前那次 stage 的，或根本沒有這行）時印 RESTAGE <key> regression-failed <code 或 none>。
 test('staged 的 batch 最後一行 regression 不是 staged SHA 的 exit 0：印 RESTAGE，通過的不印', t => {
   const { batch, probe, pilot } = fixture(t);
   const staged = 'd4a2f71' + '0'.repeat(33);
