@@ -87,5 +87,6 @@ Canonical scripts in `<skill>/templates/`. A row's level is the lowest level tha
 | `orca-worktree-create.mjs`, `orca-session-send.mjs`, `orca-session-split.mjs` | L3, with Orca | the adapter's Dispatch and Handoff lines |
 | `pilot-handoff.mjs` | L3, with Orca | the adapter's Pilot Handoff line; pass `--held-check <command>` when the project has an "integration merge in progress" check |
 | `issue-pool.mjs` | L3, GitHub trackers | the adapter's Pilot Pool line (list the buckets, pick `ready` in order) and Dispatch line (`claim <n>` before each member) |
+| `pilot-register.mjs`, `pilot-decision.mjs`, `pilot-request.mjs`, `pilot-hold.mjs`, `pilot-sources.mjs` | L3 | the adapter's Pilot **Sessions**, **Sources**, and **Decisions, requests, hold** lines; their commands and result lines are in [PILOT-STORE.md](../issue-pilot/PILOT-STORE.md#canonical-scripts) |
 | `pilot-counterpart.mjs` | L3, when Issues name cross-repo counterparts (`對應單：<owner>/<repo>#<m>`) | the adapter's Pilot Close step (or the Pilot line it points to) |
 | `run-codex-review.mjs` | `codex` | the adapter's Review |
