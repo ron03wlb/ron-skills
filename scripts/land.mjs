@@ -73,27 +73,38 @@ export function checksVerdict(checks) {
   return 'pending';
 }
 
-/** statusCheckRollup 的一項（CheckRun 或 StatusContext）換成 `gh pr checks` 的 bucket，分類照 gh 的。 */
+/** statusCheckRollup 的一項（CheckRun 或 StatusContext）換成 `gh pr checks` 的 bucket，分類照 gh 的 aggregate.go。 */
 export function rollupBucket(item) {
   const state = item.state || (item.status === 'COMPLETED' ? item.conclusion : item.status);
   if (state === 'SUCCESS') return 'pass';
   if (state === 'SKIPPED' || state === 'NEUTRAL') return 'skipping';
-  if (['ERROR', 'FAILURE', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE'].includes(state)) return 'fail';
+  if (['ERROR', 'FAILURE', 'TIMED_OUT', 'ACTION_REQUIRED'].includes(state)) return 'fail';
   if (state === 'CANCELLED') return 'cancel';
   return 'pending';
 }
 
 /**
- * 等 PR 在 head 這個 SHA 上的 checks。headRefOid 與 statusCheckRollup 取自同一次查詢：
- * `gh pr checks` 不帶 SHA，push 後 PR 的 head 還沒更新時會讀到前一個 head 的失敗 run（#128，PR #125）。
+ * `gh pr view --json headRefOid,statusCheckRollup` 的結果換成 head 這個 SHA 上的 checks（`{ name, link, bucket }`）。
+ * PR 的 head 還不是 head 時回空陣列（照 pending）：`gh pr checks` 不帶 SHA，push 後 PR 的 head 還沒更新時
+ * 會讀到前一個 head 的失敗 run（#128，PR #125）。headRefOid 與 rollup 取自同一次查詢，所以 rollup 屬於那個 head。
+ * 重跑會留下同一個 run 的舊結果：同 `gh pr checks` 只留最新開始的一筆。gh 以 name、workflow、event 去重，
+ * `pr view` 沒有 event，改用 Actions 網址裡的 run id 區分 push 與 pull_request 兩個 run（重跑沿用 run id）。
  */
+export function rollupChecks(view, head) {
+  if (view.headRefOid !== head) return [];
+  const latest = new Map();
+  for (const item of [...(view.statusCheckRollup ?? [])].sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''))) {
+    const link = item.detailsUrl || item.targetUrl;
+    const key = item.context ?? `${item.name}/${item.workflowName}/${link?.match(/\/actions\/runs\/(\d+)\//)?.[1] ?? ''}`;
+    if (!latest.has(key)) latest.set(key, { name: item.name || item.context, link, bucket: rollupBucket(item) });
+  }
+  return [...latest.values()];
+}
+
 async function waitChecks(cwd, number, head) {
   const deadline = Date.now() + CHECKS_TIMEOUT_MS;
   for (;;) {
-    const view = JSON.parse(gh(cwd, 'pr', 'view', String(number), '--json', 'headRefOid,statusCheckRollup'));
-    const checks = view.headRefOid !== head ? [] : view.statusCheckRollup.map(item => ({
-      name: item.name || item.context, link: item.detailsUrl || item.targetUrl, bucket: rollupBucket(item),
-    }));
+    const checks = rollupChecks(JSON.parse(gh(cwd, 'pr', 'view', String(number), '--json', 'headRefOid,statusCheckRollup')), head);
     const verdict = checksVerdict(checks);
     if (verdict === 'fail') {
       const failed = checks.filter(check => check.bucket === 'fail' || check.bucket === 'cancel').map(check => check.link || check.name);

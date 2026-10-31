@@ -4,7 +4,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, re
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { mergeSample } from './helpers/fake-orca.mjs';
-import { checksVerdict, pickMergedPr, pickPr, rollupBucket } from '../scripts/land.mjs';
+import { checksVerdict, pickMergedPr, pickPr, rollupBucket, rollupChecks } from '../scripts/land.mjs';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../scripts/land.mjs', import.meta.url).pathname;
@@ -12,7 +12,7 @@ const script = new URL('../scripts/land.mjs', import.meta.url).pathname;
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
 const IDENTITY = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
 
-// 假 gh 的輸出一律從 PR #39 的真實樣本長出來（同 helpers/fake-orca.mjs 的做法），替身不能自創 gh 沒有的欄位。
+// 假 gh 的輸出一律從真實樣本長出來（PR #39；statusCheckRollup 取自 PR #125）（同 helpers/fake-orca.mjs 的做法），替身不能自創 gh 沒有的欄位。
 const samplesDir = new URL('./helpers/fixtures/gh/', import.meta.url).pathname;
 const GH_SAMPLES = Object.fromEntries(readdirSync(samplesDir).map(file => [file.replace(/\.json$/, ''), JSON.parse(readFileSync(join(samplesDir, file), 'utf8'))]));
 
@@ -21,6 +21,7 @@ const PASS = [{ status: 'COMPLETED', conclusion: 'SUCCESS' }];
 const PENDING = [{ status: 'IN_PROGRESS', conclusion: '' }];
 const FAIL = [{ status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/r/actions/runs/2/job/2' }];
 const OLD_HEAD = 'cdaebee0000000000000000000000000000000000';
+const CHECK_POLL = /^gh pr view \S+ --json headRefOid,statusCheckRollup/gm;
 
 /**
  * bare remote、主 checkout（在 main）、feature 分支的 worktree，以及 PATH 上的假 gh、假 Orca。
@@ -86,7 +87,8 @@ else if (sub === 'create') {
 else if (sub === 'view' && arg('--json').includes('statusCheckRollup')) {
   const pr = find(args[2]);
   const next = s.checks.length > 1 ? s.checks.shift() : s.checks[0]; save();
-  const { head = pr.headRefOid, checks = next === 'none' ? [] : next } = next.checks ? next : {};
+  const entry = next === 'none' ? { checks: [] } : Array.isArray(next) ? { checks: next } : next;
+  const { head = pr.headRefOid, checks } = entry;
   console.log(JSON.stringify(mergeSample(SAMPLES['pr-view-checks'], { headRefOid: head, statusCheckRollup: checks }, 'pr')));
 }
 else if (sub === 'view') console.log(JSON.stringify(out(find(args[2]))));
@@ -139,7 +141,7 @@ test('手動分支：push、開 PR、等 CI 登記並通過、合併、收尾、
   const [pr] = prs();
   assert.equal(pr.state, 'MERGED');
   assert.equal(last(result), `LANDED ${pr.number} ${pr.mergeCommit.oid}`);
-  assert.equal((calls().match(/^gh pr view \S+ --json headRefOid,statusCheckRollup/gm) || []).length, 3);
+  assert.equal((calls().match(CHECK_POLL) || []).length, 3);
   assert.equal(existsSync(wt), false);
   assert.equal(sh(main, 'branch', '--list', 'feature'), '');
   assert.equal(remoteHas('feature'), false);
@@ -202,7 +204,7 @@ test('PR 的 head 還是前一個 SHA 時不採計它的 checks：等到新 head
   assert.doesNotMatch(result.stdout, /STOP ci-failed/);
   assert.match(result.stdout, /^CHECKS_PASSED 40 1$/m);
   assert.equal(last(result), `LANDED 40 ${prs()[0].mergeCommit.oid}`);
-  assert.equal((calls().match(/^gh pr view \S+ --json headRefOid,statusCheckRollup/gm) || []).length, 4);
+  assert.equal((calls().match(CHECK_POLL) || []).length, 4);
 });
 
 test('PR 的 head 一直沒更新到 push 的 SHA：STOP checks-timeout，不合併', t => {
@@ -400,4 +402,15 @@ test('rollupBucket：CheckRun 看 status 與 conclusion，StatusContext 看 stat
   assert.equal(rollupBucket({ status: 'QUEUED', conclusion: '' }), 'pending');
   assert.equal(rollupBucket({ state: 'ERROR' }), 'fail');
   assert.equal(rollupBucket({ state: 'PENDING' }), 'pending');
+});
+
+test('rollupChecks：head 不符回空；同一個 run 重跑只留最新一筆，push 與 pull_request 兩個 run 都留', () => {
+  const run = (id, startedAt, conclusion) => ({ status: 'COMPLETED', conclusion, startedAt, name: 'checks', workflowName: 'w', detailsUrl: `https://github.com/o/r/actions/runs/${id}/job/${startedAt}` });
+  const view = statusCheckRollup => ({ headRefOid: 'new', statusCheckRollup });
+  assert.deepEqual(rollupChecks({ headRefOid: 'old', statusCheckRollup: [run(1, 't1', 'FAILURE')] }, 'new'), []);
+  assert.deepEqual(rollupChecks(view(null), 'new'), []);
+  // 重跑：run 1 第一次失敗、第二次通過。
+  assert.deepEqual(rollupChecks(view([run(1, 't1', 'FAILURE'), run(1, 't2', 'SUCCESS')]), 'new').map(check => check.bucket), ['pass']);
+  // push 與 pull_request：不同 run id，晚開始的通過也不能蓋掉另一個 run 的失敗。
+  assert.equal(checksVerdict(rollupChecks(view([run(1, 't1', 'FAILURE'), run(2, 't2', 'SUCCESS')]), 'new')), 'fail');
 });
