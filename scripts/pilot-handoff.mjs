@@ -5,7 +5,7 @@
 // 步驟：確認 `.scratch/pilot/coordinator` 的 pid 是呼叫者 → 有 `--held-check` 時確認整合分支沒有合併進行中 → 有 `--to` 時找出對象分頁
 //   → 改寫為 handoff 行（不含 `pid ` 欄，新 session 視為無人占用）
 //   → 沒有 `--to`：記下主 checkout 現有的分頁 → orca-session-split 在主 checkout 新開分頁 `issue-pilot coordinator` 跑 claude 並送出 `/loop /issue-pilot`
-//     （create 失敗時依快照與標題找回已開的分頁關掉）；有 `--to`：orca-session-send 把 `/loop /issue-pilot` 送給既有 session
+//     （標題前面由 orca-session-split 加上「處理中｜」；create 失敗時依快照與標題找回已開的分頁關掉）；有 `--to`：orca-session-send 把 `/loop /issue-pilot` 送給既有 session
 //   → 等新 session 把 `pid ` 行寫進 coordinator 檔，才算交接完成，這時在 `sessions.md` 附加 handoff 行、在 stderr 提醒停掉 watcher。
 // 任一步失敗就還原 coordinator 檔、關掉這次開的分頁（`--to` 的既有 session 不關）並 STOP，舊 session 照常繼續當 coordinator（新分頁若留著，`/loop` 之後仍可能接手，變成兩個 coordinator）。
 // 沒有 coordinator 檔也是 STOP not-coordinator。
@@ -13,7 +13,8 @@
 // 最壞在 540 秒內結束。因此全程用 async：同步等待會擋住訊號處理。
 //
 // 用法：node scripts/pilot-handoff.mjs --session <舊 session id> --pid <舊 CLAUDE_PID> --reason <原因> [--to <name|handle>] [--held-check <指令>]
-//   --to          交給已經開著的 session：本 repo 任一 worktree 上 handle 或標題完全相同的分頁，不開新分頁。
+//   --to          交給已經開著的 session：本 repo 任一 worktree 上 handle 相同，或標題去掉分頁狀態前綴與 `[類別] ` 後相同的分頁，不開新分頁。
+//                 標題比對 Orca 的自動標題與 tab-state.mjs 記錄的標題（Orca 讀不回 rename 設的標題）。
 //   --held-check  adapter 指定的「整合分支合併進行中」檢查，在主 checkout 以 shell 執行：exit 0 合併中、1 沒有、其他無法判斷；沒帶就不檢查。
 // stdout 最後一行：HANDED_OFF <terminal handle>，或 STOP <原因>（not-coordinator、held-merge、held-check、to-not-found、to-ambiguous、to-self、
 //   create、tui-timeout、send、orca、pid-timeout、timeout、signal）。
@@ -26,10 +27,11 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { orca, sendToSession } from './orca-session-send.mjs';
 import { openSession } from './orca-session-split.mjs';
+import { recordedTitle, sameTopic, withState } from './tab-state.mjs';
 
 const USAGE = '用法：node scripts/pilot-handoff.mjs --session <id> --pid <pid> --reason <原因> [--to <name|handle>] [--held-check <指令>]（需要 ORCA_CLI_COMMAND）';
 export const LOOP_COMMAND = '/loop /issue-pilot';
-export const TITLE = 'issue-pilot coordinator';
+export const TITLE = '[維運] issue-pilot coordinator';
 
 /** 新 session 啟動、TUI 就緒後跑完 /issue-pilot 的 Entry 才寫 pid 行；送達後最多等 5 分鐘（仍受總預算限制）。 */
 const WAIT_MS = Number(process.env.PILOT_HANDOFF_WAIT_MS || 300000);
@@ -84,11 +86,11 @@ async function closeTerminal(cli, handle) {
  * 所以 create 是被中止而這裡沒關掉任何分頁時，一律提醒人去確認。
  */
 async function closeOrphans(cli, main, before, aborted) {
-  const remind = `（請確認有沒有留下標題 ${TITLE} 或剛由 create 開出的分頁）`;
+  const remind = `（請確認有沒有留下標題 ${withState(TITLE, '處理中')} 或剛由 create 開出的分頁）`;
   let note = '', closed = 0;
   try {
     for (const terminal of (await listTerminals(cli, main)).filter(terminal => !before.has(terminal.handle))) {
-      if (terminal.title !== TITLE) { note += `（新分頁 ${terminal.handle} 標題不符，未關閉，請確認後手動關掉）`; continue; }
+      if (!sameTopic(terminal.title, TITLE)) { note += `（新分頁 ${terminal.handle} 標題不符，未關閉，請確認後手動關掉）`; continue; }
       const failed = await closeTerminal(cli, terminal.handle);
       note += failed;
       if (!failed) closed++;
@@ -114,16 +116,20 @@ async function heldMerge(command, main, signal) {
 }
 
 /**
- * `--to` 的對象：本 repo 任一 worktree 上 handle 或標題與 `to` 完全相同的分頁（別的 repo 同名分頁不算）。
- * 傳回 `{ handle }`，或 `{ stop }`：to-not-found、to-ambiguous（附各 handle）、to-self（呼叫者自己的分頁，或 coordinator 檔裡自己的名字）。
+ * `--to` 的對象：本 repo 任一 worktree 上 handle 與 `to` 相同，或自動標題、記錄的標題與 `to` 是同一主題（sameTopic）的分頁（別的 repo 同名分頁不算）。
+ * 傳回 `{ handle }`，或 `{ stop }`：to-not-found、to-ambiguous（附各 handle）、to-self（只對到呼叫者自己的分頁，或 coordinator 檔裡自己的名字；同時對到自己與別人時排除自己）。
  */
 async function resolveTarget(cli, paths, to, { self, name }, signal) {
-  if (to === name) return { stop: `to-self ${to}` };
+  if (to === name || sameTopic(to, name)) return { stop: `to-self ${to}` };
   const { terminals } = await orca({ cli, signal: AbortSignal.any([signal, AbortSignal.timeout(ORCA_STEP_MS)]) }, 'terminal', 'list');
-  const matches = terminals.filter(terminal => paths.includes(terminal.worktreePath) && (terminal.handle === to || terminal.title === to));
-  if (!matches.length) return { stop: `to-not-found ${to}` };
+  const all = terminals.filter(terminal => paths.includes(terminal.worktreePath)
+    && (terminal.handle === to || sameTopic(terminal.title, to) || sameTopic(recordedTitle(terminal.handle), to)));
+  if (!all.length) return { stop: `to-not-found ${to}` };
+  // 新開的 coordinator 分頁標題都相同，交接雙方因此同主題：先排除自己，再判斷 ambiguous。
+  const matches = all.filter(terminal => terminal.handle !== self);
+  if (!matches.length) return { stop: `to-self ${to}` };
   if (matches.length > 1) return { stop: `to-ambiguous ${to} ${matches.map(terminal => terminal.handle).join(' ')}` };
-  return matches[0].handle === self ? { stop: `to-self ${to}` } : { handle: matches[0].handle };
+  return { handle: matches[0].handle };
 }
 
 /** `signal` 中止時（reason 為 `timeout` 或 `signal <名稱>`）進行中的步驟丟錯，STOP 原因改用 reason。 */
