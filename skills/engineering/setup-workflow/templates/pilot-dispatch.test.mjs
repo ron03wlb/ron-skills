@@ -69,7 +69,7 @@ else fail('unknown');
   if (guard !== undefined) {
     const scripts = join(temp, 'scripts');
     mkdirSync(scripts);
-    for (const name of ['pilot-dispatch.mjs', 'orca-session-send.mjs', 'orca-worktree-create.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+    for (const name of ['pilot-dispatch.mjs', 'orca-session-send.mjs', 'orca-worktree-create.mjs', 'tab-state.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
     writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
     chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
     dispatchScript = join(scripts, 'pilot-dispatch.mjs');
