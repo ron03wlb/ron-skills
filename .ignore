@@ -1,0 +1,4 @@
+# rg（Claude Code 的 Grep 工具、Explore agent）搜尋時跳過產生出來的檔案：圖表 HTML 內嵌 base64 字型，一次搜尋就能塞爆輸出。
+# 來源在 docs/workflow/diagrams/src/ 與 docs/workflow/*.md；git、build、check 不讀這個檔。
+docs/workflow/diagrams/*.html
+docs/workflow/site/
