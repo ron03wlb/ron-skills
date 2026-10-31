@@ -864,32 +864,31 @@ test('#166 原句：以「它們」為 blocker 的每個還開著的號碼都印
   assert.deepEqual(lines(probe()), ['DEPS_PROSE 166 #131', 'DEPS_PROSE 166 #132', 'DEPS_PROSE 166 #134', 'DEPS_PROSE 166 #94', 'DEPS_PROSE 166 last']);
 });
 
-test('#176 原句：排在「它」之後回指同一句前面的 #94；整句沒號碼的「排在它之後」不印', t => {
+test('#176 原句「排在它之後」：單數的「它」沒號碼不印；「它們」「這些」才回指同一句前面的號碼', t => {
   const { probe } = fixture(t, { issues: [
     issue(176, ISSUE_176),
-    issue(177, '這張改 probe，#94 也在改。\n\n排在它之後。'),
+    issue(177, '#94、#172 都在改 probe，排在這些之後。'),
     issue(94, ''), issue(172, ''),
   ] });
-  assert.deepEqual(lines(probe()), ['DEPS_PROSE 176 #94']);
+  assert.deepEqual(lines(probe()), ['DEPS_PROSE 177 #94', 'DEPS_PROSE 177 #172']);
 });
 
-test('「排在 #m 之後」「以 #m、#n 為 blocker」「等 #m 合入」都印，句子之外的號碼不算', t => {
+test('「排在 #m 之後」「以 #m、#n 為 blocker」「等 #m 合入」都印，句子之外的號碼與否定不算', t => {
   const { probe } = fixture(t, { issues: [
-    issue(60, '#61 也改這支，本單排在 #62 之後。\n以 #63、#64（同一條目）為 Blocker；#65 另開。\n先等 #66 合入再做，#67 無關。'),
-    ...[61, 62, 63, 64, 65, 66, 67].map(n => issue(n, '')),
+    issue(60, '#61 也改這支，本單排在 #62 之後。\n以 #63、#64（同一條目）為 Blocker；#65 另開。\n先等 #66 合入再做，#67 無關。\n不必等 #68 合入，也不用排在 #69 之後。'),
+    ...[61, 62, 63, 64, 65, 66, 67, 68, 69].map(n => issue(n, '')),
   ] });
   assert.deepEqual(lines(probe()), ['DEPS_PROSE 60 #62', 'DEPS_PROSE 60 #63', 'DEPS_PROSE 60 #64', 'DEPS_PROSE 60 #66']);
 });
 
-test('「最後做」：同一句有號碼、已有 blocked_by、「不必最後做」都不印 last', t => {
+test('「最後做」：同一小句有號碼、「不必／不要／無需最後做」不印 last，已有 blocked_by 照印', t => {
   const { probe } = fixture(t, { issues: [
     issue(70, '等 #71 合入，最後做 #72。'),
     issue(73, '這張最後做。', { blockedBy: [71] }),
-    issue(74, '不必最後做。'),
-    issue(75, '本單最後做。'),
+    issue(74, '不必最後做；不要最後做；無需最後做。'),
     issue(71, ''), issue(72, ''),
   ] });
-  assert.deepEqual(lines(probe()), ['DEPS_PROSE 70 #71', 'DEPS_PROSE 75 last']);
+  assert.deepEqual(lines(probe()), ['DEPS_PROSE 70 #71', 'DEPS_PROSE 73 last']);
 });
 
 test('gh 失敗時印 DEPS_PROSE_FAILED，其他檢查照跑', t => {
