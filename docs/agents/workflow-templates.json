@@ -63,8 +63,8 @@
     },
     "scripts/pilot-batch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-batch.mjs",
-      "commit": "a05e91da98987401b57bc17b566cd50fefce2041",
-      "sha256": "a0df6bd6bcd81cbb266a5e2ff9d7903854d0be7289ac417c805a9717f825f522"
+      "commit": "b2a9471c81ff3e3e1a9a85f1b6a9daa34fa83535",
+      "sha256": "c2aa79ae101ca5ae6925e1d77fe13a478d95af8998713177aae463775c036e77"
     },
     "scripts/pilot-counterpart.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-counterpart.mjs",
@@ -103,8 +103,8 @@
     },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",
-      "commit": "a05e91da98987401b57bc17b566cd50fefce2041",
-      "sha256": "dd38c22739e08e5ccac235a2753eeaf448f2b8a7757318de8a131f324c5f7c64"
+      "commit": "b2a9471c81ff3e3e1a9a85f1b6a9daa34fa83535",
+      "sha256": "07f99144e95925f64d4f4125e4d721502b7290b8a7e2e37b14e7a8435c842ba9"
     },
     "scripts/pilot-register.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-register.mjs",
