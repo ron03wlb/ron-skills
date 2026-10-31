@@ -9,7 +9,8 @@ const root = resolve(dirname(new URL(import.meta.url).pathname), '..');
 function* markdown(dir) {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
-    if (name === 'node_modules') continue;
+    // fixtures/ 是測試資料，裡面的 .md 連結指向測試情境而非 repo 檔案（#250）
+    if (name === 'node_modules' || name === 'fixtures') continue;
     if (statSync(p).isDirectory()) yield* markdown(p);
     else if (name.endsWith('.md')) yield p;
   }
