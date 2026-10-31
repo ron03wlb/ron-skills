@@ -62,18 +62,18 @@ test('03 L1 checklist 有 /issue-queue 與 /issue-run --pool 兩步', () => {
 // fresh 重派 #107：只審輪剩下的 findings，要照腳本與 skill 的實際行為寫。
 test('Pool 段的認領窗口照 issue-pool.mjs claim：5 分鐘只用於還沒指派的認領留言', () => {
   const pool = section(read('skills/engineering/issue-run/ADAPTER.md'), 'Pool');
-  assert.doesNotMatch(pool, /a claim another session made within 5 minutes blocks/);
   assert.match(pool, /assigned Issue[^.]*any age/);
   assert.match(pool, /unassigned[^.]*5 minutes/);
+  assert.match(pool, /no claim comment from an assignee always blocks/);
+  assert.match(pool, /taken over in two cases only: a pilot coordinator that succeeded a handed-off coordinator/);
 });
 
 test('三條底線照實寫範圍：停下的單只不卡無關的單、Retro collect 在 Pilot 段、worker cap 沒有通用預設', () => {
   const contract = section(read('docs/workflow/README.md'), '三條底線');
-  assert.doesNotMatch(contract, /不卡住後面的單/);
   assert.match(contract, /不卡住與它無關的單/);
   assert.match(contract, /Pilot 段的 Retro collect 條目/);
   const cap = contract.split('\n').find(line => line.startsWith('| worker cap'));
   assert.ok(cap, '預設值表沒有 worker cap 列');
-  assert.doesNotMatch(cap, /沒寫就不設上限/);
+  assert.match(cap, /沒有通用預設/);
   assert.match(cap, /\/issue-queue/);
 });
