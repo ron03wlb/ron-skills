@@ -69,9 +69,10 @@ Default, with the setup-workflow `tab-state.mjs` and `claude-hook-tab-state.mjs`
 
 ## Pilot
 
-What `/issue-pilot` needs on top of the sections above: pool query, worker cap and batch size, dispatch, watch and probe commands, stage, regression, integrate, push gate, close, and handoff. The files under `.scratch/pilot/`, batch checkpoints included, follow [PILOT-STORE.md](../issue-pilot/PILOT-STORE.md): write only the values that differ per project here, never a file format. Besides those, name:
+What `/issue-pilot` needs on top of the sections above: pool query, worker cap and batch size, dispatch, watch and probe commands, stage, regression, integrate, close, and handoff. The files under `.scratch/pilot/`, batch checkpoints included, follow [PILOT-STORE.md](../issue-pilot/PILOT-STORE.md): write only the values that differ per project here, never a file format. Besides those, name:
 
 - **Hold flag.** Which landing commands check `.scratch/pilot/hold` right before they merge.
+- **Push gate.** What the coordinator runs once the integration branch tip is the last SHA that passed regression: the PR body command, then push, open the PR or MR, and merge, or hand those to the human. Default: hand the push to the human; with the setup-workflow templates, `pilot-pr-body` writes the PR body from the merged batch checkpoints ([Canonical scripts](../issue-pilot/PILOT-STORE.md#canonical-scripts)).
 - **Brief check.** A command that refuses a brief missing goal, scope, acceptance, verify, timebox, forbidden, report, or the standing orders path.
 - **Agent rows.** Where the checkpoint records each spawned agent (parent, handle, start time, stuck-after), and which probe line reports a parent still waiting past its child's stuck-after.
 - **Sessions.** The register command: writes `.scratch/pilot/coordinator` and appends the session's start line to `.scratch/pilot/sessions.md`. Default: the coordinator writes both itself; with the setup-workflow templates, `node scripts/pilot-register.mjs <checkout> --name <session name> --loop yes|no <source>...`.

@@ -1,0 +1,97 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { realTmpdir } from './test/real-tmpdir.mjs';
+
+const SCRIPT = fileURLToPath(new URL('./pilot-pr-body.mjs', import.meta.url));
+const checkout = t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'pilot-pr-body-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, '.scratch/pilot'), { recursive: true });
+  return dir;
+};
+const run = (dir, ...args) => spawnSync('node', [SCRIPT, dir, ...args], { encoding: 'utf8' });
+const HEAD = '| Issue | branch | worktree | handle | started | stuck-after | state | candidate |\n|---|---|---|---|---|---|---|---|\n';
+const batch = (dir, key, current, rows, regression = []) => writeFileSync(join(dir, `.scratch/pilot/batch-${key}.md`),
+  `# batch ${key}\ncurrent: ${current}\nintegration: pilot/integration @ 1111111\n\n${HEAD}${rows.join('\n')}\n${regression.map(r => `regression: ${r}\n`).join('')}`);
+const row = (n, branch, state, candidate = '') => `| ${n} | ${branch} | /w/${branch} | term_x | 2026-10-31T12:00:00+08:00 | 90m | ${state} | ${candidate} |`;
+const A = 'a'.repeat(40);
+const B = 'b'.repeat(40);
+const C = 'c'.repeat(40);
+const SIGNATURE = '🤖 Generated with [Claude Code](https://claude.com/claude-code)';
+
+/** 兩個 merged batch（其中一個是請求分支）、一個 staged、一個 dispatched、一個已 closed。 */
+function fixture(t) {
+  const dir = checkout(t);
+  batch(dir, '7-42', `merged ${A}`, [row(7, 'issue/7-x', 'done', A), row(42, 'issue/42-y', 'done', A), row(50, 'issue/50-z', 'moved batch-50')],
+    [`${C} exit 1`, `${A} exit 0 CHECK_PASS tests 1+2+3`]);
+  batch(dir, 'req-12', `merged ${B} PR #9`, ['| - | retro/1031a | | | 2026-10-31T12:00:00+08:00 | | done | ' + B + ' |'], [`${B} exit 0 CHECK_PASS tests 4+5+6`]);
+  batch(dir, '60', `staged ${C} onto 1111111`, [row(60, 'issue/60-s', 'done', C)], [`${C} exit 0`]);
+  batch(dir, '61', 'dispatched 2026-10-31T12:00:00+08:00', [row(61, 'issue/61-d', 'running')]);
+  batch(dir, '30', 'closed', [row(30, 'issue/30-c', 'done', C)], [`${C} exit 0`]);
+  return dir;
+}
+
+test('merged batch 各一列（key、staged SHA、regression 行），只有 Issue 成員有 Closes；staged、未 merged 的不列', t => {
+  const result = run(fixture(t));
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, [
+    '## Batches',
+    '',
+    `- batch 7-42：staged ${A}，\`regression: ${A} exit 0 CHECK_PASS tests 1+2+3\``,
+    `- batch req-12（retro/1031a）：staged ${B}，\`regression: ${B} exit 0 CHECK_PASS tests 4+5+6\``,
+    '',
+    'Closes #7',
+    'Closes #42',
+    '',
+    SIGNATURE,
+    '',
+  ].join('\n'));
+});
+
+test('--out 把同一份 body 寫進檔案，stdout 只印 PR_BODY 摘要', t => {
+  const dir = fixture(t);
+  const file = join(dir, 'pr-body.md');
+  const result = run(dir, '--out', file);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `PR_BODY ${file} batches 2 closes 2\n`);
+  assert.equal(readFileSync(file, 'utf8'), run(dir).stdout);
+});
+
+test('只有請求 batch：沒有 Closes 行，署名照樣在結尾', t => {
+  const dir = checkout(t);
+  batch(dir, 'req-3', `merged ${B}`, ['| - | retro/x | | | 2026-10-31T12:00:00+08:00 | | done | ' + B + ' |'], [`${B} exit 0`]);
+  const result = run(dir);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `## Batches\n\n- batch req-3（retro/x）：staged ${B}，\`regression: ${B} exit 0\`\n\n${SIGNATURE}\n`);
+});
+
+test('沒有 merged batch：STOP no-merged-batch，exit 4', t => {
+  const dir = checkout(t);
+  batch(dir, '60', `staged ${C} onto 1111111`, [row(60, 'issue/60-s', 'done', C)], [`${C} exit 0`]);
+  const result = run(dir);
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, 'STOP no-merged-batch\n');
+});
+
+test('merged batch 最後的 regression 不是它的 staged SHA exit 0：STOP regression <key>，exit 4，不寫檔', t => {
+  for (const regression of [[], [`${A} exit 0`, `${A} exit 1`], [`${C} exit 0`]]) {
+    const dir = checkout(t);
+    batch(dir, '7', `merged ${A}`, [row(7, 'issue/7-x', 'done', A)], regression);
+    const result = run(dir, '--out', join(dir, 'pr-body.md'));
+    assert.equal(result.status, 4, regression.join(';'));
+    assert.equal(result.stdout, 'STOP regression 7\n');
+    assert.ok(!existsSync(join(dir, 'pr-body.md')));
+  }
+});
+
+test('用法錯誤：exit 2', t => {
+  const dir = checkout(t);
+  for (const args of [[], ['--out', 'x'], [dir, '--out'], [dir, 'extra'], [dir, '--out', 'a', 'b']]) {
+    const result = spawnSync('node', [SCRIPT, ...args], { encoding: 'utf8' });
+    assert.equal(result.status, 2, args.join(' '));
+  }
+});
