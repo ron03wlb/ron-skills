@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isHarnessText, isMostlyEnglish, isSyntheticEntry, lastTurnTexts, textsBeforeTool } from './claude-hook-language.mjs';
@@ -170,4 +170,26 @@ test('hook Stop：只有用量上限訊息、或英文段落已提示過一次�
   const post = hook(JSON.stringify({ hook_event_name: 'PostToolUse', transcript_path: limit, tool_use_id: 't1' }));
   assert.equal(post.status, 0);
   assert.equal(post.stdout + post.stderr, '');
+});
+
+// #250：session a0f6ae91 jsonl 第 598 行「All closed. Now handle the source tabs.」與第 599 行的 Bash tool_use，
+// 在 PostToolUse 觸發時都還沒寫入（前 597 行跑 hook exit 0），尾端文字段是空的。找不到 tool_use 時重讀一次就抓得到。
+test('hook PostToolUse：觸發時文字段與 tool_use 都還沒寫入，稍後寫入時重讀抓到；有 .scratch 時記量測', async () => {
+  const dir = mkdtempSync(join(realTmpdir(), 'hook-language-'));
+  const transcript = join(dir, 't.jsonl');
+  writeFileSync(transcript, [user('收 retro'), toolUse('t0'), toolResult()].join('\n') + '\n');
+  mkdirSync(join(dir, '.scratch'));
+  const child = spawn('node', [script], { env: { ...process.env, CLAUDE_PROJECT_DIR: dir } });
+  const stderr = [];
+  child.stderr.on('data', chunk => stderr.push(chunk));
+  child.stdin.end(JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', transcript_path: transcript, tool_use_id: 'toolu_01SEaAZoqmGaWd9tGQMEwb67' }));
+  await new Promise(resolve => setTimeout(resolve, 60));
+  appendFileSync(transcript, [assistant('All closed. Now handle the source tabs.'), toolUse('toolu_01SEaAZoqmGaWd9tGQMEwb67')].join('\n') + '\n');
+  const code = await new Promise(resolve => child.on('close', resolve));
+  assert.equal(code, 2);
+  assert.match(Buffer.concat(stderr).toString(), /All closed/);
+  const log = JSON.parse(readFileSync(join(dir, '.scratch', 'language-hook.log'), 'utf8').trim());
+  assert.equal(log.first.found, false);
+  assert.equal(log.retry.found, true);
+  assert.equal(log.tool, 'Bash');
 });

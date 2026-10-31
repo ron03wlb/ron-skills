@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 
 // pilot 存檔的格式只寫在 PILOT-STORE.md（ADR 0002）：契約要涵蓋每個檔案、與正本 script 實際寫出的格式一致，
 // 其他文件只連過去，不再各寫一份（#55）。
@@ -60,4 +60,14 @@ test('契約的 Canonical scripts 列出每支寫存檔的正本，正本不含�
     }
   }
   assert.doesNotMatch(read('skills/engineering/setup-workflow/templates/lib/pilot-store.mjs'), /spay2|ron-skills|\/Users\/|\/home\//, 'lib/pilot-store.mjs 含專案字樣');
+});
+
+// 這些正本的測試 fixture（templates/test/fixtures/pilot-*/）也不能帶專案字樣（#250：pilot-sources 的 fixture 寫了 ron-skills，bin/check 才報）。
+// github/、gitlab/ 是錄下來的真實 CLI 回應，不在此列。
+test('pilot 正本的測試 fixture 不含專案字樣', () => {
+  const base = new URL('../skills/engineering/setup-workflow/templates/test/fixtures/', import.meta.url);
+  const dirs = readdirSync(base).filter(name => PILOT_SCRIPTS.includes(name));
+  for (const dir of dirs) for (const file of readdirSync(new URL(`${dir}/`, base))) {
+    assert.doesNotMatch(readFileSync(new URL(`${dir}/${file}`, base), 'utf8'), /spay2|ron-skills|\/Users\/|\/home\//, `test/fixtures/${dir}/${file} 含專案字樣`);
+  }
 });

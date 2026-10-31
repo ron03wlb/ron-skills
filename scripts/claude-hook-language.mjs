@@ -5,6 +5,9 @@
 // - PostToolUse／PostToolUseFailure：檢查這次工具呼叫前緊鄰的文字段（上一個工具呼叫或 tool_result 之後到本 tool_use 為止），
 //   同一輪就能改正；工具已執行，exit 2 只把 stderr 交回 agent。transcript 還沒寫入這次的 tool_use 時（Skill、Edit 這類幾十毫秒就結束的工具，
 //   #238：前面有英文段的 Bash 14/14 都抓到，Skill、Edit 0/9），改看 transcript 尾端最後一個 tool_use、tool_result 或使用者輪之後的文字段。
+//   #250：Bash 也會漏，hook 觸發時連 3 秒前的文字段都還沒寫入（整則 assistant 訊息延後寫），尾端文字段是空的。所以找不到 tool_use 時
+//   等 RETRY_MS 重讀一次；專案根有 `.scratch/` 時把兩次讀到的行數、有沒有找到、尾端項目的 type 與 timestamp 附加到 `.scratch/language-hook.log`，
+//   累積後判斷寫入時機，再決定改等更久、改用 hook 輸入，或只靠 Stop。
 // - Stop（或未帶 hook_event_name）：檢查最後一個使用者輪的所有文字段；PostToolUse 尚未掛上時仍有覆蓋，
 //   PostToolUse 提示過卻未改正的段落會再提一次（可接受）。
 // harness 合成的訊息（用量上限「You've hit your weekly limit · resets 3am」、API Error 等）不是模型輸出：transcript 中這類 assistant 項目
@@ -13,7 +16,8 @@
 // 否則 /loop 的 coordinator 長時間沒有新的使用者輪，每次 Stop 都重抓同一句舊英文。
 // 命中時 exit 2，stderr 交回 agent 繼續；stop_hook_active 為 true（已因本 hook 續跑一次）、輸入不合法、
 // 讀不到 transcript 時 exit 0 不輸出，避免卡住。
-import { readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // 程式碼、路徑、網址、識別字不算語言：先移除再計數
@@ -144,8 +148,25 @@ export function lastTurnTexts(jsonl) {
  * @returns {string[]}
  */
 export function textsBeforeTool(jsonl, toolUseId) {
-  return scanSegments(jsonl, (_, block) => block.id === toolUseId);
+  return locateTool(jsonl, toolUseId).texts;
 }
+
+/**
+ * textsBeforeTool 加上 transcript 裡有沒有這個 tool_use，與尾端項目的 type、timestamp（寫入時機的量測用）。
+ * @param {string} jsonl transcript 內容
+ * @param {string} toolUseId hook 輸入的 tool_use_id
+ * @returns {{texts: string[], found: boolean, lines: number, lastType: string|null, lastTs: string|null}}
+ */
+export function locateTool(jsonl, toolUseId) {
+  let found = false;
+  const texts = scanSegments(jsonl, (_, block) => (found = block.id === toolUseId));
+  const lines = jsonl.split('\n').filter(Boolean);
+  let last = null;
+  for (let i = lines.length - 1; i >= 0 && !last; i--) { try { last = JSON.parse(lines[i]); } catch { /* 略過半行 */ } }
+  return { texts, found, lines: lines.length, lastType: last?.type ?? null, lastTs: last?.timestamp ?? null };
+}
+
+const RETRY_MS = 300;
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   let input;
@@ -155,7 +176,24 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (postTool && !input.tool_use_id) process.exit(0);
   let jsonl;
   try { jsonl = readFileSync(input.transcript_path, 'utf8'); } catch { process.exit(0); }
-  const texts = postTool ? textsBeforeTool(jsonl, input.tool_use_id) : lastTurnTexts(jsonl);
+  let texts;
+  if (postTool) {
+    const first = locateTool(jsonl, input.tool_use_id);
+    let retry = null;
+    if (!first.found) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RETRY_MS);
+      try { retry = locateTool(readFileSync(input.transcript_path, 'utf8'), input.tool_use_id); } catch { /* 用第一次的結果 */ }
+    }
+    texts = (retry ?? first).texts;
+    const scratch = join(process.env.CLAUDE_PROJECT_DIR || input.cwd || '.', '.scratch');
+    if (existsSync(scratch)) {
+      const strip = ({ texts: t, ...rest }) => ({ ...rest, texts: t.length });
+      try {
+        appendFileSync(join(scratch, 'language-hook.log'), `${JSON.stringify({ at: new Date().toISOString(), tool: input.tool_name ?? null,
+          id: input.tool_use_id, first: strip(first), retry: retry && strip(retry) })}\n`);
+      } catch { /* 量測失敗不影響檢查 */ }
+    }
+  } else texts = lastTurnTexts(jsonl);
   const english = texts.filter(isMostlyEnglish);
   if (english.length) {
     const sample = english[0].replace(/\s+/g, ' ').slice(0, 120);
