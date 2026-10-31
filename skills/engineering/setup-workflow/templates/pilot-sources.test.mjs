@@ -135,3 +135,31 @@ test('沒給來源：exit 2', t => {
   assert.equal(run(checkout(t)).status, 2);
   assert.equal(run(checkout(t), '--record').status, 2);
 });
+
+// #236、#239：**Probe.** 是好幾 KB 的單行條目，只印 `entry Probe` 時 coordinator 得自己跑 `git diff --word-diff`
+// 才看得出多了 `regression-failed` 一個變體。fixture 是某個 repo 的 docs/agents/pilot.md 改動前後的 Probe 條目（專案名稱換成 example-repo）。
+const probe = name => readFileSync(new URL(`./test/fixtures/pilot-sources/probe-${name}.txt`, import.meta.url), 'utf8');
+
+test('長條目下面印詞級改動片段，讀片段就看得出改了什麼', t => {
+  const dir = checkout(t);
+  writeFileSync(join(dir, 'docs/agents/pilot.md'), `# Pilot\n\n${probe('old')}`);
+  run(dir, '--record', ...SOURCES);
+  writeFileSync(join(dir, 'docs/agents/pilot.md'), `# Pilot\n\n${probe('new')}`);
+  const lines = run(dir, ...SOURCES).stdout.split('\n');
+  assert.deepEqual(lines.slice(0, 2), ['SOURCE_CHANGED docs/agents/pilot.md', '  entry Probe']);
+  const snippets = lines.slice(2).filter(Boolean);
+  assert.equal(snippets.length, 2, lines.join('\n'));
+  assert.ok(snippets.every(line => line.startsWith('    ') && line.length < 400), lines.join('\n'));
+  assert.match(snippets[0], /\{\+且那一行是 exit 0，\+\}/);
+  assert.match(snippets[1], /\{\+.*NOT_IN_MAIN <key> regression-failed .*\+\}/);
+});
+
+test('片段太多時改印 reread；短條目不印片段', t => {
+  const dir = checkout(t);
+  const long = Array.from({ length: 300 }, (_, i) => `word${i}`).join(' ');
+  writeFileSync(join(dir, 'docs/agents/pilot.md'), `- **Long.** ${long}\n- **Short.** a\n`);
+  run(dir, '--record', ...SOURCES);
+  const rewritten = long.split(' ').map((w, i) => (i % 2 ? `${w}x` : w)).join(' ');
+  writeFileSync(join(dir, 'docs/agents/pilot.md'), `- **Long.** ${rewritten}\n- **Short.** b\n`);
+  assert.equal(run(dir, ...SOURCES).stdout, `SOURCE_CHANGED docs/agents/pilot.md\n  entry Long\n    (diff ${`- **Long.** ${rewritten}`.length} chars, reread)\n  entry Short\n`);
+});

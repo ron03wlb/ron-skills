@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { equalsWords, nomatchWords } from '../scripts/claude-hook-zsh-equals.mjs';
+import { equalsWords, nomatchWords, usesPipestatus } from '../scripts/claude-hook-zsh-equals.mjs';
 
 const HOOK = fileURLToPath(new URL('../scripts/claude-hook-zsh-equals.mjs', import.meta.url));
 const run = input => spawnSync('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8' });
@@ -100,4 +100,18 @@ test('加引號的 ref pattern、不含萬用字元的 ref、路徑裡的 issue/
   ]) {
     assert.deepEqual(nomatchWords(command), [], command);
   }
+});
+
+// session 8d8ec702 jsonl 第 183 行的原指令：zsh 裡 `${PIPESTATUS[0]}` 展開成空字串，印 `exit=`（#238）。
+test('雙引號或未加引號的 PIPESTATUS 被擋下，提示改用 zsh 的 pipestatus', () => {
+  const result = bash('cd /Users/ron/Documents/Workspace/ron-skills; sysctl -n vm.loadavg; node scripts/pilot-land.mjs 227 </dev/null 2>&1 | tail -20; echo "exit=${PIPESTATUS[0]}"');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /PIPESTATUS/);
+  assert.match(result.stderr, /\$\{pipestatus\[1\]\}/);
+  assert.equal(usesPipestatus('make | tee log; echo $PIPESTATUS'), true);
+  for (const command of [
+    'make | tee log; echo "exit=${pipestatus[1]}"',
+    "bash -c 'make | tee log; exit ${PIPESTATUS[0]}'",
+    "cat > run.sh <<'EOF'\nmake | tee log\nexit ${PIPESTATUS[0]}\nEOF",
+  ]) assert.equal(usesPipestatus(command), false, command);
 });

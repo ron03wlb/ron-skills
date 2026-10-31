@@ -12,8 +12,8 @@
     },
     "scripts/claude-hook-language.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-language.mjs",
-      "commit": "ada628ad8ff233f859b6e1cd3cdb9965b4629871",
-      "sha256": "62fd40e666955ff8bc9a29e11ec0ef15cc4cd87f6e76cab284fd6c1a76ec1a28"
+      "commit": "6dd5f16478e8c443ade1f407e0bc355a278bd815",
+      "sha256": "422d8ca68c9f84f534b08cbfab8836390ca85cc267f50e5273da3b33f02b7675"
     },
     "scripts/claude-hook-main-checkout.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-main-checkout.mjs",
@@ -122,8 +122,8 @@
     },
     "scripts/pilot-sources.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-sources.mjs",
-      "commit": "001c819df3a349a1b23a2f86d374c0e6368f4d2e",
-      "sha256": "67197fc6cc51acd93cdd211f18689ae8b5291b64d030052e0c306d4e280c465e"
+      "commit": "6dd5f16478e8c443ade1f407e0bc355a278bd815",
+      "sha256": "b5f196510e2413e609a26607d1e6902e292aaf58cb4c4a631c091afae6d7cdf0"
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",

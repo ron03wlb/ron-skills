@@ -8,6 +8,8 @@
 // `no matches found: --include=*.md` 並中止整串指令（session 19341230，#209）。一般的 `*.md` 參數多半是刻意展開，放行。
 // 分支 pattern 同理：沒加引號、含 `*`／`?`、以 `issue/`、`pilot/`、`retro/`、`origin/` 開頭的字（`git merge-base issue/193-* …`）
 // 不是檔案，zsh 一樣印 `no matches found` 中止（session cbef7b39，#218）。
+// PIPESTATUS：Bash 工具跑的是 zsh，bash 的 `${PIPESTATUS[0]}` 在 zsh 展開成空字串，pipe 前那支指令的 exit code 就不見了
+// （session 8d8ec702 jsonl 第 183 行 `… | tail -20; echo "exit=${PIPESTATUS[0]}"` 印 `exit=`，#238）。沒加引號或在雙引號裡的才算，單引號與 heredoc 內容放行。
 // 命中時 exit 2，stderr 說明原因與改法；輸入不合法或不是 Bash 時 exit 0 不輸出。
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -26,9 +28,17 @@ export function nomatchWords(command) {
   return scan(command).nomatch;
 }
 
+/** 指令有沒有在 zsh 會展開的地方用到 bash 的 `$PIPESTATUS`。 */
+export function usesPipestatus(command) {
+  return scan(command).pipestatus;
+}
+
+const PIPESTATUS = /\$\{?PIPESTATUS\b/;
+
 function scan(command) {
   const found = [];
   const nomatch = [];
+  let pipestatus = false;
   let glob = false; // 目前的字在 `--opt=` 之後、或像 ref 的字裡，有沒有沒加引號的 * 或 ?
   const heredocs = [];
   let i = 0;
@@ -66,6 +76,7 @@ function scan(command) {
       // 引號裡的字不展開；`"$(…)"` 這類巢狀的內容少見，整段當字串略過。
       let j = i + 1;
       while (j < command.length && command[j] !== c) j += c === '"' && command[j] === '\\' ? 2 : 1;
+      if (c === '"' && PIPESTATUS.test(command.slice(i, j))) pipestatus = true;
       word += command.slice(i, j + 1);
       wordStart = false;
       i = j + 1;
@@ -96,6 +107,7 @@ function scan(command) {
       continue;
     }
     if (BREAK.has(c)) { end(); i++; continue; }
+    if (c === '$' && PIPESTATUS.test(command.slice(i, i + 12))) pipestatus = true;
     if (wordStart && c === '=') startsWithEquals = true;
     if ((c === '*' || c === '?') && GLOB_WORD.test(word)) glob = true;
     word += c;
@@ -103,7 +115,7 @@ function scan(command) {
     i++;
   }
   end();
-  return { equals: found, nomatch };
+  return { equals: found, nomatch, pipestatus };
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
@@ -113,8 +125,8 @@ if (isMain) {
   const command = input?.tool_input?.command;
   if (input?.tool_name && input.tool_name !== 'Bash') process.exit(0);
   if (typeof command !== 'string') process.exit(0);
-  const { equals, nomatch } = scan(command);
-  if (!equals.length && !nomatch.length) process.exit(0);
+  const { equals, nomatch, pipestatus } = scan(command);
+  if (!equals.length && !nomatch.length && !pipestatus) process.exit(0);
   const lines = [];
   if (equals.length) lines.push(
     `zsh 會把沒加引號、以 = 開頭的字當 EQUALS 展開成指令路徑：${equals.map(w => `\`${w}\``).join('、')}。`,
@@ -129,6 +141,10 @@ if (isMain) {
       `把 pattern 加引號：${quoted.map(w => `\`${w}\``).join('、')}；要找分支用 \`git branch --list '<pattern>'\`（#218）。`,
     );
   }
+  if (pipestatus) lines.push(
+    'Bash 工具跑的是 zsh，bash 的 `$PIPESTATUS` 在 zsh 展開成空字串，pipe 前那支指令的 exit code 會不見（#238）。',
+    '改用 zsh 的 `${pipestatus[1]}`（從 1 起算），或不要 pipe，直接看結果行。',
+  );
   console.error(lines.join('\n'));
   process.exit(2);
 }
