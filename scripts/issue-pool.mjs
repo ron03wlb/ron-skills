@@ -51,9 +51,11 @@ const openNodes = ({ nodes }) => nodes.filter(({ state }) => state === 'OPEN');
 /** 認領之後最後一次動靜：最近一則留言或最近一次指派，取較晚的；都沒有時是 0（視為過期）。 */
 const lastActivity = issue => Math.max(0, ...[...issue.comments.nodes, ...issue.timelineItems.nodes].map(({ createdAt }) => Date.parse(createdAt)));
 
+const labelsOf = issue => new Set(issue.labels.nodes.map(({ name }) => name));
+
 /** 每張 Issue 歸到一個桶，優先序見檔頭。 */
 export function bucketOf(issue, { staleHours = 24, now = Date.now() } = {}) {
-  const labels = new Set(issue.labels.nodes.map(({ name }) => name));
+  const labels = labelsOf(issue);
   if (issue.subIssuesSummary.total > 0) return 'parent';
   if (labels.has('ready-for-human')) return 'human';
   if (issue.assignees.nodes.length) return now - lastActivity(issue) > staleHours * 3600_000 ? 'stale' : 'claimed';
@@ -101,10 +103,11 @@ export function pool(issues, { repo, ...options }) {
 export const TRIAGE_STATES = ['needs-triage', 'needs-info', 'ready-for-agent', 'ready-for-human', 'wontfix'];
 export const DEFAULT_CATEGORIES = ['bug', 'enhancement'];
 
-/** 有 triage 狀態卻沒有分類的單，號碼小的先；母單與 retro 候選清單本來就不掛分類，不算。 */
+/** 有 triage 狀態卻沒有分類的單，號碼小的先；母單與 retro 候選清單本來就不掛分類，不算。
+ * 母單除了 parent 桶看的 sub-issue，也認 `parent` label：子單還沒建好、只掛了 label 的母單同樣不該被要求補分類。 */
 export function missingCategory(issues, categories = DEFAULT_CATEGORIES) {
   return issues.filter(issue => {
-    const labels = new Set(issue.labels.nodes.map(({ name }) => name));
+    const labels = labelsOf(issue);
     if (issue.subIssuesSummary.total > 0 || labels.has('parent') || labels.has('retro-candidates')) return false;
     return TRIAGE_STATES.some(name => labels.has(name)) && !categories.some(name => labels.has(name));
   }).map(({ number }) => number).sort((a, b) => a - b);
@@ -185,7 +188,7 @@ function main(argv) {
     repo ??= gh('repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim();
     const issues = openIssues(repo);
     for (const { issue, bucket } of pool(issues, { repo, staleHours })) console.log(`${bucket} #${issue.number} ${issue.title}`);
-    for (const n of missingCategory(issues, categories)) console.log(`NO_CATEGORY ${n}`);
+    for (const number of missingCategory(issues, categories)) console.log(`NO_CATEGORY ${number}`);
     return 0;
   } catch (error) {
     if (!(error instanceof GhError)) throw error;

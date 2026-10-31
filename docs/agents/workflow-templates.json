@@ -28,8 +28,8 @@
     },
     "scripts/issue-pool.mjs": {
       "template": "skills/engineering/setup-workflow/templates/issue-pool.mjs",
-      "commit": "5f7cfbd403b3740d3a95ed26a42b5d533a3e0317",
-      "sha256": "36fb2f82ab7f6994153f4caba75072bccecfbd7eb19383f4e119e1cceb3421b5"
+      "commit": "6a326d2423d4b43897c8bfba8a1a8c3592adc0b2",
+      "sha256": "dfe1574d154061c7815c2e05d2b622acd3ec710296a7a9eef9316289ef0a44b3"
     },
     "scripts/lib/pilot-store.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/pilot-store.mjs",
