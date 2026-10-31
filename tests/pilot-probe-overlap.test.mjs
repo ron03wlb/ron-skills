@@ -2,7 +2,7 @@
 // Probe 在派工與 stage 之前就印 OVERLAP；這裡用本 repo 真正的 pilot.md 當 fixture，比對的是副本 scripts/pilot-probe.mjs。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { env, git } from './helpers/git-fixture.mjs';
@@ -38,7 +38,15 @@ integration: pilot/integration @ 1234567
 |---|---|---|---|---|---|---|---|
 ${Object.keys(edits).map(n => `| ${n} | issue/${n}-x | /w/issue-${n} | term_${n} | 2026-10-31T00:00:00+08:00 | 90m | done | ${'a'.repeat(40)} |`).join('\n')}
 `);
-  return spawnSync('node', [script, repo], { encoding: 'utf8', env: { ...env, ORCA_CLI_COMMAND: '' } });
+  // Probe 也用 gh 讀開著的 Issue（DEPS_PROSE）；暫存 repo 沒有 remote，換成回空頁的假 gh。
+  const bin = join(repo, '.scratch/bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh
+[ "$1" = repo ] && echo acme/app && exit 0
+echo '{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}'
+`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  return spawnSync('node', [script, repo], { encoding: 'utf8', env: { ...env, ORCA_CLI_COMMAND: '', PATH: `${bin}:${env.PATH}` } });
 }
 
 /** 在 `- **<名稱>.**` 條目那一行的尾端加字。 */
