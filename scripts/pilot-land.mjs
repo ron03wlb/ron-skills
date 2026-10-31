@@ -3,7 +3,8 @@
 // 全部在 stage worktree 做（分支是 pilot/integration 或 pilot/stage-* 的那個 worktree；沒有就用 Orca 建 pilot-stage，再跑 Bare guard）：
 //   Stage       stage worktree 要乾淨；`switch -C pilot/stage-<key> <integration tip>`，依號碼 `merge --no-ff` 每個 done 成員。
 //               衝突只照 Stage 條目允許的解法自己解，其他 `merge --abort`：
-//                 restamp    scripts/workflow-doc-sync.json：其他衝突檔都用下列解法解完之後，跑 check-workflow-sync.mjs --restamp（#72）；
+//                 restamp    戳記檔（scripts/restamp.mjs 的 STAMP_FILES：workflow-doc-sync.json、workflow-templates.json）：其他衝突檔都用
+//                            下列解法解完之後，交給和 land.mjs 共用的 restamp()（#72、#173）；
 //                 additions  每個衝突 hunk 的 base 是空的（兩邊只在既有檔案的同一處新增，沒有相同的非空行或同名條目）：依號碼兩段都留下；
 //                 entries    每個衝突 hunk 裡兩邊改的是不同的 `- **<名稱>.**` 條目：各取改過的那一版（#45）；
 //                 rows       衝突 hunk 三份的行都是 Markdown 表格列（`|` 開頭）、以第一格為鍵兩邊改的是不同列：各取各的版本、
@@ -33,10 +34,10 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { STAMP_FILES, restamp } from './restamp.mjs';
 
 const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>]（--branch 時 key 是 req-<n>；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
 const INTEGRATION = 'pilot/integration';
-const STAMPS = 'scripts/workflow-doc-sync.json';
 const MARKER = 32;
 const MARKER_LINE = new RegExp(`^([<|=>])\\1{${MARKER - 1}}`, 'm');
 const here = dirname(fileURLToPath(import.meta.url));
@@ -287,16 +288,16 @@ function resolveFile(tree, path, kinds) {
 
 /** 照 Stage 條目允許的解法解掉進行中 merge 的衝突並 add；傳回解法名稱，解不了傳回 undefined（呼叫端 abort）。 */
 function resolveConflicts(tree, files) {
-  const others = files.filter(path => path !== STAMPS);
+  const others = files.filter(path => !STAMP_FILES.includes(path));
+  const stamps = files.filter(path => STAMP_FILES.includes(path));
   const kinds = new Set();
   const resolved = others.map(path => resolveFile(tree, path, kinds));
   if (resolved.includes(undefined)) return undefined;
   others.forEach((path, i) => writeFileSync(join(tree, path), resolved[i]));
   if (others.length) must(tree, 'add', '--', ...others);
   // 戳記檔最後重算：restamp 讀的是其他檔解完之後的來源。
-  if (files.includes(STAMPS)) {
-    if (run('node', [join(tree, 'scripts/check-workflow-sync.mjs'), '--restamp'], { cwd: tree }).status !== 0) return undefined;
-    must(tree, 'add', STAMPS);
+  if (stamps.length) {
+    if (!restamp(tree, stamps)) return undefined;
     kinds.add('restamp');
   }
   // 固定順序，restamp 最後：它在其他解法之後才跑（`entries+restamp`、`rows+restamp`）。
