@@ -91,6 +91,21 @@ test('Stage：允許的衝突解法（不同條目、只新增、表格的不同
   assert.match(stage, /解完的 staged SHA 一樣要跑 Regression/);
 });
 
+// #192：batch 79-108 照舊順序先重派 #108，fresh worker 從 #79 合入前的整合分支開始，做完一定再跟 #79 衝突（refresh-twice）；
+// 判斷同一條目又對兩邊跑 diff（29.7 KB）。改成讀 STOP 行的來源與種類欄，衝突對象是同批成員時先搬出、讓其他成員合入，再以自己的 key 重派。
+test('Stage：STOP conflict 標來源與種類；同批成員衝突先 move 出原 batch、重跑合入其餘成員，再以自己的 key --fresh；不再跑兩邊 diff', () => {
+  const stage = line('Stage');
+  assert.match(stage, /`STOP conflict <n> <檔>=<來源>:<種類> …`/);
+  assert.match(stage, /`member <m>`.*`integration`.*`member <m>\+integration`/);
+  assert.match(stage, /`entry <名稱>`.*`code`.*`other`/);
+  assert.doesNotMatch(stage, /git -C <主 checkout> diff/, '同一條目判斷不再跑兩邊 diff');
+  const order = stage.match(/來源含 `member <m>`[^。]*。/)?.[0] ?? '';
+  const steps = ['pilot-batch.mjs <主 checkout> move <key> <n> --state stop', 'pilot-land.mjs <key>', 'pilot-dispatch.mjs <n> --fresh <n>:<slug>'];
+  const at = steps.map(step => order.indexOf(step));
+  assert.ok(at.every(i => i >= 0), `同批成員衝突的步驟要依序寫在同一句：${order}`);
+  assert.deepEqual([...at].sort((a, b) => a - b), at, '先 move、再合入其餘成員、最後重派');
+});
+
 test('Integrate 比對 stage 時記下的 tip，不數 parent', () => {
   assert.match(line('Integrate'), /`onto <tip>`.*`STOP drift`/);
   assert.match(line('Stage'), /`current: staged <sha> onto <tip>`/);

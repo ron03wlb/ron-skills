@@ -29,7 +29,10 @@
 //
 // 用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>]（在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）
 // stdout：最後一行是 `MERGED <key> <sha>`，或 `STOP regression <exit>`、`STOP hold`、`STOP drift`（tip 變了，下一輪重新 stage）、
-//   `STOP conflict <n> <檔案…>`（已 abort，stage worktree 乾淨），以及 `STOP checkpoint …`、`STOP member <n> <state>`、`STOP dirty <worktree>`、
+//   `STOP conflict <n> <檔>=<來源>:<種類> …`（已 abort，stage worktree 乾淨；每個衝突檔一項，#192）：來源是 `member <m>`（本次 stage
+//     依號碼先合入、自己的分支改過這個檔的成員）、`integration`（成員開分支之後整合分支改過）或兩者以 + 相連（`member 79+integration`）；
+//     種類是 `entry <名稱>`（Markdown 檔解不了的 hunk 裡兩邊都改的 `- **<名稱>.**` 條目，多個以、相連）、`code`（程式檔）或 `other`。
+//     例：`STOP conflict 108 scripts/lib/hosts.mjs=member 79:code docs/agents/pilot.md=integration:entry Pool`。以及 `STOP checkpoint …`、`STOP member <n> <state>`、`STOP dirty <worktree>`、
 //   `STOP no-stage-worktree`、`STOP create …`、`STOP merge <n> …`、`STOP git …`。之前的行：`STAGED <key> <sha> onto <tip>`、
 //   `RESUME <key> <sha>`、`RESOLVED <n> <解法> <檔案…>`，Bare guard 還原主 checkout 時的 `UNBARE <主 checkout>`。
 // exit：0 MERGED；4 STOP；2 用法錯誤；1 其他失敗（程式錯誤，不印 STOP）。
@@ -370,22 +373,22 @@ function blob(tree, spec) {
   }
 }
 
-/** 一個衝突檔：從 index 的三個 stage 以 diff3 重新合併，逐一解每個 hunk；有一個解不了就傳回 undefined。 */
-function resolveFile(tree, path, kinds) {
+/**
+ * 一個衝突檔：從 index 的三個 stage 以 diff3 重新合併，切成段落清單：沒衝突的 `{ text }` 與衝突 hunk `{ base, ours, theirs, after }`
+ * （after 是 hunk 後一行）。沒有 base（兩邊各自新增同一個檔）、有一邊刪掉、不是 UTF-8 文字或合不出來時傳回 undefined。
+ */
+function diff3(tree, path) {
   const [base, ours, theirs] = [1, 2, 3].map(n => blob(tree, `:${n}:${path}`));
-  // 沒有 base（兩邊各自新增同一個檔）、有一邊刪掉，或不是 UTF-8 文字：不自己解。
   if ([base, ours, theirs].includes(undefined)) return undefined;
+  // 標記用長的 MARKER：預設 7 個字元時，內容本身的 `=======`（setext 標題底線）會被當成分隔線。內容裡真有這麼長的標記行就不自己解。
+  if ([base, ours, theirs].some(text => MARKER_LINE.test(text))) return undefined;
   const dir = mkdtempSync(join(tmpdir(), 'pilot-land-'));
   try {
     const files = ['ours', 'base', 'theirs'].map(name => join(dir, name));
     [ours, base, theirs].forEach((text, i) => writeFileSync(files[i], text));
-    // 標記用長的 MARKER：預設 7 個字元時，內容本身的 `=======`（setext 標題底線）會被當成分隔線。內容裡真有這麼長的標記行就不自己解。
-    if ([base, ours, theirs].some(text => MARKER_LINE.test(text))) return undefined;
     const merged = run('git', ['merge-file', '-p', '--diff3', `--marker-size=${MARKER}`, '-L', 'ours', '-L', 'base', '-L', 'theirs', ...files]);
     if (merged.status === null || merged.status > 127) return undefined;
-    let out = '';
-    let last;
-    let entry = '';
+    const segments = [];
     let hunk;
     const lines = merged.stdout.split(/(?<=\n)/);
     for (const [i, line] of lines.entries()) {
@@ -394,24 +397,95 @@ function resolveFile(tree, path, kinds) {
       else if (hunk && marker === `${'|'.repeat(MARKER)} base`) hunk.part = 'base';
       else if (hunk && marker === '='.repeat(MARKER)) hunk.part = 'theirs';
       else if (hunk && marker === `${'>'.repeat(MARKER)} theirs`) {
-        const resolved = resolveHunk(hunk.base, hunk.ours, hunk.theirs, kinds, { before: last, after: lines[i + 1], entry });
-        if (resolved === undefined) return undefined;
-        out += resolved;
-        const pieces = resolved.split(/(?<=\n)/).filter(Boolean);
-        last = pieces.at(-1) ?? last;
-        entry = pieces.map(entryName).filter(Boolean).at(-1) ?? entry;
+        const { base: b, ours: o, theirs: t } = hunk;
+        segments.push({ base: b, ours: o, theirs: t, after: lines[i + 1] });
         hunk = undefined;
       } else if (hunk) hunk[hunk.part] += line;
-      else {
-        out += line;
-        last = line;
-        entry = entryName(line) ?? entry;
-      }
+      else segments.push({ text: line });
     }
-    return hunk ? undefined : out;
+    return hunk ? undefined : segments;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * 依 diff3 段落逐一處理 hunk：`onHunk(hunk, context)` 傳回 hunk 合併後的文字（undefined 表示解不了），context 是 adjacent 要的
+ * hunk 前後各一行與 hunk 之前所在的條目名稱；解不了的 hunk 之後以 ours 那一版接續 context。傳回整份合併後的文字，有 hunk 解不了時 undefined。
+ */
+function walkHunks(segments, onHunk) {
+  let out = '';
+  let failed = false;
+  let last;
+  let entry = '';
+  for (const segment of segments) {
+    let text = segment.text;
+    if (text === undefined) {
+      text = onHunk(segment, { before: last, after: segment.after, entry });
+      if (text === undefined) {
+        failed = true;
+        text = segment.ours;
+      }
+    }
+    out += text;
+    const pieces = text.split(/(?<=\n)/).filter(Boolean);
+    last = pieces.at(-1) ?? last;
+    entry = pieces.map(entryName).filter(Boolean).at(-1) ?? entry;
+  }
+  return failed ? undefined : out;
+}
+
+/** 一個衝突檔逐一解每個 hunk；有一個解不了就傳回 undefined。 */
+function resolveFile(tree, path, kinds) {
+  const segments = diff3(tree, path);
+  return segments && walkHunks(segments, (hunk, context) => resolveHunk(hunk.base, hunk.ours, hunk.theirs, kinds, context));
+}
+
+/** 程式檔的副檔名；副檔名不在清單裡時看 ours 那一版開頭是不是 shebang。 */
+const CODE = /\.(mjs|cjs|js|jsx|ts|tsx|sh|bash|zsh|py|rb|go|rs|java|kt|swift|c|h|cc|cpp)$/;
+
+/**
+ * STOP conflict 的種類欄（#192）：Markdown 檔裡解不了的 hunk 有兩邊都改的 `- **<名稱>.**` 條目時是 `entry <名稱>`（多個以、連接，
+ * 條目開頭之前的文字歸到 hunk 之前所在的條目）；不然程式檔是 `code`，其他是 `other`。
+ */
+function conflictKind(tree, path) {
+  const segments = path.endsWith('.md') && !STAMP_FILES.includes(path) ? diff3(tree, path) : undefined;
+  const names = new Set();
+  if (segments) {
+    walkHunks(segments, (hunk, context) => {
+      const resolved = resolveHunk(hunk.base, hunk.ours, hunk.theirs, new Set(), context);
+      if (resolved === undefined) for (const name of bothChangedEntries(hunk, context.entry)) names.add(name);
+      return resolved;
+    });
+  }
+  if (names.size) return `entry ${[...names].join('、')}`;
+  if (CODE.test(path)) return 'code';
+  return blob(tree, `:2:${path}`)?.startsWith('#!') ? 'code' : 'other';
+}
+
+/** 一個解不了的 hunk 裡兩邊都改（而且改得不一樣）的條目名稱；條目沒對齊（一邊增刪了條目）時是 hunk 碰到的每個條目。 */
+function bothChangedEntries({ base, ours, theirs }, entry) {
+  const [b, o, t] = [base, ours, theirs].map(entries);
+  const named = (piece, i) => (i === 0 ? entry : piece.name);
+  const list = pieces => pieces.map(p => p.name).join('\n');
+  if (list(o) === list(b) && list(t) === list(b)) {
+    return b.map(named).filter((name, i) => name && o[i].text !== b[i].text && t[i].text !== b[i].text && o[i].text !== t[i].text);
+  }
+  return [...new Set([b, o, t].flatMap(pieces => pieces.map((p, i) => (i > 0 || p.text.trim() ? named(p, i) : ''))))].filter(Boolean);
+}
+
+/** 這個檔在 from..to 之間有改動（新增、刪除也算）。 */
+const touches = (tree, from, to, path) => gitIn(tree, 'diff', '--quiet', from, to, '--', path).status === 1;
+
+/**
+ * STOP conflict 的來源欄（#192）：本次 stage 先合入、自己的分支改過這個檔的成員是 `member <m>`，成員開分支之後整合分支改過的是
+ * `integration`；兩者都有時以 + 連接（`member 79+integration`）。都看不出來（不該發生）時是 `unknown`。
+ */
+function conflictSource(tree, path, tip, branch, earlier) {
+  const since = ref => must(tree, 'merge-base', tip, ref);
+  const sources = earlier.filter(m => touches(tree, since(m.branch), m.branch, path)).map(m => `member ${m.n}`);
+  if (touches(tree, since(branch), tip, path)) sources.push('integration');
+  return sources.join('+') || 'unknown';
 }
 
 /** 照 Stage 條目允許的解法解掉進行中 merge 的衝突並 add；傳回解法名稱，解不了傳回 undefined（呼叫端 abort）。 */
@@ -435,7 +509,7 @@ function resolveConflicts(tree, files) {
 /** Stage：從 `tip` 重開 stage 分支、依號碼合入成員；傳回 staged SHA。 */
 function stage(tree, key, members, tip) {
   must(tree, 'switch', '-q', '-C', `pilot/stage-${key}`, tip);
-  for (const { n, branch } of members) {
+  for (const [index, { n, branch }] of members.entries()) {
     const merge = gitIn(tree, 'merge', '--no-ff', '--no-edit', branch);
     if (merge.status === 0) continue;
     const conflicted = must(tree, 'diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean);
@@ -447,7 +521,10 @@ function stage(tree, key, members, tip) {
         console.log(`RESOLVED ${n} ${how} ${conflicted.join(' ')}`);
         continue;
       }
-      throw new Stop(conflicted.length ? `conflict ${n} ${conflicted.join(' ')}` : `merge ${n} ${merge.reason}`);
+      if (!conflicted.length) throw new Stop(`merge ${n} ${merge.reason}`);
+      // 種類要讀 index 的三個 stage，在 abort 之前標好。
+      const labels = conflicted.map(path => `${path}=${conflictSource(tree, path, tip, branch, members.slice(0, index))}:${conflictKind(tree, path)}`);
+      throw new Stop(`conflict ${n} ${labels.join(' ')}`);
     } catch (error) {
       if (gitIn(tree, 'rev-parse', '-q', '--verify', 'MERGE_HEAD').status === 0) must(tree, 'merge', '--abort');
       throw error;
