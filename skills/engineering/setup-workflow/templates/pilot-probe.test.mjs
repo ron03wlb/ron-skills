@@ -17,7 +17,8 @@ const SHA = 'a'.repeat(40);
 // `screens` 是 handle → `terminal read --screen` 的 `{ status, tail }`；不在表裡的 handle 回 terminal_handle_stale。
 // 假 Orca 會把 stdin 讀光並記錄讀到的內容：真實 Orca CLI 會吃掉 stdin，逐一讀成員時後面的成員就讀不到。
 // `guard` 是專案自備 Bare guard（pilot-unbare.sh）的內容：有給時把 probe 複製到暫存的 scripts/，guard 放在它旁邊。
-function fixture(t, { screens = {}, guard } = {}) {
+// PATH 上的假 gh：`repo view` 回 acme/app，`api graphql` 回一頁 `issues`（GraphQL 的 issue 節點），`issues` 是 null 時 gh 失敗；每次呼叫記進 gh.log。
+function fixture(t, { screens = {}, guard, issues = [] } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-probe-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const origin = join(temp, 'origin.git');
@@ -52,6 +53,20 @@ reply('read', { terminal: screen });
 `);
   chmodSync(cli, 0o755);
 
+  const bin = join(temp, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('fs'); const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(join(temp, 'gh.log'))}, JSON.stringify([process.cwd(), ...args]) + '\\n');
+const issues = ${JSON.stringify(issues)};
+if (issues === null) { process.stderr.write('HTTP 502: Bad Gateway\\n'); process.exit(1); }
+if (args[0] === 'repo' && args[1] === 'view') process.stdout.write('acme/app\\n');
+else if (args[0] === 'api' && args[1] === 'graphql') process.stdout.write(JSON.stringify({ data: { repository: { issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: issues } } } }));
+else process.exit(1);
+`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const probeEnv = { ...env, PATH: `${bin}:${env.PATH}` };
+
   const batch = (key, current, members) => writeFileSync(join(pilot, `batch-${key}.md`), `# batch ${key}
 current: ${current}
 integration: pilot/integration @ 1234567
@@ -70,8 +85,8 @@ ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? 
     probeScript = join(scripts, 'pilot-probe.mjs');
   }
   const probe = ({ input = 'stdin 不該被 orca 讀到\n', args = [] } = {}) =>
-    spawnSync('node', [probeScript, repo, ...args], { encoding: 'utf8', input, env: { ...env, ORCA_CLI_COMMAND: cli } });
-  return { repo, pilot, origin, git, log, batch, probe };
+    spawnSync('node', [probeScript, repo, ...args], { encoding: 'utf8', input, env: { ...probeEnv, ORCA_CLI_COMMAND: cli } });
+  return { repo, pilot, origin, git, log, batch, probe, probeEnv, ghLog: join(temp, 'gh.log') };
 }
 
 const lines = result => result.stdout.trim().split('\n');
@@ -308,10 +323,10 @@ test('started 或 stuck-after 解析不了時印 STUCK checkpoint', t => {
 
 // 沒有 ORCA_CLI_COMMAND 時主 checkout、gate 等與 Orca 無關的檢查照跑，只有 running 成員讀不到。
 test('沒有 ORCA_CLI_COMMAND 時其他檢查照跑，running 成員印 STUCK no-orca', t => {
-  const { repo, pilot, batch } = fixture(t);
+  const { repo, pilot, batch, probeEnv } = fixture(t);
   writeFileSync(join(pilot, 'hold'), '');
   batch('23', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 23 }]);
-  const result = spawnSync('node', [script, repo], { encoding: 'utf8', env: Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'ORCA_CLI_COMMAND')) });
+  const result = spawnSync('node', [script, repo], { encoding: 'utf8', env: Object.fromEntries(Object.entries(probeEnv).filter(([key]) => key !== 'ORCA_CLI_COMMAND')) });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(lines(result), ['HOLD', 'WORKER 23 STUCK no-orca']);
 });
@@ -654,4 +669,63 @@ test('在同一處各加新條目、或改到相鄰條目的相接行時，算�
   memberBranch(repo, git, 11, 'pilot/integration', { 'docs/tight.md': tight.replace('關單。', '關單（#11）。') });
   batch('8-11', 'dispatched 2026-10-31T00:00:00+08:00', [8, 9, 10, 11].map(n => ({ n, state: 'done', candidate: SHA })));
   assert.deepEqual(overlapOf(probe()), ['OVERLAP 8 9 docs/rules.md:Probe', 'OVERLAP 10 11 docs/tight.md:Handoff', 'OVERLAP 10 11 docs/tight.md:Close']);
+});
+
+// 開單時依賴只寫在內文（「依賴 #87」）、沒建 blocked_by，Pool 只讀 blocked_by，會把兩組同時派出（#94）。
+const issue = (number, body, { labels = ['ready-for-agent'], blockedBy = [] } = {}) => ({
+  number, body,
+  labels: { nodes: labels.map(name => ({ name })) },
+  blockedBy: { nodes: blockedBy.map(n => (typeof n === 'number' ? { number: n, repository: { nameWithOwner: 'acme/app' } } : n)) },
+});
+
+test('ready Issue 內文寫「依賴 #m」、#m 開著卻不在 blocked_by 時印 DEPS_PROSE <n> #m', t => {
+  const before = issue(88, '依賴 #87（同一支腳本）。\n\n## 要做的事\n\n- 改 #12 提到的那段');
+  const { probe, repo, ghLog } = fixture(t, { issues: [before, issue(87, '')] });
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), ['DEPS_PROSE 88 #87']);
+  // gh 在主 checkout 裡跑，才會讀到那個 repo 的 Issue。
+  assert.ok(readFileSync(ghLog, 'utf8').trim().split('\n').every(line => JSON.parse(line)[0] === repo));
+});
+
+test('補上 blocked_by 之後不印 DEPS_PROSE', t => {
+  const after = issue(88, '依賴 #87（同一支腳本）。', { blockedBy: [87] });
+  const { probe } = fixture(t, { issues: [after, issue(87, '')] });
+  assert.equal(probe().stdout, '');
+});
+
+test('依賴的 Issue 已關閉、別的 repo 的同號單、不是 ready-for-agent 的 Issue 都不印', t => {
+  const { probe } = fixture(t, { issues: [
+    issue(56, '依賴 #55'),
+    issue(57, '依賴 #87', { blockedBy: [{ number: 87, repository: { nameWithOwner: 'acme/other' } }] }),
+    issue(58, '依賴 #87', { labels: ['needs-triage'] }),
+    issue(87, ''),
+  ] });
+  assert.deepEqual(lines(probe()), ['DEPS_PROSE 57 #87']);
+});
+
+// 實際的內文：「依賴：#58、#77」、「依賴 #58（註解）、#77（註解），兩者合入後再做」、「依賴 ①（#103）；提示沿用 #94 的實作」。
+test('「依賴」到句末（。；，或換行）的每個 #m 都檢查，句子之後的 #m 與跨 repo 參照不算', t => {
+  const { probe } = fixture(t, { issues: [
+    issue(90, '依賴：#83（同一支腳本）、#84 和 ①（#85）兩者合入後再做；#86 另外處理。\n依賴 acme/other#87。', { blockedBy: [84] }),
+    issue(83, ''), issue(84, ''), issue(85, ''), issue(86, ''), issue(87, ''),
+  ] });
+  assert.deepEqual(lines(probe()), ['DEPS_PROSE 90 #83', 'DEPS_PROSE 90 #85']);
+});
+
+// review：「不依賴 #82」、逗號之後換了主詞（「另開子單，依賴本單與 #89」仍算，「依賴 #87，跟 #86 無關」的 #86 不算）、內文提到自己都不是缺的 blocked_by。
+test('「不依賴」「無依賴」、逗號之後的 #m 與自己的號碼都不印', t => {
+  const { probe } = fixture(t, { issues: [
+    issue(91, '本單不依賴 #82；無依賴 #83。依賴 #84，跟 #85 無關。依賴 #91 的舊版。'),
+    issue(82, ''), issue(83, ''), issue(84, ''), issue(85, ''),
+  ] });
+  assert.deepEqual(lines(probe()), ['DEPS_PROSE 91 #84']);
+});
+
+test('gh 失敗時印 DEPS_PROSE_FAILED，其他檢查照跑', t => {
+  const { probe, pilot } = fixture(t, { issues: null });
+  writeFileSync(join(pilot, 'hold'), '');
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), ['HOLD', 'DEPS_PROSE_FAILED gh repo view 失敗：HTTP 502: Bad Gateway']);
 });
