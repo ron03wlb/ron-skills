@@ -108,7 +108,7 @@ Regenerated from the store and git at each drain, never edited by hand (`pilot-p
 - pilot/integration 370114b
 ```
 
-- One bullet per batch whose `current:` is not `closed`, with its `current:` value, and one sub-bullet per member: `#<n> <state>` and its candidate (a SHA shortened to 7 characters); `- 沒有開著的 batch` when there is none.
+- One bullet per batch whose `current:` is not `closed`, with its `current:` value (`(沒有 current:)` when the line is missing), and one sub-bullet per member, `moved` ones included: `#<n> <state>` and its candidate, a SHA shortened to 7 characters and any other text as written; `- 沒有開著的 batch` when there is none.
 - One bullet per open gate: id, Issue, question or section title, and how long since `opened`; `- 沒有開著的 gate` when there is none.
 - One bullet per open request, its line as written; `- 沒有開著的 request` when there is none.
 - The SHAs of `origin/<main branch>` (as of the last fetch), the main branch, and the integration branch, `none` for a missing ref.

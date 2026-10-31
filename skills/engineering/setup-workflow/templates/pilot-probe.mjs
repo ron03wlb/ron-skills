@@ -7,7 +7,8 @@
 //   --integration 整合分支，預設 pilot/integration；--main 主分支，預設 main。讀 running 成員要 ORCA_CLI_COMMAND，沒有時其他檢查照跑。
 //   --apply：把這一輪讀到的 `WORKER <n> DONE <sha>`、`STOP <cause>` 寫回 batch checkpoint 的成員列（state `done` 與 candidate SHA、
 //            state `stop`），只改那一列的這兩欄；`merged` 的 batch 印 IN_MAIN 時把 `current: merged` 改成 `pushed`（SHA 與附註不動）。
-//            寫回後再讀一次，沒寫進去（對不到唯一一列 running 的成員列等）印 APPLY_MISS <key> <n|current> <原因>，exit 1。
+//            對不到唯一一列 running 的成員列時不寫檔，印 APPLY_MISS <key> <n> rows <列數>；寫回後再讀一次沒對上時印 APPLY_MISS <key> <n|current> verify
+//            （檔案已經寫了，不還原）；有 APPLY_MISS 就 exit 1。
 //   --status：最後從 checkpoint、gates.md、requests.md、coordinator 與 git 重寫 `.scratch/pilot/status.md`（格式見 PILOT-STORE.md），不印任何行。
 //   兩個旗標都不改其他輸出行，stdout 與不帶旗標時相同（APPLY_MISS 除外）。
 //   Bare guard：同目錄有 pilot-unbare.sh（專案自備，`<checkout> <時機>`，還原時印 UNBARE）時先跑它（時機 probe），沒有就略過。
@@ -115,6 +116,9 @@ export function adapterAhead(checkout, { integration = 'pilot/integration', main
     return ancestor.status === 0;
   }).map(path => `ADAPTER_AHEAD ${path}`);
 }
+
+/** `.scratch/pilot/` 裡的 batch checkpoint 檔名，依名稱排序。 */
+const batchFiles = pilot => (existsSync(pilot) ? readdirSync(pilot) : []).filter(file => /^batch-.+\.md$/.test(file)).sort();
 
 const readStore = (pilot, name) => (existsSync(join(pilot, name)) ? readFileSync(join(pilot, name), 'utf8') : '');
 
@@ -233,6 +237,7 @@ export function applyResults(file, key, results) {
       return cells.length >= 8 && cells[0] === n && cells[6] === 'running' ? [i] : [];
     });
     if (rows.length !== 1) { misses.push(`APPLY_MISS ${key} ${n} rows ${rows.length}`); continue; }
+    // `split('|')` 的第 0 段是行首 `|` 之前的空字串，所以 tableCells 的第 6、7 格（state、candidate）在這裡是第 7、8 段。
     const parts = lines[rows[0]].split('|');
     parts[7] = ` ${state} `;
     if (sha) parts[8] = ` ${sha} `;
@@ -269,9 +274,8 @@ export function statusReport(checkout, { integration = 'pilot/integration', main
   const pilot = join(checkout, '.scratch/pilot');
   const coordinator = readStore(pilot, 'coordinator').match(/^pid \d+\b.*\bname (.+)$/m)?.[1].trim() ?? '(none)';
   const out = [`# pilot status（${now(at)}，coordinator ${coordinator}）`, ''];
-  const batches = (existsSync(pilot) ? readdirSync(pilot) : []).filter(file => /^batch-.+\.md$/.test(file)).sort();
   let open = 0;
-  for (const file of batches) {
+  for (const file of batchFiles(pilot)) {
     const { current, members } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
     if (/^closed\b/.test(current)) continue;
     open++;
@@ -297,9 +301,8 @@ export function statusReport(checkout, { integration = 'pilot/integration', main
 export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false } = {}) {
   const pilot = join(checkout, '.scratch/pilot');
   const out = [...checkoutState(checkout, main), ...adapterAhead(checkout, { integration, main }), ...openRows(pilot)];
-  const batches = (existsSync(pilot) ? readdirSync(pilot) : []).filter(file => /^batch-.+\.md$/.test(file)).sort();
   const landing = [];
-  for (const file of batches) {
+  for (const file of batchFiles(pilot)) {
     const key = file.slice('batch-'.length, -'.md'.length);
     const { current, members, regression, sha } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
     const active = members.filter(m => !/^moved\b/.test(m.state));

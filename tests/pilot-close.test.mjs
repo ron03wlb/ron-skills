@@ -194,7 +194,7 @@ test('照 Close 依序做完每一步，母單子單全部結束就留言關閉�
   assert.equal(f.issues()[35].comments.length, 1);
 });
 
-// retro ron-skills-5b：LANDED 之後不用先手改成 `pushed`，`current: merged` 的 batch 跑完 Close 一樣是 `closed`。
+// coordinator 的 retro：LANDED 之後不用先手改成 `pushed`，`current: merged` 的 batch 跑完 Close 一樣是 `closed`。
 test('current 還是 merged 時 Close 照樣做完並寫成 closed', t => {
   const f = fixture(t, { pushed: true });
   const file = join(f.repo, '.scratch/pilot/batch-76.md');
