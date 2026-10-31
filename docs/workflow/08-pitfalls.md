@@ -8,14 +8,14 @@
 
 ### WSL
 
-WSL 專屬的 workaround（例如 worktree 操作後還原 `core.bare`）在每個平台都無條件執行，其他平台無害，不必依平台分支。
+這幾項只在 WSL 發生，但每項的做法都標了「其他平台無害」：照做不會出錯，所以不必依平台分支（例如 `core.bare` 的檢查在每個平台都無條件跑）。
 
 | 症狀 | 原因 | 做法 |
 | --- | --- | --- |
-| Orca `worktree create` 回 `runtime_unavailable` 或 `runtime_timeout`，重試後多出一個 `<name>-2` | 從 WSL 呼叫時，回應早於實際完成 | 只呼叫一次，用 `git worktree list` 輪詢確認；絕不重試 |
-| Orca `worktree create --repo path:<WSL 路徑>` 回 `repo_not_found`（帶 `--agent` 時變成 `agent_session_operation_unknown`） | WSL 下 Orca 以 Windows UNC 路徑記錄 repo | 不帶 `--repo`，在該 repo 的 checkout 執行，讓 Orca 從 cwd 推斷 |
-| Orca 的 worktree 操作（create、rm）之後，主 checkout 在 `git worktree list` 顯示 `(bare)`，`git status` 回 `must be run in a work tree` | 從 WSL 建立或移除 worktree 時，Orca 把主 repo `.git/config` 的 `core.bare` 改成 `true`，不一定在指令當下發生 | 每個 tick 開頭與每次 `worktree create`、`worktree rm` 之後，在主 checkout 跑 `git rev-parse --is-bare-repository`，印出 `true` 就執行 `git config core.bare false`（ron-skills 用 `scripts/pilot-unbare.sh`） |
-| WSL 裡 headless Chromium 截圖的中文變方框 | WSL 預設沒有中文字型 | 把 Noto Sans TC 放進 `~/.local/share/fonts/`、在 fontconfig 加 fallback、`fc-cache -f` |
+| Orca `worktree create` 回 `runtime_unavailable` 或 `runtime_timeout`，重試後多出一個 `<name>-2` | 從 WSL 呼叫時，回應早於實際完成 | 只呼叫一次，用 `git worktree list` 輪詢確認；絕不重試。其他平台無害 |
+| Orca `worktree create --repo path:<WSL 路徑>` 回 `repo_not_found`（帶 `--agent` 時變成 `agent_session_operation_unknown`） | WSL 下 Orca 以 Windows UNC 路徑記錄 repo | 不帶 `--repo`，在該 repo 的 checkout 執行，讓 Orca 從 cwd 推斷。其他平台無害 |
+| Orca 的 worktree 操作（create、rm）之後，主 checkout 在 `git worktree list` 顯示 `(bare)`，`git status` 回 `must be run in a work tree` | 從 WSL 建立或移除 worktree 時，Orca 把主 repo `.git/config` 的 `core.bare` 改成 `true`，不一定在指令當下發生 | 每個 tick 開頭與每次 `worktree create`、`worktree rm` 之後，在主 checkout 跑 `git rev-parse --is-bare-repository`，印出 `true` 就執行 `git config core.bare false`（ron-skills 用 `scripts/pilot-unbare.sh`）。其他平台無害 |
+| WSL 裡 headless Chromium 截圖的中文變方框 | WSL 預設沒有中文字型 | 把 Noto Sans TC 放進 `~/.local/share/fonts/`、在 fontconfig 加 fallback、`fc-cache -f`。其他平台無害 |
 
 ### macOS
 
@@ -23,7 +23,7 @@ WSL 專屬的 workaround（例如 worktree 操作後還原 `core.bare`）在每�
 | --- | --- | --- |
 | 測試在 macOS 比對路徑失敗，期望 `/var/folders/…` 實際是 `/private/var/folders/…` | macOS 的 `os.tmpdir()` 在 `/var` 底下，而 `/var` 是 `/private/var` 的 symlink；`git` 與 `realpath` 回的是解開後的路徑 | 測試的暫存目錄先取 realpath 再比對（ron-skills 用 `realTmpdir()`） |
 | `bin/` 下的腳本在 macOS 報 `declare: -A: invalid option` | macOS 內建的 `/bin/bash` 是 3.2 | `bin/` 只用 bash 3.2 語法；複雜的邏輯改寫成 node |
-| `sed -i 's/…/…/' <檔>` 在 macOS 報 `invalid command code` 或把下一個參數當成備份後綴 | BSD 版 `sed -i` 一定要接備份後綴參數，GNU 版不接 | 兩邊都通的寫法是 `sed -i.bak '…' <檔>` 再刪掉 `.bak`，或改用 node；可攜性檢查會擋 GNU 專屬寫法 |
+| `sed -i 's/…/…/' <檔>` 在 macOS 報 `invalid command code` 或把下一個參數當成備份後綴 | BSD 版 `sed -i` 一定要接備份後綴參數，GNU 版不接 | 兩邊都通的寫法是 `sed -i.bak '…' <檔>` 再刪掉 `.bak`，或改用 node；可攜性檢查兩邊專屬的寫法都擋，只放行 `-i.bak` |
 | 管線後面接 `paste -sd+`，在 macOS 只印出 usage | BSD `paste` 要明寫 `-` 才讀 stdin | 寫成 `paste -sd+ -`，兩邊都通 |
 | 讀 `/proc` 的腳本在 macOS 拿不到資料 | macOS 沒有 `/proc` | 不讀 `/proc`；改用環境變數標記或 `ps`，平台判斷用 `process.platform` |
 | 兩個只差大小寫的檔名在 macOS checkout 後只剩一個 | macOS 預設的檔案系統不分大小寫 | 不讓 repo 裡出現只差大小寫的路徑；可攜性檢查會擋 |

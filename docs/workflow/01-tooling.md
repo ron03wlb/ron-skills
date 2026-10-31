@@ -41,8 +41,6 @@ controller 與 worker 是同一個 `/issue-run` skill 的兩種模式：沒有 c
 | Linux | 支援 | 一般發行版；`orca` 這個名稱可能是 GNOME 螢幕閱讀器，Orca 可用與否只看 `ORCA_CLI_COMMAND` |
 | 原生 Windows | 不支援 | 環境站在這裡停下、不寫檔，提示改用 WSL2 |
 
-WSL 專屬的 workaround 怎麼處理其他平台，見 [08 常見坑](08-pitfalls.md#wsl)。
-
 ## 三層 skill 怎麼疊
 
 | 層 | 來源 | 內容 | 誰改 |
