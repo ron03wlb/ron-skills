@@ -5,8 +5,8 @@
 //   每個 done 的 Issue 成員一行 `Closes #<n>`（依號碼）；請求分支成員（Issue 欄 `-`）只列 batch。結尾是署名。
 //   staged、dispatched、pushed、closed 的 batch 不列（pushed 已在 main 上）；moved 的成員不算。
 // stdout：沒有 --out 時印 body；有 --out 時寫進檔案，印 `PR_BODY <file> batches <n> closes <m>`。
-//   沒有 merged batch 印 `STOP no-merged-batch`；某個 batch 最後的 regression 不是它的 staged SHA exit 0 印 `STOP regression <key>`。
-// exit 0；4 STOP；用法錯誤 2。
+//   沒有 merged batch 印 `STOP no-merged-batch`；某個 batch 最後的 `regression:` 行不是「它的 staged SHA 加 `exit 0`」印 `STOP regression <key>`（不寫檔）。
+// exit：0 成功；4 STOP；2 用法錯誤。
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { storeDir, tableCells, usage } from './lib/pilot-store.mjs';
