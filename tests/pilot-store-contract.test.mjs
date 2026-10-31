@@ -9,7 +9,7 @@ const CONTRACT = 'skills/engineering/issue-pilot/PILOT-STORE.md';
 const contract = read(CONTRACT);
 
 test('契約逐一涵蓋 pilot 存檔的每個檔案', () => {
-  for (const file of ['coordinator', 'sessions.md', 'hold', 'decisions.md', 'requests.md', 'gates.md', 'preferences.md', 'status.md', 'briefs/', 'batch-<key>.md']) {
+  for (const file of ['coordinator', 'sessions.md', 'hold', 'decisions.md', 'requests.md', 'sources', 'gates.md', 'preferences.md', 'status.md', 'briefs/', 'batch-<key>.md']) {
     assert.match(contract, new RegExp(`^## \`[^\`\\n]*${file.replace(/[.*<>/]/g, '\\$&')}\``, 'm'), `缺少 ${file} 一節`);
   }
 });
@@ -45,4 +45,19 @@ test('skill、adapter 範本、本 repo adapter 與流程文件都連到契約�
     assert.ok(!text.includes('pid <CLAUDE_PID>   loop'), `${path} 仍描述 coordinator 檔的行格式`);
     assert.ok(!text.includes('handoff from-session <'), `${path} 仍描述 sessions.md 的 handoff 行`);
   }
+});
+
+// 寫存檔的 5 支正本（#56）：契約列出每支的指令與結果行；正本不能帶任何專案的路徑或名稱，專案值一律由參數傳入。
+const PILOT_SCRIPTS = ['pilot-register', 'pilot-decision', 'pilot-request', 'pilot-hold', 'pilot-sources'];
+test('契約的 Canonical scripts 列出每支寫存檔的正本，正本不含專案字樣', () => {
+  const section = contract.slice(contract.indexOf('## Canonical scripts'));
+  assert.ok(section.startsWith('## Canonical scripts'), '缺少 Canonical scripts 一節');
+  for (const name of PILOT_SCRIPTS) {
+    assert.ok(section.includes(`| \`${name}.mjs\` |`), `Canonical scripts 沒有 ${name}.mjs`);
+    for (const file of [`${name}.mjs`, `${name}.test.mjs`]) {
+      const text = read(`skills/engineering/setup-workflow/templates/${file}`);
+      assert.doesNotMatch(text, /spay2|ron-skills|\/Users\/|\/home\//, `${file} 含專案字樣`);
+    }
+  }
+  assert.doesNotMatch(read('skills/engineering/setup-workflow/templates/lib/pilot-store.mjs'), /spay2|ron-skills|\/Users\/|\/home\//, 'lib/pilot-store.mjs 含專案字樣');
 });

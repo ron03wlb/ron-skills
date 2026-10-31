@@ -30,3 +30,10 @@ test('.claude/settings.json 以 PreToolUse（Edit|Write|Bash）接上主 checkou
 test('scripts/pilot-handoff.mjs 與它 import 的 orca-session-send、orca-session-split 都登記為副本', () => {
   for (const path of ['scripts/pilot-handoff.mjs', 'scripts/orca-session-send.mjs', 'scripts/orca-session-split.mjs']) assert.ok(copies[path], `清單沒有 ${path}`);
 });
+
+// pilot 存檔的寫入者由副本負責，adapter 的 Pilot 段不再要求手寫（#56）。
+test('清單涵蓋寫 pilot 存檔的 5 個副本與它們的共用 lib', () => {
+  for (const name of ['pilot-register', 'pilot-decision', 'pilot-request', 'pilot-hold', 'pilot-sources', 'lib/pilot-store']) {
+    assert.ok(copies[`scripts/${name}.mjs`], `清單沒有 scripts/${name}.mjs`);
+  }
+});
