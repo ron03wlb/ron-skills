@@ -114,10 +114,14 @@ function writeRow(checkpoint, n, cells) {
   writeFileSync(checkpoint, `${lines.join('\n')}\n`);
 }
 
-/** 認領檢查：這個 session 的認領傳回 undefined，否則傳回 STOP 原因（不含 `STOP <n> ` 前綴）。 */
+/**
+ * 認領檢查：這個 session 的認領傳回 undefined，否則傳回 STOP 原因（不含 `STOP <n> ` 前綴）。
+ * spawnSync 期間總預算的計時器不會觸發，所以 gh 自己限時 60 秒；原因壓成一行，stdout 才維持每個成員一行。
+ */
 function claimStop(n) {
-  const viewed = run('gh', ['issue', 'view', n, '--json', 'comments']);
-  if (viewed.status !== 0) return `claim-check ${(viewed.stderr ?? '').trim() || `exit ${viewed.status ?? viewed.error?.code}`}`;
+  const viewed = run('gh', ['issue', 'view', n, '--json', 'comments'], { timeout: 60000 });
+  const detail = (viewed.stderr ?? '').trim().replace(/\s*\n\s*/g, ' ');
+  if (viewed.status !== 0) return `claim-check ${detail || `exit ${viewed.status ?? viewed.error?.code}`}`;
   try {
     return claimedBy(JSON.parse(viewed.stdout).comments, defaultSession()) ? undefined : 'not-claimed';
   } catch {
