@@ -8,7 +8,7 @@
 //       node scripts/gh-tracker.mjs sub-issue add|remove <parent> <child>
 //       node scripts/gh-tracker.mjs blocked-by add|remove <n> <blocker>
 // 在 repo 根目錄執行：allow 規則比對的是 `node scripts/gh-tracker.mjs` 這個相對路徑。
-// 不合規則時 exit 2、不呼叫 gh；其餘照 gh 的 exit code。主機也要寫死：不帶主機的 --repo 與 gh api 會用 gh config 的預設主機，不一定是 github.com。
+// 不合規則時 exit 2、不呼叫 gh；gh 無法執行、或查到的 database id 不是數字時也 exit 2；其餘照 gh 的 exit code。主機也要寫死：不帶主機的 --repo 與 gh api 會用 gh config 的預設主機，不一定是 github.com。
 // gh 收到的環境也沒有 GH_HOST、GH_REPO。
 // --body-file 照樣讀本機任何檔案，內容會公開貼到 Issue 上：只指向要貼的檔。
 import { spawnSync } from 'node:child_process';

@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
+Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for reads; this repo's tracker writes go through `scripts/gh-tracker.mjs` (below).
 
 本 repo 的留言、label 與 assignee、關單、開單、sub-issue、依賴一律在 repo 根目錄以 `node scripts/gh-tracker.mjs` 寫入（allow 規則比對的是這個相對路徑）：`.claude/settings.json` 只放行它，直接跑 gh 的留言、關單在 auto mode 會被當成 External System Writes 擋下（#96）。它固定寫 github.com 上的 `ron03wlb/ron-skills`、只收數字 Issue 號碼和白名單旗標（用法見腳本開頭），其他 repo 的寫入照舊用 `gh … --repo <owner>/<repo>`，交給人核准；wrapper 沒涵蓋的寫入（如 `gh issue reopen`）在 auto mode 仍會被擋或詢問。讀取不受影響，照下列 `gh` 指令。
 
