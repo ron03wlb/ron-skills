@@ -83,7 +83,7 @@ if (fs.existsSync(worldFile)) {
     labels: { nodes: issue.labels.map(name => ({ name })) },
     blockedBy: { nodes: [] },
     subIssuesSummary: { total: world.filter(child => child.parent === issue.number).length },
-    parent: issue.parent ? { number: issue.parent, state: find(issue.parent).state, repository: { nameWithOwner: 'acme/app' } } : null,
+    parent: issue.parent ? { number: issue.parent, state: find(issue.parent).state, repository: { nameWithOwner: 'acme/app' }, labels: { nodes: find(issue.parent).labels.map(name => ({ name })) } } : null,
   }));
 }
 if (issues === null) { process.stderr.write('HTTP 502: Bad Gateway\\n'); process.exit(1); }
@@ -862,4 +862,20 @@ test('--apply 寫入失敗時印 PARENT_APPLY_FAILED <n> <錯誤> 並 exit 1，�
   assert.equal(result.status, 1);
   assert.deepEqual(lines(result), ['PARENT_LABEL 10', 'PARENT_LABEL 20', 'PARENT_APPLY_FAILED 10 gh issue edit exit 1：HTTP 403: Resource not accessible']);
   assert.deepEqual(lines(probe()), ['PARENT_LABEL 10']);
+});
+
+// review：已關閉又缺 parent label 的母單，查詢只列開著的單，一次 --apply 只重開、下一輪才補 label。
+test('已關閉的母單同時缺 parent label 時一起印 PARENT_LABEL，一次 --apply 修完', t => {
+  const { probe, ghLog } = fixture(t, { world: [
+    { number: 40, state: 'CLOSED', labels: ['ready-for-agent'] },
+    { number: 41, state: 'OPEN', labels: [], parent: 40 },
+  ] });
+  const result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), ['PARENT_LABEL 40', 'PARENT_REOPEN 40']);
+  assert.deepEqual(ghWrites(ghLog), [
+    ['issue', 'edit', '40', '--add-label', 'parent', '--remove-label', 'ready-for-agent'],
+    ['issue', 'reopen', '40'],
+  ]);
+  assert.equal(probe().stdout, '');
 });

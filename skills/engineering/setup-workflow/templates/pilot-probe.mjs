@@ -21,7 +21,7 @@
 //   開著的列：REQUEST <requests.md 原文>｜GATE <id> <Issue> <question 或段落標題>｜GATE_MALFORMED <id> <把 resolved 寫進別的欄位的那一行>
 //   Issue 依賴：DEPS_PROSE <n> #<m>（開著的 `ready-for-agent` Issue 內文以「依賴」帶出 #m，#m 還開著，blocked_by 卻沒有它；Pool 只讀 blocked_by）｜
 //               DEPS_PROSE_FAILED <錯誤>（在主 checkout 跑 gh 失敗，其他檢查照跑；同一次查詢的 PARENT_* 也不印）
-//   母單（#164）：PARENT_LABEL <n>（開著、有 sub-issue，卻沒有 `parent` label 或還掛 triage label）｜
+//   母單（#164）：PARENT_LABEL <n>（開著、或已關閉卻有開著子單的母單，沒有 `parent` label 或還掛 triage label）｜
 //               PARENT_REOPEN <n>（開著的子單的母單 #n 在同一個 repo、已關閉）；各依號碼、每張一次
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
 //                 WORKER <n> STUCK exited|stuck-after <分鐘>|orca <錯誤碼>|no-orca|checkpoint <欄位> <值>
@@ -44,7 +44,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gateLines, isOpenRequest, now, openGates, tableCells } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 
-const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{number body labels(first:50){nodes{name}} blockedBy(first:50){nodes{number repository{nameWithOwner}}} subIssuesSummary{total} parent{number state repository{nameWithOwner}}}}}}`;
+const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{number body labels(first:50){nodes{name}} blockedBy(first:50){nodes{number repository{nameWithOwner}}} subIssuesSummary{total} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
 const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const TRACKER = join(dirname(fileURLToPath(import.meta.url)), 'gh-tracker.mjs');
@@ -176,24 +176,28 @@ export function depsProse(issues, repo) {
 export const TRIAGE_STATES = ['needs-triage', 'needs-info', 'ready-for-agent', 'ready-for-human', 'wontfix'];
 
 /**
- * 母單的整理（#164）：開著、有 sub-issue 卻沒有 `parent` label 或還掛 triage label 的印 `PARENT_LABEL <n>`；
- * 開著的子單指向已關閉的（同一個 repo 的）母單時，對那張母單印 `PARENT_REOPEN <n>`。號碼小的先，每張一次。
+ * 母單的整理（#164）：有 sub-issue 卻沒有 `parent` label 或還掛 triage label 的母單印 `PARENT_LABEL <n>`；
+ * 開著的子單指向已關閉的（同一個 repo 的）母單時，對那張母單印 `PARENT_REOPEN <n>`。查詢只列開著的單，已關閉的母單從子單的 `parent`
+ * 讀 label，所以它同時缺 label 時一起印 PARENT_LABEL，一次 `--apply` 修完。各依號碼、每張一次。
  * 傳回 `{ lines, fixes }`，`fixes` 是每行對應的 tracker 寫入（給 `--apply`，參數形式同 `gh issue`）。
  */
 export function parentFixes(issues, repo) {
-  const label = [];
+  const label = new Map();
   const reopen = new Map();
-  for (const issue of issues) {
-    const names = issue.labels.nodes.map(({ name }) => name);
+  const checkLabels = (n, labels) => {
+    const names = labels.nodes.map(({ name }) => name);
     const triage = TRIAGE_STATES.filter(name => names.includes(name));
-    if (issue.subIssuesSummary?.total > 0 && (!names.includes('parent') || triage.length)) {
-      label.push({ n: issue.number, args: ['edit', String(issue.number), '--add-label', 'parent', ...triage.flatMap(name => ['--remove-label', name])] });
-    }
+    if (!names.includes('parent') || triage.length) label.set(n, { n, args: ['edit', String(n), '--add-label', 'parent', ...triage.flatMap(name => ['--remove-label', name])] });
+  };
+  for (const issue of issues) {
+    if (issue.subIssuesSummary?.total > 0) checkLabels(issue.number, issue.labels);
     const { parent } = issue;
-    if (parent && parent.state === 'CLOSED' && parent.repository?.nameWithOwner === repo) reopen.set(parent.number, { n: parent.number, args: ['reopen', String(parent.number)] });
+    if (parent?.state !== 'CLOSED' || parent.repository?.nameWithOwner !== repo) continue;
+    reopen.set(parent.number, { n: parent.number, args: ['reopen', String(parent.number)] });
+    if (parent.labels) checkLabels(parent.number, parent.labels);
   }
-  const sorted = (kind, items) => items.sort((a, b) => a.n - b.n).map(item => ({ ...item, line: `${kind} ${item.n}` }));
-  const all = [...sorted('PARENT_LABEL', label), ...sorted('PARENT_REOPEN', [...reopen.values()])];
+  const sorted = (kind, items) => [...items.values()].sort((a, b) => a.n - b.n).map(item => ({ ...item, line: `${kind} ${item.n}` }));
+  const all = [...sorted('PARENT_LABEL', label), ...sorted('PARENT_REOPEN', reopen)];
   return { lines: all.map(({ line }) => line), fixes: all };
 }
 
@@ -215,11 +219,19 @@ function trackerWrite(checkout, args) {
   return `${cmd === 'node' ? 'gh-tracker' : 'gh issue'} ${args[0]} exit ${result.status ?? result.error?.code}：${(result.stderr || '').trim().split('\n')[0]}`;
 }
 
+/** `--apply`：照 PARENT_* 修正 tracker，寫入失敗的每張印 `PARENT_APPLY_FAILED <n> <錯誤>`，其他照修。 */
+function applyParentFixes(checkout, fixes) {
+  return fixes.flatMap(({ n, args }) => {
+    const error = trackerWrite(checkout, args);
+    return error ? [`PARENT_APPLY_FAILED ${n} ${error}`] : [];
+  });
+}
+
 /**
- * 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE 與 PARENT_* 行（同一次查詢）；gh 失敗時只印 DEPS_PROSE_FAILED，不中斷其他檢查。
- * `apply` 時照 PARENT_* 修正 tracker，寫入失敗另印 `PARENT_APPLY_FAILED <n> <錯誤>`。
+ * 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE 與 PARENT_* 行（同一次查詢），以及 PARENT_* 對應的 tracker 寫入（不在這裡寫）；
+ * gh 失敗時只有一行 DEPS_PROSE_FAILED，不中斷其他檢查。
  */
-export function trackerLines(checkout, { apply = false } = {}) {
+export function trackerLines(checkout) {
   try {
     const repo = gh(checkout, 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim();
     const [owner, name] = repo.split('/');
@@ -230,13 +242,9 @@ export function trackerLines(checkout, { apply = false } = {}) {
       ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
     }
     const { lines, fixes } = parentFixes(issues, repo);
-    const failed = apply ? fixes.flatMap(({ n, args }) => {
-      const error = trackerWrite(checkout, args);
-      return error ? [`PARENT_APPLY_FAILED ${n} ${error}`] : [];
-    }) : [];
-    return [...depsProse(issues, repo), ...lines, ...failed];
+    return { lines: [...depsProse(issues, repo), ...lines], fixes };
   } catch (error) {
-    return [`DEPS_PROSE_FAILED ${error.message}`];
+    return { lines: [`DEPS_PROSE_FAILED ${error.message}`], fixes: [] };
   }
 }
 
@@ -509,7 +517,9 @@ export function statusReport(checkout, { integration = 'pilot/integration', main
 
 export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false } = {}) {
   const pilot = join(checkout, '.scratch/pilot');
-  const out = [...checkoutState(checkout, main), ...adapterAhead(checkout, { integration, main }), ...openRows(pilot), ...trackerLines(checkout, { apply })];
+  const tracker = trackerLines(checkout);
+  const out = [...checkoutState(checkout, main), ...adapterAhead(checkout, { integration, main }), ...openRows(pilot), ...tracker.lines];
+  if (apply) out.push(...applyParentFixes(checkout, tracker.fixes));
   const landing = [];
   const batches = [];
   for (const file of batchFiles(pilot)) {
