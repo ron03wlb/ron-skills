@@ -32,7 +32,7 @@ controller 與 worker 是同一個 `/issue-run` skill 的兩種模式：沒有 c
 
 ## 支援平台
 
-正本、測試與 `bin/` 在下面三種平台都要能通過檢查入口。`/setup-workflow` 的環境站會偵測這台機器的平台，並問團隊還有誰用哪些平台，記進 adapter 的 `## Platforms`。
+正本、測試與 `bin/` 在下面支援的三種平台都要能通過檢查入口。`/setup-workflow` 的環境站會偵測這台機器的平台，並問團隊還有誰用哪些平台，記進 adapter 的 `## Platforms`。
 
 | 平台 | 支援 | 說明 |
 | --- | --- | --- |
@@ -41,7 +41,7 @@ controller 與 worker 是同一個 `/issue-run` skill 的兩種模式：沒有 c
 | Linux | 支援 | 一般發行版；`orca` 這個名稱可能是 GNOME 螢幕閱讀器，Orca 可用與否只看 `ORCA_CLI_COMMAND` |
 | 原生 Windows | 不支援 | 環境站在這裡停下、不寫檔，提示改用 WSL2 |
 
-WSL 專屬的 workaround（例如 worktree 操作後還原 `core.bare`）在每個平台都無條件執行，其他平台上無害，不必依平台分支。
+WSL 專屬的 workaround 怎麼處理其他平台，見 [08 常見坑](08-pitfalls.md#wsl)。
 
 ## 三層 skill 怎麼疊
 

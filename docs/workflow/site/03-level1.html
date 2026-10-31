@@ -21,7 +21,7 @@
 <p>L1 的目標：在一個還沒有 adapter 的 repo 裡，把第一張 Issue 用 <code>/issue-run</code> 跑到本機 candidate commit。照下面的 checklist 由上往下做，每一步都有「做完的樣子」，對不上就停在那一步。</p>
 <p>實例：ron-skills 的 adapter <a href="../../agents/issue-run.md"><code>docs/agents/issue-run.md</code></a> 只看 Tracker、Readiness、Checks、Candidate and acceptance、Evidence and closing 五段，就是一份 L1 adapter；其餘段落屬於 L3。唯一檢查入口是 <code>bin/check</code>。</p>
 <h2 id="checklist">Checklist</h2>
-<p>第 1～3 步是 <code>/setup-workflow</code> 開頭的三站：環境 → Host → 等級。每一站都只讀不寫，先列出證據、問一個問題，然後停下來等你確認，確認了才進下一站；三站都確認之後它才列出要寫的檔案（第 4 步），你再確認一次才寫入。哪一站停在「不寫檔、只給修正指令」，修好之後重跑 <code>/setup-workflow</code>，從第一站重新開始。</p>
+<p>第 1～3 步是 <code>/setup-workflow</code> 開頭的三站：環境 → Host → 等級。每一站都只讀不寫，先列出證據、問這一站的問題，然後停下來等你確認，確認了才進下一站；三站都確認之後它才列出要寫的檔案（第 4 步），你再確認一次才寫入。哪一站停在「不寫檔、只給修正指令」，修好之後重跑 <code>/setup-workflow</code>，從第一站重新開始。</p>
 <h3 id="1-環境站">1. 環境站</h3>
 <p>先在這台機器裝 skills（每台機器一次）：</p>
 <pre><code class="language-bash">git clone https://github.com/ron03wlb/ron-skills ~/code/ron-skills   # private：先取得讀取權限
@@ -47,14 +47,14 @@ git clone https://github.com/backnotprop/pstack ~/code/pstack
 </ul>
 <p>做完的樣子：Host 站印出 <code>HOST ok</code>，你確認了 tracker host 與程式碼 host。</p>
 <h3 id="3-等級站">3. 等級站</h3>
-<p>等級站需要一條單一檢查入口：一條指令跑完這個 repo 所有該跑的檢查（lint、型別、測試、文件守門），全過才 exit 0。pre-commit、CI 和 adapter 都只呼叫它，檢查清單只寫在這一個地方。等級站會找 <code>bin/check</code>、<code>npm run check</code>、<code>make check</code>，或 adapter 已寫的 Checks；找不到就停下、不寫任何檔，先做好它再重跑。</p>
+<p>等級站需要一條單一檢查入口：一條指令跑完這個 repo 所有該跑的檢查（lint、型別、測試、文件守門），全過才 exit 0。pre-commit、CI 和 adapter 都只呼叫它，檢查清單只寫在這一個地方。等級站會找 <code>bin/check</code>、<code>npm run check</code>、<code>make check</code>，或 adapter 已寫的 Checks；找不到就停下、不寫任何檔、也不問是非題，先做好它再重跑（回答「願意做」也一樣要先做好）。</p>
 <ul>
 <li>已經有的就沿用：<code>npm test</code>、<code>make check</code>、<code>./gradlew check</code>、<code>pytest</code>。</li>
 <li>沒有的就建一個 <code>bin/check</code>，把現有的指令依序串起來，開頭 <code>set -euo pipefail</code>。在乾淨的 <code>main</code> 上跑它是 exit 0；故意弄壞一個測試再跑是非 0。這兩個 exit code 記下來，第 6 步要用。</li>
 </ul>
 <p>有了檢查入口，等級站偵測現況（目前的等級與每個訊號的證據），列出量測證據（近 90 天貢獻者數、同時存在的 Issue 分支與 worktree、開放 Issue 數、有沒有 CI、有沒有 gated 工作，不設門檻數字），再問下一級進入條件的是非題（題目對應 <a href="index.html#導入等級">README 等級表</a>的進入條件）。都符合才建議升一級，否則建議維持目前等級，維持也是合理的建議。</p>
 <ul>
-<li>一次最多升一級。要跳級得你明說，它會列出跳過的每一級還沒滿足的訊號與條件，你看過再確認。</li>
+<li>一次最多升一級。要跳級得你明說，它會列出跳過的每一級與目標等級還沒滿足的訊號與條件，你看過再確認。</li>
 <li>環境站標為不可選的等級（沒有 Orca 的 L3）不會是建議目標。</li>
 </ul>
 <p>做完的樣子：你確認了目標等級。</p>
