@@ -38,8 +38,9 @@
 //          沒有 done 印 PARKED <key> <n…>（#163：只剩 stop 的 batch 照跑 pilot-land 只得到 STOP member）；
 //          沒關的 batch 裡 `parked after #<m>` 的成員，在 #m 以 done 留在 `closed` 的 batch 之後印 UNPARK <n>；
 //          current 是 merged／pushed 的 batch 在 git fetch 後比 origin/<主分支>，印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
-//          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA），
-//          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
+//          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA，且那一行是 exit 0），
+//          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> regression-failed <code 或 none>
+//          （#130：最後一行 regression 的 exit 不是 0，或 SHA 後面沒緊接 exit <code>）｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
 //   重疊：OVERLAP <n> <m|integration> <檔案數> files [**<條目>.**…]（開著的 batch 裡 running、done 的成員分支已 commit 的內容，相對於與整合分支的 merge-base：
 //          兩個成員改到同一個檔，或整合分支自成員的 merge-base 以來也改了它改的檔；`.md` 檔的改動都在 `- **<名稱>.**` 條目裡時細到條目，
 //          相接的行與同一處的插入也算，git 合併時會衝突；同一對只印一行，後面列重疊的條目名稱，#176：條目不帶檔名、不同檔的同名條目只列一次，
@@ -305,12 +306,15 @@ export function trackerLines(checkout) {
 }
 
 /**
- * 解析 batch checkpoint：`current:`、成員表格、最後一行 `regression: <sha>` 的 SHA，
+ * 解析 batch checkpoint：`current:`、成員表格、最後一行 `regression: <sha> exit <code>` 的 SHA 與 exit（SHA 後面不是 `exit <code>` 時 undefined），
  * 與合入的 SHA（`current: merged|pushed <sha>`，沒有就取 regression 的 SHA）。
  */
 export function parseBatch(text) {
   const current = text.match(/^current:\s*(.*)$/m)?.[1].trim() ?? '';
-  const regression = [...text.matchAll(/^regression: ([0-9a-f]{7,40})\b/gm)].at(-1)?.[1];
+  // exit 要緊接在 SHA 之後（PILOT-STORE.md 的格式，pilot-pr-body.mjs 也這樣認），寫在別處的 `exit N` 不算。
+  const lastRegression = [...text.matchAll(/^regression: ([0-9a-f]{7,40})\b(?: exit (\d+)\b)?/gm)].at(-1);
+  const regression = lastRegression?.[1];
+  const regressionExit = lastRegression?.[2];
   const sha = current.match(/^(?:merged|pushed) ([0-9a-f]{7,40})\b/)?.[1] ?? regression;
   const members = [];
   for (const line of text.split('\n')) {
@@ -319,7 +323,7 @@ export function parseBatch(text) {
     const [n, branch, worktree, handle, started, stuckAfter, state, candidate] = cells;
     members.push({ n, branch, worktree, handle, started, stuckAfter, state, candidate });
   }
-  return { current, members, regression, sha };
+  return { current, members, regression, regressionExit, sha };
 }
 
 /**
@@ -359,13 +363,15 @@ export async function workerState(ctx, member, now = Date.now()) {
 
 /**
  * 還沒進 origin/<主分支> 的 `merged` batch：Push gate 的前提是整合分支的 tip 等於最後一次 Regression SHA。
- * 符合時 coordinator 從 Push gate 第 1 步接著做；Integrate 之後又有 commit、或沒有 regression 行時，直接推會送出沒驗過的內容。
+ * 符合時 coordinator 從 Push gate 第 1 步接著做；Integrate 之後又有 commit、沒有 regression 行，
+ * 或最後一行 regression 的 exit 不是 0、沒寫 exit 時（#130：exit 1 被誤判為通過、ff 進了整合分支），直接推會送出沒驗過的內容。
  */
-function mergedNotInMain(checkout, integration, key, regression) {
-  const passed = regression && rev(checkout, `${regression}^{commit}`);
-  if (!passed) return `NOT_IN_MAIN ${key} no-regression`;
+function mergedNotInMain(checkout, integration, key, regression, regressionExit) {
+  const regressionSha = regression && rev(checkout, `${regression}^{commit}`);
+  if (!regressionSha) return `NOT_IN_MAIN ${key} no-regression`;
+  if (regressionExit !== '0') return `NOT_IN_MAIN ${key} regression-failed ${regressionExit ?? 'none'}`;
   const tip = rev(checkout, `refs/heads/${integration}`);
-  return tip === passed ? `RESUME_PUSH ${key}` : `NOT_IN_MAIN ${key} tip ${tip.slice(0, 7) || 'none'}`;
+  return tip === regressionSha ? `RESUME_PUSH ${key}` : `NOT_IN_MAIN ${key} tip ${tip.slice(0, 7) || 'none'}`;
 }
 
 /**
@@ -638,7 +644,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   let running = 0;
   for (const file of batchFiles(pilot)) {
     const key = file.slice('batch-'.length, -'.md'.length);
-    const { current, members, regression, sha } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
+    const { current, members, regression, regressionExit, sha } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
     batches.push({ key, current, members });
     const active = members.filter(m => !/^moved\b/.test(m.state));
     const results = [];
@@ -651,19 +657,19 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     }
     if (apply && results.length) out.push(...applyResults(join(pilot, file), key, results));
     if (/^dispatched\b/.test(current)) out.push(...stageLines(key, active, results));
-    if (/^(merged|pushed)\b/.test(current)) landing.push({ key, sha, regression, merged: /^merged\b/.test(current) });
+    if (/^(merged|pushed)\b/.test(current)) landing.push({ key, sha, regression, regressionExit, merged: /^merged\b/.test(current) });
   }
   out.push(...unparkLines(batches));
   out.push(...overlapLines(checkout, batches, { integration, main }));
   if (landing.length) {
     const fetch = git(checkout, 'fetch', '-q', 'origin');
     if (fetch.status !== 0) out.push(`FETCH_FAILED ${fetch.stderr.trim().split('\n').find(line => line.startsWith('fatal:')) ?? fetch.stderr.trim().split('\n')[0]}`);
-    else for (const { key, sha, regression, merged } of landing) {
+    else for (const { key, sha, regression, regressionExit, merged } of landing) {
       if (!sha) out.push(`NOT_IN_MAIN ${key} no-sha`);
       else if (git(checkout, 'merge-base', '--is-ancestor', sha, `origin/${main}`).status === 0) {
         out.push(`IN_MAIN ${key}`);
         if (apply && merged) out.push(...applyPushed(join(pilot, `batch-${key}.md`), key));
-      } else out.push(merged ? mergedNotInMain(checkout, integration, key, regression) : `NOT_IN_MAIN ${key}`);
+      } else out.push(merged ? mergedNotInMain(checkout, integration, key, regression, regressionExit) : `NOT_IN_MAIN ${key}`);
     }
   }
   if (capacity) {

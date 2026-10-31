@@ -249,7 +249,7 @@ test('merged 的 batch 還沒進 origin/main：tip 等於 Regression SHA 印 RES
   git('switch', '-q', '-c', 'pilot/integration');
   const staged = commit('staged');
   const regression = key => writeFileSync(join(pilot, `batch-${key}.md`), readFileSync(join(pilot, `batch-${key}.md`), 'utf8')
-    + `regression: ${staged} bin/check --upstream exit 0\n`);
+    + `regression: ${staged} exit 0 CHECK_PASS tests 1+2\n`);
   batch('11', `merged ${staged}`, [{ n: 11, state: 'done', candidate: 'abc1234' }]);
   regression('11');
   batch('12', `merged ${staged}`, [{ n: 12, state: 'done', candidate: 'abc1234' }]);
@@ -266,6 +266,36 @@ test('merged 的 batch 還沒進 origin/main：tip 等於 Regression SHA 印 RES
   git('switch', '-q', 'main');
   out = lines(probe());
   assert.ok(out.includes(`NOT_IN_MAIN 11 tip ${moved.slice(0, 7)}`), out.join('\n'));
+});
+
+// #130：batch-96 第一次 stage 的 Regression 是 exit 1 卻被當成通過 ff 進整合分支，checkpoint 是 `merged <sha>` 加 `regression: <sha> exit 1`、
+// tip 等於那個 SHA。只比 tip 會印 RESUME_PUSH，下一任 coordinator 照 Push gate 把沒通過的內容推進 PR；最後一行 regression 的 exit 不是 0
+// 或 SHA 後面沒緊接 `exit <code>`（同 pilot-pr-body.mjs 的認定）時改印 NOT_IN_MAIN <key> regression-failed <code 或 none>。
+test('merged 的 batch 最後一行 regression 沒通過或沒寫 exit：印 NOT_IN_MAIN regression-failed，不印 RESUME_PUSH', t => {
+  const { batch, probe, git, pilot } = fixture(t);
+  git('switch', '-q', '-c', 'pilot/integration');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'staged');
+  const staged = git('rev-parse', 'HEAD');
+  git('switch', '-q', 'main');
+  const regression = (key, ...rows) => writeFileSync(join(pilot, `batch-${key}.md`), readFileSync(join(pilot, `batch-${key}.md`), 'utf8')
+    + rows.map(row => `regression: ${staged} ${row}\n`).join(''));
+  batch('96', `merged ${staged}`, [{ n: 96, state: 'done', candidate: 'abc1234' }]);
+  regression('96', 'exit 1');
+  batch('97', `merged ${staged}`, [{ n: 97, state: 'done', candidate: 'abc1234' }]);
+  regression('97', 'exit 0 CHECK_PASS tests 1+2', 'exit 2');
+  batch('98', `merged ${staged}`, [{ n: 98, state: 'done', candidate: 'abc1234' }]);
+  regression('98', 'note only');
+  batch('95', `merged ${staged}`, [{ n: 95, state: 'done', candidate: 'abc1234' }]);
+  regression('95', 'bin/check --upstream exit 0');
+  batch('99', `merged ${staged}`, [{ n: 99, state: 'done', candidate: 'abc1234' }]);
+  regression('99', 'exit 1', 'exit 0 CHECK_PASS tests 1+2');
+  const out = lines(probe());
+  assert.ok(out.includes('NOT_IN_MAIN 96 regression-failed 1'), out.join('\n'));
+  assert.ok(out.includes('NOT_IN_MAIN 97 regression-failed 2'), out.join('\n'));
+  assert.ok(out.includes('NOT_IN_MAIN 98 regression-failed none'), out.join('\n'));
+  assert.ok(out.includes('NOT_IN_MAIN 95 regression-failed none'), out.join('\n'));
+  assert.ok(out.includes('RESUME_PUSH 99'), out.join('\n'));
+  assert.deepEqual(out.filter(line => /^RESUME_PUSH (95|96|97|98)$/.test(line)), []);
 });
 
 // 主 checkout 的狀態沒問題時不印任何一行，有問題才各印一行：Bare guard 印的行、不在 main、有 hold 檔、
