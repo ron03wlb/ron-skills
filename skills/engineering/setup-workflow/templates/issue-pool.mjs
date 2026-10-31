@@ -14,9 +14,13 @@
 // - 已被指派時，最近一則認領留言必須是這個 session、作者還在指派名單裡，才再認領一次（重派；新留言順便更新 stale 的時間），否則不改 Issue。
 // - 還沒人指派、但最近一則認領是別的 session 在 5 分鐘內留的：對方正在認領，不改 Issue。
 // - 寫入後重讀：這次讀到之後新增的認領留言裡，最早一則不是自己就是別台搶先了，收回自己的留言（指派到這裡一定是同一個帳號，不動）。
+// - 擋下的認領者是這台機器上已交接出去的前任 coordinator（主 checkout 的 `.scratch/pilot/sessions.md` 有它的 handoff 行），
+//   而這個 session 是現任 coordinator（有 start 行、沒交接出去）時，改以前任的 session 認領，成功印 `CLAIMED <n> takeover <session>`（#135）。
 // 被擋時印 `STOP <n> claimed <機器>／<session>`（沒有認領留言、或最近一則認領的作者已不在指派名單時，是指派者登入名），exit 4。
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const USAGE = '用法：node scripts/issue-pool.mjs [--repo <owner>/<name>] [--stale-hours <h>] | claim <n> [--repo <owner>/<name>] [--session <id>]';
@@ -97,6 +101,25 @@ const IN_FLIGHT_MS = 5 * 60_000;
 /** 整則留言只有「認領：<機器>／<session>」一行時回傳認領者；引用或夾在其他文字裡的不算。 */
 const claimerOf = ({ body }) => body.trim().match(/^認領：([^\n]+)$/)?.[1];
 
+/** 主 checkout：`git worktree list` 的第一列，從任何 worktree 呼叫都指回同一處；不在 git repo 裡時是 undefined（claim 照舊 STOP，不像 pilot-dispatch 那樣丟錯）。 */
+function mainCheckout() {
+  const result = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  return result.status === 0 ? result.stdout.split('\n')[0].replace(/^worktree /, '') : undefined;
+}
+
+/** 擋下認領的是本機已交接出去的前任 coordinator、而 claim 的 session 是現任 coordinator（有 start 行、沒交接出去）時，傳回前任的 session；
+ * 都照主 checkout 的 sessions.md（PILOT-STORE.md 的格式）判斷，讀不到時是 undefined。 */
+function takeoverSession(claimer, session) {
+  const [host, previous] = claimer.split('／');
+  const main = host === hostname() && previous ? mainCheckout() : undefined;
+  if (!main) return undefined;
+  let lines;
+  try { lines = readFileSync(join(main, '.scratch/pilot/sessions.md'), 'utf8').split('\n'); } catch { return undefined; }
+  const retired = id => lines.some(line => line.includes(`   handoff from-session ${id} `));
+  const started = id => lines.some(line => line.includes(`   session ${id}   `) || (line.endsWith('  coordinator start') && line.includes(`  ${id}  `)));
+  return retired(previous) && started(session) && !retired(session) ? previous : undefined;
+}
+
 function claim(n, repo, session) {
   const target = [n, ...(repo ? ['--repo', repo] : [])];
   const read = () => JSON.parse(gh('issue', 'view', ...target, '--json', 'assignees,comments'));
@@ -104,24 +127,28 @@ function claim(n, repo, session) {
   const mine = `${hostname()}／${session}`;
   const before = read();
   const last = before.comments.filter(claimerOf).at(-1);
+  let blocker;
   if (before.assignees.length) {
     const logins = before.assignees.map(({ login }) => login);
     if (!last || !logins.includes(last.author.login)) return stop(logins.join(','));
-    if (claimerOf(last) !== mine) return stop(claimerOf(last));
+    if (claimerOf(last) !== mine) blocker = claimerOf(last);
   } else if (last && claimerOf(last) !== mine && Date.now() - Date.parse(last.createdAt) < IN_FLIGHT_MS) {
     // 別的 session 剛留言、還沒指派：當成進行中的認領，不然兩邊都會在對方指派前寫入、各自以為贏了。
-    return stop(claimerOf(last));
+    blocker = claimerOf(last);
   }
+  const takeover = blocker && takeoverSession(blocker, session);
+  if (blocker && !takeover) return stop(blocker);
+  const claimant = takeover ? blocker : mine;
   // 先留言再指派：指派成功、留言失敗時，重跑會被自己沒有留言的指派擋住。
-  gh('issue', 'comment', ...target, '--body', `認領：${mine}`);
+  gh('issue', 'comment', ...target, '--body', `認領：${claimant}`);
   gh('issue', 'edit', ...target, '--add-assignee', '@me');
   const first = read().comments.slice(before.comments.length).find(claimerOf);
-  if (first && claimerOf(first) !== mine) {
+  if (first && claimerOf(first) !== claimant) {
     // 收回搶輸的留言，不然贏家重派時最近一則認領是自己的，會被擋下；輸家的留言在贏家的認領之後，`--delete-last` 刪的是這個帳號最新一則，所以前提是贏家這幾秒內沒有再留言。
     gh('issue', 'comment', ...target, '--delete-last', '--yes');
     return stop(claimerOf(first));
   }
-  console.log(`CLAIMED ${n}`);
+  console.log(takeover ? `CLAIMED ${n} takeover ${takeover}` : `CLAIMED ${n}`);
   return 0;
 }
 
