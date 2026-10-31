@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-// Claude Code Bash PreToolUse hook：擋下會被 zsh EQUALS 展開的字（#203）。
+// Claude Code Bash PreToolUse hook：擋下會被 zsh EQUALS 或 NOMATCH 中止整串指令的字（#203、#209）。
 // zsh 預設開著 EQUALS：沒加引號、以 `=` 開頭的字會換成指令路徑（`=node` → `/usr/local/bin/node`），找不到就印 `(eval):1: == not found`
 // 並中止整串指令。session 2ebf77bf 三次用 `echo ===` 當分隔線，後面的指令都沒跑、exit 1，錯誤訊息又不指向原因，各多花一次重跑。
 // 命中的字：不在引號、heredoc 內容、註解、`[[ … ]]` 與 `(( … ))` 裡，以 `=` 開頭、後面還有字的字（`===`、`==`、`=x`）。
 // 單獨一個 `=`（`[ a = b ]`）、`VAR=x`、`--opt=x`、`a==b` 都不是以 `=` 開頭的字，放行。
+// NOMATCH：沒加引號、含 `*`／`?` 的 `--<opt>=<pattern>` 字（`--include=*.md`）zsh 會當檔名展開，找不到就印
+// `no matches found: --include=*.md` 並中止整串指令（session 19341230，#209）。一般的 `*.md` 參數多半是刻意展開，放行。
 // 命中時 exit 2，stderr 說明原因與改法；輸入不合法或不是 Bash 時 exit 0 不輸出。
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +14,18 @@ const BREAK = new Set([' ', '\t', ';', '|', '&', '(', ')', '<', '>', '\n']);
 
 /** 指令裡會被 zsh EQUALS 展開的字（依出現順序）。 */
 export function equalsWords(command) {
+  return scan(command).equals;
+}
+
+/** 指令裡沒加引號、含萬用字元、會被 zsh NOMATCH 中止的 `--opt=pattern` 字（依出現順序）。 */
+export function nomatchWords(command) {
+  return scan(command).nomatch;
+}
+
+function scan(command) {
   const found = [];
+  const nomatch = [];
+  let glob = false; // 目前的字在 `--opt=` 之後有沒有加引號的 * 或 ?
   const heredocs = [];
   let i = 0;
   let word = '';
@@ -21,6 +34,8 @@ export function equalsWords(command) {
   let depth = 0; // [[ … ]] 或 (( … )) 的層數：裡面的 == 是比較運算子
   const end = () => {
     if (startsWithEquals && word.length > 1 && depth === 0) found.push(word);
+    if (glob && depth === 0) nomatch.push(word);
+    glob = false;
     word = '';
     wordStart = true;
     startsWithEquals = false;
@@ -78,12 +93,13 @@ export function equalsWords(command) {
     }
     if (BREAK.has(c)) { end(); i++; continue; }
     if (wordStart && c === '=') startsWithEquals = true;
+    if ((c === '*' || c === '?') && /^--[\w-]+=/.test(word)) glob = true;
     word += c;
     wordStart = false;
     i++;
   }
   end();
-  return found;
+  return { equals: found, nomatch };
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
@@ -93,12 +109,22 @@ if (isMain) {
   const command = input?.tool_input?.command;
   if (input?.tool_name && input.tool_name !== 'Bash') process.exit(0);
   if (typeof command !== 'string') process.exit(0);
-  const words = equalsWords(command);
-  if (!words.length) process.exit(0);
-  console.error([
-    `zsh 會把沒加引號、以 = 開頭的字當 EQUALS 展開成指令路徑：${words.map(w => `\`${w}\``).join('、')}。`,
+  const { equals, nomatch } = scan(command);
+  if (!equals.length && !nomatch.length) process.exit(0);
+  const lines = [];
+  if (equals.length) lines.push(
+    `zsh 會把沒加引號、以 = 開頭的字當 EQUALS 展開成指令路徑：${equals.map(w => `\`${w}\``).join('、')}。`,
     '找不到指令時印 `(eval):1: == not found` 並中止整串指令，後面的指令都不會跑（#203）。',
     "分隔線改成 `echo '==='` 或 `echo ---`；要傳以 = 開頭的參數時加引號。",
-  ].join('\n'));
+  );
+  if (nomatch.length) {
+    const quoted = nomatch.map(w => { const k = w.indexOf('='); return `${w.slice(0, k + 1)}'${w.slice(k + 1)}'`; });
+    lines.push(
+      `zsh 會把沒加引號、含 * 或 ? 的字當檔名展開：${nomatch.map(w => `\`${w}\``).join('、')}。`,
+      '找不到相符檔案時 NOMATCH 印 `no matches found` 並中止整串指令，前後的輸出都作廢（#209）。',
+      `把 pattern 加引號：${quoted.map(w => `\`${w}\``).join('、')}。`,
+    );
+  }
+  console.error(lines.join('\n'));
   process.exit(2);
 }

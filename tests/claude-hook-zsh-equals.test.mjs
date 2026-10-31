@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { equalsWords } from '../scripts/claude-hook-zsh-equals.mjs';
+import { equalsWords, nomatchWords } from '../scripts/claude-hook-zsh-equals.mjs';
 
 const HOOK = fileURLToPath(new URL('../scripts/claude-hook-zsh-equals.mjs', import.meta.url));
 const run = input => spawnSync('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8' });
@@ -50,5 +50,32 @@ test('不是 Bash、沒有 command 或輸入不是 JSON 時 exit 0 不輸出', (
     const result = run(input);
     assert.equal(result.status, 0);
     assert.equal(result.stderr, '');
+  }
+});
+
+// session 19341230 的原指令：zsh 對 `--include=*.md` 做檔名展開，找不到就印 `no matches found: --include=*.md`、exit 1，整串作廢（#209）。
+test('未加引號、含 * 或 ? 的 --opt=pattern 被擋下，exit 2 並說明 NOMATCH 與改法', () => {
+  const result = bash('git status --short; grep -rln "claude-hook-unbare\\|claude-hook-language" --include=*.md . | head');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /NOMATCH/);
+  assert.match(result.stderr, /`--include=\*\.md`/);
+  assert.match(result.stderr, /--include='\*\.md'/);
+  assert.deepEqual(nomatchWords('grep -r x --include=*.md --exclude=*.log .'), ['--include=*.md', '--exclude=*.log']);
+  assert.deepEqual(nomatchWords('find . --name=a?.txt'), ['--name=a?.txt']);
+});
+
+test('加引號或跳脫的 pattern、一般的 *.md 參數、不含萬用字元的 --opt=x 放行', () => {
+  for (const command of [
+    "grep -r x --include='*.md' .",
+    'grep -r x --include="*.md" .',
+    'grep -r x --include=\\*.md .',
+    'ls *.md docs/*.md',
+    'node x.mjs --opt=x --base-branch=main',
+    "cat <<'EOF'\n--include=*.md\nEOF\necho ok",
+    'echo ok # --include=*.md',
+    '[[ $a == --x=* ]] && echo ok',
+  ]) {
+    assert.deepEqual(nomatchWords(command), [], command);
+    assert.equal(bash(command).status, 0, command);
   }
 });
