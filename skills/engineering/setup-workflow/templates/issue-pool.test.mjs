@@ -72,8 +72,10 @@ else if (args[0] === 'issue' && args[1] === 'view') {
   chmodSync(join(dir, 'gh'), 0o755);
   const runAt = (cwd, ...args) => spawnSync('node', [SCRIPT, '--repo', 'acme/app', ...args], { cwd, encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
   const run = (...args) => runAt(repo, ...args);
+  // 不帶 --repo：tracker 專案由 script 自己判定。
+  const runBare = (...args) => spawnSync('node', [SCRIPT, ...args], { cwd: repo, encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
   const calls = () => { try { return readFileSync(join(dir, 'calls.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line)); } catch { return []; } };
-  return { run, runAt, calls, repo };
+  return { run, runAt, runBare, calls, repo };
 }
 
 test('標 ready-for-agent、沒被 block、不是母單、沒被認領的 Issue 歸到 ready', () => {
@@ -338,3 +340,226 @@ for (const [why, claimer, sessions] of STOP_CASES) {
     assert.deepEqual(writes(calls()), []);
   });
 }
+
+// GitLab tracker（#108）：docs/agents/issue-tracker.md 寫 glab 時改用 glab。樣本 test/fixtures/gitlab/ 不是實際回應：本機沒有 glab，
+// 欄位依 GitLab GraphQL reference（WorkItemWidgetLabels、Assignees、Hierarchy、LinkedItems、Notes）與 REST issues、notes 文件組成，
+// 只取 script 讀的欄位；列表的 `comments`、`activity` 是 query 裡 notes 的別名。
+const glabFixture = name => JSON.parse(readFileSync(new URL(`./test/fixtures/gitlab/${name}.json`, import.meta.url), 'utf8'));
+const GL_PAGE = glabFixture('work-items');
+const GL_NODE = GL_PAGE.data.project.workItems.nodes[0];
+const GL_ISSUE = glabFixture('issue');
+const GL_NOTES = glabFixture('notes');
+
+/** 一張 GitLab work item：參數同 issue()，children 是有沒有子項目；blockedBy、blocking 的數字是同專案 acme/app 開著的單。
+ * widgets 是不同型別的陣列，逐個依 __typename 對樣本的同型 widget 合併。 */
+function workItem(number, { labels = [], assignees = [], children = false, blockedBy = [], blocking = [], commentAt, activity = [] } = {}) {
+  const link = linkType => ref => {
+    const [, path = 'acme/app', n, state = 'OPEN'] = String(ref).match(/^(?:(.+)#)?(\d+)(?::(\w+))?$/);
+    return { linkType, workItem: { iid: n, state, namespace: { fullPath: path } } };
+  };
+  const widget = (typename, patch) => mergeSample(GL_NODE.widgets.find(w => w.__typename === typename), patch, typename);
+  return {
+    ...mergeSample(GL_NODE, { iid: String(number), title: `標題 ${number}` }, 'workItem'),
+    widgets: [
+      widget('WorkItemWidgetLabels', { labels: { nodes: labels.map(title => ({ title })) } }),
+      widget('WorkItemWidgetAssignees', { assignees: { nodes: assignees.map(username => ({ username })) } }),
+      widget('WorkItemWidgetHierarchy', { hasChildren: children }),
+      widget('WorkItemWidgetLinkedItems', { linkedItems: { nodes: [...blockedBy.map(link('is_blocked_by')), ...blocking.map(link('blocks'))] } }),
+      widget('WorkItemWidgetNotes', { comments: { nodes: commentAt ? [{ createdAt: commentAt }] : [] }, activity: { nodes: activity.map(([body, createdAt]) => ({ body, createdAt })) } }),
+    ],
+  };
+}
+
+/** claim 讀到的 GitLab Issue：REST 的 issue（assignees）與 notes（[作者, 內文, 建立時間, id]；system 給 true 是系統紀錄）。 */
+const glView = ({ assignees = [], notes = [] } = {}) => ({
+  issue: mergeSample(GL_ISSUE, { assignees: assignees.map((username, i) => ({ id: i + 1, username, name: username })) }, 'issue'),
+  notes: notes.map(([username, body, createdAt = GL_NOTES[0].created_at, id = 300, system = false]) =>
+    mergeSample(GL_NOTES[0], { id, author: { id: 1, username, name: username }, body, created_at: createdAt, system }, 'note')),
+});
+
+/** PATH 上的假 glab，在 origin 指向 originUrl、docs/agents/issue-tracker.md 為 trackerDoc 的暫存 repo 裡跑。
+ * `api graphql` 回 work items 頁面；`api projects/<p>` 回專案；`api user` 回登入者；`api projects/<p>/issues/<n>` 與 `.../notes` 依序回 views 的第 i 個；
+ * 其餘只記錄 argv。 */
+function fakeGlab({ items = [], views = [glView()], originUrl = 'https://gitlab.example.com/acme/app.git', trackerDoc = 'Issues live in GitLab; use the `glab` CLI.\n' } = {}) {
+  const dir = mkdtempSync(join(realTmpdir(), 'issue-pool-glab-'));
+  const repo = join(dir, 'repo');
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  git(repo, 'init', '-q', '--initial-branch=main');
+  if (originUrl) git(repo, 'remote', 'add', 'origin', originUrl);
+  if (trackerDoc !== null) writeFileSync(join(repo, 'docs/agents/issue-tracker.md'), trackerDoc);
+  const page = mergeSample(GL_PAGE, { data: { project: { workItems: { pageInfo: { hasNextPage: false, endCursor: null } } } } }, 'page');
+  page.data.project.workItems.nodes = items;
+  writeFileSync(join(dir, 'page.json'), JSON.stringify(page));
+  writeFileSync(join(dir, 'views.json'), JSON.stringify(views));
+  writeFileSync(join(dir, 'samples.json'), JSON.stringify({ project: glabFixture('project'), user: glabFixture('user') }));
+  writeFileSync(join(dir, 'glab'), `#!/usr/bin/env node
+const { appendFileSync, readFileSync } = require('node:fs');
+const args = process.argv.slice(2);
+const log = ${JSON.stringify(join(dir, 'calls.log'))};
+let previous = [];
+try { previous = readFileSync(log, 'utf8').trim().split('\\n').map(line => JSON.parse(line)); } catch {}
+appendFileSync(log, JSON.stringify(args) + '\\n');
+const read = name => JSON.parse(readFileSync(${JSON.stringify(dir)} + '/' + name, 'utf8'));
+const endpoint = args[0] === 'api' ? args.slice(1).find(arg => !arg.startsWith('-') && /^(graphql|user|projects\\/)/.test(arg)) : undefined;
+const nth = kind => { const views = read('views.json'); return views[Math.min(previous.filter(call => call.includes(kind)).length, views.length - 1)]; };
+if (args.includes('DELETE')) {}
+else if (endpoint === 'graphql') process.stdout.write(readFileSync(${JSON.stringify(join(dir, 'page.json'))}));
+else if (endpoint === 'user') process.stdout.write(JSON.stringify(read('samples.json').user));
+else if (/\\/notes/.test(endpoint ?? '')) {
+  // 同 glab v1.126.0 的 internal/commands/api/api.go：--paginate 時每頁原樣接著印（[...][...]，不合併）；--output ndjson 每個元素一行。
+  const notes = nth(endpoint).notes;
+  if (args.includes('ndjson')) process.stdout.write(notes.map(note => JSON.stringify(note) + '\\n').join(''));
+  else for (let i = 0; i === 0 || i < notes.length; i += 100) process.stdout.write(JSON.stringify(notes.slice(i, i + 100)));
+}
+else if (/\\/issues\\/\\d+$/.test(endpoint ?? '')) process.stdout.write(JSON.stringify(nth(endpoint).issue));
+else if (endpoint) process.stdout.write(JSON.stringify(read('samples.json').project));
+`);
+  chmodSync(join(dir, 'glab'), 0o755);
+  const run = (...args) => spawnSync('node', [SCRIPT, ...args], { cwd: repo, encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+  const calls = () => { try { return readFileSync(join(dir, 'calls.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line)); } catch { return []; } };
+  return { run, calls, repo };
+}
+
+// 每個桶各一個 GitLab fixture：子項目（hierarchy）是母單，is_blocked_by 開著的單是 blocked，認領時限看最近的留言或指派紀錄。
+for (const [bucket, options] of [
+  ['parent', { labels: ['enhancement', 'ready-for-agent'], children: true }],
+  ['human', { labels: ['enhancement', 'ready-for-human'] }],
+  ['stale', { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'], commentAt: hoursAgo(30), activity: [['assigned to @ron', hoursAgo(30)]] }],
+  ['claimed', { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'], commentAt: hoursAgo(30), activity: [['assigned to @ron', hoursAgo(1)]] }],
+  ['retro-candidates', { labels: ['retro-candidates'] }],
+  ['blocked', { labels: ['enhancement', 'ready-for-agent'], blockedBy: [5] }],
+  ['needs-info', { labels: ['enhancement', 'needs-info'] }],
+  ['needs-triage', { labels: ['enhancement', 'needs-triage'] }],
+  ['ready', { labels: ['enhancement', 'ready-for-agent'], blockedBy: ['5:CLOSED'] }],
+  ['unlabeled', {}],
+]) {
+  test(`GitLab：${bucket} 桶`, () => {
+    const { run } = fakeGlab({ items: [workItem(7, options)] });
+    const result = run();
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `${bucket} #7 標題 7\n`);
+  });
+}
+
+test('GitLab：系統紀錄裡只有指派算認領後的動靜，改 label 這類紀錄不算', () => {
+  const { run } = fakeGlab({ items: [workItem(7, { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'],
+    activity: [['assigned to @ron', hoursAgo(30)], ['added ~"ready-for-agent" label', hoursAgo(1)]] })] });
+  assert.equal(run().stdout, 'stale #7 標題 7\n');
+});
+
+test('GitLab：ready 依 blocks 連結排序（關鍵路徑），列表以 glab api graphql 查 checkout 推得的專案', () => {
+  const { run, calls } = fakeGlab({ items: [
+    workItem(4, { labels: ['enhancement', 'ready-for-agent'] }),
+    workItem(8, { labels: ['enhancement', 'ready-for-agent'], blocking: [20, 'other/group/app#3'] }),
+    workItem(20, { labels: ['enhancement', 'ready-for-agent'], blockedBy: [8] }),
+  ] });
+  const result = run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #8 標題 8\nready #4 標題 4\nblocked #20 標題 20\n');
+  const [project, graphql] = calls();
+  assert.deepEqual(project, ['api', 'projects/:id']);
+  assert.deepEqual(graphql.slice(0, 4), ['api', 'graphql', '-f', 'fullPath=acme/app']);
+  assert.match(graphql.at(-1), /^query=.*workItems\(types:\[ISSUE\],state:opened/);
+});
+
+const glMine = `${HOST}／s1`;
+const glWrites = calls => calls.filter(call => call[0] === 'issue' || call.includes('DELETE'));
+
+test('GitLab claim：先以 glab issue note 留認領，再 glab issue update --assignee +<登入者>，重讀確認最早的認領是自己', () => {
+  const { run, calls } = fakeGlab({ views: [glView(), glView({ assignees: ['ron'], notes: [['ron', `認領：${glMine}`, new Date().toISOString(), 301]] })] });
+  const result = run('claim', '7', '--session', 's1');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'CLAIMED 7\n');
+  assert.deepEqual(glWrites(calls()), [['issue', 'note', '7', '-m', `認領：${glMine}`], ['issue', 'update', '7', '--assignee', '+ron']]);
+  assert.ok(calls().some(call => call[1] === 'projects/:id/issues/7/notes?sort=asc&order_by=created_at&per_page=100' && call.includes('--paginate')));
+});
+
+test('GitLab claim：留言超過一頁（100 則）也讀得到全部，最近一則認領在第二頁', () => {
+  const old = Array.from({ length: 120 }, (_, i) => ['ron', `討論 ${i}`, GL_NOTES[0].created_at, 100 + i]);
+  const { run, calls } = fakeGlab({ views: [glView({ assignees: ['ron'], notes: [...old, ['ron', '認領：other／s9']] })] });
+  const result = run('claim', '7', '--session', 's1');
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(result.stdout, 'STOP 7 claimed other／s9\n');
+  assert.deepEqual(glWrites(calls()), []);
+});
+
+test('GitLab claim：系統紀錄不算留言；別台的認領比自己早就依 id 刪掉自己那則並停下', () => {
+  const now = new Date().toISOString();
+  const { run, calls } = fakeGlab({ views: [
+    glView({ notes: [['ron', 'assigned to @ron', now, 290, true]] }),
+    glView({ assignees: ['ron'], notes: [['ron', 'assigned to @ron', now, 290, true], ['ron', '認領：other／s9', now, 300], ['ron', `認領：${glMine}`, now, 301]] }),
+  ] });
+  const result = run('claim', '7', '--session', 's1');
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, 'STOP 7 claimed other／s9\n');
+  assert.deepEqual(glWrites(calls()).at(-1), ['api', '-X', 'DELETE', 'projects/:id/issues/7/notes/301']);
+});
+
+test('GitLab claim：已被別的 session 認領就停下，不改 Issue', () => {
+  const { run, calls } = fakeGlab({ views: [glView({ assignees: ['ron'], notes: [['ron', '認領：other／s9']] })] });
+  const result = run('claim', '7', '--session', 's1');
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, 'STOP 7 claimed other／s9\n');
+  assert.deepEqual(glWrites(calls()), []);
+});
+
+// tracker host 與程式碼 host 分開：程式碼在 GitHub、Issue 在自架 GitLab 時，專案與主機取自 issue-tracker.md 的網址。
+const SPLIT_DOC = 'Issues live on our GitLab (http://192.168.200.202/spay/spay2/-/issues); use the `glab` CLI. Code: https://github.com/acme/app.\n';
+
+test('tracker 是自架 GitLab、程式碼在 GitHub：列表帶 --hostname 與文件裡的專案路徑', () => {
+  const { run, calls } = fakeGlab({ originUrl: 'https://github.com/acme/app.git', trackerDoc: SPLIT_DOC, items: [workItem(3, { labels: ['enhancement', 'ready-for-agent'] })] });
+  const result = run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #3 標題 3\n');
+  const [graphql] = calls();
+  assert.deepEqual(graphql.slice(0, 4), ['api', 'graphql', '-f', 'fullPath=spay/spay2']);
+  assert.deepEqual(graphql.slice(-2), ['--hostname', '192.168.200.202']);
+});
+
+test('tracker 是自架 GitLab、程式碼在 GitHub：claim 以 -R 專案網址留言與指派，讀取帶 --hostname', () => {
+  const { run, calls } = fakeGlab({ originUrl: 'https://github.com/acme/app.git', trackerDoc: SPLIT_DOC,
+    views: [glView(), glView({ assignees: ['ron'], notes: [['ron', `認領：${glMine}`, new Date().toISOString(), 301]] })] });
+  const result = run('claim', '7', '--session', 's1');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(glWrites(calls()), [
+    ['issue', 'note', '7', '-R', 'http://192.168.200.202/spay/spay2', '-m', `認領：${glMine}`],
+    ['issue', 'update', '7', '-R', 'http://192.168.200.202/spay/spay2', '--assignee', '+ron'],
+  ]);
+  assert.deepEqual(calls()[0], ['api', 'projects/spay%2Fspay2/issues/7', '--hostname', '192.168.200.202']);
+});
+
+test('issue-tracker.md 沒寫 gh 或 glab（本機 Markdown tracker）時 exit 2，不呼叫任何 CLI', () => {
+  const { run, calls } = fakeGlab({ trackerDoc: 'Issues are Markdown files under .scratch/issues/.\n' });
+  const result = run();
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /local/);
+  assert.deepEqual(calls(), []);
+});
+
+test('tracker 是 GitHub、程式碼在 GitLab：gh 查 issue-tracker.md 網址裡的 <owner>/<repo>', () => {
+  const { runBare, calls, repo } = fakeGh({ issues: [issue(7, { labels: ['enhancement', 'ready-for-agent'] })] });
+  git(repo, 'remote', 'add', 'origin', 'git@gitlab.example.com:acme/app.git');
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  writeFileSync(join(repo, 'docs/agents/issue-tracker.md'), 'Issues: https://github.com/acme/tracker/issues, read with `gh`.\n');
+  const result = runBare();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #7 標題 7\n');
+  assert.deepEqual(calls()[0].slice(0, 6), ['api', 'graphql', '-F', 'owner=acme', '-F', 'name=tracker']);
+});
+
+test('還沒有 issue-tracker.md 時 tracker 照 HOSTS.md 依 origin 推：origin 在 GitLab 就用 glab', () => {
+  const { run, calls } = fakeGlab({ trackerDoc: null, items: [workItem(7, { labels: ['enhancement', 'ready-for-agent'] })] });
+  const result = run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #7 標題 7\n');
+  assert.deepEqual(calls()[0], ['api', 'projects/:id']);
+});
+
+test('同種 GitLab 加 --repo：-R 與 --hostname 都指向 origin 的主機，不落到 glab 的預設主機', () => {
+  const { run, calls } = fakeGlab({ originUrl: 'git@192.168.200.202:spay/spay2.git',
+    views: [glView(), glView({ assignees: ['ron'], notes: [['ron', `認領：${glMine}`, new Date().toISOString(), 301]] })] });
+  const result = run('claim', '7', '--repo', 'spay/spay2', '--session', 's1');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(calls()[0], ['api', 'projects/spay%2Fspay2/issues/7', '--hostname', '192.168.200.202']);
+  assert.deepEqual(glWrites(calls())[0], ['issue', 'note', '7', '-R', 'https://192.168.200.202/spay/spay2', '-m', `認領：${glMine}`]);
+});
