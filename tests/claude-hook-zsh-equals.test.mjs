@@ -113,5 +113,6 @@ test('雙引號或未加引號的 PIPESTATUS 被擋下，提示改用 zsh 的 pi
     'make | tee log; echo "exit=${pipestatus[1]}"',
     "bash -c 'make | tee log; exit ${PIPESTATUS[0]}'",
     "cat > run.sh <<'EOF'\nmake | tee log\nexit ${PIPESTATUS[0]}\nEOF",
+    'gh issue comment 238 --body "擋沒加引號的 \\$PIPESTATUS，改用 \\${pipestatus[1]}"',
   ]) assert.equal(usesPipestatus(command), false, command);
 });

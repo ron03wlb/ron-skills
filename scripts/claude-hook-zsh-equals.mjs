@@ -33,7 +33,8 @@ export function usesPipestatus(command) {
   return scan(command).pipestatus;
 }
 
-const PIPESTATUS = /\$\{?PIPESTATUS\b/;
+// 雙引號裡跳脫過的 `\$PIPESTATUS` 不展開（retro 1101b：留言內文提到它就被擋下）。
+const PIPESTATUS = /(?:^|[^\\])\$\{?PIPESTATUS\b/;
 
 function scan(command) {
   const found = [];
