@@ -3,15 +3,16 @@
 // 專案規定使用者可見訊息一律繁體中文（寫在 CLAUDE.md 等 agent 指引），連工具呼叫之間的一行進度也算；只靠文字規則會反覆重犯，所以用 hook 擋。
 // 依 stdin hook JSON 的 hook_event_name 分兩種用法：
 // - PostToolUse／PostToolUseFailure：檢查這次工具呼叫前緊鄰的文字段（上一個工具呼叫或 tool_result 之後到本 tool_use 為止），
-//   同一輪就能改正；工具已執行，exit 2 只把 stderr 交回 agent。
-// - Stop（或未帶 hook_event_name）：檢查最後一個使用者輪的所有文字段；PostToolUse 尚未掛上或 tool_use 還沒寫入 transcript 時仍有覆蓋，
+//   同一輪就能改正；工具已執行，exit 2 只把 stderr 交回 agent。transcript 還沒寫入這次的 tool_use 時（Skill、Edit 這類幾十毫秒就結束的工具，
+//   #238：前面有英文段的 Bash 14/14 都抓到，Skill、Edit 0/9），改看 transcript 尾端最後一個 tool_use、tool_result 或使用者輪之後的文字段。
+// - Stop（或未帶 hook_event_name）：檢查最後一個使用者輪的所有文字段；PostToolUse 尚未掛上時仍有覆蓋，
 //   PostToolUse 提示過卻未改正的段落會再提一次（可接受）。
 // harness 合成的訊息（用量上限「You've hit your weekly limit · resets 3am」、API Error 等）不是模型輸出：transcript 中這類 assistant 項目
 // 帶 isApiErrorMessage／apiError 或 model `<synthetic>`，整筆略過；結構欄位缺漏時再以固定句型比對文字。
 // Stop 只看最後一次語言檢查提示（Stop hook feedback 或 PostToolUse 的 hook_blocking_error）之後的文字：提示過的段落不再重提，
 // 否則 /loop 的 coordinator 長時間沒有新的使用者輪，每次 Stop 都重抓同一句舊英文。
 // 命中時 exit 2，stderr 交回 agent 繼續；stop_hook_active 為 true（已因本 hook 續跑一次）、輸入不合法、
-// 讀不到 transcript 或 transcript 找不到這次 tool_use 時 exit 0 不輸出，避免卡住。
+// 讀不到 transcript 時 exit 0 不輸出，避免卡住。
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -137,14 +138,13 @@ export function lastTurnTexts(jsonl) {
 
 /**
  * PostToolUse 用：緊接在指定 tool_use 之前的 assistant 文字；平行呼叫的第二個以後沒有自己的文字段，回傳空陣列。
+ * transcript 還沒寫入該 tool_use 時，回傳尾端最後一個 tool_use、tool_result 或使用者輪之後的文字段（就是這次呼叫前的文字）。
  * @param {string} jsonl transcript 內容
  * @param {string} toolUseId hook 輸入的 tool_use_id
- * @returns {string[] | null} transcript 找不到該 tool_use 時為 null
+ * @returns {string[]}
  */
 export function textsBeforeTool(jsonl, toolUseId) {
-  let found = false;
-  const texts = scanSegments(jsonl, (_, block) => (found = block.id === toolUseId));
-  return found ? texts : null;
+  return scanSegments(jsonl, (_, block) => block.id === toolUseId);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -155,7 +155,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (postTool && !input.tool_use_id) process.exit(0);
   let jsonl;
   try { jsonl = readFileSync(input.transcript_path, 'utf8'); } catch { process.exit(0); }
-  const texts = postTool ? textsBeforeTool(jsonl, input.tool_use_id) ?? [] : lastTurnTexts(jsonl);
+  const texts = postTool ? textsBeforeTool(jsonl, input.tool_use_id) : lastTurnTexts(jsonl);
   const english = texts.filter(isMostlyEnglish);
   if (english.length) {
     const sample = english[0].replace(/\s+/g, ' ').slice(0, 120);

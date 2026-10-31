@@ -46,7 +46,7 @@ test('lastTurnTexts：只取最後一個使用者輪之後的 assistant 文字�
   assert.deepEqual(lastTurnTexts(jsonl), ['第一段', '第二段']);
 });
 
-test('textsBeforeTool：取緊接在該 tool_use 之前的文字段；平行呼叫第二個為空；找不到為 null', () => {
+test('textsBeforeTool：取緊接在該 tool_use 之前的文字段；平行呼叫第二個為空；找不到時取尾端文字段', () => {
   const jsonl = [
     user('問題'), assistant('前一段'), toolUse('t1'), toolResult(),
     assistant('Merged the branch. Now land the next one.'), toolUse('t2'), toolUse('t3'),
@@ -54,7 +54,18 @@ test('textsBeforeTool：取緊接在該 tool_use 之前的文字段；平行呼�
   assert.deepEqual(textsBeforeTool(jsonl, 't1'), ['前一段']);
   assert.deepEqual(textsBeforeTool(jsonl, 't2'), ['Merged the branch. Now land the next one.']);
   assert.deepEqual(textsBeforeTool(jsonl, 't3'), []);
-  assert.equal(textsBeforeTool(jsonl, 'missing'), null);
+  assert.deepEqual(textsBeforeTool(jsonl, 'missing'), []);
+  assert.deepEqual(textsBeforeTool(`${jsonl}\n${toolResult()}\n${assistant('尾端')}`, 'missing'), ['尾端']);
+});
+
+// #238：session 8d8ec702 jsonl 第 37 行的英文寫入了，第 38 行 Skill 的 tool_use 在 PostToolUse 觸發時還沒寫入，原本 exit 0、等到 Stop 才抓到
+test('hook PostToolUse：transcript 還沒寫入這次 tool_use 時，檢查尾端的文字段', () => {
+  const dir = mkdtempSync(join(realTmpdir(), 'claude-hook-language-'));
+  const transcript = join(dir, 'transcript.jsonl');
+  writeFileSync(transcript, [user('/loop /issue-pilot'), assistant('Dynamic mode. Invoke the skill now.')].join('\n'));
+  const denied = hook(JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Skill', transcript_path: transcript, tool_use_id: 'toolu_014EWebLkG3b61bqJjbLcFSg' }));
+  assert.equal(denied.status, 2);
+  assert.match(denied.stderr, /這次工具呼叫前.*Dynamic mode/);
 });
 
 test('hook：本輪有英文段落時 exit 2；已續跑一次、中文、輸入不合法時 exit 0 無輸出', () => {

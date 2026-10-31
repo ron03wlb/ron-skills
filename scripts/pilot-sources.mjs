@@ -8,6 +8,8 @@
 //   有舊快照時 `SOURCE_CHANGED` 下面每個改動的單位縮排一行（依新版出現的順序，刪掉的接在後面）：
 //   `  entry <名稱>`（`- **<名稱>.**` 條目，含它縮排的續行）｜`  heading <標題>`（`##` 以下標題本身，或它底下條目以外的內容）｜
 //   `  outside`（第一個 `##` 標題之前、條目以外的內容）；沒有舊快照（第一次記錄或舊格式記錄）時只印 `SOURCE_CHANGED`。
+//   新舊兩版都有、而且有一版超過 600 字的單位，下面再縮排印改動的片段（詞級 diff，git `--word-diff=plain` 的寫法），一段一行：
+//   `    …<前文>[-<刪除>-]{+<新增>+}<後文>…`；片段合計超過 1500 字時改印一行 `    (diff <n> chars, reread)`，要重讀整個單位（#236、#239）。
 //   --record 先照樣回報，再以這次的清單整份改寫記錄與快照（不在清單裡的快照刪掉），最後印 `RECORDED <n>`。exit 0；沒給來源 exit 2。
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -44,10 +46,76 @@ function units(text) {
   return out;
 }
 
-/** 舊版到新版改了哪些單位，依新版順序、刪掉的接在後面。 */
+const LONG_UNIT = 600;
+const SNIPPET_LIMIT = 1500;
+const CONTEXT = 20;
+const MAX_CELLS = 4e6;
+
+/** 詞級 diff 的單位：英數字串、空白串，或其他單一字元（中文一字一詞）。 */
+const tokens = text => text.match(/[A-Za-z0-9_.\/-]+|\s+|[^]/gu) ?? [];
+
+/**
+ * 兩段文字的詞級改動，回傳 `…<前文>[-<刪除>-]{+<新增>+}<後文>…` 片段；
+ * 改動之間相隔不到 3 個詞就併成一段；比對太大或片段合計超過上限時回傳 null（要重讀整個單位）。
+ */
+export function wordDiff(before, after) {
+  const [a, b] = [tokens(before), tokens(after)];
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) { endA--; endB--; }
+  const [n, m] = [endA - start, endB - start];
+  if (n * m > MAX_CELLS) return null;
+  // LCS 表（倒著填），再順著走出 equal／delete／insert 的序列。
+  const lcs = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) {
+    lcs[i][j] = a[start + i] === b[start + j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  }
+  const ops = a.slice(0, start).map(t => ['=', t]);
+  for (let i = 0, j = 0; i < n || j < m;) {
+    if (i < n && j < m && a[start + i] === b[start + j]) { ops.push(['=', a[start + i]]); i++; j++; }
+    else if (j < m && (i === n || lcs[i][j + 1] >= lcs[i + 1][j])) ops.push(['+', b[start + j++]]);
+    else ops.push(['-', a[start + i++]]);
+  }
+  ops.push(...a.slice(endA).map(t => ['=', t]));
+  // 找出改動的區段 [from, to)，相隔不到 3 個 equal 詞的併在一起。
+  const hunks = [];
+  for (let k = 0; k < ops.length; k++) {
+    if (ops[k][0] === '=') continue;
+    const last = hunks.at(-1);
+    let to = k + 1;
+    while (to < ops.length && ops[to][0] !== '=') to++;
+    if (last && k - last[1] < 3) last[1] = to; else hunks.push([k, to]);
+    k = to - 1;
+  }
+  const text = list => list.map(([, t]) => t).join('');
+  const clip = (str, tail) => (str.length <= CONTEXT ? str : tail ? `…${str.slice(-CONTEXT)}` : `${str.slice(0, CONTEXT)}…`);
+  const lines = hunks.map(([from, to]) => {
+    let body = '';
+    for (let k = from; k < to;) {
+      const kind = ops[k][0];
+      let run = '';
+      while (k < to && ops[k][0] === kind) run += ops[k++][1];
+      body += kind === '-' ? `[-${run}-]` : kind === '+' ? `{+${run}+}` : run;
+    }
+    const before = text(ops.slice(Math.max(0, from - CONTEXT), from)).replace(/\s+/g, ' ');
+    const after = text(ops.slice(to, to + CONTEXT)).replace(/\s+/g, ' ');
+    return `${clip(before, true)}${body.replace(/\n/g, '⏎')}${clip(after, false)}`;
+  });
+  return lines.join('').length > SNIPPET_LIMIT ? null : lines;
+}
+
+/** 舊版到新版改了哪些單位，依新版順序、刪掉的接在後面；長單位下面接詞級片段（已縮排）。 */
 function changedSections(before, after) {
   const [old, now] = [units(before), units(after)];
-  return [...new Set([...now.keys(), ...old.keys()])].filter(key => old.get(key) !== now.get(key));
+  return [...new Set([...now.keys(), ...old.keys()])].filter(key => old.get(key) !== now.get(key)).flatMap(key => {
+    const [was, is] = [old.get(key), now.get(key)];
+    if (was === undefined || is === undefined || Math.max(was.length, is.length) <= LONG_UNIT) return [`  ${key}`];
+    const snippets = wordDiff(was, is);
+    const total = is.length;
+    return [`  ${key}`, ...(snippets ? snippets.map(line => `    ${line}`) : [`    (diff ${total} chars, reread)`])];
+  });
 }
 
 /** 比對來源與記錄，回傳結果行；record 為 true 時改寫記錄並加上 `RECORDED <n>`。 */
@@ -69,7 +137,7 @@ export function checkSources(checkout, sources, { record = false } = {}) {
     if (hash === MISSING) { if (old !== MISSING) out.push(`SOURCE_MISSING ${name}`); } else if (old !== hash) {
       out.push(`SOURCE_CHANGED ${name}`);
       const snapshot = old && old !== MISSING ? join(snapshots, old) : null;
-      if (snapshot && existsSync(snapshot)) out.push(...changedSections(readFileSync(snapshot, 'utf8'), content.toString('utf8')).map(key => `  ${key}`));
+      if (snapshot && existsSync(snapshot)) out.push(...changedSections(readFileSync(snapshot, 'utf8'), content.toString('utf8')));
     }
     return [name, hash, content];
   });
