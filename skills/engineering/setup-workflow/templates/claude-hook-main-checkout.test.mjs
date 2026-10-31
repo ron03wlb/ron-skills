@@ -170,6 +170,20 @@ test('Bash：主 checkout 切換或新開分支 exit 2；切回預設分支、�
   }
 });
 
+// 真實發生過的錯（retro 2026-10-31，ron-skills-16）：coordinator 在主 checkout 用迴圈變數 `git -C $w` 對 worktree 開分支，
+// hook 解析不了 $w、照主 checkout 擋下，訊息卻只叫人開 worktree，沒說是 -C 的變數造成的。
+test('Bash：git -C 解析不了而擋下時，訊息點出改寫成字面路徑；-C 是字面路徑時不加這句', () => {
+  const { main, worktree } = fixture();
+  const bash = command => hook(JSON.stringify({ tool_name: 'Bash', cwd: main, tool_input: { command } }));
+  const real = `for pair in 75:pilot-land; do n=\${pair%%:*}; w=${worktree}-$n; git -C $w branch -m a a-prior && git -C $w switch -c a main; done`;
+  const denied = bash(real);
+  assert.equal(denied.status, 2);
+  assert.match(denied.stderr, /`git -C \$w` 的路徑 hook 解析不了/);
+  const literal = bash(`git -C ${main} switch -c x`);
+  assert.equal(literal.status, 2);
+  assert.doesNotMatch(literal.stderr, /解析不了/);
+});
+
 // 真實發生過的錯（#71）：沒展開的 `$變數` 被接在 cwd 底下，當成主 checkout 內未 gitignore 的路徑擋下。
 test('Bash：無法解析的 $變數 不當成主 checkout 路徑；同一條指令裡賦值的變數先代換再判斷', () => {
   const { root, main } = fixture();

@@ -224,16 +224,24 @@ const CREATE_FLAGS = new Set(['-c', '-C', '--create', '--force-create', '-b', '-
  * 切到預設分支、`git checkout -- <檔案>` 放行。
  * @param {string} command Bash tool 的 command
  * @param {string} cwd hook 輸入的 cwd；指令內的 `cd <dir>` 與 `git -C <dir>` 依序套用
- * @returns {string[]} 會被切走分支的主 checkout 目錄；無法解析時丟錯（呼叫端 fail-open）
+ * @returns {{repo: string, unresolvedC?: string}[]} 會被切走分支的主 checkout 目錄；`git -C` 的引數解析不了、改依目前目錄判斷時，
+ *   unresolvedC 是那個未代換的引數。無法解析時丟錯（呼叫端 fail-open）
  */
 export function bashBranchSwitches(command, cwd) {
   const found = [];
   for (const { name, args, rawArgs, resolvePaths } of walkSegments(command, cwd)) {
     if (name !== 'git') continue;
     let repo = resolvePaths('.')[0];
+    let unresolvedC;
     let i = 0;
     for (; i < args.length && args[i].startsWith('-'); i += 1) {
-      if (args[i] === '-C') { repo = rawArgs[i + 1] === undefined ? undefined : resolvePaths(rawArgs[i + 1])[0] ?? repo; i += 1; }
+      if (args[i] === '-C') {
+        const resolved = rawArgs[i + 1] === undefined ? undefined : resolvePaths(rawArgs[i + 1])[0];
+        if (rawArgs[i + 1] === undefined) repo = undefined;
+        else if (resolved === undefined) unresolvedC = rawArgs[i + 1];
+        else { repo = resolved; unresolvedC = undefined; }
+        i += 1;
+      }
       else if (args[i] === '-c') i += 1;
     }
     if (repo === undefined) continue;
@@ -245,7 +253,7 @@ export function bashBranchSwitches(command, cwd) {
     const creates = rest.some(arg => CREATE_FLAGS.has(arg));
     if (!creates && defaultBranches(repo).includes(target)) continue;
     if (sub === 'checkout' && !creates && git(repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${target}`).status !== 0) continue;
-    found.push(repo);
+    found.push(unresolvedC === undefined ? { repo } : { repo, unresolvedC });
   }
   return found;
 }
@@ -270,8 +278,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     let switches = [];
     try { switches = bashBranchSwitches(command, typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd()); } catch { process.exit(0); }
     if (switches.length) {
-      process.stderr.write(`主 checkout 防護：不在主 checkout（${switches[0]}）切換或新開分支，它要一直停在預設分支；其他 session 同時在這裡開分支時，commit 會落到別人的分支上。`
-        + '請用 `node scripts/orca-worktree-create.mjs --name <name> --base-branch <integration> --branch <branch>` 開 worktree 再 commit。\n');
+      const unresolved = switches.find(found => found.unresolvedC !== undefined);
+      process.stderr.write(`主 checkout 防護：不在主 checkout（${switches[0].repo}）切換或新開分支，它要一直停在預設分支；其他 session 同時在這裡開分支時，commit 會落到別人的分支上。`
+        + '請用 `node scripts/orca-worktree-create.mjs --name <name> --base-branch <integration> --branch <branch>` 開 worktree 再 commit。'
+        + (unresolved ? `\n\`git -C ${unresolved.unresolvedC}\` 的路徑 hook 解析不了，改依目前目錄判斷；目標其實是 worktree 時，改寫成字面路徑或先 cd 過去再跑。` : '')
+        + '\n');
       process.exit(2);
     }
     process.exit(0);
