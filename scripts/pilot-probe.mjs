@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// setup-workflow 正本（#58）：pilot 的 Reconcile 用這一支對帳（之後只剩整理母單要另外做）。主 checkout、`.scratch/pilot/` 的請求、gate、
-// batch checkpoint 與每個 running 成員的 terminal，各印一行狀態，不必再手動拼 `orca terminal read` 的 JSON（手拼時漏過 exited 卻沒有結果行的 worker）。
+// setup-workflow 正本（#58）：pilot 的 Reconcile 用這一支對帳。主 checkout、`.scratch/pilot/` 的請求、gate、batch checkpoint、
+// 每個 running 成員的 terminal 與 tracker 上的母單，各印一行狀態，不必再手動拼 `orca terminal read` 的 JSON（手拼時漏過 exited 卻沒有結果行的 worker）。
 // 存檔格式照 issue-pilot 的 PILOT-STORE.md；專案不同的值由參數傳入。
 //
 // 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status]
@@ -9,15 +9,20 @@
 //            state `stop`），只改那一列的這兩欄；`merged` 的 batch 印 IN_MAIN 時把 `current: merged` 改成 `pushed`（SHA 與附註不動）。
 //            對不到唯一一列 running 的成員列時不寫檔，印 APPLY_MISS <key> <n> rows <列數>；寫回後再讀一次沒對上時印 APPLY_MISS <key> <n|current> verify
 //            （檔案已經寫了，不還原）；有 APPLY_MISS 就 exit 1。
+//            母單：PARENT_LABEL 補上 `parent` label、移除它掛著的 triage label，PARENT_REOPEN 重開母單；同目錄有專案自備的 gh-tracker.mjs
+//            （`edit <n> --add-label …`、`reopen <n>`，參數同 `gh issue`）時經它寫，沒有就直接跑 `gh issue`，都在主 checkout 跑。
+//            寫入失敗印 PARENT_APPLY_FAILED <n> <錯誤>，其他母單照修，exit 1。
 //   --status：最後從 checkpoint、gates.md、requests.md、coordinator 與 git 重寫 `.scratch/pilot/status.md`（格式見 PILOT-STORE.md），不印任何行。
-//   兩個旗標都不改其他輸出行，stdout 與不帶旗標時相同（APPLY_MISS 除外）。
+//   兩個旗標都不改其他輸出行，stdout 與不帶旗標時相同（APPLY_MISS、PARENT_APPLY_FAILED 除外）。
 //   Bare guard：同目錄有 pilot-unbare.sh（專案自備，`<checkout> <時機>`，還原時印 UNBARE）時先跑它（時機 probe），沒有就略過。
 // stdout 每行一項，沒事的項目不印（全部正常且沒有 batch 時不輸出）：
 //   主 checkout：UNBARE <checkout>（Bare guard 剛還原 core.bare）｜NOT_MAIN <分支>｜HOLD｜DIRTY <git status --short 的一行>
 //   adapter：ADAPTER_AHEAD <檔案>（整合分支上的 adapter 比主分支新：docs/agents/issue-run.md，以及它 `## Pilot` 段連到的同目錄 .md）
 //   開著的列：REQUEST <requests.md 原文>｜GATE <id> <Issue> <question 或段落標題>｜GATE_MALFORMED <id> <把 resolved 寫進別的欄位的那一行>
 //   Issue 依賴：DEPS_PROSE <n> #<m>（開著的 `ready-for-agent` Issue 內文以「依賴」帶出 #m，#m 還開著，blocked_by 卻沒有它；Pool 只讀 blocked_by）｜
-//               DEPS_PROSE_FAILED <錯誤>（在主 checkout 跑 gh 失敗，其他檢查照跑）
+//               DEPS_PROSE_FAILED <錯誤>（在主 checkout 跑 gh 失敗，其他檢查照跑；同一次查詢的 PARENT_* 也不印）
+//   母單（#164）：PARENT_LABEL <n>（開著、有 sub-issue，卻沒有 `parent` label 或還掛 triage label）｜
+//               PARENT_REOPEN <n>（開著的子單的母單 #n 在同一個 repo、已關閉）；各依號碼、每張一次
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
 //                 WORKER <n> STUCK exited|stuck-after <分鐘>|orca <錯誤碼>|no-orca|checkpoint <欄位> <值>
 //                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）
@@ -31,7 +36,7 @@
 //   重疊：OVERLAP <n> <m|integration> <檔案>[:<條目>]（開著的 batch 裡 running、done 的成員分支已 commit 的內容，相對於與整合分支的 merge-base：
 //          兩個成員改到同一個檔，或整合分支自成員的 merge-base 以來也改了它改的檔；`.md` 檔的改動都在 `- **<名稱>.**` 條目裡時細到條目，
 //          相接的行與同一處的插入也算，git 合併時會衝突）
-// exit：0 印完；2 用法錯誤；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS 等）。
+// exit：0 印完；2 用法錯誤；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS、PARENT_APPLY_FAILED 等）。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -39,9 +44,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gateLines, isOpenRequest, now, openGates, tableCells } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 
-const DEPS_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{number body labels(first:50){nodes{name}} blockedBy(first:50){nodes{number repository{nameWithOwner}}}}}}}`;
+const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{number body labels(first:50){nodes{name}} blockedBy(first:50){nodes{number repository{nameWithOwner}}} subIssuesSummary{total} parent{number state repository{nameWithOwner}}}}}}`;
 const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
+const TRACKER = join(dirname(fileURLToPath(import.meta.url)), 'gh-tracker.mjs');
 
 /**
  * 在主 checkout 跑 git；stdin 一律不給（逐一呼叫外部指令時被吃掉 stdin 會讓後面的步驟讀不到）。
@@ -166,6 +172,31 @@ export function depsProse(issues, repo) {
   return out;
 }
 
+// 與 issue-pool.mjs 的 TRIAGE_STATES 相同（測試比對兩者）：母單不掛這些 label。
+export const TRIAGE_STATES = ['needs-triage', 'needs-info', 'ready-for-agent', 'ready-for-human', 'wontfix'];
+
+/**
+ * 母單的整理（#164）：開著、有 sub-issue 卻沒有 `parent` label 或還掛 triage label 的印 `PARENT_LABEL <n>`；
+ * 開著的子單指向已關閉的（同一個 repo 的）母單時，對那張母單印 `PARENT_REOPEN <n>`。號碼小的先，每張一次。
+ * 傳回 `{ lines, fixes }`，`fixes` 是每行對應的 tracker 寫入（給 `--apply`，參數形式同 `gh issue`）。
+ */
+export function parentFixes(issues, repo) {
+  const label = [];
+  const reopen = new Map();
+  for (const issue of issues) {
+    const names = issue.labels.nodes.map(({ name }) => name);
+    const triage = TRIAGE_STATES.filter(name => names.includes(name));
+    if (issue.subIssuesSummary?.total > 0 && (!names.includes('parent') || triage.length)) {
+      label.push({ n: issue.number, args: ['edit', String(issue.number), '--add-label', 'parent', ...triage.flatMap(name => ['--remove-label', name])] });
+    }
+    const { parent } = issue;
+    if (parent && parent.state === 'CLOSED' && parent.repository?.nameWithOwner === repo) reopen.set(parent.number, { n: parent.number, args: ['reopen', String(parent.number)] });
+  }
+  const sorted = (kind, items) => items.sort((a, b) => a.n - b.n).map(item => ({ ...item, line: `${kind} ${item.n}` }));
+  const all = [...sorted('PARENT_LABEL', label), ...sorted('PARENT_REOPEN', [...reopen.values()])];
+  return { lines: all.map(({ line }) => line), fixes: all };
+}
+
 /** 在主 checkout 跑 gh（repo 由它的 remote 決定）；stdin 一律不給。 */
 function gh(checkout, ...args) {
   const result = spawnSync('gh', args, { cwd: checkout, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -173,18 +204,37 @@ function gh(checkout, ...args) {
   return result.stdout;
 }
 
-/** 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE 行；gh 失敗時印 DEPS_PROSE_FAILED，不中斷其他檢查。 */
-export function trackerDeps(checkout) {
+/**
+ * `--apply` 的 tracker 寫入：同目錄有專案自備的 gh-tracker.mjs（auto mode 只放行它的 tracker 寫入）就經它，沒有就直接 `gh issue`；
+ * 兩者參數形式相同（`edit <n> --add-label …`、`reopen <n>`），都在主 checkout 跑。失敗時傳回錯誤訊息的第一行。
+ */
+function trackerWrite(checkout, args) {
+  const [cmd, cmdArgs] = existsSync(TRACKER) ? ['node', [TRACKER, ...args]] : ['gh', ['issue', ...args]];
+  const result = spawnSync(cmd, cmdArgs, { cwd: checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (result.status === 0) return null;
+  return `${cmd === 'node' ? 'gh-tracker' : 'gh issue'} ${args[0]} exit ${result.status ?? result.error?.code}：${(result.stderr || '').trim().split('\n')[0]}`;
+}
+
+/**
+ * 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE 與 PARENT_* 行（同一次查詢）；gh 失敗時只印 DEPS_PROSE_FAILED，不中斷其他檢查。
+ * `apply` 時照 PARENT_* 修正 tracker，寫入失敗另印 `PARENT_APPLY_FAILED <n> <錯誤>`。
+ */
+export function trackerLines(checkout, { apply = false } = {}) {
   try {
     const repo = gh(checkout, 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim();
     const [owner, name] = repo.split('/');
     const issues = [];
     for (let cursor = null, more = true; more;) {
-      const page = JSON.parse(gh(checkout, 'api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, ...(cursor ? ['-f', `cursor=${cursor}`] : []), '-f', `query=${DEPS_QUERY}`)).data.repository.issues;
+      const page = JSON.parse(gh(checkout, 'api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, ...(cursor ? ['-f', `cursor=${cursor}`] : []), '-f', `query=${TRACKER_QUERY}`)).data.repository.issues;
       issues.push(...page.nodes);
       ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
     }
-    return depsProse(issues, repo);
+    const { lines, fixes } = parentFixes(issues, repo);
+    const failed = apply ? fixes.flatMap(({ n, args }) => {
+      const error = trackerWrite(checkout, args);
+      return error ? [`PARENT_APPLY_FAILED ${n} ${error}`] : [];
+    }) : [];
+    return [...depsProse(issues, repo), ...lines, ...failed];
   } catch (error) {
     return [`DEPS_PROSE_FAILED ${error.message}`];
   }
@@ -459,7 +509,7 @@ export function statusReport(checkout, { integration = 'pilot/integration', main
 
 export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false } = {}) {
   const pilot = join(checkout, '.scratch/pilot');
-  const out = [...checkoutState(checkout, main), ...adapterAhead(checkout, { integration, main }), ...openRows(pilot), ...trackerDeps(checkout)];
+  const out = [...checkoutState(checkout, main), ...adapterAhead(checkout, { integration, main }), ...openRows(pilot), ...trackerLines(checkout, { apply })];
   const landing = [];
   const batches = [];
   for (const file of batchFiles(pilot)) {
@@ -525,7 +575,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const out = await probe({ cli }, checkout, options);
     for (const line of out) console.log(line);
-    if (out.some(line => line.startsWith('APPLY_MISS '))) process.exit(1);
+    if (out.some(line => /^(APPLY_MISS|PARENT_APPLY_FAILED) /.test(line))) process.exit(1);
   } catch (error) {
     console.error(error.message);
     process.exit(1);
