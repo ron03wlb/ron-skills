@@ -85,10 +85,11 @@ export function rollupBucket(item) {
 
 /**
  * `gh pr view --json headRefOid,statusCheckRollup` 的結果換成 head 這個 SHA 上的 checks（`{ name, link, bucket }`）。
- * PR 的 head 還不是 head 時回空陣列（照 pending）：`gh pr checks` 不帶 SHA，push 後 PR 的 head 還沒更新時
+ * PR 的 head 還不是 push 的 SHA（參數 head）時回空陣列（照 pending）：`gh pr checks` 不帶 SHA，push 後 PR 的 head 還沒更新時
  * 會讀到前一個 head 的失敗 run（#128，PR #125）。headRefOid 與 rollup 取自同一次查詢，所以 rollup 屬於那個 head。
  * 重跑會留下同一個 run 的舊結果：同 `gh pr checks` 只留最新開始的一筆。gh 以 name、workflow、event 去重，
  * `pr view` 沒有 event，改用 Actions 網址裡的 run id 區分 push 與 pull_request 兩個 run（重跑沿用 run id）。
+ * 同一個 SHA、同一種 event 有兩個 run 時（PR 重開、兩次 workflow_dispatch）gh 只留新的、這裡兩個都留：只會多報 ci-failed，不會誤合。
  */
 export function rollupChecks(view, head) {
   if (view.headRefOid !== head) return [];

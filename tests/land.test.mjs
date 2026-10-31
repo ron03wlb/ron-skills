@@ -12,7 +12,7 @@ const script = new URL('../scripts/land.mjs', import.meta.url).pathname;
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
 const IDENTITY = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
 
-// 假 gh 的輸出一律從真實樣本長出來（PR #39；statusCheckRollup 取自 PR #125）（同 helpers/fake-orca.mjs 的做法），替身不能自創 gh 沒有的欄位。
+// 假 gh 的輸出一律從真實樣本長出來（PR #39，statusCheckRollup 取自 PR #125），同 helpers/fake-orca.mjs 的做法，替身不能自創 gh 沒有的欄位。
 const samplesDir = new URL('./helpers/fixtures/gh/', import.meta.url).pathname;
 const GH_SAMPLES = Object.fromEntries(readdirSync(samplesDir).map(file => [file.replace(/\.json$/, ''), JSON.parse(readFileSync(join(samplesDir, file), 'utf8'))]));
 
@@ -405,7 +405,7 @@ test('rollupBucket：CheckRun 看 status 與 conclusion，StatusContext 看 stat
 });
 
 test('rollupChecks：head 不符回空；同一個 run 重跑只留最新一筆，push 與 pull_request 兩個 run 都留', () => {
-  const run = (id, startedAt, conclusion) => ({ status: 'COMPLETED', conclusion, startedAt, name: 'checks', workflowName: 'w', detailsUrl: `https://github.com/o/r/actions/runs/${id}/job/${startedAt}` });
+  const run = (id, startedAt, conclusion) => ({ status: 'COMPLETED', conclusion, startedAt, name: 'checks', workflowName: 'w', detailsUrl: `https://github.com/o/r/actions/runs/${id}/job/${id}${startedAt.slice(1)}` });
   const view = statusCheckRollup => ({ headRefOid: 'new', statusCheckRollup });
   assert.deepEqual(rollupChecks({ headRefOid: 'old', statusCheckRollup: [run(1, 't1', 'FAILURE')] }, 'new'), []);
   assert.deepEqual(rollupChecks(view(null), 'new'), []);
