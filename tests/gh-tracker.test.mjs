@@ -127,3 +127,13 @@ test('docs/agents 的本 repo tracker 寫入都走 gh-tracker', () => {
     .map(([, command]) => command).filter(command => !/--repo /.test(command)).map(command => `${name}: ${command}`));
   assert.deepEqual(bare, []);
 });
+
+// #164：pilot-probe --apply 對 PARENT_REOPEN 重開母單，也要經這支。
+test('reopen：轉成 gh issue reopen，固定 repo；只收 --comment', () => {
+  const result = run('reopen', '164', '-c', '子單 #165 還開著');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.calls, [['issue', 'reopen', '164', '--comment=子單 #165 還開著', '--repo', 'github.com/ron03wlb/ron-skills']]);
+  const bad = run('reopen', '164', '--repo', 'other/repo');
+  assert.equal(bad.status, 2);
+  assert.deepEqual(bad.calls, []);
+});

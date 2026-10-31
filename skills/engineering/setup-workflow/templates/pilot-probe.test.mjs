@@ -18,7 +18,9 @@ const SHA = 'a'.repeat(40);
 // 假 Orca 會把 stdin 讀光並記錄讀到的內容：真實 Orca CLI 會吃掉 stdin，逐一讀成員時後面的成員就讀不到。
 // `guard` 是專案自備 Bare guard（pilot-unbare.sh）的內容：有給時把 probe 複製到暫存的 scripts/，guard 放在它旁邊。
 // PATH 上的假 gh：`repo view` 回 acme/app，`api graphql` 回一頁 `issues`（GraphQL 的 issue 節點），`issues` 是 null 時 gh 失敗；每次呼叫記進 gh.log。
-function fixture(t, { screens = {}, guard, issues = [] } = {}) {
+// `world` 是 tracker 上的 Issue（{ number, state, labels, parent, body }）：給了它時假 gh 從它算出 GraphQL 節點（parent、subIssuesSummary），
+// 並把 `issue edit <n> --add-label/--remove-label`、`issue reopen <n>` 寫回同一份檔，所以 --apply 之後再跑會看到改過的狀態。
+function fixture(t, { screens = {}, guard, issues = [], world } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-probe-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const origin = join(temp, 'origin.git');
@@ -58,13 +60,39 @@ reply('read', { terminal: screen });
   writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
 const fs = require('fs'); const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(join(temp, 'gh.log'))}, JSON.stringify([process.cwd(), ...args]) + '\\n');
-const issues = ${JSON.stringify(issues)};
+const worldFile = ${JSON.stringify(join(temp, 'world.json'))};
+let issues = ${JSON.stringify(issues)};
+if (fs.existsSync(worldFile)) {
+  const world = JSON.parse(fs.readFileSync(worldFile, 'utf8'));
+  const find = n => world.find(issue => issue.number === Number(n));
+  if (args[0] === 'issue' && ['edit', 'reopen'].includes(args[1])) {
+    const target = find(args[2]);
+    if (!target || target.failEdit) { process.stderr.write('HTTP 403: Resource not accessible\\n'); process.exit(1); }
+    if (args[1] === 'reopen') target.state = 'OPEN';
+    for (let i = 3; i < args.length; i++) {
+      const [flag, inline] = args[i].split(/=(.*)/s);
+      const value = inline ?? args[++i];
+      if (flag === '--add-label' && !target.labels.includes(value)) target.labels.push(value);
+      if (flag === '--remove-label') target.labels = target.labels.filter(name => name !== value);
+    }
+    fs.writeFileSync(worldFile, JSON.stringify(world));
+    process.exit(0);
+  }
+  issues = world.filter(issue => issue.state === 'OPEN').map(issue => ({
+    number: issue.number, body: issue.body ?? '',
+    labels: { nodes: issue.labels.map(name => ({ name })) },
+    blockedBy: { nodes: [] },
+    subIssuesSummary: { total: world.filter(child => child.parent === issue.number).length },
+    parent: issue.parent ? { number: issue.parent, state: find(issue.parent).state, repository: { nameWithOwner: 'acme/app' }, labels: { nodes: find(issue.parent).labels.map(name => ({ name })) } } : null,
+  }));
+}
 if (issues === null) { process.stderr.write('HTTP 502: Bad Gateway\\n'); process.exit(1); }
 if (args[0] === 'repo' && args[1] === 'view') process.stdout.write('acme/app\\n');
 else if (args[0] === 'api' && args[1] === 'graphql') process.stdout.write(JSON.stringify({ data: { repository: { issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: issues } } } }));
 else process.exit(1);
 `);
   chmodSync(join(bin, 'gh'), 0o755);
+  if (world) writeFileSync(join(temp, 'world.json'), JSON.stringify(world));
   const probeEnv = { ...env, PATH: `${bin}:${env.PATH}` };
 
   const batch = (key, current, members) => writeFileSync(join(pilot, `batch-${key}.md`), `# batch ${key}
@@ -757,4 +785,97 @@ test('gh 失敗時印 DEPS_PROSE_FAILED，其他檢查照跑', t => {
   const result = probe();
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(lines(result), ['HOLD', 'DEPS_PROSE_FAILED gh repo view 失敗：HTTP 502: Bad Gateway']);
+});
+
+// #164：母單的 parent label 與重開原本是 Probe 條目尾端要 coordinator 手動做的散文，好幾輪都沒做。
+const ghWrites = ghLog => readFileSync(ghLog, 'utf8').trim().split('\n').map(line => JSON.parse(line).slice(1)).filter(([cmd]) => cmd === 'issue');
+
+test('有 sub-issue 卻沒有 parent label、或還掛 triage label 的開著的母單印 PARENT_LABEL <n>', t => {
+  const { probe } = fixture(t, { world: [
+    { number: 10, state: 'OPEN', labels: ['ready-for-agent'] },
+    { number: 11, state: 'OPEN', labels: ['ready-for-agent'], parent: 10 },
+    { number: 20, state: 'OPEN', labels: ['parent', 'needs-triage'] },
+    { number: 21, state: 'OPEN', labels: [], parent: 20 },
+    { number: 30, state: 'OPEN', labels: ['parent', 'enhancement'] },
+    { number: 31, state: 'OPEN', labels: [], parent: 30 },
+  ] });
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), ['PARENT_LABEL 10', 'PARENT_LABEL 20']);
+});
+
+test('開著的子單指向已關閉的母單時印 PARENT_REOPEN <母單>，每張母單一次', t => {
+  const { probe } = fixture(t, { world: [
+    { number: 40, state: 'CLOSED', labels: ['parent'] },
+    { number: 41, state: 'OPEN', labels: ['ready-for-agent'], parent: 40 },
+    { number: 42, state: 'OPEN', labels: ['ready-for-agent'], parent: 40 },
+    { number: 50, state: 'CLOSED', labels: ['parent'] },
+    { number: 51, state: 'CLOSED', labels: [], parent: 50 },
+  ] });
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), ['PARENT_REOPEN 40']);
+});
+
+test('--apply 補上 parent label、移除 triage label、重開母單，輸出不變；再跑不印', t => {
+  const { probe, ghLog } = fixture(t, { world: [
+    { number: 10, state: 'OPEN', labels: ['ready-for-agent', 'enhancement'] },
+    { number: 11, state: 'OPEN', labels: ['ready-for-agent'], parent: 10 },
+    { number: 40, state: 'CLOSED', labels: ['parent'] },
+    { number: 41, state: 'OPEN', labels: ['ready-for-agent'], parent: 40 },
+  ] });
+  const result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), ['PARENT_LABEL 10', 'PARENT_REOPEN 40']);
+  assert.deepEqual(ghWrites(ghLog), [
+    ['issue', 'edit', '10', '--add-label', 'parent', '--remove-label', 'ready-for-agent'],
+    ['issue', 'reopen', '40'],
+  ]);
+  assert.equal(probe({ args: ['--apply'] }).stdout, '');
+  assert.equal(probe().stdout, '');
+});
+
+test('不帶 --apply 時不寫 tracker', t => {
+  const { probe, ghLog } = fixture(t, { world: [
+    { number: 10, state: 'OPEN', labels: [] },
+    { number: 11, state: 'OPEN', labels: [], parent: 10 },
+  ] });
+  assert.deepEqual(lines(probe()), ['PARENT_LABEL 10']);
+  assert.deepEqual(ghWrites(ghLog), []);
+  assert.deepEqual(lines(probe()), ['PARENT_LABEL 10']);
+});
+
+test('TRIAGE_STATES 與 issue-pool 的相同', async () => {
+  const probeModule = await import('./pilot-probe.mjs');
+  const pool = await import('./issue-pool.mjs');
+  assert.deepEqual(probeModule.TRIAGE_STATES, pool.TRIAGE_STATES);
+});
+
+test('--apply 寫入失敗時印 PARENT_APPLY_FAILED <n> <錯誤> 並 exit 1，其他母單照修', t => {
+  const { probe } = fixture(t, { world: [
+    { number: 10, state: 'OPEN', labels: [], failEdit: true },
+    { number: 11, state: 'OPEN', labels: [], parent: 10 },
+    { number: 20, state: 'OPEN', labels: [] },
+    { number: 21, state: 'OPEN', labels: [], parent: 20 },
+  ] });
+  const result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 1);
+  assert.deepEqual(lines(result), ['PARENT_LABEL 10', 'PARENT_LABEL 20', 'PARENT_APPLY_FAILED 10 gh issue edit exit 1：HTTP 403: Resource not accessible']);
+  assert.deepEqual(lines(probe()), ['PARENT_LABEL 10']);
+});
+
+// review：已關閉又缺 parent label 的母單，查詢只列開著的單，一次 --apply 只重開、下一輪才補 label。
+test('已關閉的母單同時缺 parent label 時一起印 PARENT_LABEL，一次 --apply 修完', t => {
+  const { probe, ghLog } = fixture(t, { world: [
+    { number: 40, state: 'CLOSED', labels: ['ready-for-agent'] },
+    { number: 41, state: 'OPEN', labels: [], parent: 40 },
+  ] });
+  const result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), ['PARENT_LABEL 40', 'PARENT_REOPEN 40']);
+  assert.deepEqual(ghWrites(ghLog), [
+    ['issue', 'edit', '40', '--add-label', 'parent', '--remove-label', 'ready-for-agent'],
+    ['issue', 'reopen', '40'],
+  ]);
+  assert.equal(probe().stdout, '');
 });
