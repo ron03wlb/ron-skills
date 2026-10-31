@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { FAST, orcaReplySource } from './helpers/fake-orca.mjs';
-import { realTmpdir } from './helpers/real-tmpdir.mjs';
+import { FAST, orcaReplySource } from './test/fake-orca.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
-const script = new URL('../scripts/pilot-dispatch.mjs', import.meta.url).pathname;
+const script = new URL('./pilot-dispatch.mjs', import.meta.url).pathname;
 // pre-commit hook 匯出 GIT_DIR 等變數；繼承下去，腳本的 git 會指回本 repo 而不是 fixture。
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
 const git = (cwd, ...args) => {
@@ -20,9 +20,10 @@ const git = (cwd, ...args) => {
 //   late    建好 worktree，卻回 ok:false（2026-10-30 實際發生：worktree 已建好、create 回 "ok": false）；
 //   fail    回 ok:false、不建 worktree；
 //   bare    同 ok，另把主 checkout 設成 bare（Orca 從 WSL 建 worktree 的副作用）。
+// `guard` 是專案自備 Bare guard（pilot-unbare.sh）的內容：有給時把 dispatch 與它的相依複製到暫存的 scripts/，guard 放在旁邊。
 // 每次呼叫都把 stdin 讀光並記下讀到幾個位元組：Orca CLI 會吃掉 stdin，`while read` 迴圈因此只派到第一個成員。
 // `waitHangs` 為真時 `terminal wait` 永遠不回。
-function fixture(t, { modes = {}, waitHangs = false } = {}) {
+function fixture(t, { modes = {}, waitHangs = false, guard } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-dispatch-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
@@ -64,7 +65,16 @@ else if (b === 'read') {
 else fail('unknown');
 `);
   chmodSync(cli, 0o755);
-  const dispatch = (args, extra = {}) => spawnSync('node', [script, ...args], {
+  let dispatchScript = script;
+  if (guard !== undefined) {
+    const scripts = join(temp, 'scripts');
+    mkdirSync(scripts);
+    for (const name of ['pilot-dispatch.mjs', 'orca-session-send.mjs', 'orca-worktree-create.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+    writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
+    chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
+    dispatchScript = join(scripts, 'pilot-dispatch.mjs');
+  }
+  const dispatch = (args, extra = {}) => spawnSync('node', [dispatchScript, ...args], {
     cwd: repo, encoding: 'utf8', input: 'leftover-line\nanother-line\n', timeout: 60000,
     env: { ...env, ORCA_CLI_COMMAND: cli, ORCA_BIN: '', ...FAST, ...extra },
   });
@@ -103,13 +113,21 @@ test('Orca CLI 會把 stdin 讀光：第二個成員仍然派出，每個子行�
   assert.deepEqual([...new Set(readFileSync(`${log}.stdin`, 'utf8').trim().split('\n'))], ['0']);
 });
 
-test('create 把主 checkout 設成 bare：Bare guard 還原、記一列 decisions.md，照樣派出', t => {
-  const { repo, dispatch } = fixture(t, { modes: { 46: 'bare' } });
+// 專案的 guard 通常還會在 decisions.md 記一列；這裡的替身只還原、印出收到的時機。
+test('create 把主 checkout 設成 bare：先跑 Bare guard（時機 dispatch #<n>）、轉印它的輸出，照樣派出', t => {
+  const { repo, dispatch } = fixture(t, { modes: { 46: 'bare' }, guard: '#!/bin/sh\ngit -C "$1" config core.bare false\necho "UNBARE $1 $2"\n' });
   const result = dispatch(['46', '46:pilot-dispatch']);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), [`UNBARE ${repo}`, 'DISPATCHED 46 term_46']);
+  assert.deepEqual(lines(result), [`UNBARE ${repo} dispatch #46`, 'DISPATCHED 46 term_46']);
   assert.equal(git(repo, 'rev-parse', '--is-bare-repository'), 'false');
-  assert.match(readFileSync(join(repo, '.scratch/pilot/decisions.md'), 'utf8'), /dispatch #46/);
+});
+
+test('Bare guard 失敗：STOP unbare，不開分頁', t => {
+  const { dispatch, calls } = fixture(t, { guard: '#!/bin/sh\necho 壞了 >&2\nexit 3\n' });
+  const result = dispatch(['46', '46:pilot-dispatch']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['STOP 46 unbare 壞了']);
+  assert.doesNotMatch(calls(), /^terminal create /m);
 });
 
 const ISO = '\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d[+-]\\d\\d:\\d\\d';
@@ -164,4 +182,25 @@ test('重跑時 worktree 已存在：不再呼叫 worktree create，直接開分
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(lines(result).pop(), 'DISPATCHED 46 term_46');
   assert.equal(calls().match(/^worktree create /gm).length, 1);
+});
+
+// 整合分支與 stuck-after 是專案的值：由參數傳入，預設 pilot/integration 與 90m。
+test('--integration 換掉 worktree 的 base 與表頭的整合分支，--stuck-after 換掉成員行的 stuck-after', t => {
+  const { repo, dispatch, calls, checkpoint } = fixture(t);
+  git(repo, 'branch', 'feature-int');
+  const result = dispatch(['46', '46:pilot-dispatch', '--integration', 'feature-int', '--stuck-after', '45m']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(calls(), /^worktree create --name issue-46 --base-branch feature-int --branch issue\/46-pilot-dispatch --issue 46 --json$/m);
+  assert.match(checkpoint('46'), new RegExp(`^integration: feature-int @ ${git(repo, 'rev-parse', '--short', 'feature-int')}$`, 'm'));
+  assert.match(checkpoint('46'), /^\| 46 \| .* \| 45m \| running \| \|$/m);
+});
+
+test('參數錯誤時 exit 2，不派工', t => {
+  const { dispatch, calls } = fixture(t);
+  for (const args of [['46', '46:x', '--integration'], ['46', '46:x', '--stuck-after', '2h'], ['46', '46:x', '--bogus', 'y'], ['46', '46:x', '--integration', 'a', '--integration', 'b']]) {
+    const result = dispatch(args);
+    assert.equal(result.status, 2, `${args.join(' ')}：${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /^用法：/);
+  }
+  assert.equal(calls(), '');
 });

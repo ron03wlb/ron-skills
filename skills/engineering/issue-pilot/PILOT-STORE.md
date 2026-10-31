@@ -122,7 +122,9 @@ integration: pilot/integration @ 202f8ec
 
 ## Canonical scripts
 
-The setup-workflow templates that write this store, copied into a project's `scripts/` (ADR 0001). Each takes the coordinator checkout as its first argument and writes only under its `.scratch/pilot/`; every project value (checkout, source list, session name) comes in as an argument, never as a constant. Exit 2 is always a usage error.
+The setup-workflow templates that read and write this store, copied into a project's `scripts/` (ADR 0001). Each takes the coordinator checkout as its first argument (except `pilot-dispatch`, which runs in it and finds it with `git worktree list`) and writes only under its `.scratch/pilot/`; every project value (checkout, source list, session name, integration branch) comes in as an argument, never as a constant. Exit 2 is always a usage error.
+
+`pilot-probe` and `pilot-dispatch` also run the project's own Bare guard when a `pilot-unbare.sh` sits next to them (`<checkout> <when>`, `when` being `probe` or `dispatch #<n>`; its stdout, such as `UNBARE <checkout>`, is passed through, and a non-zero exit fails the probe or stops the member with `unbare`); without one they skip it. Their integration branch defaults to `pilot/integration` and the main branch to `main`.
 
 | Script | Command | stdout | exit |
 | --- | --- | --- | --- |
@@ -132,6 +134,8 @@ The setup-workflow templates that write this store, copied into a project's `scr
 | `pilot-request.mjs` | `<checkout> list` | `REQUEST <line no>   <line>` per open request (a line with no ` source ` field counts as open, as the probe reads it) | 0 |
 | `pilot-request.mjs` | `<checkout> apply <line no> [--note <text>]`, `<checkout> decline <line no> --reason <text> [--note <text>]` | `APPLIED <line no>`, `DECLINED <line no>` (a line with no ` source ` field gets `   source unknown` before its mark); `NOT_OPEN <line no>` when that line is not an open request | 0; 1 `NOT_OPEN` |
 | `pilot-hold.mjs` | `<checkout> show`, `set <reason>`, `clear` | `HOLD <since>   <reason>` (`(no since)` for a JSON line without one), `HOLD (no reason)`, `NO_HOLD`; `HOLD_SET`; `HOLD_CLEARED` or `NO_HOLD` | 0 |
+| `pilot-probe.mjs` | `<checkout> [--integration <branch>] [--main <branch>]` (reads running members with `$ORCA_CLI_COMMAND`) | one line per finding, nothing when all is well: `UNBARE`, `NOT_MAIN <branch>`, `HOLD`, `DIRTY <status line>`; `ADAPTER_AHEAD <file>` for `docs/agents/issue-run.md`, or a same-directory `.md` its `## Pilot` section links to, that is newer on the integration branch; `REQUEST <line>`, `GATE …`, `GATE_MALFORMED <id> <line>`; `WORKER <n> DONE <sha>`, `STOP <cause>`, `RUNNING <minutes>`, `STUCK <why>`; `STAGEABLE <key>`; after `git fetch`, `IN_MAIN <key>`, `RESUME_PUSH <key>`, `NOT_IN_MAIN <key> [no-sha\|no-regression\|tip <sha>]`, `FETCH_FAILED <error>` (the script's header comment has the details) | 0; 1 failure |
+| `pilot-dispatch.mjs` | `<key> <n>:<slug>... [--integration <branch>] [--stuck-after <minutes>m]` (needs `$ORCA_CLI_COMMAND`; budget `$PILOT_DISPATCH_BUDGET_MS`, default 510000) | per member `DISPATCHED <n> <handle>` or `STOP <n> <cause>`, after creating worktree `issue-<n>` on branch `issue/<n>-<slug>` from the integration branch, a `claude` terminal, and sending `/issue-run <n> --worker <checkpoint>`; it writes the checkpoint's header once and each member's row (state `running` or `stop`, stuck-after default `90m`) | 0; 4 a `STOP` |
 | `pilot-sources.mjs` | `<checkout> [--record] <source>...` | `SOURCE_CHANGED <path>` per source whose hash differs from the record (or has none), `SOURCE_MISSING <path>` per source that does not exist and was not already recorded `missing`; `--record` then rewrites the record and prints `RECORDED <n>` | 0 |
 
 A note, reason, or field is one line without three spaces in a row; a decisions cell also has no `|`, and a request mark has no `source` word, which would reopen the line.

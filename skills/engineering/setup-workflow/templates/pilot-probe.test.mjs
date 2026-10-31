@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { orcaReplySource } from './helpers/fake-orca.mjs';
-import { realTmpdir } from './helpers/real-tmpdir.mjs';
+import { orcaReplySource } from './test/fake-orca.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
-const script = new URL('../scripts/pilot-probe.mjs', import.meta.url).pathname;
-// pre-commit hook 匯出的 GIT_DIR 等會讓暫存 repo 的 git 指令寫到本 repo（見 pilot-unbare.test.mjs）。
+const script = new URL('./pilot-probe.mjs', import.meta.url).pathname;
+// pre-commit hook 匯出的 GIT_DIR 等會讓暫存 repo 的 git 指令寫到本 repo。
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
 
 const ago = minutes => new Date(Date.now() - minutes * 60000).toISOString();
@@ -15,8 +15,9 @@ const SHA = 'a'.repeat(40);
 
 // 主 checkout（origin 是暫存的 bare repo，不碰網路）＋ `.scratch/pilot/` ＋ 假 Orca CLI。
 // `screens` 是 handle → `terminal read --screen` 的 `{ status, tail }`；不在表裡的 handle 回 terminal_handle_stale。
-// 假 Orca 會把 stdin 讀光並記錄讀到的內容：真實 orca-ide 會吃掉 stdin，逐一讀成員時後面的成員就讀不到（#23 retro）。
-function fixture(t, { screens = {} } = {}) {
+// 假 Orca 會把 stdin 讀光並記錄讀到的內容：真實 Orca CLI 會吃掉 stdin，逐一讀成員時後面的成員就讀不到。
+// `guard` 是專案自備 Bare guard（pilot-unbare.sh）的內容：有給時把 probe 複製到暫存的 scripts/，guard 放在它旁邊。
+function fixture(t, { screens = {}, guard } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-probe-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const origin = join(temp, 'origin.git');
@@ -59,14 +60,23 @@ integration: pilot/integration @ 1234567
 |---|---|---|---|---|---|---|---|
 ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? `term_${m.n}`} | ${m.started ?? ago(5)} | ${m.stuckAfter ?? '90m'} | ${m.state ?? 'running'} | ${m.candidate ?? ''} |`).join('\n')}
 `);
-  const probe = ({ input = 'stdin 不該被 orca 讀到\n' } = {}) =>
-    spawnSync('node', [script, repo], { encoding: 'utf8', input, env: { ...env, ORCA_CLI_COMMAND: cli } });
+  let probeScript = script;
+  if (guard !== undefined) {
+    const scripts = join(temp, 'scripts');
+    mkdirSync(scripts);
+    for (const name of ['pilot-probe.mjs', 'orca-session-send.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+    writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
+    chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
+    probeScript = join(scripts, 'pilot-probe.mjs');
+  }
+  const probe = ({ input = 'stdin 不該被 orca 讀到\n', args = [] } = {}) =>
+    spawnSync('node', [probeScript, repo, ...args], { encoding: 'utf8', input, env: { ...env, ORCA_CLI_COMMAND: cli } });
   return { repo, pilot, origin, git, log, batch, probe };
 }
 
 const lines = result => result.stdout.trim().split('\n');
 
-// 重現 #23 retro：TUI 畫了框線時結果行尾端帶空白和 `│`，不先去掉就比對不到 DONE。
+// 重現過的錯：TUI 畫了框線時結果行尾端帶空白和 `│`，不先去掉就比對不到 DONE。
 test('結果行帶 TUI 框線時仍讀出 DONE 與 STOP', t => {
   const { batch, probe } = fixture(t, { screens: {
     term_23: { status: 'running', tail: ['● 報告', `  DONE 23 ${SHA}      │`, '╰──────╯', '❯'] },
@@ -101,7 +111,7 @@ test('超過 stuck-after 印 STUCK，還沒超過印 RUNNING <分鐘>；讀不�
   assert.ok(out.includes('WORKER 3 STUCK orca terminal_handle_stale'), out.join('\n'));
 });
 
-// 真實 orca-ide 會吃掉 stdin（#23 retro）；呼叫時 stdin 一律接 /dev/null，假 Orca 讀光 stdin 也只會讀到空的。
+// 真實 Orca CLI 會吃掉 stdin；呼叫時 stdin 一律接 /dev/null，假 Orca 讀光 stdin 也只會讀到空的。
 test('呼叫 orca 時不把 stdin 交給它，每個成員都讀得到', t => {
   const { batch, probe, log } = fixture(t, { screens: {
     term_23: { status: 'running', tail: [`DONE 23 ${SHA}`] },
@@ -187,25 +197,31 @@ test('merged 的 batch 還沒進 origin/main：tip 等於 Regression SHA 印 RES
   assert.ok(out.includes(`NOT_IN_MAIN 11 tip ${moved.slice(0, 7)}`), out.join('\n'));
 });
 
-// 主 checkout 的狀態沒問題時不印任何一行，有問題才各印一行：被設成 bare（Bare guard 還原並印 UNBARE，#20）、
-// 不在 main（#21）、有 hold 檔、`git status --short` 有內容（每行一個 DIRTY，帶 status 原文）。
-test('主 checkout 正常時不印狀態行', t => {
+// 主 checkout 的狀態沒問題時不印任何一行，有問題才各印一行：Bare guard 印的行、不在 main、有 hold 檔、
+// `git status --short` 有內容（每行一個 DIRTY，帶 status 原文）。
+test('主 checkout 正常時不印狀態行；沒有 Bare guard 時略過', t => {
   const { probe } = fixture(t);
   const result = probe();
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, '');
 });
 
-test('主 checkout 被設成 bare、不在 main、有 hold、有改動時各印一行', t => {
-  const { repo, pilot, git, probe } = fixture(t);
+test('Bare guard 先跑（時機 probe），不在 main、有 hold、有改動時各印一行', t => {
+  const { repo, pilot, git, probe } = fixture(t, { guard: '#!/bin/sh\necho "UNBARE $1 $2"\n' });
   git('switch', '-q', '-c', 'pilot/stage-8');
   writeFileSync(join(repo, 'stray.txt'), 'x');
   writeFileSync(join(pilot, 'hold'), '');
-  git('config', 'core.bare', 'true');
   const result = probe();
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(lines(result), [`UNBARE ${repo}`, 'NOT_MAIN pilot/stage-8', 'HOLD', 'DIRTY ?? stray.txt']);
-  assert.match(readFileSync(join(pilot, 'decisions.md'), 'utf8'), /還原 core\.bare \| [^|]*probe/);
+  assert.deepEqual(lines(result), [`UNBARE ${repo} probe`, 'NOT_MAIN pilot/stage-8', 'HOLD', 'DIRTY ?? stray.txt']);
+});
+
+test('Bare guard 失敗時 exit 1，不印狀態行', t => {
+  const { probe } = fixture(t, { guard: '#!/bin/sh\necho 壞了 >&2\nexit 3\n' });
+  const result = probe();
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, '');
+  assert.match(result.stderr, /pilot-unbare\.sh exit 3：壞了/);
 });
 
 // hold 檔是一行 JSON（PILOT-STORE.md）；舊的空檔仍然合法，代表「有 hold、沒有原因」（#55）。
@@ -290,19 +306,21 @@ test('started 或 stuck-after 解析不了時印 STUCK checkpoint', t => {
   assert.ok(out.includes('WORKER 2 STUCK checkpoint stuck-after 2h'), out.join('\n'));
 });
 
-// 沒有 ORCA_CLI_COMMAND 時 Bare guard、主 checkout、gate 等與 Orca 無關的檢查照跑，只有 running 成員讀不到。
+// 沒有 ORCA_CLI_COMMAND 時主 checkout、gate 等與 Orca 無關的檢查照跑，只有 running 成員讀不到。
 test('沒有 ORCA_CLI_COMMAND 時其他檢查照跑，running 成員印 STUCK no-orca', t => {
-  const { repo, git, batch } = fixture(t);
-  git('config', 'core.bare', 'true');
+  const { repo, pilot, batch } = fixture(t);
+  writeFileSync(join(pilot, 'hold'), '');
   batch('23', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 23 }]);
   const result = spawnSync('node', [script, repo], { encoding: 'utf8', env: Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'ORCA_CLI_COMMAND')) });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(lines(result), [`UNBARE ${repo}`, 'WORKER 23 STUCK no-orca']);
+  assert.deepEqual(lines(result), ['HOLD', 'WORKER 23 STUCK no-orca']);
 });
 
-// #52：coordinator 讀主 checkout 的 adapter，pilot/integration 上的版本比較新時會照過時的規則 stage（#21 的 Stage worktree）。
-// issue-run.md 與 pilot.md（#45 之後）都比；只有 integration 有也算，兩邊相同或沒有 pilot/integration 時不印。
+// coordinator 讀主 checkout 的 adapter，pilot/integration 上的版本比較新時會照過時的規則 stage。
+// issue-run.md 與它 Pilot 段連到的檔案 都比；只有 integration 有也算，兩邊相同或沒有 pilot/integration 時不印。
 // review 第一輪：main 自己改了 adapter、integration 還沒跟上時，integration 的版本比較舊，不印（否則 coordinator 會改讀舊規則）。
+const PILOT_SECTION = '# adapter\n\n## Pilot\n\n設定整份在 [pilot-rules.md](pilot-rules.md)。\n';
+
 test('pilot/integration 的 adapter 比 main 新時印 ADAPTER_AHEAD <檔案>', t => {
   const { repo, git, probe } = fixture(t);
   const commit = (files, message) => {
@@ -319,28 +337,28 @@ test('pilot/integration 的 adapter 比 main 新時印 ADAPTER_AHEAD <檔案>', 
   assert.equal(probe().stdout, '');
 
   git('switch', '-q', 'pilot/integration');
-  commit({ 'docs/agents/issue-run.md': '# adapter\n- Stage worktree\n', 'docs/agents/pilot.md': '# pilot\n' }, 'newer adapter');
+  commit({ 'docs/agents/issue-run.md': PILOT_SECTION + '- Stage worktree\n', 'docs/agents/pilot-rules.md': '# pilot\n' }, 'newer adapter');
   git('switch', '-q', 'main');
   const result = probe();
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(lines(result), ['ADAPTER_AHEAD docs/agents/issue-run.md', 'ADAPTER_AHEAD docs/agents/pilot.md']);
+  assert.deepEqual(lines(result), ['ADAPTER_AHEAD docs/agents/issue-run.md', 'ADAPTER_AHEAD docs/agents/pilot-rules.md']);
 
-  // main 跟上 integration 之後只剩 integration 新改的 pilot.md。
+  // main 跟上 integration 之後只剩 integration 新改的 pilot-rules.md。
   git('merge', '-q', '--ff-only', 'pilot/integration');
   git('switch', '-q', 'pilot/integration');
-  commit({ 'docs/agents/pilot.md': '# pilot\n- Probe\n' }, 'newer pilot');
+  commit({ 'docs/agents/pilot-rules.md': '# pilot\n- Probe\n' }, 'newer pilot');
   git('switch', '-q', 'main');
-  assert.deepEqual(lines(probe()), ['ADAPTER_AHEAD docs/agents/pilot.md']);
+  assert.deepEqual(lines(probe()), ['ADAPTER_AHEAD docs/agents/pilot-rules.md']);
 
   // main 直接合入新的 issue-run.md：integration 那份比較舊，不印。
-  commit({ 'docs/agents/issue-run.md': '# adapter\n- Push gate\n' }, 'main adapter');
-  assert.deepEqual(lines(probe()), ['ADAPTER_AHEAD docs/agents/pilot.md']);
+  commit({ 'docs/agents/issue-run.md': PILOT_SECTION + '- Push gate\n' }, 'main adapter');
+  assert.deepEqual(lines(probe()), ['ADAPTER_AHEAD docs/agents/pilot-rules.md']);
 
   // review 第二輪：integration 刪掉的檔讀不到（`git show pilot/integration:<檔案>` 會失敗），不印。
   git('-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '-q', '--no-edit', 'pilot/integration');
   git('switch', '-q', 'pilot/integration');
   git('merge', '-q', '--ff-only', 'main');
-  git('rm', '-q', 'docs/agents/pilot.md');
+  git('rm', '-q', 'docs/agents/pilot-rules.md');
   git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'drop pilot');
   git('switch', '-q', 'main');
   assert.equal(probe().stdout, '');
@@ -366,4 +384,58 @@ test('moved 成員不擋 STAGEABLE，⏺ 開頭的結果行也讀得到', t => {
   const out = lines(probe());
   assert.ok(out.includes(`WORKER 21 DONE ${SHA}`), out.join('\n'));
   assert.ok(out.includes('STAGEABLE 21-27'), out.join('\n'));
+});
+
+// 整合分支與主分支是專案的值：由參數傳入，預設 pilot/integration 與 main。
+test('--integration、--main 換掉整合分支與主分支', t => {
+  const { repo, git, pilot, probe } = fixture(t);
+  const commit = (path, text, message) => {
+    mkdirSync(join(repo, path, '..'), { recursive: true });
+    writeFileSync(join(repo, path), text);
+    git('add', path);
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', message);
+    return git('rev-parse', 'HEAD');
+  };
+  git('branch', '-q', '-m', 'trunk');
+  git('switch', '-q', '-c', 'feature-int');
+  const staged = commit('docs/agents/issue-run.md', '# adapter\n', 'adapter');
+  git('switch', '-q', 'trunk');
+  writeFileSync(join(pilot, 'batch-5.md'), `# batch 5\ncurrent: merged ${staged}\nintegration: feature-int @ 1234567\n\n`
+    + '| Issue | branch | worktree | handle | started | stuck-after | state | candidate |\n|---|---|---|---|---|---|---|---|\n'
+    + `| 5 | issue/5-x | /w/issue-5 | term_5 | ${ago(5)} | 90m | done | abc1234 |\nregression: ${staged} exit 0\n`);
+  git('push', '-q', 'origin', 'trunk');
+  assert.deepEqual(lines(probe()), ['NOT_MAIN trunk', 'NOT_IN_MAIN 5 tip none']);
+  assert.deepEqual(lines(probe({ args: ['--integration', 'feature-int', '--main', 'trunk'] })),
+    ['ADAPTER_AHEAD docs/agents/issue-run.md', 'RESUME_PUSH 5']);
+});
+
+test('參數錯誤時 exit 2', t => {
+  const { probe } = fixture(t);
+  for (const args of [['--integration'], ['--bogus', 'x'], ['--main', 'a', '--main', 'b']]) {
+    const result = probe({ args });
+    assert.equal(result.status, 2, `${args.join(' ')}：${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /^用法：/);
+  }
+});
+
+// Pilot 段指向的同目錄檔案才算 adapter；其他段落的連結（Tracker 的 issue-tracker.md）與其他目錄的契約、skill 不算。
+test('ADAPTER_AHEAD 只比 adapter 與它 Pilot 段連到的同目錄檔案', t => {
+  const { repo, git, probe } = fixture(t);
+  const files = {
+    'docs/agents/issue-run.md': '# adapter\n\n## Tracker\n\n[issue-tracker.md](issue-tracker.md)\n\n## Pilot\n\n見 [pilot-rules.md](./pilot-rules.md#probe)、[契約](../../skills/x/PILOT-STORE.md)。\n\n## Permissions\n\n[perms.md](perms.md)\n',
+    'docs/agents/issue-tracker.md': 'v1\n', 'docs/agents/pilot-rules.md': 'v1\n', 'docs/agents/perms.md': 'v1\n', 'skills/x/PILOT-STORE.md': 'v1\n',
+  };
+  const commit = (changes, message) => {
+    for (const [path, text] of Object.entries(changes)) {
+      mkdirSync(join(repo, path, '..'), { recursive: true });
+      writeFileSync(join(repo, path), text);
+      git('add', path);
+    }
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', message);
+  };
+  commit(files, 'adapter');
+  git('switch', '-q', '-c', 'pilot/integration');
+  commit(Object.fromEntries(Object.keys(files).filter(path => path !== 'docs/agents/issue-run.md').map(path => [path, 'v2\n'])), 'newer');
+  git('switch', '-q', 'main');
+  assert.deepEqual(lines(probe()), ['ADAPTER_AHEAD docs/agents/pilot-rules.md']);
 });
