@@ -208,7 +208,7 @@ test('current 還是 merged 時 Close 照樣做完並寫成 closed', t => {
   assert.match(f.checkpoint(), /^current: closed$/m);
 });
 
-// .claude/settings.json 只放行 gh-tracker.mjs（#96）：本 repo 的留言、關單都要經過它，跨 repo 的對應單照 #79 用裸 gh。
+// .claude/settings.json 的 tracker 寫入只放行 gh-tracker.mjs（#96）：本 repo 的留言、關單都要經過它，跨 repo 的對應單照 #79 用裸 gh。
 test('本 repo 的留言與關單（成員和母單）都經 gh-tracker.mjs；對應單留言照舊直接用 gh', t => {
   const f = fixture(t, { body: '## 背景\napp 對應單：acme/app#7\n' });
   writeFileSync(join(f.repo, '.scratch/pilot/counterpart-76.md'), `成員 ron03wlb/ron-skills#76 已合入（merge ${f.mergeSha}）。\n`);
