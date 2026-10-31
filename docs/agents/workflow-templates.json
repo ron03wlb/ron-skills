@@ -63,7 +63,7 @@
     },
     "scripts/pilot-dispatch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-dispatch.mjs",
-      "commit": "b3f8b98cc50629412b1c34f3db8f5ea28b2f6895",
+      "commit": "540b23acb152aa61a53e32d406308b982f5fe8bb",
       "sha256": "7799a1d7de730371b693fa929ca86d3fd7c8b13cc1c068ba488c12063abdbde8"
     },
     "scripts/pilot-handoff.mjs": {
