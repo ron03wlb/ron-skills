@@ -14,6 +14,17 @@ When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the 
 
 Edit the "Label in our tracker" column to match whatever vocabulary you actually use.
 
+## 分類 label
+
+每張 triage 過的 issue 掛一個分類 label 加一個上表的狀態 label（`/triage` 的規則）。本 repo 的分類 label 與 mattpocock/skills 相同：
+
+| Label in mattpocock/skills | Label in our tracker | Meaning                       |
+| -------------------------- | -------------------- | ----------------------------- |
+| `bug`                      | `bug`                | Something is broken           |
+| `enhancement`              | `enhancement`        | New feature or improvement    |
+
+`scripts/issue-pool.mjs` 對有狀態 label 卻沒有這兩個分類的開著的單印 `NO_CATEGORY <n>`（見 [pilot.md](pilot.md) 的 **Pool**）；分類 label 改名時，Pool 的指令加上 `--categories <label>,<label>`。
+
 ## `ready-for-agent` 的輸入條件
 
 標 `ready-for-agent` 之前，先照 [issue-run.md](issue-run.md#readiness) 的 **Readiness** 檢查驗收與做法用到的輸入取得到；取不到的維持 `needs-info`。

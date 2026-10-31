@@ -63,8 +63,8 @@ function fixture(t, { members, base = {}, checkpoint = text => text, stage = tru
   });
   const log = join(temp, 'check.log');
   writeFileSync(log, '');
-  const land = (extra = {}) => {
-    const result = spawnSync('node', [script, key], { cwd: repo, encoding: 'utf8', env: { ...env, FAKE_CHECK_LOG: log, ...extra } });
+  const land = (extra = {}, args = [key]) => {
+    const result = spawnSync('node', [script, ...args], { cwd: repo, encoding: 'utf8', env: { ...env, FAKE_CHECK_LOG: log, ...extra } });
     const lines = result.stdout.trim().split('\n');
     return { ...result, lines, last: lines.at(-1) };
   };
@@ -489,4 +489,50 @@ test('用法錯誤：exit 2', () => {
   const result = spawnSync('node', [script], { encoding: 'utf8', env });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /用法/);
+});
+
+// #143：沒有 Issue 的請求分支（retro/*）以 batch 落地，Stage、Regression、hold、Integrate 與一般 batch 相同。
+test('請求分支：--branch retro/<x> 開 batch-req-<n>.md（成員列 Issue 欄 -），走到 MERGED 並留下 regression 行', t => {
+  const f = fixture(t, { members: [] });
+  const tree = join(f.temp, 'retro-hook');
+  git(f.repo, 'worktree', 'add', '-q', '-b', 'retro/hook-c-var', tree, 'pilot/integration');
+  write(tree, { 'hook.txt': 'hook\n' });
+  git(tree, 'add', '.');
+  git(tree, 'commit', '-qm', 'request 10');
+  const candidate = git(tree, 'rev-parse', 'HEAD');
+  const before = f.tip();
+  const result = f.land({}, ['req-10', '--branch', 'retro/hook-c-var']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const sha = f.tip();
+  assert.equal(result.last, `MERGED req-10 ${sha}`);
+  assert.deepEqual(git(f.repo, 'log', '--first-parent', '--format=%s', `${before}..${sha}`).split('\n'), ["Merge branch 'retro/hook-c-var' into pilot/stage-req-10"]);
+  const text = readFileSync(join(f.repo, '.scratch/pilot/batch-req-10.md'), 'utf8');
+  assert.match(text, /^# batch req-10$/m);
+  assert.match(text, new RegExp(`^integration: pilot/integration @ ${before}$`, 'm'));
+  assert.match(text, new RegExp(`^\\| - \\| retro/hook-c-var \\| ${tree} \\| +\\| [^|]+ \\| +\\| done \\| ${candidate} \\|$`, 'm'));
+  assert.match(text, new RegExp(`^current: merged ${sha}$`, 'm'));
+  assert.match(text, new RegExp(`^regression: ${sha} exit 0 CHECK_PASS tests 3\\+4\\+5$`, 'm'));
+  assert.equal(f.checks(), 1);
+
+  // 重跑（帶不帶 --branch 都一樣）只再印一次 MERGED。
+  assert.equal(f.land({}, ['req-10', '--branch', 'retro/hook-c-var']).last, result.last);
+  assert.equal(f.land({}, ['req-10']).last, result.last);
+  assert.equal(f.checks(), 1);
+});
+
+test('請求分支：key 不是 req-<n>、分支不是 retro/<x>，或既有 checkpoint 的分支不同：不動任何東西', t => {
+  const f = fixture(t, { members: [] });
+  git(f.repo, 'branch', 'retro/a', 'pilot/integration');
+  assert.equal(f.land({}, ['10', '--branch', 'retro/a']).status, 2);
+  assert.equal(f.land({}, ['req-10', '--branch', 'issue/10-a']).status, 2);
+  assert.equal(f.land({}, ['req-10', '--branch']).status, 2);
+  const missing = f.land({}, ['req-11', '--branch', 'retro/missing']);
+  assert.equal(missing.status, 4, missing.stdout + missing.stderr);
+  assert.match(missing.last, /^STOP branch retro\/missing/);
+  assert.equal(existsSync(join(f.repo, '.scratch/pilot/batch-req-11.md')), false);
+  write(f.repo, { '.scratch/pilot/batch-req-10.md': '# batch req-10\ncurrent: dispatched 2026-10-31T07:00:00+08:00\n\n| Issue | branch | worktree | handle | started | stuck-after | state | candidate |\n|---|---|---|---|---|---|---|---|\n| - | retro/b | | | 2026-10-31T07:00:00+08:00 | | done | abc1234 |\n' });
+  const other = f.land({}, ['req-10', '--branch', 'retro/a']);
+  assert.equal(other.status, 4, other.stdout + other.stderr);
+  assert.match(other.last, /^STOP checkpoint .*retro\/b/);
+  assert.equal(f.checks(), 0);
 });

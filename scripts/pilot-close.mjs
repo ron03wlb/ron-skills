@@ -8,13 +8,15 @@
 // Orca rm 會順便刪掉它能證明已合入的本機分支，這時 branch 步驟就 SKIP。
 // 所有子行程的 stdin 都接 /dev/null（Orca CLI 會吃掉 stdin）；stderr 照常顯示，只濾掉 WSL 上 Orca 每次都印的 crashpad 錯誤行（#73）。
 // 本 repo 的留言與關單都經 scripts/gh-tracker.mjs：.claude/settings.json 只放行它（#96）；跨 repo 的對應單留言照 #79 直接用 gh。
+// 請求分支成員（Issue 欄 `-`、branch `retro/<x>`，#143）沒有 Issue：只做 terminal → worktree → branch → remote，不呼叫 gh 也不經 gh-tracker；
+// 它的 DONE／SKIP／STOP 行以分支名稱代替 <n>（STOP branch-malformed 例外，照 checkpoint 印 `-`），Bare guard 的時機是 `close <分支>`。
 // 對應單的交接內容要人寫：coordinator 先寫 <主 checkout>/.scratch/pilot/counterpart-<n>.md，內容要有 merge SHA 與 `ron03wlb/ron-skills#<n>`，
 // 重跑時才認得出已經留過言。
 //
 // 用法：node scripts/pilot-close.mjs <batch key> <pr> <merge sha>（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
 // stdout：每一步一行 `DONE <n> <step>` 或 `SKIP <n> <step>`；任何一步失敗都印 `STOP <n> <step> <原因>` 並停下
 //   （開頭 main 那步的 <n> 是 batch key；checkpoint 讀不到或沒有 done 成員只印 STOP <key> checkpoint；
-//   done 成員的 branch 不是 `issue/<n>-<slug>` 時，在任何寫入之前只印 STOP branch-malformed <n> <JSON 字串的 branch>）。Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。
+//   done 成員的 branch 不是 `issue/<n>-<slug>`（請求分支成員是 `retro/<x>`）時，在任何寫入之前只印 STOP branch-malformed <n> <JSON 字串的 branch>）。Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。
 //   全部成員做完，checkpoint 的 `current:` 寫成 `closed`，最後一行 `CLOSED <key>`。
 // exit：0 CLOSED；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND。
 import { spawnSync } from 'node:child_process';
@@ -75,11 +77,11 @@ function worktreeOf(main, branch) {
     .find(w => w.branch === branch)?.path;
 }
 
-/** batch checkpoint 裡 state 是 done 的成員：`{ n, branch, handle }`（欄位見 PILOT-STORE.md）。 */
+/** batch checkpoint 裡 state 是 done 的成員：`{ n, branch, handle, id }`（欄位見 PILOT-STORE.md）；`id` 是結果行裡的名稱，請求分支成員（n 是 `-`）用分支。 */
 function doneMembers(text) {
   return text.split('\n').filter(line => line.startsWith('|')).map(line => line.split('|').slice(1, -1).map(cell => cell.trim()))
-    .filter(([n, , , , , , state]) => /^\d+$/.test(n) && state === 'done')
-    .map(([n, branch, , handle]) => ({ n, branch, handle }));
+    .filter(([n, , , , , , state]) => /^(\d+|-)$/.test(n) && state === 'done')
+    .map(([n, branch, , handle]) => ({ n, branch, handle, id: n === '-' ? branch : n }));
 }
 
 /** merge SHA 要已在 origin/main；主 checkout 要在 main 上，落後 origin/main 就 --ff-only 跟上。 */
@@ -103,6 +105,16 @@ const api = (step, path) => JSON.parse(must(step, 'gh', ['api', `repos/${REPO}/$
  * 呼叫端用 `at.step` 印 DONE／SKIP 行，也替不是 Stop 的錯誤標出 STOP 的步驟。
  */
 function* closeMember({ cli, main, key, pr, sha, regression }, { n, branch, handle }, at) {
+  if (n !== '-') yield* closeIssue({ main, key, pr, sha, regression }, n, at);
+  yield* cleanUp({ cli, main }, { n, branch, handle }, at);
+  if (n !== '-') {
+    at.step = 'parent';
+    yield closeParent(n);
+  }
+}
+
+/** Issue 成員的 evidence → counterpart → close。 */
+function* closeIssue({ main, key, pr, sha, regression }, n, at) {
   at.step = 'evidence';
   const issue = issueView('evidence', n, REPO, 'state,body,comments');
 
@@ -122,7 +134,10 @@ function* closeMember({ cli, main, key, pr, sha, regression }, { n, branch, hand
     tracker('close', 'close', n);
     yield 'DONE';
   }
+}
 
+/** terminal → worktree → branch → remote：只動本機與 origin 的 git、Orca，不碰 tracker。 */
+function* cleanUp({ cli, main }, { n, branch, handle }, at) {
   at.step = 'terminal';
   // worktree 已經移除時，它的 terminal 也跟著關了，Orca 也認不得那個選擇器。
   const tree = worktreeOf(main, branch);
@@ -140,7 +155,7 @@ function* closeMember({ cli, main, key, pr, sha, regression }, { n, branch, hand
     let failed;
     try { orca(cli, 'worktree', 'worktree', 'rm', '--worktree', `path:${tree}`); } catch (error) { failed = error; }
     // rm 失敗也可能已把主 checkout 設成 bare，或其實已經移除（Orca 曾在建好 worktree 時回 ok:false）；以 git worktree list 為準。
-    const unbare = run(join(here, 'pilot-unbare.sh'), [main, `close #${n}`]);
+    const unbare = run(join(here, 'pilot-unbare.sh'), [main, `close ${n === '-' ? branch : `#${n}`}`]);
     if (unbare.stdout) process.stdout.write(unbare.stdout);
     if (unbare.status !== 0) throw new Stop('worktree', [failed?.message, `unbare ${unbare.reason}`].filter(Boolean).join('；'));
     if (worktreeOf(main, branch)) throw failed ?? new Stop('worktree', 'rm 之後 git worktree list 仍有這個分支');
@@ -165,9 +180,6 @@ function* closeMember({ cli, main, key, pr, sha, regression }, { n, branch, hand
     must('remote', 'git', ['-C', main, 'push', 'origin', '--delete', branch]);
     yield 'DONE';
   }
-
-  at.step = 'parent';
-  yield closeParent(n);
 }
 
 /** 對應單交接；沒有對應單或每張都已留過言傳回 SKIP。 */
@@ -225,7 +237,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     if (!members.length) throw new Stop('checkpoint', `${checkpoint} 沒有 done 成員`);
     // 空的或手寫錯的 branch 會讓 remote 步驟拿它跑 ls-remote（空 pattern 列出全部 heads，exit 0）再 push --delete（#120），
     // 所以在 Bare guard、main 與任何成員的寫入之前，先確認每個 done 成員的 branch 都是 issue/<這一列的 n>-<slug>。
-    const malformed = members.find(({ n, branch }) => !new RegExp(`^issue/${n}-[a-z0-9-]+$`).test(branch));
+    const malformed = members.find(({ n, branch }) => !new RegExp(n === '-' ? '^retro/[a-z0-9][a-z0-9-]*$' : `^issue/${n}-[a-z0-9-]+$`).test(branch));
     if (malformed) {
       console.log(`STOP branch-malformed ${malformed.n} ${JSON.stringify(malformed.branch)}`);
       process.exit(4);
@@ -238,8 +250,8 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     at.step = 'main';
     console.log(`${syncMain(main, sha)} ${key} main`);
     for (const member of members) {
-      at.n = member.n;
-      for (const outcome of closeMember({ cli, main, key, pr, sha, regression }, member, at)) console.log(`${outcome} ${member.n} ${at.step}`);
+      at.n = member.id;
+      for (const outcome of closeMember({ cli, main, key, pr, sha, regression }, member, at)) console.log(`${outcome} ${member.id} ${at.step}`);
     }
     Object.assign(at, { n: key, step: 'checkpoint' });
     writeFileSync(checkpoint, readFileSync(checkpoint, 'utf8').replace(/^current: .*$/m, 'current: closed'));

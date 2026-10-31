@@ -16,8 +16,11 @@
 // 重跑：`current:` 是 `staged <sha> onto <tip>`、tip 沒變、stage 分支還在那個 SHA、成員組合與各分支都沒變、最後一個 regression 行是它的 exit 0 時，
 //   不重新 stage、不重跑 Regression，直接從 hold 檢查繼續；其他情況一律從 Stage 重來。已經 `merged` 時只再印一次 MERGED。
 // checkpoint 格式見 skills/engineering/issue-pilot/PILOT-STORE.md；寫回之後再讀一次，沒寫進去就 STOP checkpoint，不會靜默失敗（#74）。
+// 請求分支（沒有 Issue 的 `retro/<x>`，#143）：`req-<n> --branch retro/<x>`（<n> 是 requests.md 的行號）在 batch-req-<n>.md 不存在時開出它，
+//   唯一的成員列 Issue 欄是 `-`、state `done`、candidate 是分支 tip；已存在時成員要是同一個分支，否則 STOP checkpoint。之後與一般 batch 相同。
+//   分支不存在印 `STOP branch <分支> …`，不開 checkpoint。成員列是 `-` 時，STOP、RESOLVED 行裡的 <n> 是分支名稱。
 //
-// 用法：node scripts/pilot-land.mjs <batch key>（在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）
+// 用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>]（在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）
 // stdout：最後一行是 `MERGED <key> <sha>`，或 `STOP regression <exit>`、`STOP hold`、`STOP drift`（tip 變了，下一輪重新 stage）、
 //   `STOP conflict <n> <檔案…>`（已 abort，stage worktree 乾淨），以及 `STOP checkpoint …`、`STOP member <n> <state>`、`STOP dirty <worktree>`、
 //   `STOP no-stage-worktree`、`STOP create …`、`STOP merge <n> …`、`STOP git …`。之前的行：`STAGED <key> <sha> onto <tip>`、
@@ -29,7 +32,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const USAGE = '用法：node scripts/pilot-land.mjs <batch key>（在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
+const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>]（--branch 時 key 是 req-<n>；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
 const INTEGRATION = 'pilot/integration';
 const STAMPS = 'scripts/workflow-doc-sync.json';
 const MARKER = 32;
@@ -92,7 +95,12 @@ function createStageWorktree(main, key) {
   return tree;
 }
 
-/** batch checkpoint：`current:` 的值、成員 `{ n, branch, state }`（欄位見 PILOT-STORE.md）與最後一個 `regression:` 行的值。欄位前後的空格不影響。 */
+/**
+ * batch checkpoint：`current:` 的值、成員 `{ n, branch, state }`（欄位見 PILOT-STORE.md）與最後一個 `regression:` 行的值。欄位前後的空格不影響。
+ * Issue 欄是 `-` 的請求分支成員以分支名稱當 n，排在 Issue 成員之後、照表格順序。
+ */
+const order = ({ n }) => (typeof n === 'number' ? n : Number.MAX_SAFE_INTEGER);
+
 function readCheckpoint(file) {
   if (!existsSync(file)) throw new Stop(`checkpoint 缺 ${file}`);
   const text = readFileSync(file, 'utf8');
@@ -100,11 +108,33 @@ function readCheckpoint(file) {
   if (current === undefined) throw new Stop(`checkpoint ${file} 沒有 current: 行`);
   const members = text.split('\n').filter(line => line.trim().startsWith('|'))
     .map(line => line.trim().split('|').slice(1, -1).map(cell => cell.trim()))
-    .filter(([n]) => /^\d+$/.test(n))
-    .map(([n, branch, , , , , state]) => ({ n: Number(n), branch, state }))
-    .sort((a, b) => a.n - b.n);
+    .filter(([n]) => /^(\d+|-)$/.test(n))
+    .map(([n, branch, , , , , state]) => ({ n: n === '-' ? branch : Number(n), branch, state }))
+    .sort((a, b) => order(a) - order(b));
   const regression = [...text.matchAll(/^regression:[ \t]*(.*)$/gm)].pop()?.[1].trim();
   return { current, members, regression };
+}
+
+/** 請求分支的 batch：checkpoint 不在就開出來（成員列 Issue 欄 `-`），在的話成員要是同一個分支。 */
+function openRequest(key, branch) {
+  const main = mainCheckout();
+  const file = join(main, `.scratch/pilot/batch-${key}.md`);
+  if (existsSync(file)) {
+    const others = readCheckpoint(file).members.map(m => m.branch);
+    if (others.length !== 1 || others[0] !== branch) throw new Stop(`checkpoint ${file} 的成員是 ${others.join(' ') || '（沒有）'}，不是 ${branch}`);
+    return;
+  }
+  const candidate = gitIn(main, 'rev-parse', '-q', '--verify', `refs/heads/${branch}^{commit}`).stdout.trim();
+  if (!candidate) throw new Stop(`branch ${branch} 不存在`);
+  const worktree = must(main, 'worktree', 'list', '--porcelain').split(/\n\n+/)
+    .find(block => block.split('\n').includes(`branch refs/heads/${branch}`))?.match(/^worktree (.*)$/m)?.[1] ?? '';
+  const now = new Date().toISOString();
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `# batch ${key}\ncurrent: dispatched ${now}\nintegration: ${INTEGRATION} @ ${must(main, 'rev-parse', INTEGRATION)}\n\n`
+    + '| Issue | branch | worktree | handle | started | stuck-after | state | candidate |\n|---|---|---|---|---|---|---|---|\n'
+    + `| - | ${branch} | ${worktree} | | ${now} | | done | ${candidate} |\n`);
+  const { members } = readCheckpoint(file);
+  if (members.length !== 1 || members[0].branch !== branch || members[0].state !== 'done') throw new Stop(`checkpoint ${file} 的成員列沒寫成 ${branch}`);
 }
 
 /** 改寫 `current:` 行；寫完再讀一次，不是這個值就 STOP（多一個空格就靜默不中的 sed 正是 #74 的起因）。 */
@@ -309,11 +339,14 @@ function land(key) {
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [key, ...rest] = process.argv.slice(2);
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(key ?? '') || rest.length) {
+  const request = rest[0] === '--branch' ? rest[1] : undefined;
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(key ?? '')
+    || (rest.length && !(rest.length === 2 && /^req-\d+$/.test(key) && /^retro\/[a-z0-9][a-z0-9-]*$/.test(request ?? '')))) {
     console.error(USAGE);
     process.exit(2);
   }
   try {
+    if (request) openRequest(key, request);
     console.log(`MERGED ${key} ${land(key)}`);
   } catch (error) {
     if (!(error instanceof Stop)) throw error;
