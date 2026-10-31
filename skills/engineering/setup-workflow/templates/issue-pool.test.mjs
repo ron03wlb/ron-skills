@@ -70,13 +70,10 @@ else if (args[0] === 'issue' && args[1] === 'view') {
 }
 `);
   chmodSync(join(dir, 'gh'), 0o755);
-  // 最後一個引數可以是 `{ cwd }`，改在別的目錄跑（例如 repo 的 worktree）。
-  const run = (...args) => {
-    const { cwd = repo } = typeof args.at(-1) === 'object' ? args.pop() : {};
-    return spawnSync('node', [SCRIPT, '--repo', 'acme/app', ...args], { cwd, encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
-  };
+  const runAt = (cwd, ...args) => spawnSync('node', [SCRIPT, '--repo', 'acme/app', ...args], { cwd, encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+  const run = (...args) => runAt(repo, ...args);
   const calls = () => { try { return readFileSync(join(dir, 'calls.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line)); } catch { return []; } };
-  return { run, calls, repo };
+  return { run, runAt, calls, repo };
 }
 
 test('標 ready-for-agent、沒被 block、不是母單、沒被認領的 Issue 歸到 ready', () => {
@@ -245,9 +242,11 @@ test('claim：最近一則認領是同一個 session 時照常再認領一次', 
   assert.equal(writes(calls()).length, 2);
 });
 
-// #135：handoff 之後重派，認領者是這台機器上的前任 coordinator；它記在主 checkout 的 sessions.md，就直接以它的 session 接手。
+// #135：handoff 之後重派，認領者是這台機器上已交接出去的前任 coordinator（sessions.md 有它的 handoff 行），
+// 而 claim 的是現任 coordinator（有 start 行、沒交接出去），就直接以前任的 session 接手。
 const SESSIONS = '2026-10-31T09:00:00+08:00   session old-coord   pid 4242   ron-skills-15\n'
-  + '2026-10-31T10:00:00+08:00   handoff from-session old-coord → terminal term_1   reason 合入 2 批\n';
+  + '2026-10-31T10:00:00+08:00   handoff from-session old-coord → terminal term_1   reason 合入 2 批\n'
+  + '2026-10-31T10:00:05+08:00   session sess-1   pid 4343   ron-skills-16\n';
 
 test('claim：認領者是本機前任 coordinator（sessions.md 有它）時以它的 session 接手', () => {
   const theirs = `認領：${HOST}／old-coord`;
@@ -282,10 +281,26 @@ test('claim：sessions.md 不存在時本機別的 session 照舊停下，不改
 
 test('claim：從 worktree 跑時讀主 checkout 的 sessions.md', () => {
   const theirs = `認領：${HOST}／old-coord`;
-  const { run, repo } = fakeGh({ sessions: SESSIONS, views: [view({ assignees: ['ron'], comments: [['ron', theirs]] }), view({ assignees: ['ron'], comments: [['ron', theirs], ['ron', theirs]] })] });
+  const { runAt, repo } = fakeGh({ sessions: SESSIONS, views: [view({ assignees: ['ron'], comments: [['ron', theirs]] }), view({ assignees: ['ron'], comments: [['ron', theirs], ['ron', theirs]] })] });
   git(repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'base');
   git(repo, 'worktree', 'add', '-q', '-b', 'issue/7', join(repo, '..', 'wt'));
-  const result = run('claim', '7', '--session', 'sess-1', { cwd: join(repo, '..', 'wt') });
+  const result = runAt(join(repo, '..', 'wt'), 'claim', '7', '--session', 'sess-1');
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'CLAIMED 7 takeover old-coord\n');
 });
+
+const STOP_CASES = [
+  ['認領者還在任（只有 start 行、沒交接出去）', `${HOST}／live-coord`, '2026-10-31T09:00:00+08:00   session live-coord   pid 4242   ron-skills-15\n2026-10-31T09:00:05+08:00   session sess-1   pid 4343   ron-skills-16\n'],
+  ['claim 的不是現任 coordinator（例如 --pool 或手動 /issue-run）', `${HOST}／old-coord`, SESSIONS.replace(/.*session sess-1 .*\n/, '')],
+  ['claim 的 coordinator 自己也已交接出去', `${HOST}／old-coord`, `${SESSIONS}2026-10-31T11:00:00+08:00   handoff from-session sess-1 → terminal term_2   reason 合入 2 批\n`],
+  ['認領者只撞到 sessions.md 其他欄位的字（session 名稱、terminal handle）', `${HOST}／term_1`, SESSIONS],
+];
+for (const [why, claimer, sessions] of STOP_CASES) {
+  test(`claim：${why}時照舊停下，不改 Issue`, () => {
+    const { run, calls } = fakeGh({ sessions, views: [view({ assignees: ['ron'], comments: [['ron', `認領：${claimer}`]] })] });
+    const result = run('claim', '7', '--session', 'sess-1');
+    assert.equal(result.status, 4);
+    assert.equal(result.stdout, `STOP 7 claimed ${claimer}\n`);
+    assert.deepEqual(writes(calls()), []);
+  });
+}
