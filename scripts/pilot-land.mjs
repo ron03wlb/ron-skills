@@ -99,6 +99,8 @@ function createStageWorktree(main, key) {
  * batch checkpoint：`current:` 的值、成員 `{ n, branch, state }`（欄位見 PILOT-STORE.md）與最後一個 `regression:` 行的值。欄位前後的空格不影響。
  * Issue 欄是 `-` 的請求分支成員以分支名稱當 n，排在 Issue 成員之後、照表格順序。
  */
+const order = ({ n }) => (typeof n === 'number' ? n : Number.MAX_SAFE_INTEGER);
+
 function readCheckpoint(file) {
   if (!existsSync(file)) throw new Stop(`checkpoint 缺 ${file}`);
   const text = readFileSync(file, 'utf8');
@@ -108,7 +110,7 @@ function readCheckpoint(file) {
     .map(line => line.trim().split('|').slice(1, -1).map(cell => cell.trim()))
     .filter(([n]) => /^(\d+|-)$/.test(n))
     .map(([n, branch, , , , , state]) => ({ n: n === '-' ? branch : Number(n), branch, state }))
-    .sort((a, b) => (typeof a.n === 'number' ? a.n : Infinity) - (typeof b.n === 'number' ? b.n : Infinity));
+    .sort((a, b) => order(a) - order(b));
   const regression = [...text.matchAll(/^regression:[ \t]*(.*)$/gm)].pop()?.[1].trim();
   return { current, members, regression };
 }

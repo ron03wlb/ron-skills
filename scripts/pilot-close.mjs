@@ -9,7 +9,7 @@
 // 所有子行程的 stdin 都接 /dev/null（Orca CLI 會吃掉 stdin）；stderr 照常顯示，只濾掉 WSL 上 Orca 每次都印的 crashpad 錯誤行（#73）。
 // 本 repo 的留言與關單都經 scripts/gh-tracker.mjs：.claude/settings.json 只放行它（#96）；跨 repo 的對應單留言照 #79 直接用 gh。
 // 請求分支成員（Issue 欄 `-`、branch `retro/<x>`，#143）沒有 Issue：只做 terminal → worktree → branch → remote，不呼叫 gh 也不經 gh-tracker；
-// 它的 DONE／SKIP／STOP 行以分支名稱代替 <n>。
+// 它的 DONE／SKIP／STOP 行以分支名稱代替 <n>（STOP branch-malformed 例外，照 checkpoint 印 `-`），Bare guard 的時機是 `close <分支>`。
 // 對應單的交接內容要人寫：coordinator 先寫 <主 checkout>/.scratch/pilot/counterpart-<n>.md，內容要有 merge SHA 與 `ron03wlb/ron-skills#<n>`，
 // 重跑時才認得出已經留過言。
 //

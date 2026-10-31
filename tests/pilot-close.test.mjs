@@ -19,7 +19,6 @@ const git = (cwd, ...args) => {
   return result.stdout.trim();
 };
 const BRANCH = 'issue/76-pilot-close';
-const MEMBER = BRANCH;
 const REPO = 'ron03wlb/ron-skills';
 
 // origin（bare）、主 checkout（main 已合入 issue 分支並 push）、Orca 建的成員 worktree，以及假 gh 與假 Orca。
@@ -33,7 +32,7 @@ const REPO = 'ron03wlb/ron-skills';
 // 假 gh 的輸出從 helpers/fixtures/gh 的真實樣本長出來（同 land.test.mjs）；Orca rm 沒有樣本，比照 land.test.mjs 回空的 result，腳本只看 ok。
 function fixture(t, { pushed = false, unmerged = false, body = '', siblings = { 70: 'CLOSED' }, orcaDeletesBranch = true, request = false } = {}) {
   // request：成員是沒有 Issue 的請求分支（Issue 欄 `-`，#143），batch 是 req-10。
-  const BRANCH = request ? 'retro/hook-c-var' : MEMBER;
+  const branch = request ? 'retro/hook-c-var' : BRANCH;
   const key = request ? 'req-10' : '76';
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-close-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
@@ -48,14 +47,14 @@ function fixture(t, { pushed = false, unmerged = false, body = '', siblings = { 
   git(repo, 'commit', '-qm', 'fixture');
   git(repo, 'remote', 'add', 'origin', origin);
   git(repo, 'push', '-q', '-u', 'origin', 'main');
-  git(repo, 'worktree', 'add', '-q', '-b', BRANCH, worktree, 'main');
+  git(repo, 'worktree', 'add', '-q', '-b', branch, worktree, 'main');
   writeFileSync(join(worktree, 'close.txt'), 'close\n');
   git(worktree, 'add', '.');
   git(worktree, 'commit', '-qm', 'member');
-  git(repo, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #100', BRANCH);
+  git(repo, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #100', branch);
   git(repo, 'push', '-q', 'origin', 'main');
   const mergeSha = git(repo, 'rev-parse', 'HEAD');
-  if (pushed) git(repo, 'push', '-q', 'origin', BRANCH);
+  if (pushed) git(repo, 'push', '-q', 'origin', branch);
   if (unmerged) {
     writeFileSync(join(worktree, 'late.txt'), 'late\n');
     git(worktree, 'add', '.');
@@ -68,7 +67,7 @@ integration: pilot/integration @ 5d2e5d4
 
 | Issue | branch | worktree | handle | started | stuck-after | state | candidate |
 |---|---|---|---|---|---|---|---|
-| ${request ? '-' : 76} | ${BRANCH} | ${worktree} | term_76 | 2026-10-31T06:38:56+08:00 | 90m | done | abc1234 |
+| ${request ? '-' : 76} | ${branch} | ${worktree} | term_76 | 2026-10-31T06:38:56+08:00 | 90m | done | abc1234 |
 | 77 | issue/77-other | /nowhere/issue-77 | term_77 | 2026-10-31T06:38:56+08:00 | 90m | moved batch-77 | |
 regression: abc1234 exit 0 CHECK_PASS tests 300+40
 `);
@@ -157,8 +156,8 @@ else fail('unknown');
   const ghIssues = () => JSON.parse(readFileSync(ghState, 'utf8')).issues;
   const checkpoint = () => readFileSync(join(repo, `.scratch/pilot/batch-${key}.md`), 'utf8');
   const calls = () => readFileSync(log, 'utf8');
-  const branchExists = () => spawnSync('git', ['-C', repo, 'rev-parse', '--verify', '-q', `refs/heads/${BRANCH}`], { env }).status === 0;
-  const remoteHas = () => spawnSync('git', ['-C', origin, 'rev-parse', '--verify', '-q', `refs/heads/${BRANCH}`], { env }).status === 0;
+  const branchExists = () => spawnSync('git', ['-C', repo, 'rev-parse', '--verify', '-q', `refs/heads/${branch}`], { env }).status === 0;
+  const remoteHas = () => spawnSync('git', ['-C', origin, 'rev-parse', '--verify', '-q', `refs/heads/${branch}`], { env }).status === 0;
   return { temp, origin, repo, worktree, mergeSha, close, issues: ghIssues, checkpoint, calls, branchExists, remoteHas, terminals: () => JSON.parse(readFileSync(terminals, 'utf8')) };
 }
 
