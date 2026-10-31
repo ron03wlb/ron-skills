@@ -104,6 +104,13 @@ test('tracker 與程式碼 host 不同：兩邊分開記錄，各自檢查 gh �
   assert.ok(lines.some(line => /^HOST tracker github github\.com /.test(line)));
 });
 
+test('GitHub Enterprise 的 tracker、程式碼在 GitLab：tracker 主機取自文件裡的 GitHub 網址，不預設 github.com', t => {
+  const doc = 'Issues: https://github.acme.corp/team/app/issues — read with `gh issue view <n> --json body`.\n';
+  const { result } = station(t, { tracker: doc, origin: 'git@gitlab.acme.corp:team/app.git', loggedIn: ['github.acme.corp', 'gitlab.acme.corp'] });
+  assert.deepEqual([result.tracker.value, result.tracker.host], ['github', 'github.acme.corp']);
+  assert.equal(result.ok, true);
+});
+
 test('無 remote：程式碼 host 是 local；本機 Markdown tracker 也是 local，不需要任何 CLI', t => {
   const { status, result, lines } = station(t, { tracker: 'Issues live as Markdown files under `.scratch/issues/`.\n', clis: [] });
   assert.equal(status, 0);

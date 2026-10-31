@@ -18,7 +18,7 @@
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
-import { CLI, codeHost, trackerKind } from '../templates/lib/hosts.mjs';
+import { CLI, codeHost, hostInDoc, trackerKind } from '../templates/lib/hosts.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
@@ -143,16 +143,14 @@ function hostStation() {
   const doc = existsSync(docPath) ? readFileSync(docPath, 'utf8') : null;
   const kind = trackerKind(doc);
   // 還沒有 tracker 文件時依 origin 推定（setup 之後才寫這份文件）。
+  // 和程式碼不同種的 tracker 先從文件網址找主機；GitHub 找不到時用 github.com，GitLab 找不到時不帶 --hostname，查 glab 的預設主機。
   const tracker = kind === 'none'
     ? { value: code.value, host: code.host, evidence: [`${trackerDoc} 不存在，依 origin 推定`] }
-    : { value: kind, host: kind === code.value ? code.host : kind === 'github' ? 'github.com' : null,
-        evidence: [`${trackerDoc} 寫 ${{ github: 'gh', gitlab: 'glab', local: '本機 Markdown（沒有 gh、glab）' }[kind]}`] };
-  if (tracker.value === 'gitlab' && !tracker.host) {
-    // 程式碼 host 不是 GitLab 時，從文件裡的網址找 GitLab 主機；找不到就不帶 --hostname，查 glab 的預設主機。
-    tracker.host = [...doc.matchAll(/https?:\/\/([^/\s`'")]+)/g)].map(match => match[1].replace(/:\d+$/, '').toLowerCase()).find(host => !/github/.test(host)) ?? null;
-  }
+    : { value: kind, host: kind === 'local' ? null : kind === code.value ? code.host : hostInDoc(doc, kind) ?? (kind === 'github' ? 'github.com' : null),
+        evidence: [`${trackerDoc} 寫 ${CLI[kind] ?? '本機 Markdown（沒有 gh、glab）'}`] };
 
   const macos = (process.env.DETECT_PLATFORM ?? process.platform) === 'darwin';
+  // glab 官方只支援 Homebrew（含 Linux、WSL）；gh 在 Linux 走官方 apt 來源。
   const installHint = { gh: macos ? 'brew install gh' : '照 https://github.com/cli/cli/blob/trunk/docs/install_linux.md 加入 apt 來源後 sudo apt install gh', glab: 'brew install glab' };
   const needs = new Map();
   for (const side of [tracker, code]) {

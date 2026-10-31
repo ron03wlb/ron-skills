@@ -6,8 +6,8 @@ The tracker host and the code host of a repo, and the `gh` (GitHub) or `glab` (G
 
 There are two hosts, recorded separately, and they may differ (Issues on GitHub, code on a self-hosted GitLab):
 
-- **Tracker host**: from `docs/agents/issue-tracker.md`: it names `glab` → `gitlab`, `gh` → `github`, neither → `local` (Markdown Issues in the repo). Before that file exists, the Host station infers it from `origin`. A GitLab tracker on a different host than the code takes its hostname from the first non-GitHub URL in the file.
-- **Code host**: from the `origin` URL: `github.com` or a hostname containing `github` (GitHub Enterprise) → `github`; any other network host → `gitlab`, including a self-hosted instance over plain http or an IP (`http://192.168.200.202/spay/spay2`); no `origin`, or one that is a local path or `file://` → `local`.
+- **Tracker host**: from `docs/agents/issue-tracker.md`: it names `glab` → `gitlab`, `gh` → `github`, neither → `local` (Markdown Issues in the repo). Before that file exists, the Host station infers it from `origin`. A tracker on a different kind of host than the code takes its hostname from the first URL of that kind in the file; without one, GitHub falls back to `github.com` and GitLab to `glab`'s default host.
+- **Code host**: from the `origin` URL: `github.com` or a hostname containing `github` (GitHub Enterprise) → `github`; any other network host → `gitlab`, including a self-hosted instance over plain http or an IP (`http://192.168.200.202/spay/spay2`); no `origin`, or one that is a local path or `file://` → `local`. Only GitHub and GitLab are supported: another hosting service (Bitbucket, Codeberg) is classified `gitlab` and gets a wrong `glab` stop, so confirm the code host with the human before trusting the CLI line.
 
 A `local` side needs no CLI, and a `local` code host has no remote delivery (no PR/MR, no remote CI). Every other host needs its CLI installed and logged in to that hostname (`<cli> auth status --hostname <host>` exits 0); the Host station stops otherwise and prints the install or `auth login` command.
 

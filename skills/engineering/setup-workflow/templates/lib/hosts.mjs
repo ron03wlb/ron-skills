@@ -16,7 +16,12 @@ export function remoteHostname(url) {
 /** 主機名稱的 host 種類；null 為 local。 */
 export function hostKind(hostname) {
   if (!hostname) return 'local';
-  return /(^|\.)github\.com$|github/.test(hostname) ? 'github' : 'gitlab';
+  return /github/.test(hostname) ? 'github' : 'gitlab';
+}
+
+/** 文件裡第一個屬於 kind 的網址主機（tracker 和程式碼不在同一種 host 時，tracker 的主機從 issue-tracker.md 找）；沒有時 null。 */
+export function hostInDoc(doc, kind) {
+  return [...(doc ?? '').matchAll(/https?:\/\/[^\s`'")<>]+/g)].map(([url]) => remoteHostname(url)).find(host => host && hostKind(host) === kind) ?? null;
 }
 
 /** 程式碼 host：依 origin URL。 */
