@@ -63,6 +63,17 @@ test('最後以 pilot-sources --record 記錄傳入的來源', t => {
   assert.match(run(dir, [...ARGS, 'AGENTS.md']).stdout, /\nRECORDED 1\n$/);
 });
 
+test('來源的條目改了：透傳 SOURCE_CHANGED 與縮排的條目行；重新記錄後不再印', t => {
+  const dir = checkout(t);
+  const pilot = join(dir, 'docs/agents/pilot.md');
+  mkdirSync(join(dir, 'docs/agents'), { recursive: true });
+  writeFileSync(pilot, '# Pilot\n\n- **Sessions.** 跑 register\n\n- **Handoff.** coordinator 手動附加 handoff 行\n');
+  run(dir, [...ARGS, 'AGENTS.md', 'docs/agents/pilot.md']);
+  writeFileSync(pilot, '# Pilot\n\n- **Sessions.** 跑 register\n\n- **Handoff.** pilot-handoff 已附加，coordinator 不再手動附加\n');
+  assert.match(run(dir, [...ARGS, 'AGENTS.md', 'docs/agents/pilot.md']).stdout, /\nSOURCE_CHANGED docs\/agents\/pilot\.md\n {2}entry Handoff\nRECORDED 2\n$/);
+  assert.match(run(dir, [...ARGS, 'AGENTS.md', 'docs/agents/pilot.md']).stdout, /^REGISTERED [^\n]*\nRECORDED 2\n$/);
+});
+
 test('sessions.md 記著這個 session 交接出去：已退役，印 STOP retired、exit 4、不改 coordinator', t => {
   const dir = checkout(t);
   mkdirSync(join(dir, '.scratch/pilot'), { recursive: true });
