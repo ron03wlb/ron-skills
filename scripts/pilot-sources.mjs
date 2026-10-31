@@ -20,16 +20,24 @@ const MISSING = 'missing';
 const ENTRY = /^- \*\*(.+?)\.\*\*/;
 const HEADING = /^#{2,6}\s+(.*?)\s*$/;
 
-/** 把文字切成單位：Map<`entry <名稱>`|`heading <標題>`|`outside`, 內容>；空行不算內容。 */
+/** 把文字切成單位：Map<`entry <名稱>`|`heading <標題>`|`outside`, 內容>；空行不算內容，同名的單位合在一起。 */
 function units(text) {
   const out = new Map();
   let heading = null;
   let entry = null;
+  let fenced = false;
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
-    const title = line.match(HEADING)?.[1];
-    const name = line.match(ENTRY)?.[1];
-    if (title !== undefined) { heading = title; entry = null; } else if (name) entry = name; else if (!/^\s/.test(line)) entry = null;
+    // code fence 裡的行（含 `## `、`- **x.**`）只是內容，算在 fence 所在的單位。
+    const fence = /^\s*(```|~~~)/.test(line);
+    const title = fenced || fence ? undefined : line.match(HEADING)?.[1];
+    const name = fenced || fence ? undefined : line.match(ENTRY)?.[1];
+    if (title !== undefined) {
+      heading = title;
+      entry = null;
+    } else if (name) entry = name;
+    else if (!fenced && !fence && !/^\s/.test(line)) entry = null;
+    if (fence) fenced = !fenced;
     const key = entry ? `entry ${entry}` : heading !== null ? `heading ${heading}` : 'outside';
     out.set(key, out.has(key) ? `${out.get(key)}\n${line}` : line);
   }
@@ -37,7 +45,7 @@ function units(text) {
 }
 
 /** 舊版到新版改了哪些單位，依新版順序、刪掉的接在後面。 */
-function changedUnits(before, after) {
+function changedSections(before, after) {
   const [old, now] = [units(before), units(after)];
   return [...new Set([...now.keys(), ...old.keys()])].filter(key => old.get(key) !== now.get(key));
 }
@@ -61,7 +69,7 @@ export function checkSources(checkout, sources, { record = false } = {}) {
     if (hash === MISSING) { if (old !== MISSING) out.push(`SOURCE_MISSING ${name}`); } else if (old !== hash) {
       out.push(`SOURCE_CHANGED ${name}`);
       const snapshot = old && old !== MISSING ? join(snapshots, old) : null;
-      if (snapshot && existsSync(snapshot)) out.push(...changedUnits(readFileSync(snapshot, 'utf8'), content.toString('utf8')).map(key => `  ${key}`));
+      if (snapshot && existsSync(snapshot)) out.push(...changedSections(readFileSync(snapshot, 'utf8'), content.toString('utf8')).map(key => `  ${key}`));
     }
     return [name, hash, content];
   });
