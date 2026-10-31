@@ -5,7 +5,8 @@
 // 送出前先讀 composer：先前裸 `terminal send` 留下未提交的同一段 prompt 時只補 Enter，不再黏成兩份。
 // session 仍在忙時 tui-idle 不成立，兩輪逾時即 STOP tui-timeout，不把 prompt 排進忙碌中的 turn。
 // `--queue` 給忙碌中的 session 補送（例如 Dispatch 之後補範圍，#133）：不等 tui-idle，直接送出排到下一輪；
-// 忙碌畫面本來就有 `esc to interrupt`，畫面上也可能留著開頭相同的上一則提醒，所以只認送出後多出來的 prompt 開頭，且輸入框已清空。
+// 忙碌畫面本來就有 `esc to interrupt`，也可能留著開頭相同的上一則提醒（還會捲出畫面），所以不看畫面，只看 composer：
+// 先只打字、等 `draft` 出現 prompt，再只補 Enter、等 `draft` 清空；整段文字最多送一次，只有 Enter 會重送。
 //
 // 用法：node scripts/orca-session-send.mjs --terminal <handle> --prompt <text> [--queue]
 // stdout 最後一行：SENT <handle>、QUEUED <handle>（--queue），或 STOP <原因>（tui-timeout <handle>、send <handle>、orca <錯誤碼>）。
@@ -56,14 +57,10 @@ export async function waitTuiReady(ctx, handle) {
  * 送出 prompt 並確認進了 Claude：TUI 剛就緒時 Orca 會回 accepted 卻吞掉輸入。
  * 畫面出現 prompt 開頭或 `esc to interrupt` 才算送達；否則依 SEND_DELAYS 重送。送不出或三次都沒送達傳回 false。
  * 第一次送出前先讀一次 composer 的 `draft`（缺省視為空），已有同一段文字時只補 Enter，並在 stderr 印 `DRAFT_SUBMIT <handle>`。
- * `queue` 時 session 本來就在忙，`esc to interrupt` 不算送達；含 prompt 開頭的行要比送出前多，畫面上留著的上一則才不會被當成這一則。
  */
-export async function sendPrompt(ctx, handle, text, { queue = false } = {}) {
-  const echoes = tail => tail.filter(line => line.includes(text.slice(0, 24))).length;
-  const before = (await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal ?? {};
-  const seen = queue ? echoes(before.tail ?? []) : 0;
-  const landed = tail => echoes(tail) > seen || (!queue && tail.some(line => line.includes('esc to interrupt')));
-  let draft = before.draft ?? '';
+export async function sendPrompt(ctx, handle, text) {
+  const landed = tail => tail.some(line => line.includes(text.slice(0, 24)) || line.includes('esc to interrupt'));
+  let draft = (await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal?.draft ?? '';
   if (resendInput(draft, text)[1] === '') console.error(`DRAFT_SUBMIT ${handle}`);
   for (const delay of SEND_DELAYS) {
     if (delay) await sleep(delay, undefined, { signal: ctx.signal });
@@ -79,6 +76,29 @@ export async function sendPrompt(ctx, handle, text, { queue = false } = {}) {
   return false;
 }
 
+/**
+ * 把 prompt 排進忙碌中 session 的下一輪：只打字（composer 已有同一段時略過並印 `DRAFT_SUBMIT`），讀到 `draft` 含 prompt 開頭才補 Enter，
+ * `draft` 不再含它才算排進佇列；Enter 依 SEND_DELAYS 重送。文字沒進 `draft` 或三次 Enter 都沒清空傳回 false。
+ */
+export async function queuePrompt(ctx, handle, text) {
+  const inDraft = async () => ((await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal?.draft ?? '').includes(text.slice(0, 24));
+  const poll = async want => {
+    for (let i = 0; i < CONFIRM_POLLS; i++) {
+      await sleep(CONFIRM_MS, undefined, { signal: ctx.signal });
+      if (await inDraft() === want) return true;
+    }
+    return false;
+  };
+  if (await inDraft()) console.error(`DRAFT_SUBMIT ${handle}`);
+  else if (!(await orca(ctx, 'terminal', 'send', '--terminal', handle, '--text', text)).send?.accepted || !await poll(true)) return false;
+  for (const delay of SEND_DELAYS) {
+    if (delay) await sleep(delay, undefined, { signal: ctx.signal });
+    if (!(await orca(ctx, 'terminal', 'send', '--terminal', handle, '--text', '', '--enter')).send?.accepted) return false;
+    if (await poll(false)) return true;
+  }
+  return false;
+}
+
 /** 重送的輸入：文字已留在輸入框（`draft` 含 prompt 開頭）時只補 Enter，否則送文字加 Enter；避免黏成兩份。 */
 export function resendInput(draft, text) {
   return draft.includes(text.slice(0, 24)) ? ['--text', '', '--enter'] : ['--text', text, '--enter'];
@@ -90,8 +110,9 @@ export function resendInput(draft, text) {
  */
 export async function sendToSession(ctx, handle, prompt, { queue = false } = {}) {
   try {
-    if (!queue && !await waitTuiReady(ctx, handle)) return { stop: `tui-timeout ${handle}` };
-    if (!await sendPrompt(ctx, handle, prompt, { queue })) return { stop: `send ${handle}` };
+    if (queue) return await queuePrompt(ctx, handle, prompt) ? { handle } : { stop: `send ${handle}` };
+    if (!await waitTuiReady(ctx, handle)) return { stop: `tui-timeout ${handle}` };
+    if (!await sendPrompt(ctx, handle, prompt)) return { stop: `send ${handle}` };
   } catch (error) {
     return { stop: `orca ${error.message}` };
   }
