@@ -100,7 +100,7 @@ const args = process.argv.slice(2); const arg = k => args[args.indexOf(k) + 1];
 fs.appendFileSync(${JSON.stringify(join(temp, 'gh.log'))}, args.join(' ') + '\\n');
 const comments = JSON.parse(fs.readFileSync(${JSON.stringify(comments)}, 'utf8'));
 const claims = ${JSON.stringify(claims)}[args[2]] ?? [${JSON.stringify(MINE)}];
-if (args[0] === 'issue' && args[1] === 'view') console.log(JSON.stringify({ comments: [...claims, ...comments.filter(c => c.issue === args[2]).map(({ body }) => body)].map(body => ({ body })) }));
+if (args[0] === 'issue' && args[1] === 'view') console.log(JSON.stringify({ title: 'Fixture ' + args[2], comments: [...claims, ...comments.filter(c => c.issue === args[2]).map(({ body }) => body)].map(body => ({ body })) }));
 else if (args[0] === 'issue' && args[1] === 'comment') fs.writeFileSync(${JSON.stringify(comments)}, JSON.stringify([...comments, { issue: args[2], body: arg('--body') }]));
 else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
 `);
@@ -612,11 +612,143 @@ test('--fresh：最近一則認領是別的 session 時 STOP not-claimed，分�
 
 test('--fresh 的參數錯誤時 exit 2，不動任何東西', t => {
   const fx = conflicted(t);
-  for (const args of [['23-46', '--fresh', '46:pilot-dispatch'], ['23-46', '--fresh', '46:pilot-dispatch', '--note', join(fx.temp, 'missing.md')],
+  for (const args of [['23-46', '--fresh', '46:pilot-dispatch', '--note', join(fx.temp, 'missing.md')], ['23-46', '--fresh', '46:pilot-dispatch', '--again'],
     ['23-46', '23:pilot-probe', '--fresh', '46:pilot-dispatch', '--note', fx.note], ['23-46', '46:pilot-dispatch', '--note', fx.note], ['23-46', '46:pilot-dispatch', '--again']]) {
     const result = fx.dispatch(args);
     assert.equal(result.status, 2, `${args.join(' ')}：${result.stdout}${result.stderr}`);
     assert.match(result.stderr, /^用法：/);
   }
   assert.equal(git(fx.repo, 'branch', '--list', '*-prior*'), '');
+});
+
+// 沒帶 --note 的 --fresh（#227）：只產生 `<主 checkout>/.scratch/pilot/fresh-<n>.md` 草稿、印 NOTE_DRAFT，不派工。
+// 起點：batch 23-46 的 46 做完（candidate 是它的第一個 commit，之後又多一個），成員與整合分支都改了 docs/pilot.md 的 Probe 條目與 src.mjs，
+// 各自還改了只有自己動的檔；worker checkpoint 有最後一輪 review-only 段。
+function drafted(t, { review = true } = {}) {
+  const fx = fixture(t);
+  writeFileSync(join(fx.repo, '.gitignore'), '.scratch/\n');
+  mkdirSync(join(fx.repo, 'docs'));
+  writeFileSync(join(fx.repo, 'docs/pilot.md'), '# Pilot\n\n- **Probe.** 舊的 Probe。\n\n- **Stage.** 舊的 Stage。\n\n- **Close.** 舊的 Close。\n');
+  writeFileSync(join(fx.repo, 'src.mjs'), 'export const a = 1;\n\nexport const b = 2;\n');
+  git(fx.repo, 'add', '.');
+  git(fx.repo, 'commit', '-qm', 'base');
+  git(fx.repo, 'branch', '-f', 'pilot/integration', 'main');
+  const base = git(fx.repo, 'rev-parse', 'main');
+  assert.equal(fx.dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']).status, 0);
+  const tree = join(fx.root, 'issue-46');
+  const edit = (dir, file, from, to) => writeFileSync(join(dir, file), readFileSync(join(dir, file), 'utf8').replace(from, to));
+  edit(tree, 'docs/pilot.md', '舊的 Probe。', '成員改的 Probe。');
+  edit(tree, 'docs/pilot.md', '舊的 Stage。', '成員改的 Stage。');
+  edit(tree, 'docs/pilot.md', '# Pilot', '# Pilot（成員改的標題）');
+  edit(tree, 'src.mjs', 'a = 1', 'a = 46');
+  writeFileSync(join(tree, 'member-only.txt'), 'member\n');
+  git(tree, 'add', '.');
+  git(tree, 'commit', '-qm', 'worker 46');
+  const candidate = git(tree, 'rev-parse', 'HEAD');
+  writeFileSync(join(tree, 'later.txt'), 'later\n');
+  git(tree, 'add', '.');
+  git(tree, 'commit', '-qm', 'after candidate');
+  mkdirSync(join(tree, '.scratch/issue-run-46'), { recursive: true });
+  const section = '## final review-only round（第二次）\n- P2 src.mjs:1 a 應該是 47。\n- rulings：保留 Stage 的改法。\n\nSTOP 46 findings after two review cycles\n';
+  const earlier = '## final review-only round（第一次）\n- P2 review cycle 2 的舊 finding。\nSTOP 46 findings after two review cycles\n';
+  writeFileSync(join(tree, '.scratch/issue-run-46/state.md'), `# issue-run 46\n\n${review ? `${earlier}\n${section}` : '## review cycle 2\n'}\n## after\n不該抄進來。\n`);
+  edit(fx.repo, 'docs/pilot.md', '舊的 Probe。', '整合分支改的 Probe。');
+  edit(fx.repo, 'docs/pilot.md', '舊的 Close。', '整合分支改的 Close。');
+  edit(fx.repo, 'src.mjs', 'b = 2', 'b = 99');
+  writeFileSync(join(fx.repo, 'integration-only.txt'), 'integration\n');
+  git(fx.repo, 'add', '.');
+  git(fx.repo, 'commit', '-qm', 'integration moved');
+  git(fx.repo, 'branch', '-f', 'pilot/integration', 'main');
+  const file = join(fx.repo, '.scratch/pilot/batch-23-46.md');
+  writeFileSync(file, readFileSync(file, 'utf8').replace(/^(\| 46 \|.*) running \| \|$/m, `$1 stop | ${candidate} |`));
+  const before = { calls: fx.calls(), open: fx.open(), batch: readFileSync(file, 'utf8'), head: git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch'), gh: fx.ghCalls() };
+  return { ...fx, tree, base, candidate, section, before };
+}
+
+test('--fresh 不帶 --note：印 NOTE_DRAFT，草稿有原 Issue、prior、merge-base、共同檔與條目、review-only 段與空白的怎麼整併；不派工', t => {
+  const fx = drafted(t);
+  // 草稿只讀不寫：沒有 Orca 也能跑。
+  const result = fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch'], { ORCA_CLI_COMMAND: '' });
+  const path = join(fx.repo, '.scratch/pilot/fresh-46.md');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), [`NOTE_DRAFT ${path}`]);
+  const draft = readFileSync(path, 'utf8');
+  assert.match(draft, /#46 Fixture 46/);
+  assert.ok(draft.includes(`issue/46-pilot-dispatch @ ${fx.candidate}`), draft);
+  assert.ok(draft.includes(`merge-base issue/46-pilot-dispatch pilot/integration：${fx.base}`), draft);
+  // 共同檔只有兩邊都改的 docs/pilot.md 與 src.mjs，各附兩邊的 --stat；.md 附兩邊改到的條目。
+  const common = draft.slice(draft.indexOf('## 共同改過的檔'), draft.indexOf('## 最後一輪 review-only'));
+  assert.deepEqual([...common.matchAll(/^### (.+)$/gm)].map(m => m[1]), ['docs/pilot.md', 'src.mjs']);
+  // 成員另改了檔頭（條目外）：條目照列，另註明。
+  assert.match(common, /^- 成員：.*docs\/pilot\.md \| +6 \+\+\+---`；條目：Probe、Stage；另有條目外的改動$/m);
+  assert.match(common, /^- 整合分支：.*docs\/pilot\.md \| +4 \+\+--`；條目：Close、Probe$/m);
+  assert.match(common, /^- 成員：.*src\.mjs \| +2 \+-`$/m);
+  assert.doesNotMatch(draft, /member-only|integration-only|later\.txt/);
+  // 不印完整 diff。
+  assert.doesNotMatch(draft, /^@@|^[-+]- \*\*|成員改的|整合分支改的|a = 46|b = 99/m);
+  assert.ok(draft.includes(fx.section.trim()), draft);
+  // 抄最後一輪 review-only，不是第一次出現的那段。
+  assert.doesNotMatch(draft, /第一次|review cycle 2|不該抄進來/);
+  assert.match(draft, /## 怎麼整併\n+$/);
+  // 沒改名分支、沒開或關分頁、沒留言，checkpoint 不動。
+  assert.equal(fx.calls(), fx.before.calls);
+  assert.deepEqual(fx.open(), fx.before.open);
+  assert.equal(git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch'), fx.before.head);
+  assert.equal(git(fx.repo, 'branch', '--list', '*-prior*'), '');
+  assert.equal(readFileSync(join(fx.repo, '.scratch/pilot/batch-23-46.md'), 'utf8'), fx.before.batch);
+  assert.equal(existsSync(join(fx.repo, '.scratch/pilot/batch-46.md')), false);
+  assert.doesNotMatch(fx.ghCalls(), /^issue comment /m);
+  assert.equal(existsSync(join(fx.tree, '.scratch/issue-run-46/state.md')), true);
+});
+
+test('--fresh 不帶 --note：candidate 空的取分支 tip；checkpoint 沒有 review-only 段時寫明要補 worker 分頁尾段', t => {
+  const fx = drafted(t, { review: false });
+  const file = join(fx.repo, '.scratch/pilot/batch-23-46.md');
+  writeFileSync(file, readFileSync(file, 'utf8').replace(` ${fx.candidate} |`, ' |'));
+  const result = fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const draft = readFileSync(join(fx.repo, '.scratch/pilot/fresh-46.md'), 'utf8');
+  assert.ok(draft.includes(`issue/46-pilot-dispatch @ ${fx.before.head}`), draft);
+  assert.match(draft, /checkpoint 沒有 review-only 段，補 worker 分頁尾段/);
+  assert.doesNotMatch(draft, /review cycle 2/);
+});
+
+test('--fresh 不帶 --note：成員沒有分支時 STOP，不寫草稿', t => {
+  const fx = drafted(t);
+  const result = fx.dispatch(['23-46', '--fresh', '99:nothing']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(result.stdout, /^STOP 99 git 沒有分支 issue\/99-nothing$/m);
+  assert.equal(existsSync(join(fx.repo, '.scratch/pilot/fresh-99.md')), false);
+});
+
+test('--fresh 不帶 --note：草稿的「怎麼整併」已經補過時 STOP draft-filled、不覆寫；空白的草稿照常重寫', t => {
+  const fx = drafted(t);
+  const path = join(fx.repo, '.scratch/pilot/fresh-46.md');
+  assert.equal(fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch']).status, 0);
+  assert.equal(fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch']).status, 0);
+  writeFileSync(path, `${readFileSync(path, 'utf8')}照整合分支的 Probe 改寫。\n`);
+  const filled = readFileSync(path, 'utf8');
+  const result = fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), [`STOP 46 draft-filled ${path}`]);
+  assert.equal(readFileSync(path, 'utf8'), filled);
+});
+
+test('--fresh 不帶 --note 又帶派工才用的旗標時 exit 2，不寫草稿', t => {
+  const fx = drafted(t);
+  for (const extra of [['--allow-overlap'], ['--capacity'], ['--stuck-after', '30m']]) {
+    const result = fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch', ...extra]);
+    assert.equal(result.status, 2, `${extra.join(' ')}：${result.stdout}${result.stderr}`);
+  }
+  assert.equal(existsSync(join(fx.repo, '.scratch/pilot/fresh-46.md')), false);
+});
+
+test('--fresh 不帶 --note：checkpoint 用別的寫法記 review-only、沒有結果行時，抄最後一個 review-only 段到下一個標題', t => {
+  const fx = drafted(t, { review: false });
+  writeFileSync(join(fx.tree, '.scratch/issue-run-46/state.md'),
+    '# issue-run 46\n\n## rulings\n- review 1：P2 已修。\n- review-only verifier round @ abc：P2 src.mjs:1 仍在。\n- P3 命名。\n\n## notes\n不該抄進來。\n');
+  assert.equal(fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch']).status, 0);
+  const draft = readFileSync(join(fx.repo, '.scratch/pilot/fresh-46.md'), 'utf8');
+  assert.ok(draft.includes('- review-only verifier round @ abc：P2 src.mjs:1 仍在。\n- P3 命名。\n\n## 怎麼整併'), draft);
+  assert.doesNotMatch(draft, /review 1|不該抄進來|沒有 review-only 段/);
 });
