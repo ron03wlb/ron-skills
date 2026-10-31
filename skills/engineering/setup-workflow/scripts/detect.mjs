@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // /setup-workflow 的偵測：讀目標 repo 的檔案與 git 歷史，判定導入等級（L0–L3）與擴充，不寫任何檔。
-// 用法：node detect.mjs [<repo>] [--answer <id>=yes|no ...] [--json]（repo 預設 cwd）
+// 用法：node detect.mjs [<repo>] [--answer <id>=yes|no ...] [--no-station] [--json]（repo 預設 cwd；--no-station 只判等級，見下方）
 // 文字輸出每個訊號一行 `SIGNAL <name> met|missing <value>`、每項擴充一行 `EXTENSION <name> <value> ...`，
 // 每個缺口一行 `GAP <name> <原因>`（不是等級訊號，不影響 LEVEL；目前只有 ci：程式碼 host 不是 local，卻沒有 CI 檔或 CI 檔沒呼叫檢查入口），
 // 接著是等級站：量測證據每項一行 `EVIDENCE <name> <value>`（不設門檻數字），目前等級以上每級的進入條件
@@ -343,6 +343,9 @@ const extensions = {
 const origin = git('remote', 'get-url', 'origin');
 const gaps = { ci: ciGap(root, check.value, codeHost(origin).value) };
 
+// --no-station：只判等級（health 用），不跑等級站：不呼叫 gh、不看 Orca，沒有 EVIDENCE、QUESTION、ENTRY，RECOMMEND 等於目前等級。
+const station = !args.includes('--no-station');
+
 // 等級站的量測證據：只列數字與有無，不設門檻，由人對照 README 的進入條件回答是非題。
 // 開放 Issue 數只問 GitHub（gh；測試以 DETECT_GH 取代）：本機沒有 glab 可核對旗標，GitLab 與本機 Markdown 記 unknown。
 // tracker 種類照 Host 站的判定：issue-tracker.md 寫的 CLI，還沒有這份文件時依 origin 推定。
@@ -364,7 +367,7 @@ const authors = new Set(lines(git('log', '--all', '--since=90.days', '--format=%
 const issueBranches = lines(git('for-each-ref', '--format=%(refname:short)', 'refs/heads')).filter(ref => ISSUE_BRANCH.test(ref));
 const linked = lines(git('worktree', 'list', '--porcelain')).filter(line => line.startsWith('worktree ')).slice(1).map(line => line.slice(9));
 const ciFiles = matching(/^\.github\/workflows\/[^/]+\.ya?ml$|^\.gitlab-ci\.yml$/);
-const evidence = {
+const evidence = !station ? {} : {
   contributors: { value: authors.size, evidence: ['git log --all --since=90.days 的作者 email（不分大小寫去重）'] },
   issueBranches: { value: issueBranches.length, evidence: issueBranches },
   worktrees: { value: linked.length, evidence: linked },
@@ -375,7 +378,7 @@ const evidence = {
 
 // 等級站：README 各級的進入條件。每級是一串條件，每個條件是擇一的選項：是非題由人回答（--answer），
 // 量得到的選項直接取訊號（L1 的 tracker 與檢查入口：已經有，或人回答會用、願意做；L2：同時開好幾個 session，或發生過事故）。
-const orca = orcaTool();
+const orca = station ? orcaTool() : { met: false, evidence: ['--no-station'] };
 const ENTRY_CONDITIONS = {
   L1: [
     [{ id: 'tracker', measured: signals.tracker.met, evidence: ['SIGNAL tracker'] },
@@ -407,7 +410,7 @@ for (const answer of answers) {
 }
 const LEVEL_ORDER = ['L0', ...Object.keys(LEVEL_SIGNALS)];
 const above = name => LEVEL_ORDER.indexOf(name) > LEVEL_ORDER.indexOf(level);
-const entry = Object.fromEntries(Object.entries(ENTRY_CONDITIONS).filter(([name]) => above(name)).map(([name, groups]) => {
+const entry = Object.fromEntries(Object.entries(ENTRY_CONDITIONS).filter(([name]) => station && above(name)).map(([name, groups]) => {
   const conditions = groups.map(group => {
     const options = group.map(option => (option.ask ? { id: option.id, ask: option.ask, value: answered[option.id] ?? null }
       : { id: option.id, value: option.measured, evidence: option.evidence }));
@@ -417,7 +420,7 @@ const entry = Object.fromEntries(Object.entries(ENTRY_CONDITIONS).filter(([name]
   return [name, { met: unmet.length === 0, unmet, conditions }];
 }));
 const next = LEVEL_ORDER[LEVEL_ORDER.indexOf(level) + 1];
-const recommend = next && entry[next].met ? next : level;
+const recommend = next && entry[next]?.met ? next : level;
 
 const result = { root, level, recommend, levels, signals, extensions, gaps, evidence, entry };
 if (json) {

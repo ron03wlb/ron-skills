@@ -46,7 +46,7 @@ const finding = (kind, message, evidence, detail = []) => findings.push({ line: 
 
 // 等級標示：只提到一個等級的非表格行，提到本 repo，或在 adapter 裡寫明「等級」（`導入等級：L3`、`Level: L2`），就是宣稱；
 // adapter 裡描述某級機制的句子（`L2 起由 pre-push 重驗`）不算。和 detect.mjs 判定的實際等級不同就回報。
-const detectOutput = run('node', join(here, 'detect.mjs'), root, '--json');
+const detectOutput = run('node', join(here, 'detect.mjs'), root, '--json', '--no-station');
 if (detectOutput === null) fail('detect.mjs 失敗');
 const detected = JSON.parse(detectOutput);
 const namePattern = new RegExp(`(^|[^\\w-])(${[...names].map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![\\w-])`);
