@@ -530,6 +530,43 @@ test('改動換上的條目和插入的條目同名：合起來有兩個同名�
   assert.equal(f.land().last, 'STOP conflict 2 x.md');
 });
 
+// review（452e06d）：一邊刪掉的行正是另一邊插入時接著的那一行，兩邊都套用會留下沒有標題的段落（modify/delete 衝突）。
+test('一邊刪掉 base 行、另一邊在那行後面插入：刪除不算改動，STOP conflict', t => {
+  const f = fixture(t, {
+    base: { 'x.md': 'x\n## 標題\ny\n' },
+    members: [
+      { n: 1, slug: 'a', files: { 'x.md': 'x\ny\n' } },
+      { n: 2, slug: 'b', files: { 'x.md': 'x\n## 標題\n標題下的說明\ny\n' } },
+    ],
+  });
+  assert.equal(f.land().last, 'STOP conflict 2 x.md');
+});
+
+// review（452e06d）：兩邊動到同一個 `- **<名稱>.**` 條目是同一條目衝突，照 Stage 條目走 Fresh redispatch，不由 adjacent 合掉。
+test('一邊改條目的開頭行、另一邊在同一條目裡插入：同一條目衝突，STOP conflict', t => {
+  const f = fixture(t, {
+    base: { 'x.md': '- **A.** 規則一。\n\n- **B.** b\n' },
+    members: [
+      { n: 1, slug: 'a', files: { 'x.md': '- **A.** 規則一，改成二。\n\n- **B.** b\n' } },
+      { n: 2, slug: 'b', files: { 'x.md': '- **A.** 規則一。\n  例外：X。\n\n- **B.** b\n' } },
+    ],
+  });
+  assert.equal(f.land().last, 'STOP conflict 2 x.md');
+});
+
+test('一邊改條目 A、另一邊在條目 A 後面插入新條目 C：不同條目，RESOLVED adjacent', t => {
+  const f = fixture(t, {
+    base: { 'x.md': 'intro\n- **A.** 規則一。\n- **B.** b\n' },
+    members: [
+      { n: 1, slug: 'a', files: { 'x.md': 'intro\n- **A.** 規則二。\n- **B.** b\n' } },
+      { n: 2, slug: 'b', files: { 'x.md': 'intro\n- **A.** 規則一。\n- **C.** c\n- **B.** b\n' } },
+    ],
+  });
+  const result = f.land();
+  assert.ok(result.lines.includes('RESOLVED 2 adjacent x.md'), result.stdout + result.stderr);
+  assert.equal(git(f.repo, 'show', `${f.tip()}:x.md`) + '\n', 'intro\n- **A.** 規則二。\n- **C.** c\n- **B.** b\n');
+});
+
 test('插入點落在另一邊改的連續幾行中間：重疊，STOP conflict', t => {
   const base = 'a\nb\nc\nd\n';
   const f = fixture(t, {

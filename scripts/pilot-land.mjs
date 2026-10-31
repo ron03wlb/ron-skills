@@ -10,7 +10,7 @@
 //                 rows       衝突 hunk 三份的行都是 Markdown 表格列（`|` 開頭）、以第一格為鍵兩邊改的是不同列：各取各的版本、
 //                            依原順序排好，新增的列都留下；同一列兩邊都改照樣 abort（#162）。
 //                 adjacent   衝突 hunk 裡一邊只改了 base 的某幾行、另一邊只在 base 行之間插入新行（沒改任何 base 行），插入點不在
-//                            改動的那幾行中間：兩邊都套用；兩邊都改了同一個 base 行、改動或插入碰到表格列（歸 rows）、
+//                            改動的那幾行中間：兩邊都套用；純刪除、兩邊動到同一個 `- **<名稱>.**` 條目、兩邊都改了同一個 base 行、改動或插入碰到表格列（歸 rows）、
 //                            改動或插入的重複行能滑到另一側或滑出 hunk、插入的行裡有被改的 base 行、換上的行和插入的行相同
 //                            （非空行或同名條目）、碰到檔尾沒換行的行照樣 abort（#175）。
 //               additions、entries、rows 與 adjacent 只解三個版本都是 UTF-8 文字的檔案，其他的照樣 abort。
@@ -157,18 +157,21 @@ function appendRegression(file, value) {
   if (readCheckpoint(file).regression !== value) throw new Stop(`checkpoint ${file} 的 regression: 沒寫成 ${value}`);
 }
 
+/** 這行是 `- **<名稱>.**` 條目的開頭時傳回名稱，否則 undefined。 */
+const entryName = line => line.match(/^- \*\*([^*]+?)\.\*\*/)?.[1];
+
 /** 依 `- **<名稱>.**` 條目切段：第一段是條目前的文字（可能是空的），之後每段從條目開頭那行起。 */
 function entries(text) {
   const pieces = [{ name: '', text: '' }];
   for (const line of text.split(/(?<=\n)/)) {
-    const name = line.match(/^- \*\*([^*]+?)\.\*\*/)?.[1];
+    const name = entryName(line);
     if (name) pieces.push({ name, text: line });
     else pieces.at(-1).text += line;
   }
   return pieces;
 }
 
-/** 一個衝突 hunk 照允許的解法解；解不了傳回 undefined。`kinds` 收集用到的解法；`context` 是 hunk 前後各一行（adjacent 用）。 */
+/** 一個衝突 hunk 照允許的解法解；解不了傳回 undefined。`kinds` 收集用到的解法；`context` 是 hunk 前後各一行與 hunk 之前所在的條目名稱（adjacent 用）。 */
 function resolveHunk(base, ours, theirs, kinds, context) {
   if (base === '') {
     // 不重疊：兩邊新增的非空行不能有相同的（diff3 不剝掉共有的行，同一個標題接起來就重複了），條目也不能同名。
@@ -259,22 +262,29 @@ function shifts(base, { start, end, lines }) {
 }
 
 /**
- * adjacent：一邊只改了 hunk 裡 base 的某幾行（每個改動都換掉至少一行 base），另一邊只在 base 行之間插入新行、沒改任何 base 行，
+ * adjacent：一邊只改了 hunk 裡 base 的某幾行（每個改動都把至少一行 base 換成至少一行新行，純刪除不算），另一邊只在 base 行之間插入新行、沒改任何 base 行，
  * 插入點都不在改動的那幾行中間（落在改動的開頭或結尾就是相鄰）時兩邊都套用（#175）。同一點的插入排在改動之前。其他情況傳回 undefined。
  */
-function resolveAdjacent(base, ours, theirs, { before, after } = {}) {
+function resolveAdjacent(base, ours, theirs, { before, after, entry = '' } = {}) {
   // 檔尾沒有換行的行接上插入行會黏成同一行：hunk 碰到這種行就不自己解。
   if (![base, ours, theirs].every(text => text === '' || text.endsWith('\n'))) return undefined;
   const split = text => (text === '' ? [] : text.split(/(?<=\n)/));
   const b = split(base);
   const [o, t] = [ours, theirs].map(text => diffLines(b, split(text)));
   const inserts = edits => edits.length > 0 && edits.every(({ start, end }) => start === end);
-  const modifies = edits => edits.length > 0 && edits.every(({ start, end }) => start < end);
+  const modifies = edits => edits.length > 0 && edits.every(({ start, end, lines }) => start < end && lines.length > 0);
   const [changed, inserted] = modifies(o) && inserts(t) ? [o, t] : modifies(t) && inserts(o) ? [t, o] : [];
   if (!changed) return undefined;
   // 動到表格列（改掉的 base 行、換上或插入的行）歸 rows 判斷：一邊改欄數、一邊加列逐行套用會留下欄數不對的列。
   const touched = [...changed, ...inserted].flatMap(({ start, end, lines }) => [...b.slice(start, end), ...lines]);
   if (touched.some(line => line.startsWith('|'))) return undefined;
+  // 兩邊動到同一個 `- **<名稱>.**` 條目是同一條目衝突（Stage 條目要 Fresh redispatch），不自己解。
+  // 每個 base 行歸到它所在的條目（hunk 之前的條目接續下來）；插入歸到它接著的那一行的條目，自己以條目開頭時就是新條目。
+  const owner = [];
+  for (const line of b) owner.push(entryName(line) ?? owner.at(-1) ?? entry);
+  const edited = changed.flatMap(({ start, end }) => owner.slice(start, end));
+  const homes = inserted.map(({ start, lines }) => entryName(lines[0]) ?? (start ? owner[start - 1] : entry));
+  if (homes.some(name => name && edited.includes(name))) return undefined;
   const added = inserted.flatMap(({ lines }) => lines);
   // 插入那一邊含有被改的 base 行的另一份副本時，base 行對齊哪一份都說得通（拆成兩段插入），結果不唯一；整塊平移的檢查看不到。
   if (changed.some(({ start, end }) => b.slice(start, end).some(line => added.includes(line)))) return undefined;
@@ -387,6 +397,7 @@ function resolveFile(tree, path, kinds) {
     if (merged.status === null || merged.status > 127) return undefined;
     let out = '';
     let last;
+    let entry = '';
     let hunk;
     const lines = merged.stdout.split(/(?<=\n)/);
     for (const [i, line] of lines.entries()) {
@@ -395,15 +406,18 @@ function resolveFile(tree, path, kinds) {
       else if (hunk && marker === `${'|'.repeat(MARKER)} base`) hunk.part = 'base';
       else if (hunk && marker === '='.repeat(MARKER)) hunk.part = 'theirs';
       else if (hunk && marker === `${'>'.repeat(MARKER)} theirs`) {
-        const resolved = resolveHunk(hunk.base, hunk.ours, hunk.theirs, kinds, { before: last, after: lines[i + 1] });
+        const resolved = resolveHunk(hunk.base, hunk.ours, hunk.theirs, kinds, { before: last, after: lines[i + 1], entry });
         if (resolved === undefined) return undefined;
         out += resolved;
-        last = resolved === '' ? last : resolved.split(/(?<=\n)/).at(-1);
+        const pieces = resolved.split(/(?<=\n)/).filter(Boolean);
+        last = pieces.at(-1) ?? last;
+        entry = pieces.map(entryName).filter(Boolean).at(-1) ?? entry;
         hunk = undefined;
       } else if (hunk) hunk[hunk.part] += line;
       else {
         out += line;
         last = line;
+        entry = entryName(line) ?? entry;
       }
     }
     return hunk ? undefined : out;
