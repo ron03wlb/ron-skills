@@ -31,14 +31,11 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { isOpenRequest, now } from './lib/pilot-store.mjs';
+import { gateLines, isOpenRequest, now, openGates, tableCells } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 
 const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
-
-/** Markdown 表格一列的各欄（去掉首尾的 `|` 與空白）；不是表格列時回空陣列。 */
-const tableCells = line => line.split('|').slice(1, -1).map(cell => cell.trim());
 
 /**
  * 在主 checkout 跑 git；stdin 一律不給（逐一呼叫外部指令時被吃掉 stdin 會讓後面的步驟讀不到）。
@@ -128,36 +125,10 @@ const readStore = (pilot, name) => (existsSync(join(pilot, name)) ? readFileSync
 /** requests.md 還開著的行（原文去掉首尾空白）：最後一個 `source` 欄之後沒標 `applied`／`declined`（請求內文提到這兩個字或 source 都不算）。 */
 const openRequests = pilot => readStore(pilot, 'requests.md').split('\n').filter(isOpenRequest).map(line => line.trim());
 
-/**
- * gates.md 還開著的 gate：表格 status 欄不以 `resolved` 開頭的列，或 `## G<n>` 段落裡沒有 `resolved` 那一行的 gate。
- * 每個 `{ line, id, issue, title, opened, malformed }`：`line` 是 GATE 行去掉前綴的內容；表格列的 title 是 question 欄，段落的是標題去掉 id。
- */
-export function openGates(text) {
-  const gates = [];
-  for (const line of text.split('\n')) {
-    const cells = tableCells(line);
-    if (/^G\d+$/.test(cells[0] ?? '') && !/^resolved\b/.test(cells.at(-1))) {
-      gates.push({ line: `${cells[0]} ${cells[1]} ${cells[2]}`, id: cells[0], issue: cells[1], title: cells[2], opened: cells[6] ?? '' });
-    }
-  }
-  for (const [, title, body] of text.matchAll(/^## (G\d+\b.*)\n([\s\S]*?)(?=^## |(?![\s\S]))/gm)) {
-    if (/^- (?:G\d+ )?resolved\b/m.test(body)) continue;
-    const id = title.match(/^G\d+/)[0];
-    // resolved 寫進別的欄位（`- status：resolved …`）不算解除；指出那一行（retro a6）。
-    const malformed = body.match(/^- [^：:\n]+[：:]\s*resolved\s+\d{4}-\d\d-\d\dT.*$/m)?.[0].trim();
-    const field = name => body.match(new RegExp(`^- ${name}[：:]\\s*(.*)$`, 'm'))?.[1].trim() ?? '';
-    gates.push({ line: title.trim(), id, issue: field('Issue').match(/#\d+/)?.[0] ?? '', title: title.slice(id.length).trim(), opened: field('opened'), malformed });
-  }
-  return gates;
-}
-
 /** requests.md 與 gates.md 還開著的列。 */
 export function openRows(pilot) {
   const out = openRequests(pilot).map(line => `REQUEST ${line}`);
-  for (const gate of openGates(readStore(pilot, 'gates.md'))) {
-    out.push(`GATE ${gate.line}`);
-    if (gate.malformed) out.push(`GATE_MALFORMED ${gate.id} ${gate.malformed}`);
-  }
+  out.push(...gateLines(readStore(pilot, 'gates.md')));
   return out;
 }
 
