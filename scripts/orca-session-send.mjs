@@ -5,7 +5,7 @@
 // 送出前先讀 composer：先前裸 `terminal send` 留下未提交的同一段 prompt 時只補 Enter，不再黏成兩份。
 // session 仍在忙時 tui-idle 不成立，兩輪逾時即 STOP tui-timeout，不把 prompt 排進忙碌中的 turn。
 // `--queue` 給忙碌中的 session 補送（例如 Dispatch 之後補範圍，#133）：不等 tui-idle，直接送出排到下一輪；
-// 忙碌畫面本來就有 `esc to interrupt`，所以只認畫面上的 prompt 開頭，且輸入框已清空。
+// 忙碌畫面本來就有 `esc to interrupt`，畫面上也可能留著開頭相同的上一則提醒，所以只認送出後多出來的 prompt 開頭，且輸入框已清空。
 //
 // 用法：node scripts/orca-session-send.mjs --terminal <handle> --prompt <text> [--queue]
 // stdout 最後一行：SENT <handle>、QUEUED <handle>（--queue），或 STOP <原因>（tui-timeout <handle>、send <handle>、orca <錯誤碼>）。
@@ -56,11 +56,14 @@ export async function waitTuiReady(ctx, handle) {
  * 送出 prompt 並確認進了 Claude：TUI 剛就緒時 Orca 會回 accepted 卻吞掉輸入。
  * 畫面出現 prompt 開頭或 `esc to interrupt` 才算送達；否則依 SEND_DELAYS 重送。送不出或三次都沒送達傳回 false。
  * 第一次送出前先讀一次 composer 的 `draft`（缺省視為空），已有同一段文字時只補 Enter，並在 stderr 印 `DRAFT_SUBMIT <handle>`。
- * `queue` 時 session 本來就在忙，`esc to interrupt` 不算送達，只認 prompt 開頭。
+ * `queue` 時 session 本來就在忙，`esc to interrupt` 不算送達；含 prompt 開頭的行要比送出前多，畫面上留著的上一則才不會被當成這一則。
  */
 export async function sendPrompt(ctx, handle, text, { queue = false } = {}) {
-  const landed = tail => tail.some(line => line.includes(text.slice(0, 24)) || (!queue && line.includes('esc to interrupt')));
-  let draft = (await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal?.draft ?? '';
+  const echoes = tail => tail.filter(line => line.includes(text.slice(0, 24))).length;
+  const before = (await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal ?? {};
+  const seen = queue ? echoes(before.tail ?? []) : 0;
+  const landed = tail => echoes(tail) > seen || (!queue && tail.some(line => line.includes('esc to interrupt')));
+  let draft = before.draft ?? '';
   if (resendInput(draft, text)[1] === '') console.error(`DRAFT_SUBMIT ${handle}`);
   for (const delay of SEND_DELAYS) {
     if (delay) await sleep(delay, undefined, { signal: ctx.signal });
