@@ -31,7 +31,7 @@ Edit the "Label in our tracker" column to match whatever vocabulary you actually
 
 ## `parent` label
 
-帶 `parent` label 的 issue 是母單（見 [issue-tracker.md](issue-tracker.md#母單)）：`/triage` 不把它放進 Unlabeled 桶，也不給它掛上表中任何 triage label。母單的 label 由 pilot 的 Reconcile 整理（[issue-run.md](issue-run.md) 的 **Probe**）。
+帶 `parent` label 的 issue 是母單（見 [issue-tracker.md](issue-tracker.md#母單)）：`/triage` 不把它放進 Unlabeled 桶，也不給它掛上表中任何 triage label。母單的 label 由 pilot 的 Reconcile 整理（[pilot.md](pilot.md) 的 **Probe**）。
 
 ## `priority`、`retro` 與 `retro-candidates` label
 

@@ -2,7 +2,7 @@
 
 Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for reads; this repo's tracker writes go through `scripts/gh-tracker.mjs` (below).
 
-本 repo 的留言、label 與 assignee、關單、開單、sub-issue、依賴一律在 repo 根目錄以 `node scripts/gh-tracker.mjs` 寫入（allow 規則比對的是這個相對路徑）：`.claude/settings.json` 的 tracker 寫入只放行它（其他放行規則見 [pilot.md](pilot.md) 的 Permissions），直接跑 gh 的留言、關單在 auto mode 會被當成 External System Writes 擋下（#96）。它固定寫 github.com 上的 `ron03wlb/ron-skills`、只收數字 Issue 號碼和白名單旗標（用法見腳本開頭），其他 repo 的寫入照舊用 `gh … --repo <owner>/<repo>`，交給人核准；wrapper 沒涵蓋的寫入（如 `gh issue reopen`）在 auto mode 仍會被擋或詢問。讀取不受影響，照下列 `gh` 指令。
+本 repo 的留言、label 與 assignee、關單、重開、開單、sub-issue、依賴一律在 repo 根目錄以 `node scripts/gh-tracker.mjs` 寫入（allow 規則比對的是這個相對路徑）：`.claude/settings.json` 的 tracker 寫入只放行它（其他放行規則見 [pilot.md](pilot.md) 的 Permissions），直接跑 gh 的留言、關單在 auto mode 會被當成 External System Writes 擋下（#96）。它固定寫 github.com 上的 `ron03wlb/ron-skills`、只收數字 Issue 號碼和白名單旗標（用法見腳本開頭），其他 repo 的寫入照舊用 `gh … --repo <owner>/<repo>`，交給人核准；wrapper 沒涵蓋的寫入（如 `gh issue transfer`）在 auto mode 仍會被擋或詢問。讀取不受影響，照下列 `gh` 指令。
 
 ## Conventions
 
@@ -13,6 +13,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for reads
 - **Comment on an issue**: `node scripts/gh-tracker.mjs comment <number> --body-file <file>` (or `--body "..."`)
 - **Apply / remove labels**: `node scripts/gh-tracker.mjs edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `node scripts/gh-tracker.mjs close <number> --comment "..."`
+- **Reopen**: `node scripts/gh-tracker.mjs reopen <number> [--comment "..."]`
 
 Reads infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone. Writes need no inference: `scripts/gh-tracker.mjs` always passes `--repo github.com/ron03wlb/ron-skills` (and `gh api --hostname github.com`), so neither the remote nor the gh config's default host can redirect them.
 
@@ -50,7 +51,7 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 母單是範圍已定、子單已拆好的 issue：它只把子單分組，不派工、不驗收，開關跟著子單走。和 **Map**（`wayfinder:map`）不同：Map 還在探索，子票會陸續長出來；母單在建立時就拆完了。
 
 - **辨識**：有 sub-issue（`sub_issues_summary.total > 0`）的 issue 就是母單，掛 `parent` label、不掛任何 triage label（[triage-labels.md](triage-labels.md#parent-label)）。
-- **上游行為**：`/to-spec` 給 spec issue 掛 `ready-for-agent`；`/to-tickets` 把子單掛成該 spec 的 sub-issue、各掛 `ready-for-agent`，不動母單。所以 spec 一拆成子單，母單和子單都帶 `ready-for-agent`。本 repo 不改這兩個 skill，改由 pilot 的 Pool 規則排除母單、Reconcile 整理母單的 label（[issue-run.md](issue-run.md) 的 **Pool**、**Probe**），Close 在子單全部結束後關掉母單（**Close**）。
+- **上游行為**：`/to-spec` 給 spec issue 掛 `ready-for-agent`；`/to-tickets` 把子單掛成該 spec 的 sub-issue、各掛 `ready-for-agent`，不動母單。所以 spec 一拆成子單，母單和子單都帶 `ready-for-agent`。本 repo 不改這兩個 skill，改由 pilot 的 Pool 規則排除母單、Reconcile 整理母單的 label 與重開（[pilot.md](pilot.md) 的 **Pool**、**Probe**），Close 在子單全部結束後關掉母單（**Close**）。
 - **檢視**：
   - 可開工：`gh issue list --search 'is:open label:ready-for-agent -is:blocked'`
   - 母單：`gh issue list --search 'is:open label:parent'`
