@@ -317,3 +317,29 @@ test('checkpoint 沒有 done 成員：STOP，不把 current 寫成 closed', t =>
   assert.match(lines(result).pop(), /^STOP 76 checkpoint /);
   assert.doesNotMatch(f.checkpoint(), /^current: closed$/m);
 });
+
+// 空的或手寫錯的 branch 會讓 remote 步驟拿它跑 ls-remote（空 pattern 列出全部 heads，exit 0）再 push --delete（#120）。
+// 包一層 git 記下每次呼叫，確認停在任何寫入之前，連 ls-remote 都沒跑。
+for (const [title, row, value] of [
+  ['branch 欄是空字串', '| 76 |  |', ''],
+  ['branch 的號碼和這一列的 Issue 不同', '| 71 | issue/72-x |', 'issue/72-x'],
+]) {
+  test(`done 成員的 ${title}：STOP branch-malformed，不跑任何 git 寫入、不留言`, t => {
+    const f = fixture(t, { pushed: true });
+    const gitLog = join(f.temp, 'git.log');
+    const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env }).stdout.trim();
+    writeFileSync(join(f.temp, 'bin/git'), `#!/bin/sh\necho "$*" >> '${gitLog}'\nexec '${realGit}' "$@"\n`);
+    chmodSync(join(f.temp, 'bin/git'), 0o755);
+    writeFileSync(join(f.repo, '.scratch/pilot/batch-76.md'), f.checkpoint().replace(`| 76 | ${BRANCH} |`, row));
+    const result = f.close();
+    assert.equal(result.status, 4, result.stdout + result.stderr);
+    const n = row.match(/\d+/)[0];
+    assert.deepEqual(lines(result), [`STOP branch-malformed ${n} ${JSON.stringify(value)}`]);
+    const gitCalls = existsSync(gitLog) ? readFileSync(gitLog, 'utf8') : '';
+    assert.doesNotMatch(gitCalls, /ls-remote|push|merge --ff-only|config core\.bare|branch -d/);
+    assert.doesNotMatch(f.calls(), /issue comment|issue close|worktree rm|terminal close/);
+    assert.equal(f.remoteHas(), true);
+    assert.equal(f.issues()[76].state, 'OPEN');
+    assert.doesNotMatch(f.checkpoint(), /^current: closed$/m);
+  });
+}
