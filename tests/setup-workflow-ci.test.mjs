@@ -97,6 +97,14 @@ test('只在 YAML 註解提到檢查入口不算呼叫', t => {
   assert.match(last(result), /^GAP ci /);
 });
 
+// Spec review（#139）：GitHub 不會跑 .gitlab-ci.yml，只看程式碼 host 自己的 CI 檔。
+test('只看程式碼 host 的 CI 檔：GitHub repo 只有 .gitlab-ci.yml 時照樣寫 checks.yml', t => {
+  const root = repo(t, { origin: 'git@github.com:o/r.git', files: { '.gitlab-ci.yml': 'c:\n  script:\n    - bin/check\n' } });
+  const result = ci(root);
+  assert.doesNotMatch(result.stdout, /^CI_EXISTS /m);
+  assert.equal(last(result), 'CI_WRITTEN .github/workflows/checks.yml');
+});
+
 test('沒有單一檢查入口：不寫 CI，exit 2', t => {
   const root = repo(t, { origin: 'git@github.com:o/r.git', files: { 'docs/agents/issue-run.md': '# a\n' } });
   rmSync(join(root, 'bin/check'));

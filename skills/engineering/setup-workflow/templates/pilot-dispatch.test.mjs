@@ -219,7 +219,10 @@ test('總預算用完：進行中與還沒派的成員都 STOP timeout，照樣�
   const result = dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch'], { PILOT_DISPATCH_BUDGET_MS: '1500', SESSION_TUI_WAIT_MS: '60000' });
   assert.ok(Date.now() - begin < 20000, `${Date.now() - begin} ms`);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['STOP 23 timeout', 'STOP 46 timeout']);
+  // 負載高時 23 可能已開了分頁才逾時，STOP 會多帶「請確認有沒有留下標題 … 的分頁」（#139：land.test 搬進同一組並行後出現）。
+  const [first, ...rest] = lines(result);
+  assert.match(first, /^STOP 23 timeout(（請確認有沒有留下標題 .+ 的分頁）)?$/);
+  assert.deepEqual(rest, ['STOP 46 timeout']);
   assert.match(checkpoint('23-46'), /^\| 23 \| .* \| term_23 \| .* \| stop \| \|$/m);
   assert.match(checkpoint('23-46'), /^\| 46 \| .* \| stop \| \|$/m);
 });

@@ -13,12 +13,12 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { CI_FILES, codeHost } from '../templates/lib/hosts.mjs';
 
-/** repo 裡現有的 CI 設定檔（相對路徑）：.github/workflows/*.yml|yaml 與 .gitlab-ci.yml。 */
-export function ciFiles(root) {
+/** 程式碼 host 會執行的 CI 設定檔（相對路徑）：GitHub 是 .github/workflows/*.yml|yaml，GitLab 是 .gitlab-ci.yml；別家的檔不會被跑，不算。 */
+export function ciFiles(root, host) {
+  if (host === 'gitlab') return existsSync(join(root, CI_FILES.gitlab)) ? [CI_FILES.gitlab] : [];
   const dir = join(root, CI_FILES.github);
-  const workflows = existsSync(dir) && statSync(dir).isDirectory()
+  return existsSync(dir) && statSync(dir).isDirectory()
     ? readdirSync(dir).filter(file => /\.ya?ml$/.test(file)).sort().map(file => `${CI_FILES.github}${file}`) : [];
-  return [...workflows, ...(existsSync(join(root, CI_FILES.gitlab)) ? [CI_FILES.gitlab] : [])];
 }
 
 /** 比對 CI 檔用的入口：去掉選項之後的部分（`bin/check --upstream` 與 `bin/check` 都算呼叫了 `bin/check`）。 */
@@ -38,7 +38,7 @@ const withoutComments = text => text.replace(/(^|\s)#.*$/gm, '$1');
 export function ciGap(root, entry, host) {
   if (host === 'local') return { met: true, evidence: ['程式碼 host 是 local，沒有遠端 CI，只有本機執行端'], files: [] };
   const command = entry && entryCommand(entry);
-  const files = ciFiles(root).map(file => ({ file, calls: Boolean(command) && withoutComments(readFileSync(join(root, file), 'utf8')).includes(command) }));
+  const files = ciFiles(root, host).map(file => ({ file, calls: Boolean(command) && withoutComments(readFileSync(join(root, file), 'utf8')).includes(command) }));
   if (!files.length) return { met: false, evidence: [`沒有 CI 檔（${CI_FILES[host]}）`], files };
   if (files.some(file => file.calls)) return { met: true, evidence: files.filter(file => file.calls).map(({ file }) => `${file} 呼叫 ${command}`), files };
   return { met: false, evidence: [`${files.map(({ file }) => file).join('、')} 沒有呼叫 ${command ?? '單一檢查入口'}`], files };

@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Setup workflow
 
-Bring the target repo (the cwd, or the path in `$ARGUMENTS`) one **level** up the ron-skills delivery workflow: L1 basic, L2 gates, L3 resident pilot, as the guide at `docs/workflow/` in ron-skills defines them. Everything is **present first, write after the human confirms**: steps 1–5 only read (step 1 also asks which platforms the team uses, step 2 which hosts); step 6 asks once; steps 7–9 write.
+Bring the target repo (the cwd, or the path in `$ARGUMENTS`) one **level** up the ron-skills delivery workflow: L1 basic, L2 gates, L3 resident pilot, as the guide at `docs/workflow/` in ron-skills defines them. Everything is **present first, write after the human confirms**: steps 1–5 only read (step 1 also asks which platforms the team uses, step 2 which hosts); step 6 asks once; steps 7–10 write.
 
 With `health` as the first word of `$ARGUMENTS`, run only the [Health check](#health-check) on the target repo (the path after it, or the cwd) and skip the steps below.
 
@@ -51,9 +51,9 @@ With `health` as the first word of `$ARGUMENTS`, run only the [Health check](#he
 
 9. **Copy templates.** Run `node <skill>/scripts/copy-templates.mjs <repo> <template>...`. It copies each template with its runtime dependencies and tests into `scripts/` and records each copy's template path, the last ron-skills commit that changed that template, and the copy's sha256 in `docs/agents/workflow-templates.json`; it refuses a template with uncommitted changes, since the recorded commit would not match the content. Exit 3 (`CONFIRM_OVERWRITE`) means an existing file differs: show the human the printed diff, and rerun with `--yes` only after they confirm. Wire each copy as its row in [Templates](#templates) says, and add the copied tests to the repo's check entry. Done when `copy-templates.mjs <repo> --verify` prints `VERIFIED <n>` and the check entry exits 0.
 
-   When the target level is L2 or above, then run `node <skill>/scripts/ci.mjs <repo>` for the remote CI runner. It writes the minimal CI for the code host (`.github/workflows/checks.yml` on GitHub, `.gitlab-ci.yml` on GitLab: `push` and PR/MR pipelines run the check entry, Node pinned to this machine's version, the same rule as ron-skills' `check-node-version.mjs`) and prints `CI_WRITTEN <file>`; a `local` code host gets none (`CI_SKIPPED local`). A repo that already has CI files is left untouched: `CI_KEPT <file>` when one calls the check entry, otherwise `GAP ci <reason>`, which goes into the report for the human. Done when it printed one of those last lines.
+10. **Remote CI.** Only when the target level is L2 or above: run `node <skill>/scripts/ci.mjs <repo>` for the remote CI runner. It writes the minimal CI for the code host (`.github/workflows/checks.yml` on GitHub, `.gitlab-ci.yml` on GitLab: `push` and PR/MR pipelines run the check entry, Node pinned to this machine's version, the same rule as ron-skills' `check-node-version.mjs`) and prints `CI_WRITTEN <file>`; a `local` code host gets none (`CI_SKIPPED local`). A repo that already has CI files is left untouched: `CI_KEPT <file>` when one calls the check entry, otherwise `GAP ci <reason>`, which goes into the report for the human. Done when it printed one of those last lines.
 
-10. **Report.** Report the detected and new level, every file written, the commands with exit codes, and the gaps left: unmet signals of the target level and declined extensions.
+11. **Report.** Report the detected and new level, every file written, the commands with exit codes, and the gaps left: unmet signals of the target level, `GAP ci` from step 3 or step 10, and declined extensions.
 
 ## Health check
 
