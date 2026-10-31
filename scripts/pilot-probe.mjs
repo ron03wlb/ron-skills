@@ -16,6 +16,8 @@
 //   主 checkout：UNBARE <checkout>（Bare guard 剛還原 core.bare）｜NOT_MAIN <分支>｜HOLD｜DIRTY <git status --short 的一行>
 //   adapter：ADAPTER_AHEAD <檔案>（整合分支上的 adapter 比主分支新：docs/agents/issue-run.md，以及它 `## Pilot` 段連到的同目錄 .md）
 //   開著的列：REQUEST <requests.md 原文>｜GATE <id> <Issue> <question 或段落標題>｜GATE_MALFORMED <id> <把 resolved 寫進別的欄位的那一行>
+//   Issue 依賴：DEPS_PROSE <n> #<m>（開著的 `ready-for-agent` Issue 內文以「依賴」帶出 #m，#m 還開著，blocked_by 卻沒有它；Pool 只讀 blocked_by）｜
+//               DEPS_PROSE_FAILED <錯誤>（在主 checkout 跑 gh 失敗，其他檢查照跑）
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
 //                 WORKER <n> STUCK exited|stuck-after <分鐘>|orca <錯誤碼>|no-orca|checkpoint <欄位> <值>
 //                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）
@@ -34,6 +36,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gateLines, isOpenRequest, now, openGates, tableCells } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 
+const DEPS_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{number body labels(first:50){nodes{name}} blockedBy(first:50){nodes{number repository{nameWithOwner}}}}}}}`;
 const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 
@@ -130,6 +133,58 @@ export function openRows(pilot) {
   const out = openRequests(pilot).map(line => `REQUEST ${line}`);
   out.push(...gateLines(readStore(pilot, 'gates.md')));
   return out;
+}
+
+/**
+ * 內文以「依賴」帶出的 Issue 號碼：從 `依賴` 到句末（`。`、`；`、`;`、`，`、`,` 或換行）之間的每個 `#m`，依出現順序、不重複。
+ * 實際寫法有「依賴：#58、#77」「依賴 #58（註解）、#77」「依賴 ①（#103）」，所以不要求 #m 緊接在後；`owner/repo#m` 是別的 repo，
+ * 「不依賴」「無依賴」是否定，都不算。括號裡的逗號不斷句（「依賴 #77（同一支腳本，接在它之後改）」）。
+ */
+export function proseDeps(body) {
+  const deps = [];
+  for (const [clause] of (body ?? '').matchAll(/(?<![不無])依賴(?:（[^）\n]*）|[^。；;，,\n])*/g)) {
+    for (const [, m] of clause.matchAll(/(?<![\w/.-])#(\d+)\b/g)) if (!deps.includes(Number(m))) deps.push(Number(m));
+  }
+  return deps;
+}
+
+/**
+ * 依賴只寫在內文、沒建 blocked_by 的 ready Issue（`issues` 是本 repo 開著的 Issue，GraphQL 節點）：每個還開著、
+ * 卻不在 blocked_by（同一個 repo）裡的依賴印一行 `DEPS_PROSE <n> #<m>`。
+ */
+export function depsProse(issues, repo) {
+  const open = new Set(issues.map(({ number }) => number));
+  const out = [];
+  for (const issue of issues) {
+    if (!issue.labels.nodes.some(({ name }) => name === 'ready-for-agent')) continue;
+    const blocked = new Set(issue.blockedBy.nodes.filter(({ repository }) => repository.nameWithOwner === repo).map(({ number }) => number));
+    for (const m of proseDeps(issue.body)) if (m !== issue.number && open.has(m) && !blocked.has(m)) out.push(`DEPS_PROSE ${issue.number} #${m}`);
+  }
+  return out;
+}
+
+/** 在主 checkout 跑 gh（repo 由它的 remote 決定）；stdin 一律不給。 */
+function gh(checkout, ...args) {
+  const result = spawnSync('gh', args, { cwd: checkout, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+  if (result.status !== 0) throw new Error(`gh ${args.slice(0, 2).join(' ')} 失敗：${(result.stderr || result.error?.message || '').trim().split('\n')[0]}`);
+  return result.stdout;
+}
+
+/** 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE 行；gh 失敗時印 DEPS_PROSE_FAILED，不中斷其他檢查。 */
+export function trackerDeps(checkout) {
+  try {
+    const repo = gh(checkout, 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim();
+    const [owner, name] = repo.split('/');
+    const issues = [];
+    for (let cursor = null, more = true; more;) {
+      const page = JSON.parse(gh(checkout, 'api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, ...(cursor ? ['-f', `cursor=${cursor}`] : []), '-f', `query=${DEPS_QUERY}`)).data.repository.issues;
+      issues.push(...page.nodes);
+      ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
+    }
+    return depsProse(issues, repo);
+  } catch (error) {
+    return [`DEPS_PROSE_FAILED ${error.message}`];
+  }
 }
 
 /**
@@ -376,7 +431,7 @@ export function statusReport(checkout, { integration = 'pilot/integration', main
 
 export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false } = {}) {
   const pilot = join(checkout, '.scratch/pilot');
-  const out = [...checkoutState(checkout, main), ...adapterAhead(checkout, { integration, main }), ...openRows(pilot)];
+  const out = [...checkoutState(checkout, main), ...adapterAhead(checkout, { integration, main }), ...openRows(pilot), ...trackerDeps(checkout)];
   const landing = [];
   const batches = [];
   for (const file of batchFiles(pilot)) {
