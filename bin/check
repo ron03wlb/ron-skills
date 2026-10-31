@@ -22,6 +22,8 @@ node scripts/build-workflow-site.mjs --check
 node scripts/check-workflow-strings.mjs
 node scripts/check-workflow-secrets.mjs
 node scripts/check-workflow-sync.mjs
+# 本 repo 與 setup-workflow 的 templates/ 都要在 macOS 與 Linux 上跑（#86）；從 repo 根掃，templates/ 也在範圍內。
+node scripts/check-portability.mjs
 # 兩組測試各印一行 `ℹ tests <n>`，只看尾段會漏掉第一組（retro a6：PR #63、#64 只記到第二組的 120），所以最後彙總成一行。
 node --test --test-reporter=spec --test-force-exit tests/*.test.mjs | tee "$tmp/tests.log"
 # setup-workflow 的 script 正本與測試：先列出檔名（node --test 的輸出不帶檔名），再以正本的 node-test-guarded 跑，它會補跑靜默遺失的測試。
