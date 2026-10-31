@@ -54,10 +54,12 @@ function environment() {
   function nodeRuntime() {
     const local = process.env.DETECT_NODE_VERSION ?? process.versions.node;
     const dir = join(root, '.github/workflows');
-    const pinned = path => existsSync(join(root, path)) && readFileSync(join(root, path), 'utf8').trim().match(/^v?([\d.]+)/)?.[1];
+    // 版本取開頭的數字段（24.x 取 24）；YAML 註解行不算。
+    const leading = text => text.trim().match(/^v?(\d+(?:\.\d+)*)/)?.[1];
+    const pinned = path => (existsSync(join(root, path)) && statSync(join(root, path)).isFile() ? leading(readFileSync(join(root, path), 'utf8')) : null);
     const pins = (existsSync(dir) && statSync(dir).isDirectory() ? readdirSync(dir).filter(file => /\.ya?ml$/.test(file)).sort() : [])
-      .flatMap(file => [...readFileSync(join(dir, file), 'utf8').matchAll(/node-version(-file)?:\s*['"]?([^'"\s]+)['"]?/g)]
-        .map(([, fromFile, value]) => ({ file, version: fromFile ? pinned(value) : value.match(/^[\d.]+$/)?.[0] }))
+      .flatMap(file => [...readFileSync(join(dir, file), 'utf8').matchAll(/^[^#\n]*?node-version(-file)?:\s*['"]?([^'"\s#]+)/gm)]
+        .map(([, fromFile, value]) => ({ file, version: fromFile ? pinned(value) : leading(value) }))
         .filter(pin => pin.version));
     if (!pins.length) return { met: true, value: local, required: null, evidence: ['.github/workflows 沒有鎖定 node-version'] };
     const split = pins.find(pin => pin.version !== pins[0].version);

@@ -156,3 +156,14 @@ test('CI 以 node-version-file 指定版本時讀那個檔：主版本不同是�
   assert.deepEqual(result.stops.map(stop => stop.name), ['node']);
   assert.equal(station(t, { files, node: '20.5.0' }).status, 0);
 });
+
+test('node-version 寫成 24.x 時取主版本比對；註解行與指向資料夾的 node-version-file 不算鎖定', t => {
+  const ci = version => `jobs:\n  c:\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          # node-version: 18\n          node-version: ${version}\n`;
+  const loose = station(t, { files: { '.github/workflows/ci.yml': ci('24.x') }, node: '20.1.0' });
+  assert.equal(loose.status, 1);
+  assert.equal(loose.result.required.node.required, '24');
+  assert.equal(station(t, { files: { '.github/workflows/ci.yml': ci('24.x') } }).status, 0);
+  const dir = station(t, { files: { '.github/workflows/ci.yml': 'steps:\n  - with:\n      node-version-file: sub\n', 'sub/a': 'x\n' } });
+  assert.equal(dir.status, 0);
+  assert.equal(dir.result.required.node.required, null);
+});
