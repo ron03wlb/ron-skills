@@ -64,7 +64,8 @@ L1 通常一個 hook 都沒有；L2 開始多 session 並行時再加。
 | 校驗 | 強度 | 檢查什麼 | 不能證明什麼 |
 | --- | --- | --- | --- |
 | pre-push hook | 本地強制 | 在要 push 的 SHA 上重跑單一檢查入口（範本見 [04](04-level2.md#pre-push)） | `--no-verify` 跳得過，要靠 `PreToolUse` hook 補 |
-| CI | 遠端 | 乾淨環境、乾淨 clone 上重跑；ron-skills 每次 push 與每週一跑 `bin/check --upstream`，上游改到 overlay 補丁位置時先在這裡變紅 | 只有 push 之後才知道；沒設 branch protection 時紅了也合得進去 |
+| CI（遠端執行端） | 遠端 | 乾淨環境、乾淨 clone 上重跑；ron-skills 每次 push 與每週一跑 `bin/check --upstream`，上游改到 overlay 補丁位置時先在這裡變紅 | 只有 push 之後才知道；沒設 branch protection 時紅了也合得進去 |
+| CI（本機執行端） | 流程內 | 遠端 CI 沒啟動（帳務、沒有 runner）時，交付端在要合入的 tip SHA、工作樹乾淨時跑單一檢查入口，PR 留言附 SHA 與結果行（`land.mjs --local-checks`，見 [04](04-level2.md#ci-執行端)） | 不是乾淨環境；遠端跑了而失敗時不能改用它 |
 
 ## 7. 結案時
 

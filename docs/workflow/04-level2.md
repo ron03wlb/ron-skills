@@ -2,7 +2,7 @@
 
 L1 靠「agent 照 skill 做」維持秩序；只要同時有兩個以上的 session、或有人另開終端手動 commit，這份秩序就擋不住。L2 把幾個容易出事的動作收成**入口**：每個動作只有一條路，路上有檢查，失敗時印出修正指示。
 
-本章只寫每個入口的**契約**（必須做什麼、exit code、拒絕什麼），不提供腳本：入口用什麼語言、怎麼實作由各 repo 自己決定。唯二的範本是 pre-push hook 與 `pilot_git.py`。
+本章只寫每個入口的**契約**（必須做什麼、exit code、拒絕什麼），不提供腳本：入口用什麼語言、怎麼實作由各 repo 自己決定。範本只有 pre-push hook、`pilot_git.py`，以及 `/setup-workflow` 寫的遠端 CI 與複製的 `land.mjs`（見 [CI 執行端](#ci-執行端)）。
 
 ## 什麼時候進 L2
 
@@ -70,6 +70,13 @@ done
 ```
 
 git hook 擋得住人，但 agent 可以加 `--no-verify` 跳過它；要連這個也擋，再加一個 Claude Code `PreToolUse` hook，拒絕含 `--no-verify`、`git commit -n`、`-c core.hooksPath=` 的 Bash 指令（見 [06 品質校驗時間軸](06-quality-gates.md#1-編輯時)）。
+
+## CI 執行端
+
+合併前跑單一檢查入口、把結果當作 CI 證據的地方有兩個：**遠端**（GitHub Actions、GitLab pipeline）是預設；**本機**只在遠端沒啟動時用（帳務停擺、沒有 runner，`land.mjs` 印 `STOP ci-not-started`）。遠端跑了而失敗，不能改用本機。程式碼 host 是 `local`（沒有 remote）時只有本機。
+
+- **遠端.** `/setup-workflow` 升到 L2 時以它的 `scripts/ci.mjs` 依程式碼 host 寫最小設定：GitHub 寫 `.github/workflows/checks.yml`、GitLab 寫 `.gitlab-ci.yml`，`push` 與 PR／MR 都跑單一檢查入口，Node 版本鎖成跑 setup 那台機器的版本。專案已經有 CI 檔就不動，只檢查有沒有呼叫單一檢查入口，沒有就回報缺口；`detect.mjs` 也把它印成 `GAP ci`，但不算等級訊號。
+- **本機.** 合入前在要合入的 tip SHA、工作樹乾淨時跑單一檢查入口，PR 留言附 SHA 與結果行。GitHub 上用 setup-workflow 的 `land.mjs`：`node scripts/land.mjs <branch> --local-checks <sha> --check-command '<單一檢查入口>'`，它在 tip 的暫時 detached worktree 跑檢查。不用 pre-push hook、`act` 或 `gitlab-runner exec` 代替。
 
 ## 兩段式結案
 

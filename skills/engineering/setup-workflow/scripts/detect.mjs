@@ -2,7 +2,8 @@
 // /setup-workflow 的偵測：讀目標 repo 的檔案與 git 歷史，判定導入等級（L0–L3）與擴充，不寫任何檔。
 // 用法：node detect.mjs [<repo>] [--json]（repo 預設 cwd）
 // 文字輸出每個訊號一行 `SIGNAL <name> met|missing <value>`、每項擴充一行 `EXTENSION <name> <value> ...`，
-// 接著 `RECOMMEND <等級>|none`，最後一行 `LEVEL <等級>`；--json 印同樣內容的物件。exit 0；不是 git repo 時 exit 2。
+// 每個缺口一行 `GAP <name> <原因>`（不是等級訊號，不影響 LEVEL；目前只有 ci：程式碼 host 不是 local，卻沒有 CI 檔或 CI 檔沒呼叫檢查入口），
+// 接著 `RECOMMEND <等級>|none`，最後一行 `LEVEL <等級>`；--json 印同樣內容的物件（缺口在 gaps）。exit 0；不是 git repo 時 exit 2。
 //
 // 環境站：node detect.mjs [<repo>] --env [--copy <template>...] [--json]，只看這台機器，repo 只讀它的 CI 設定，不必是 git repo。
 // 每項一行：`ENV platform <macos|wsl|linux|…>`、必要工具 `REQUIRED <name> met|missing|skipped <value>`、
@@ -19,6 +20,7 @@ import { spawnSync } from 'node:child_process';
 import { accessSync, constants, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { CLI, codeHost, hostInDoc, trackerKind } from '../templates/lib/hosts.mjs';
+import { ciGap } from './ci.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
@@ -320,13 +322,18 @@ const extensions = {
   ], 'Review', ['run-codex-review.mjs']),
 };
 
-const result = { root, level, recommend, levels, signals, extensions };
+// 缺口：L2 該有、但不當等級訊號的設定（#139：加成訊號會讓現有 L2 專案被判回 L1）。
+const origin = git('remote', 'get-url', 'origin');
+const gaps = { ci: ciGap(root, check.value, codeHost(origin).value) };
+
+const result = { root, level, recommend, levels, signals, extensions, gaps };
 if (json) {
   console.log(JSON.stringify(result, null, 2));
 } else {
   for (const [name, s] of Object.entries(signals)) console.log(`SIGNAL ${name} ${s.met ? 'met' : 'missing'} ${s.value ?? '-'}  # ${s.evidence.join('; ')}${s.note ? `; ${s.note}` : ''}`);
   for (const [name, e] of Object.entries(extensions)) console.log(`EXTENSION ${name} ${e.value}  section=${e.section} templates=${e.templates.join(',') || '-'}  # ${e.evidence.join('; ') || '-'}`);
   for (const [name, l] of Object.entries(levels)) if (!l.met) console.log(`MISSING ${name} ${l.missing.join(',')}`);
+  for (const [name, g] of Object.entries(gaps)) if (!g.met) console.log(`GAP ${name} ${g.evidence.join('; ')}`);
   console.log(`RECOMMEND ${recommend ?? 'none'}`);
   console.log(`LEVEL ${level}`);
 }

@@ -1,21 +1,24 @@
 #!/usr/bin/env node
 // 把一條分支從 push 一路做到合入 main 並收尾（#40）：手動分支（retro、單獨跑的 /issue-run）與 pilot 的 Push gate 共用。
+// setup-workflow 正本（#139），L2 起由 adapter 的交付段指向 scripts/land.mjs；第一版只支援 GitHub（gh）。
 // 步驟：push → 找或開 PR → 等 CI → 以 merge commit 合併 → 收尾（移除 worktree、還原 core.bare、刪本機與 origin 分支）
-//   → 主 checkout 的 main 以 --ff-only 跟上 origin/main → bin/sync-skills。
+//   → 主 checkout 的 main 以 --ff-only 跟上 origin/main → bin/sync-skills（repo 有這支時）。
 // 每一步都能從中斷處重跑：還開著的 PR 沿用；head 等於分支 tip 的 PR 已合入就直接收尾，不重開、不重合。
 // 本機分支已經不在（Orca rm 會一起刪掉，#49）時不 push，只從已合入的 PR 接著收尾。
 // push 前先擋：沒有 origin/main 以外的 commit（no-commits）；`--keep-branch` 時分支沒包含 origin/main（behind-main）。
 // `--keep-branch`（pilot/integration）：不刪分支、不移除 worktree，改把分支 --ff-only 跟上 origin/main 再 push；
 // 不用 `git branch -f`，它會把 upstream 改成 origin/main（#27）。
-// `--local-checks <sha>`（只在 GitHub Actions 沒啟動時用，#137）：不等 CI；push 前確認分支 tip 是 <sha>，在 <sha> 的暫時
-// detached worktree（工作樹必定乾淨）重跑 `bin/check --upstream`，exit 0 而且印出 CHECK_PASS 行才繼續，合併前在 PR 留言註明。
+// `--local-checks <sha>`（CI 執行端改用本機：只在 GitHub Actions 沒啟動時用，#137）：不等 CI；push 前確認分支 tip 是 <sha>，
+// 在 <sha> 的暫時 detached worktree（工作樹必定乾淨）以 sh 跑 `--check-command` 的單一檢查入口（預設 `bin/check`；
+// ron-skills 是 `bin/check --upstream`），exit 0 才繼續，合併前在 PR 留言附 SHA 與結果行（CHECK_PASS 行，沒有時是最後一行）。
 // 直接重跑而不驗證 pilot 的 regression 記錄：land 也給非 pilot 的分支用，不綁 checkpoint 格式。
 // CI 失敗而失敗的 job 全都 0 個 step（帳務或 spending limit 擋下、沒有啟動，#132）時印 ci-not-started，帶 check-run annotation
 // 的第一句與 repo 可見性：log 讀不到，重跑也沒用；原因是帳務時 Push gate 才改用 `--local-checks`，有 step 的失敗照舊是 ci-failed。
-// Orca 從 WSL 移除 worktree 會把主 checkout 設成 bare，所以移除後一律跑 pilot-unbare.sh。
+// Orca 從 WSL 移除 worktree 會把主 checkout 設成 bare，所以移除後一律還原：有 scripts/pilot-unbare.sh 就交給它，沒有就自己還原並印 UNBARE。
 //
-// 用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--body-file <file>] [--title <title>]
-// stdout：每步一行進度；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
+// 用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha> [--check-command <command>]] [--body-file <file>] [--title <title>]
+// stdout：每步一行進度（PUSHED、PR、CHECKS_PASSED，`--local-checks` 時是 LOCAL_CHECKS <pr> <sha> <結果行>，收尾的 UNBARE、
+//   WORKTREE_REMOVED、BRANCH_DELETED，最後 MAIN、SYNC_SKILLS）；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
 //   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、merge、not-merged、worktree-rm）。
 // 合入之後的收尾問題（main 沒跟上、sync-skills 失敗）印 WARN，不影響 LANDED。
 // exit：0 已合入；4 STOP；2 用法錯誤；1 其他失敗。
@@ -27,13 +30,13 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { orca } from './orca-session-send.mjs';
 
-const USAGE = '用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--body-file <file>] [--title <title>]';
+const USAGE = '用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha> [--check-command <command>]] [--body-file <file>] [--title <title>]';
 
 /** CI 輪詢：剛 push 時 PR 的 head 可能還沒更新、checks 可能還沒登記（空陣列），都照 pending 處理到逾時。 */
 const CHECKS_POLL_MS = Number(process.env.LAND_CHECKS_POLL_MS || 10000);
 /** Bash 工具最多等 600 秒；逾時 STOP checks-timeout，重跑會沿用同一個 PR 接著等。 */
 const CHECKS_TIMEOUT_MS = Number(process.env.LAND_CHECKS_TIMEOUT_MS || 480000);
-/** `--local-checks` 的 bin/check --upstream 實測 166 秒（#137，macOS）；420 秒之後還留 180 秒給 Bash 600 秒內的 push、合併與收尾。 */
+/** `--local-checks` 的檢查：ron-skills 的 bin/check --upstream 實測 166 秒（#137，macOS）；420 秒之後還留 180 秒給 Bash 600 秒內的 push、合併與收尾。 */
 const LOCAL_CHECKS_TIMEOUT_MS = Number(process.env.LAND_LOCAL_CHECKS_TIMEOUT_MS || 420000);
 
 class Stop extends Error {}
@@ -171,14 +174,14 @@ async function waitChecks(cwd, number, head) {
   }
 }
 
-/** 同 pilot-land.mjs：bin/check 要在暫時 worktree 裡跑，不能被呼叫端（hook、別的 worktree）的 GIT_* 帶到別的 repo。 */
+/** 檢查入口要在暫時 worktree 裡跑，不能被呼叫端（hook、別的 worktree）的 GIT_* 帶到別的 repo。 */
 const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'].includes(key)));
 
 /**
- * 在 tip 的暫時 detached worktree 跑 `bin/check --upstream`，回傳它的 CHECK_PASS 行；完整輸出留在主 checkout 的 `.scratch/`。
- * expected 不是 SHA（ref 一定等於 tip，比對就沒作用）、tip 不是 expected、bin/check 失敗或沒印 CHECK_PASS 時 Stop，這時還沒 push。
+ * 在 tip 的暫時 detached worktree 以 sh 跑 command，回傳結果行（CHECK_PASS 行，沒有時是輸出的最後一行）；完整輸出留在主 checkout 的 `.scratch/`。
+ * expected 不是 SHA（ref 一定等於 tip，比對就沒作用）、tip 不是 expected、檢查失敗或沒有任何輸出時 Stop，這時還沒 push。
  */
-function runLocalChecks(main, branch, tip, expected) {
+function runLocalChecks(main, branch, tip, expected, command) {
   if (!/^[0-9a-f]{7,40}$/i.test(expected)) throw new Stop(`local-checks-sha ${expected} 不是 SHA：帶 Regression 通過的那個 SHA`);
   const sha = run('git', ['rev-parse', '--verify', '--quiet', `${expected}^{commit}`], main).stdout.trim();
   if (sha !== tip) throw new Stop(`local-checks-sha ${branch} 的 tip ${tip} 不是 ${expected}`);
@@ -187,13 +190,13 @@ function runLocalChecks(main, branch, tip, expected) {
   try {
     const added = spawnSync('git', ['worktree', 'add', '--detach', '-q', tree, tip], { cwd: main, encoding: 'utf8', env: childEnv });
     if (added.status !== 0) throw new Error(`git worktree add 失敗：${added.stderr.trim()}`);
-    const result = spawnSync(join(tree, 'bin/check'), ['--upstream'], { cwd: tree, encoding: 'utf8', env: childEnv, timeout: LOCAL_CHECKS_TIMEOUT_MS });
+    const result = spawnSync('sh', ['-c', command], { cwd: tree, encoding: 'utf8', env: childEnv, timeout: LOCAL_CHECKS_TIMEOUT_MS });
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
     mkdirSync(join(main, '.scratch'), { recursive: true });
     const log = join(main, '.scratch', `land-local-checks-${tip}.log`);
     writeFileSync(log, output);
-    const pass = output.match(/^CHECK_PASS .*$/m)?.[0];
-    if (result.status !== 0 || !pass) throw new Stop(`local-checks-failed ${tip} exit ${result.error?.code ?? result.status}${pass ? '' : ' 沒有 CHECK_PASS 行'} ${log}`);
+    const pass = output.match(/^CHECK_PASS .*$/m)?.[0] ?? output.trim().split('\n').pop();
+    if (result.status !== 0 || !pass) throw new Stop(`local-checks-failed ${tip} exit ${result.error?.code ?? result.status}${pass ? '' : ' 沒有輸出'} ${log}`);
     return pass;
   } finally {
     run('git', ['worktree', 'remove', '--force', tree], main);
@@ -232,8 +235,13 @@ async function cleanup(main, branch, tree) {
       // rm 失敗也可能已把主 checkout 設成 bare；pilot-unbare.sh 自己會印 UNBARE。
       // 從被移除的 worktree 執行時（land 合入自己的分支），本檔旁的 pilot-unbare.sh 已跟著刪掉，所以先找主 checkout 的。
       const unbarePath = [join(main, 'scripts/pilot-unbare.sh'), join(import.meta.dirname, 'pilot-unbare.sh')].find(existsSync);
-      const unbare = run(unbarePath, [main, `land ${branch}`], main);
-      if (unbare.stdout) process.stdout.write(unbare.stdout);
+      if (unbarePath) {
+        const unbare = run(unbarePath, [main, `land ${branch}`], main);
+        if (unbare.stdout) process.stdout.write(unbare.stdout);
+      } else if (run('git', ['rev-parse', '--is-bare-repository'], main).stdout.trim() === 'true') {
+        git(main, 'config', 'core.bare', 'false');
+        console.log(`UNBARE ${main}`);
+      }
     }
     console.log(`WORKTREE_REMOVED ${tree.path}`);
   }
@@ -247,7 +255,7 @@ async function cleanup(main, branch, tree) {
   }
 }
 
-export async function land({ branch, keepBranch = false, localChecksSha, bodyFile, title, cwd = process.cwd() }) {
+export async function land({ branch, keepBranch = false, localChecksSha, checkCommand = 'bin/check', bodyFile, title, cwd = process.cwd() }) {
   const main = worktrees(cwd)[0].path;
   // 主 checkout 也算：--keep-branch 時在那裡 ff；收尾時無法刪掉主 checkout 正在用的分支，開頭就停。
   const tree = worktrees(main).find(item => item.branch === branch);
@@ -268,7 +276,7 @@ export async function land({ branch, keepBranch = false, localChecksSha, bodyFil
       if (!pr && contains(tip, 'origin/main')) throw new Stop(`no-commits ${branch} 沒有 origin/main 以外的 commit`);
       // push 事件的 CI 跑分支自己那份 workflow：沒合入 origin/main 的 CI 修正（#48 的 Node 版本）就會紅燈（PR #50）。
       if (keepBranch && !contains('origin/main', tip)) throw new Stop(`behind-main ${branch} 沒有包含 origin/main：先合入 origin/main 並重跑 Regression`);
-      if (localChecksSha) checkPass = runLocalChecks(main, branch, tip, localChecksSha);
+      if (localChecksSha) checkPass = runLocalChecks(main, branch, tip, localChecksSha, checkCommand);
     }
     const push = run('git', ['push', '-u', 'origin', branch], main);
     if (push.status !== 0) throw new Stop(`push ${push.stderr.trim().split('\n').pop()}`);
@@ -292,7 +300,7 @@ export async function land({ branch, keepBranch = false, localChecksSha, bodyFil
   if (pr.state === 'OPEN') {
     if (checkPass) {
       // PR 開著時重跑（例如上次 STOP merge）會再檢查一次、再留一則：每則留言各對應一次實際跑過的 bin/check。
-      const note = `CI 沒有啟動，以本機 \`bin/check --upstream\` 取代 GitHub checks（\`land.mjs --local-checks\`）：SHA ${tip}，exit 0，\`${checkPass}\`。`;
+      const note = `CI 沒有啟動，以本機 \`${checkCommand}\` 取代 GitHub checks（\`land.mjs --local-checks\`）：SHA ${tip}，exit 0，\`${checkPass}\`。`;
       gh(main, 'pr', 'comment', String(pr.number), '--body', note);
       console.log(`LOCAL_CHECKS ${pr.number} ${tip} ${checkPass}`);
     } else {
@@ -321,7 +329,7 @@ export async function land({ branch, keepBranch = false, localChecksSha, bodyFil
 }
 
 /** 帶值的旗標與它在 land() 選項裡的名稱。 */
-const VALUE_FLAGS = { '--body-file': 'bodyFile', '--title': 'title', '--local-checks': 'localChecksSha' };
+const VALUE_FLAGS = { '--body-file': 'bodyFile', '--title': 'title', '--local-checks': 'localChecksSha', '--check-command': 'checkCommand' };
 
 function parseArgs(argv) {
   const options = { keepBranch: false };

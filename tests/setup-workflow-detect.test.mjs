@@ -171,3 +171,33 @@ test('文字輸出最後一行是 LEVEL <等級>', t => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim().split('\n').pop(), 'LEVEL L1');
 });
+
+// #139 R2-Q1：沒有 CI 只印成缺口，不是等級訊號；現有的 L2 專案不會因此被判回 L1。
+test('沒有 CI 的 L2 專案印 ci 缺口，LEVEL 仍是 L2；CI 檔沒呼叫檢查入口也是缺口，呼叫了就沒有', t => {
+  const github = { 'docs/agents/issue-tracker.md': L1_FILES['docs/agents/issue-tracker.md'] };
+  const none = l2(t);
+  git(none, 'remote', 'add', 'origin', 'git@github.com:o/r.git');
+  const result = detect(none);
+  assert.equal(result.level, 'L2');
+  assert.equal(result.gaps.ci.met, false);
+  assert.match(result.gaps.ci.evidence.join(' '), /沒有 CI 檔/);
+  const text = spawnSync('node', [script, none], { encoding: 'utf8', env }).stdout;
+  assert.match(text, /^GAP ci /m);
+  assert.match(text.trim().split('\n').pop(), /^LEVEL L2$/);
+
+  const silent = l2(t, { ...github, '.github/workflows/deploy.yml': 'on: push\njobs:\n  d:\n    steps:\n      - run: ./deploy.sh\n' });
+  git(silent, 'remote', 'add', 'origin', 'git@github.com:o/r.git');
+  assert.equal(detect(silent).gaps.ci.met, false);
+  assert.match(detect(silent).gaps.ci.evidence.join(' '), /\.github\/workflows\/deploy\.yml 沒有呼叫 bin\/check/);
+
+  const calls = l2(t, { '.gitlab-ci.yml': 'checks:\n  script:\n    - bin/check --upstream\n' });
+  git(calls, 'remote', 'add', 'origin', 'http://192.168.200.202/g/r.git');
+  assert.equal(detect(calls).gaps.ci.met, true);
+  assert.doesNotMatch(spawnSync('node', [script, calls], { encoding: 'utf8', env }).stdout, /^GAP /m);
+});
+
+test('程式碼 host 是 local（沒有 origin）時沒有遠端 CI，不印 ci 缺口', t => {
+  const result = detect(l2(t));
+  assert.equal(result.gaps.ci.met, true);
+  assert.match(result.gaps.ci.evidence.join(' '), /local/);
+});
