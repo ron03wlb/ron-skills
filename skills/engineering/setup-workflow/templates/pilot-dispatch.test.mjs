@@ -254,7 +254,8 @@ test('重跑同一個 batch：已有的成員行就地換掉，其他列不動',
 test('總預算用完：進行中與還沒派的成員都 STOP timeout，照樣寫進 checkpoint', t => {
   const { dispatch, checkpoint } = fixture(t, { waitHangs: true });
   const begin = Date.now();
-  const result = dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch'], { PILOT_DISPATCH_BUDGET_MS: '1500', SESSION_TUI_WAIT_MS: '60000' });
+  // 預算要夠第一個成員跑完認領檢查（假 gh）與 create、開到分頁，再卡在 wait；整套測試並行時 1.5 秒不夠。
+  const result = dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch'], { PILOT_DISPATCH_BUDGET_MS: '4000', SESSION_TUI_WAIT_MS: '60000' });
   assert.ok(Date.now() - begin < 20000, `${Date.now() - begin} ms`);
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.deepEqual(lines(result), ['STOP 23 timeout', 'STOP 46 timeout']);
