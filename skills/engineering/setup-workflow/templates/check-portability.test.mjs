@@ -87,9 +87,9 @@ const SHELL = [
   ['paste-s', 'seq 3 | paste -s > out', 'seq 3 | paste -s -d"," -'],
   ['sed-i', 'echo a; sed -i s/a/b/ f', 'x="$(seq 3 | paste -s -d "," -)"; echo a;# sed -i x'],
   // 路徑常放在引號裡，proc 比對保留引號內容的那一行；引號外的註解照樣不掃。
-  ['proc', 'cat "/proc/cpuinfo"', 'echo "see /proc in docs"'],
-  ['proc', "f='/proc/meminfo'", "echo ok # cat '/proc/meminfo'"],
-  ['proc', 'f="/proc/$$/status"; echo "$f"', 'echo "a # b"; ps -o rss= -p $$'],
+  ['proc', 'cat "/proc/cpuinfo"', 'echo "see /proc in docs"'], // portability-ok: 違規 fixture
+  ['proc', "f='/proc/meminfo'", "echo ok # cat '/proc/meminfo'"], // portability-ok: 違規 fixture
+  ['proc', 'f="/proc/$$/status"; echo "$f"', 'echo "a # b"; ps -o rss= -p $$'], // portability-ok: 違規 fixture
 ];
 for (const [rule, bad, good] of SHELL) {
   test(`${rule}：${bad}`, t => {
