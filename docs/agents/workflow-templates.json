@@ -11,6 +11,11 @@
       "commit": "716a4901e946acd99460fb030ac56e9131f17fcd",
       "sha256": "535a70ca94677843badafa5ebb728101f68738a83e15a7842c25099b69bd79dc"
     },
+    "scripts/issue-pool.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/issue-pool.mjs",
+      "commit": "b0aa94278720c2c05bbd10064d6c39856d1e6b20",
+      "sha256": "ca2220cdbcea3e2fffd90efeb728ddd85b0a2491fc9cfc2e5934323565c74ab7"
+    },
     "scripts/orca-session-send.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-send.mjs",
       "commit": "ada628ad8ff233f859b6e1cd3cdb9965b4629871",
