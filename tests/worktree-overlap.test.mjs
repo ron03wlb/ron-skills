@@ -84,3 +84,11 @@ test('沒有命中時不輸出、exit 0；未知旗標 exit 2', t => {
   assert.equal(none.stdout, '');
   assert.equal(run(main, '--bogus').status, 2);
 });
+
+test('還沒有 commit 的 orphan worktree 略過，不擋住其他 worktree', t => {
+  const { main } = fixture(t);
+  git(main, 'worktree', 'add', '-q', '--orphan', '-b', 'orph', join(main, '..', 'o'));
+  const result = run(main, 'scripts/x.mjs');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), ['OVERLAP_WT issue/2-b scripts/x.mjs']);
+});

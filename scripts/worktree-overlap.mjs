@@ -17,7 +17,7 @@
 //   所以附了條目也可能還改了標題或段落，沒附條目就是改動都不在條目裡。
 //   呼叫者自己所在的 worktree 也列（它的分支名稱看得出來）；主 checkout 不列。
 //   基準預設是 main：從 pilot/integration 開的 worktree，整合分支上還沒進 main 的改動也會算進去，只看各自的改動時帶 --main pilot/integration。
-//   detached HEAD 的 worktree，<分支> 寫成 `detached@<HEAD 前 7 碼>`。和主分支沒有共同祖先的 worktree 略過。沒有命中時不輸出。
+//   detached HEAD 的 worktree，<分支> 寫成 `detached@<HEAD 前 7 碼>`。和主分支沒有共同祖先、或還沒有 commit 的 worktree 略過。沒有命中時不輸出。
 // exit：0 印完（不論有無命中）；2 用法錯誤；1 git 失敗。
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -52,7 +52,8 @@ export function worktreeOverlaps(cwd, files = [], { main = 'main' } = {}) {
   const [, ...others] = parseWorktrees(git(cwd, 'worktree', 'list', '--porcelain'));
   const out = [];
   for (const tree of others) {
-    if (!tree.path || !existsSync(tree.path)) continue;
+    // 目錄已不在，或還沒有任何 commit 的 orphan worktree（HEAD 解析不到，merge-base 會 exit 128）都略過。
+    if (!tree.path || !existsSync(tree.path) || spawnGit(tree.path, 'rev-parse', '--verify', '-q', 'HEAD').status !== 0) continue;
     const base = spawnGit(tree.path, 'merge-base', 'HEAD', main);
     if (base.status === 1) continue;
     if (base.status !== 0) throw new Error(`git merge-base HEAD ${main} exit ${base.status}（${tree.path}）：${(base.stderr ?? '').trim()}`);
