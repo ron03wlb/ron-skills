@@ -336,6 +336,8 @@ for (const [title, row, value] of [
     const n = row.match(/\d+/)[0];
     assert.deepEqual(lines(result), [`STOP branch-malformed ${n} ${JSON.stringify(value)}`]);
     const gitCalls = existsSync(gitLog) ? readFileSync(gitLog, 'utf8') : '';
+    // 腳本找主 checkout 的 `git worktree list` 有記到，才證明 PATH 上的 wrapper 有被用到。
+    assert.match(gitCalls, /^worktree list/m);
     assert.doesNotMatch(gitCalls, /ls-remote|push|merge --ff-only|config core\.bare|branch -d/);
     assert.doesNotMatch(f.calls(), /issue comment|issue close|worktree rm|terminal close/);
     assert.equal(f.remoteHas(), true);
