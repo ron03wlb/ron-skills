@@ -175,14 +175,60 @@ test('其他衝突：merge --abort、STOP conflict <n>，stage worktree 乾淨�
   const before = f.tip();
   const result = f.land();
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.equal(result.last, 'STOP conflict 2 x.txt');
+  assert.equal(result.last, 'STOP conflict 2 x.txt=member 1:other');
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
   assert.ok(!existsSync(join(f.repo, '.git/worktrees/pilot-stage/MERGE_HEAD')), 'merge 已 abort');
   assert.equal(f.tip(), before);
   assert.equal(f.checks(), 0);
 });
 
+// #192：batch 79-108 的 STOP 行分不出衝突來自同批 #79 還是整合分支，coordinator 只好對兩邊跑 diff（29.7 KB）再憑檔名判斷。
+test('衝突來源：同批先合入的成員標 member <m>、整合分支標 integration、兩邊都改過標 member <m>+integration，程式檔標 code', t => {
+  const lines = n => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+  const f = fixture(t, {
+    base: { 'scripts/lib/x.mjs': lines(3), 'notes.txt': lines(3), 'scripts/z.mjs': lines(9) },
+    members: [
+      { n: 1, slug: 'a', files: { 'scripts/lib/x.mjs': lines(3).replace('line 2', 'from a'), 'scripts/z.mjs': lines(9).replace('line 8', 'a8') } },
+      { n: 2, slug: 'b', files: {
+        'scripts/lib/x.mjs': lines(3).replace('line 2', 'from b'),
+        'notes.txt': lines(3).replace('line 2', 'b2'),
+        'scripts/z.mjs': lines(9).replace('line 2', 'b2').replace('line 8', 'b8'),
+      } },
+    ],
+  });
+  // 成員開分支之後整合分支才前進：改 notes.txt 與 z.mjs 的第 2 行（stage worktree 停在 pilot/integration）。
+  write(f.stageTree, { 'notes.txt': lines(3).replace('line 2', 'i2'), 'scripts/z.mjs': lines(9).replace('line 2', 'i2') });
+  git(f.stageTree, 'commit', '-qam', 'integration moves');
+  const result = f.land();
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(result.last, 'STOP conflict 2 notes.txt=integration:other scripts/lib/x.mjs=member 1:code scripts/z.mjs=member 1+integration:code');
+  assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
+});
+
 const ENTRIES = '# Pilot\n\n- **Close.** close v1\n- **Handoff.** handoff v1\n\n- **Tail.** tail\n';
+
+test('衝突種類：pilot.md 同一條目兩邊都改標 entry <名稱>，只列解不了的 hunk 裡兩邊都改的條目', t => {
+  const f = fixture(t, {
+    base: { 'pilot.md': ENTRIES },
+    members: [
+      { n: 1, slug: 'a', files: { 'pilot.md': ENTRIES.replace('close v1', 'close A').replace('handoff v1', 'handoff A') } },
+      { n: 2, slug: 'b', files: { 'pilot.md': ENTRIES.replace('close v1', 'close B') } },
+    ],
+  });
+  assert.equal(f.land().last, 'STOP conflict 2 pilot.md=member 1:entry Close');
+});
+
+test('衝突種類：條目開頭之前的文字兩邊都改，歸到所在的條目；兩個條目都衝突時以、連接', t => {
+  const text = '- **Pool.** pool v1\n  more pool\n\n- **Stage.** stage v1\n';
+  const f = fixture(t, {
+    base: { 'docs/pilot.md': text },
+    members: [
+      { n: 1, slug: 'a', files: { 'docs/pilot.md': text.replace('more pool', 'pool A').replace('stage v1', 'stage A') } },
+      { n: 2, slug: 'b', files: { 'docs/pilot.md': text.replace('more pool', 'pool B').replace('stage v1', 'stage B') } },
+    ],
+  });
+  assert.equal(f.land().last, 'STOP conflict 2 docs/pilot.md=member 1:entry Pool、Stage');
+});
 
 test('允許的衝突解法：衝突 hunk 兩邊改的是不同的 `- **<名稱>.**` 條目，各取各的版本後 MERGED', t => {
   const f = fixture(t, {
@@ -219,7 +265,7 @@ test('兩邊都新增同一個檔：不是只新增段落，STOP conflict', t =>
     members: [{ n: 1, slug: 'a', files: { 'new.md': 'from a\n' } }, { n: 2, slug: 'b', files: { 'new.md': 'from b\n' } }],
   });
   const result = f.land();
-  assert.equal(result.last, 'STOP conflict 2 new.md');
+  assert.equal(result.last, 'STOP conflict 2 new.md=member 1:other');
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
 });
 
@@ -232,7 +278,7 @@ test('兩邊新增的段落有相同的行：重疊，STOP conflict', t => {
       { n: 2, slug: 'b', files: { 'n.md': '# N\n\n## Notes\nfrom b\n' } },
     ],
   });
-  assert.equal(f.land().last, 'STOP conflict 2 n.md');
+  assert.equal(f.land().last, 'STOP conflict 2 n.md=member 1:other');
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
 });
 
@@ -261,7 +307,7 @@ test('非 UTF-8 的檔案衝突：不自己解，STOP conflict，integration 不
     ],
   });
   const before = f.tip();
-  assert.equal(f.land().last, 'STOP conflict 2 n.txt');
+  assert.equal(f.land().last, 'STOP conflict 2 n.txt=member 1:other');
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
   assert.equal(f.tip(), before);
 });
@@ -307,7 +353,7 @@ test('兩邊在同一處新增同名的 `- **<名稱>.**` 條目：重疊，STOP
       { n: 2, slug: 'b', files: { 'pilot.md': '# Pilot\n\n- **New.** from b\n' } },
     ],
   });
-  assert.equal(f.land().last, 'STOP conflict 2 pilot.md');
+  assert.equal(f.land().last, 'STOP conflict 2 pilot.md=member 1:entry New');
 });
 
 test('同一個條目兩邊都改：不是允許的解法，STOP conflict', t => {
@@ -319,7 +365,7 @@ test('同一個條目兩邊都改：不是允許的解法，STOP conflict', t =>
     ],
   });
   const result = f.land();
-  assert.equal(result.last, 'STOP conflict 2 pilot.md');
+  assert.equal(result.last, 'STOP conflict 2 pilot.md=member 1:entry Close');
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
 });
 
@@ -355,7 +401,7 @@ test('表格的同一列兩邊都改（#123 與 #94 都改 pilot-probe）：STOP
   const f = storeFixture(t, 94, 'member-123');
   const tip = f.tip();
   const result = f.land();
-  assert.equal(result.last, `STOP conflict 94 ${STORE}`);
+  assert.equal(result.last, `STOP conflict 94 ${STORE}=integration:other`);
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
   assert.equal(f.tip(), tip);
   assert.equal(f.checks(), 0);
@@ -386,7 +432,7 @@ test('表格兩邊新增同一個第一格的列：STOP conflict', t => {
       { n: 2, slug: 'b', files: { 'table.md': TABLE.replace('b v1', 'b v2').replace('| `c.mjs`', '| `d.mjs` | from 2 |\n| `c.mjs`') } },
     ],
   });
-  assert.equal(f.land().last, 'STOP conflict 2 table.md');
+  assert.equal(f.land().last, 'STOP conflict 2 table.md=member 1:other');
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
 });
 
@@ -413,7 +459,7 @@ test('表格一邊改了欄數：不逐列合併，STOP conflict', t => {
       { n: 2, slug: 'b', files: { 'table.md': TABLE.replace('| `b.mjs` | b v1 |\n', '| `b.mjs` | b v1 |\n| `b2.mjs` | from 2 |\n') } },
     ],
   });
-  assert.equal(f.land().last, 'STOP conflict 2 table.md');
+  assert.equal(f.land().last, 'STOP conflict 2 table.md=member 1:other');
 });
 
 // #175：scripts/pilot-close.mjs 檔頭的真實衝突（base c07e2d7、#131 3b437bb 改第 10 行、#143 9d9e117 在第 10 行後插入兩行）。
@@ -452,7 +498,7 @@ test('兩邊都改了同一個 base 行：不是 adjacent，STOP conflict，stag
   const f = closeFixture(t, integration);
   const tip = f.tip();
   const result = f.land();
-  assert.equal(result.last, `STOP conflict 131 ${CLOSE}`);
+  assert.equal(result.last, `STOP conflict 131 ${CLOSE}=integration:code`);
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
   assert.equal(f.tip(), tip);
   assert.equal(f.checks(), 0);
@@ -467,7 +513,7 @@ test('相鄰改動碰到表格列（一邊改表頭欄數、一邊加列）：�
       { n: 2, slug: 'b', files: { 'x.md': 'intro\n|a|b|\n|1|2|\n' } },
     ],
   });
-  assert.equal(f.land().last, 'STOP conflict 2 x.md');
+  assert.equal(f.land().last, 'STOP conflict 2 x.md=member 1:other');
 });
 
 // review：插入的行和改動的 base 行相同時，插在它前面或後面都說得通，合併結果不同。
@@ -479,7 +525,7 @@ test('插入的行能滑到改動的另一側（插入的是重複行）：位�
       { n: 2, slug: 'b', files: { 'x.txt': 'a\nb\nb\n' } },
     ],
   });
-  assert.equal(f.land().last, 'STOP conflict 2 x.txt');
+  assert.equal(f.land().last, 'STOP conflict 2 x.txt=member 1:other');
 });
 
 // review：刪掉兩個相同行的其中一個，刪的是哪一個取決於對齊方式，插在兩者中間的行跟著落在不同側。
@@ -491,7 +537,7 @@ test('改動那一邊能滑動（刪掉重複行之一）：位置有歧義，ST
       { n: 2, slug: 'b', files: { 'x.txt': 'a\nN\na\n' } },
     ],
   });
-  assert.equal(f.land().last, 'STOP conflict 2 x.txt');
+  assert.equal(f.land().last, 'STOP conflict 2 x.txt=member 1:other');
 });
 
 // review（57be567 P2-1）：插入那一邊含有被改的 base 行的另一份副本時，base 行對齊哪一份都說得通（拆成兩段插入），
@@ -504,7 +550,7 @@ test('插入的行裡有被改的 base 行（拆成兩段插入也對得上）�
       { n: 2, slug: 'b', files: { 'x.txt': 'a\nL\nX\nL\nY\nz\n' } },
     ],
   });
-  assert.equal(f.land().last, 'STOP conflict 2 x.txt');
+  assert.equal(f.land().last, 'STOP conflict 2 x.txt=member 1:other');
 });
 
 // review（57be567 P2-2）：改動換上的行和另一邊插入的行相同，兩邊都套用會讓同一行出現兩次。
@@ -516,7 +562,7 @@ test('改動換上的行和插入的行相同：合起來會重複，STOP confli
       { n: 2, slug: 'b', files: { 'x.json': '{\n  "version": "1.2.0",\n  "version": "1.3.0",\n  "z": 1\n}\n' } },
     ],
   });
-  assert.equal(f.land().last, 'STOP conflict 2 x.json');
+  assert.equal(f.land().last, 'STOP conflict 2 x.json=member 1:other');
 });
 
 test('改動換上的條目和插入的條目同名：合起來有兩個同名條目，STOP conflict', t => {
@@ -527,7 +573,7 @@ test('改動換上的條目和插入的條目同名：合起來有兩個同名�
       { n: 2, slug: 'b', files: { 'x.md': 'intro\n- **A.** old\n- **A.** other\n' } },
     ],
   });
-  assert.equal(f.land().last, 'STOP conflict 2 x.md');
+  assert.equal(f.land().last, 'STOP conflict 2 x.md=member 1:entry A');
 });
 
 // review（452e06d）：一邊刪掉的行正是另一邊插入時接著的那一行，兩邊都套用會留下沒有標題的段落（modify/delete 衝突）。
@@ -539,7 +585,7 @@ test('一邊刪掉 base 行、另一邊在那行後面插入：刪除不算改�
       { n: 2, slug: 'b', files: { 'x.md': 'x\n## 標題\n標題下的說明\ny\n' } },
     ],
   });
-  assert.equal(f.land().last, 'STOP conflict 2 x.md');
+  assert.equal(f.land().last, 'STOP conflict 2 x.md=member 1:other');
 });
 
 // review（452e06d）：兩邊動到同一個 `- **<名稱>.**` 條目是同一條目衝突，照 Stage 條目走 Fresh redispatch，不由 adjacent 合掉。
@@ -551,7 +597,7 @@ test('一邊改條目的開頭行、另一邊在同一條目裡插入：同一�
       { n: 2, slug: 'b', files: { 'x.md': '- **A.** 規則一。\n  例外：X。\n\n- **B.** b\n' } },
     ],
   });
-  assert.equal(f.land().last, 'STOP conflict 2 x.md');
+  assert.equal(f.land().last, 'STOP conflict 2 x.md=member 1:entry A');
 });
 
 test('一邊改條目 A、另一邊在條目 A 後面插入新條目 C：不同條目，RESOLVED adjacent', t => {
@@ -581,7 +627,7 @@ for (const [name, base, ours, theirs] of [
         { n: 2, slug: 'b', files: { 'x.txt': theirs } },
       ],
     });
-    assert.equal(f.land().last, 'STOP conflict 2 x.txt');
+    assert.equal(f.land().last, 'STOP conflict 2 x.txt=member 1:other');
   });
 }
 
@@ -594,7 +640,7 @@ test('插入的新條目切開另一邊正在改的條目：同一條目衝突�
       { n: 2, slug: 'b', files: { 'x.md': '- **X.** head\n- **N.** n\n  body old\n' } },
     ],
   });
-  assert.equal(f.land().last, 'STOP conflict 2 x.md');
+  assert.equal(f.land().last, 'STOP conflict 2 x.md=member 1:entry X、N');
 });
 
 test('插入點落在另一邊改的連續幾行中間：重疊，STOP conflict', t => {
@@ -606,7 +652,7 @@ test('插入點落在另一邊改的連續幾行中間：重疊，STOP conflict'
       { n: 2, slug: 'b', files: { 'x.txt': 'a\nb\nnew\nc\nd\n' } },
     ],
   });
-  assert.equal(f.land().last, 'STOP conflict 2 x.txt');
+  assert.equal(f.land().last, 'STOP conflict 2 x.txt=member 1:other');
 });
 
 /** 兩個成員各改一個 check-workflow-sync 追蹤的來源並各自 restamp：戳記檔裡相鄰兩行各變一行，git 判成同一個 hunk 衝突（#72）。 */
@@ -639,7 +685,7 @@ test('只有 scripts/workflow-doc-sync.json 衝突：restamp 完成 merge，chec
 test('workflow-doc-sync.json 和解不了的檔一起衝突：STOP conflict，不 restamp', t => {
   const f = syncFixture(t, syncMembers({ a: { 'x.txt': 'a\n' }, b: { 'x.txt': 'b\n' } }));
   const result = f.land();
-  assert.equal(result.last, 'STOP conflict 2 scripts/workflow-doc-sync.json x.txt');
+  assert.equal(result.last, 'STOP conflict 2 scripts/workflow-doc-sync.json=member 1:other x.txt=member 1:other');
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
 });
 
