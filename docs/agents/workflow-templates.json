@@ -42,8 +42,8 @@
     },
     "scripts/lib/pilot-store.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/pilot-store.mjs",
-      "commit": "125e658a0a8ca19b873589f5356815acb51978d1",
-      "sha256": "41ec403267648a888f7d7d4d96d32a2a8c9b583592f92e2ab818aaa47c28117c"
+      "commit": "b38dde3fc9d61d9c185710b40eb5370d2197a689",
+      "sha256": "c7643dcf3e1cd3e52436f572139c5a141dbba9e2482e92ce91809f4036f2c11a"
     },
     "scripts/orca-session-send.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-send.mjs",
@@ -107,8 +107,8 @@
     },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",
-      "commit": "132f3e0ad81f91b15411b7e893305bdad830d1eb",
-      "sha256": "6d599a351b1af1948da55d6a0df460c3ba732d6f3fcfc216c917651017527956"
+      "commit": "cf0e6432429ecff6724239f603b784e7102f0661",
+      "sha256": "64ca2e4aac9fd80bbacde0db272af619ca8924fcb6b4e5f6b65effe9b56a96dd"
     },
     "scripts/pilot-register.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-register.mjs",
