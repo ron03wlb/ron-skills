@@ -3,10 +3,12 @@
 // 全部在 stage worktree 做（分支是 pilot/integration 或 pilot/stage-* 的那個 worktree；沒有就用 Orca 建 pilot-stage，再跑 Bare guard）：
 //   Stage       stage worktree 要乾淨；`switch -C pilot/stage-<key> <integration tip>`，依號碼 `merge --no-ff` 每個 done 成員。
 //               衝突只照 Stage 條目允許的解法自己解，其他 `merge --abort`：
-//                 restamp    scripts/workflow-doc-sync.json：其他衝突檔都用下兩種解完之後，跑 check-workflow-sync.mjs --restamp（#72）；
+//                 restamp    scripts/workflow-doc-sync.json：其他衝突檔都用下列解法解完之後，跑 check-workflow-sync.mjs --restamp（#72）；
 //                 additions  每個衝突 hunk 的 base 是空的（兩邊只在既有檔案的同一處新增，沒有相同的非空行或同名條目）：依號碼兩段都留下；
-//                 entries    每個衝突 hunk 裡兩邊改的是不同的 `- **<名稱>.**` 條目：各取改過的那一版（#45）。
-//               additions 與 entries 只解三個版本都是 UTF-8 文字的檔案，其他的照樣 abort。
+//                 entries    每個衝突 hunk 裡兩邊改的是不同的 `- **<名稱>.**` 條目：各取改過的那一版（#45）；
+//                 rows       衝突 hunk 三份的行都是 Markdown 表格列（`|` 開頭）、以第一格為鍵兩邊改的是不同列：各取各的版本、
+//                            依原順序排好，新增的列都留下；同一列兩邊都改照樣 abort（#162）。
+//               additions、entries 與 rows 只解三個版本都是 UTF-8 文字的檔案，其他的照樣 abort。
 //               staged SHA 與 stage 時的 integration tip 寫成 checkpoint 的 `current: staged <sha> onto <tip>`。
 //   Regression  在 staged SHA 跑 <stage worktree>/bin/check --upstream，完整輸出寫到 <主 checkout>/.scratch/pilot/reg-<key>.log，
 //               checkpoint 追加 `regression: <sha> exit <code>`（通過時附 bin/check 最後一行 CHECK_PASS）。
@@ -171,6 +173,11 @@ function resolveHunk(base, ours, theirs, kinds) {
     kinds.add('additions');
     return `${ours}${ours.endsWith('\n') ? '' : '\n'}${theirs}`;
   }
+  const byRows = resolveRows(base, ours, theirs);
+  if (byRows !== undefined) {
+    kinds.add('rows');
+    return byRows;
+  }
   const [b, o, t] = [base, ours, theirs].map(entries);
   const names = pieces => pieces.map(p => p.name).join('\n');
   if (b.length < 2 || names(o) !== names(b) || names(t) !== names(b)) return undefined;
@@ -182,6 +189,51 @@ function resolveHunk(base, ours, theirs, kinds) {
   if (merged.includes(undefined)) return undefined;
   kinds.add('entries');
   return merged.join('');
+}
+
+/** Markdown 表格列的第一格：開頭的 `|` 之後到下一個沒跳脫的 `|`，去掉前後空白。 */
+const firstCell = line => line.match(/^\|((?:\\.|[^|\\])*)/)[1].trim();
+/** 表格列的欄數：沒跳脫的 `|` 數，收尾那個不算（GFM 可以省略）。欄數不同（一邊加了欄）時不逐列合併。 */
+const pipes = line => (line.replace(/(?<!\\)\|\s*$/, '').match(/\\.|\|/g) ?? []).filter(token => token === '|').length;
+
+/**
+ * rows：hunk 的 base、ours、theirs 每一行都是 Markdown 表格列（`|` 開頭）時，以第一格為鍵逐列合併（#162）。
+ * 只有一邊改（或刪）的列取那一邊，兩邊改成一樣的照留；新增的列接在它在自己那一邊的前一個 base 列之後，同一處 ours 先。
+ * 同一列兩邊改成不同內容、一邊刪一邊改、兩邊新增同一個鍵、某一份有重複的鍵、留下的 base 列順序變了、各列的欄數不同：解不了，傳回 undefined。
+ */
+function resolveRows(base, ours, theirs) {
+  const parse = text => (text === '' ? [] : text.replace(/\n$/, '').split('\n'));
+  const versions = [base, ours, theirs].map(parse);
+  if (!versions[0].length || !versions.flat().every(line => line.startsWith('|'))) return undefined;
+  if (new Set(versions.flat().map(pipes)).size > 1) return undefined;
+  const [b, o, t] = versions.map(lines => new Map(lines.map(line => [firstCell(line), line])));
+  if ([b, o, t].some((map, i) => map.size !== versions[i].length)) return undefined;
+  const position = new Map([...b.keys()].map((key, i) => [key, i]));
+  const kept = map => [...map.keys()].filter(key => b.has(key)).map(key => position.get(key));
+  if ([o, t].some(map => kept(map).some((at, i, all) => i > 0 && all[i - 1] > at))) return undefined;
+  if ([...o.keys()].some(key => !b.has(key) && t.has(key))) return undefined;
+  // 新增的列依前一個 base 列分組；檔頭那組的鍵是 undefined。
+  const added = map => {
+    const at = new Map();
+    let anchor;
+    for (const [key, line] of map) {
+      if (b.has(key)) anchor = key;
+      else at.set(anchor, [...(at.get(anchor) ?? []), line]);
+    }
+    return at;
+  };
+  const [oAdded, tAdded] = [o, t].map(added);
+  const out = [...(oAdded.get(undefined) ?? []), ...(tAdded.get(undefined) ?? [])];
+  for (const [key, was] of b) {
+    const [mine, yours] = [o.get(key), t.get(key)];
+    let line;
+    if (mine === was) line = yours;
+    else if (yours === was || yours === mine) line = mine;
+    else return undefined;
+    if (line !== undefined) out.push(line);
+    out.push(...(oAdded.get(key) ?? []), ...(tAdded.get(key) ?? []));
+  }
+  return out.length ? `${out.join('\n')}${base.endsWith('\n') ? '\n' : ''}` : '';
 }
 
 /**
@@ -247,7 +299,8 @@ function resolveConflicts(tree, files) {
     must(tree, 'add', STAMPS);
     kinds.add('restamp');
   }
-  return [...kinds].sort().join('+');
+  // 固定順序，restamp 最後：它在其他解法之後才跑（`entries+restamp`、`rows+restamp`）。
+  return ['additions', 'entries', 'rows', 'restamp'].filter(kind => kinds.has(kind)).join('+');
 }
 
 /** Stage：從 `tip` 重開 stage 分支、依號碼合入成員；傳回 staged SHA。 */
