@@ -175,7 +175,7 @@ test('hook Stop：只有用量上限訊息、或英文段落已提示過一次�
 // #250：session a0f6ae91 jsonl 第 598 行「All closed. Now handle the source tabs.」與第 599 行的 Bash tool_use，
 // 在 PostToolUse 觸發時都還沒寫入（前 597 行跑 hook exit 0），尾端文字段是空的。找不到 tool_use 時重讀一次就抓得到。
 test('hook PostToolUse：觸發時文字段與 tool_use 都還沒寫入，稍後寫入時重讀抓到；有 .scratch 時記量測', async () => {
-  const dir = realTmpdir();
+  const dir = mkdtempSync(join(realTmpdir(), 'hook-language-'));
   const transcript = join(dir, 't.jsonl');
   writeFileSync(transcript, [user('收 retro'), toolUse('t0'), toolResult()].join('\n') + '\n');
   mkdirSync(join(dir, '.scratch'));
