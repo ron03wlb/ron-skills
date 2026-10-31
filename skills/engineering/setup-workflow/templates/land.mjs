@@ -21,7 +21,7 @@
 // 其他衝突（或 repo 沒有 restamp.mjs）照舊 merge --abort，STOP merge <pr> conflict <檔案…>，分支停在原來的 tip。
 //
 // 用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--check-command <command>] [--body-file <file>] [--title <title>]
-// stdout：每步一行進度（PUSHED、PR、CHECKS_PASSED、RESTAMPED <pr> <新 tip>，`--local-checks` 時是 LOCAL_CHECKS <pr> <sha> <結果行>，收尾的 UNBARE、
+// stdout：每步一行進度（PUSHED、PR、CHECKS_PASSED、RESTAMPED <pr> <新 tip>（合入 main 沒有衝突時是 MAIN_MERGED），`--local-checks` 時是 LOCAL_CHECKS <pr> <sha> <結果行>，收尾的 UNBARE、
 //   WORKTREE_REMOVED、BRANCH_DELETED，最後 MAIN、SYNC_SKILLS）；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
 //   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、restamp-checks-failed、merge、not-merged、worktree-rm）。
 // 合入之後的收尾問題（main 沒跟上、sync-skills 失敗）印 WARN，不影響 LANDED。
@@ -225,8 +225,8 @@ async function restampConflicts(tree, files) {
  */
 const conflictsWithMain = (main, tip) => run('git', ['merge-tree', '--write-tree', 'origin/main', tip], main).status === 1;
 
-/** GitHub 因 PR 和 base 衝突拒絕合併時 gh 的訊息（PR #168 的 `Pull Request has merge conflicts`，以及 mergeStateStatus DIRTY 時的說法）。 */
-const MERGE_CONFLICT = /merge conflicts|cannot be cleanly created/i;
+/** GitHub 因 PR 和 base 衝突拒絕合併時 gh 的訊息（retro 1031b、PR #168 實際印出的 `GraphQL: Pull Request has merge conflicts`）。 */
+const MERGE_CONFLICT = /Pull Request has merge conflicts/;
 
 /** 在合入 main 用的 worktree 裡跑 git：同 runLocalChecks，不讓呼叫端的 GIT_* 帶到別的 repo。 */
 const gitIn = (cwd, ...args) => spawnSync('git', args, { cwd, encoding: 'utf8', env: childEnv });
@@ -245,10 +245,12 @@ async function mergeMainAndRestamp(main, branch, tree, number, command) {
       if (added.status !== 0) throw new Error(`git worktree add 失敗：${added.stderr.trim()}`);
     }
     const merge = gitIn(path, 'merge', '--no-edit', 'origin/main');
+    let restamped = [];
     if (merge.status !== 0) {
       const conflicted = gitIn(path, 'diff', '--name-only', '--diff-filter=U').stdout.split('\n').filter(Boolean);
       try {
         if (!(await restampConflicts(path, conflicted))) throw new Stop(`merge ${number} conflict ${conflicted.join(' ') || merge.stderr.trim().split('\n').pop()}`);
+        restamped = conflicted;
         const commit = gitIn(path, 'commit', '--no-edit');
         if (commit.status !== 0) throw new Error(`git commit 失敗：${(commit.stderr || commit.stdout).trim()}`);
       } catch (error) {
@@ -265,8 +267,9 @@ async function mergeMainAndRestamp(main, branch, tree, number, command) {
     if (result.status !== 0) throw new Stop(`restamp-checks-failed ${sha} exit ${result.error?.code ?? result.status} ${log}`);
     const push = run('git', ['push', 'origin', branch], main);
     if (push.status !== 0) throw new Stop(`push ${push.stderr.trim().split('\n').pop()}`);
-    console.log(`RESTAMPED ${number} ${sha}`);
-    return { sha, pass: output.match(/^CHECK_PASS .*$/m)?.[0] ?? output.trim().split('\n').pop() };
+    // 合併沒有衝突（main 前進的部分合得起來）時沒有 restamp，印 MAIN_MERGED，不印 RESTAMPED。
+    console.log(`${restamped.length ? 'RESTAMPED' : 'MAIN_MERGED'} ${number} ${sha}`);
+    return { sha, pass: output.match(/^CHECK_PASS .*$/m)?.[0] ?? (output.trim().split('\n').pop() || 'exit 0') };
   } finally {
     if (temp) {
       run('git', ['worktree', 'remove', '--force', path], main);
@@ -368,24 +371,29 @@ export async function land({ branch, keepBranch = false, localChecksSha, checkCo
   }
 
   if (pr.state === 'OPEN') {
-    if (tip && conflictsWithMain(main, tip)) {
+    /** 合入 origin/main（只有戳記檔衝突時 restamp）後 tip 換成新的；`--local-checks` 時改用這次在新 tip 跑的檢查結果行。 */
+    const absorbMain = async () => {
       const restamped = await mergeMainAndRestamp(main, branch, tree, pr.number, checkCommand);
       tip = restamped.sha;
       if (checkPass) checkPass = restamped.pass;
-    }
-    if (checkPass) {
-      // PR 開著時重跑（例如上次 STOP merge）會再檢查一次、再留一則：每則留言各對應一次實際跑過的 bin/check。
-      const note = `CI 沒有啟動，以本機 \`${checkCommand}\` 取代 GitHub checks（\`land.mjs --local-checks\`）：SHA ${tip}，exit 0，\`${checkPass}\`。`;
-      gh(main, 'pr', 'comment', String(pr.number), '--body', note);
-      console.log(`LOCAL_CHECKS ${pr.number} ${tip} ${checkPass}`);
-    } else {
-      console.log(`CHECKS_PASSED ${pr.number} ${await waitChecks(main, pr.number, tip)}`);
-    }
+    };
+    const verify = async () => {
+      if (checkPass) {
+        // PR 開著時重跑（例如上次 STOP merge）會再檢查一次、再留一則：每則留言各對應一次實際跑過的 bin/check。
+        const note = `CI 沒有啟動，以本機 \`${checkCommand}\` 取代 GitHub checks（\`land.mjs --local-checks\`）：SHA ${tip}，exit 0，\`${checkPass}\`。`;
+        gh(main, 'pr', 'comment', String(pr.number), '--body', note);
+        console.log(`LOCAL_CHECKS ${pr.number} ${tip} ${checkPass}`);
+      } else {
+        console.log(`CHECKS_PASSED ${pr.number} ${await waitChecks(main, pr.number, tip)}`);
+      }
+    };
+    if (tip && conflictsWithMain(main, tip)) await absorbMain();
+    await verify();
     let merged = run('gh', ['pr', 'merge', String(pr.number), '--merge'], main);
-    // 等 CI 的期間 main 又前進而衝突：同樣合入、restamp，再等一輪 CI。
+    // 等 CI 的期間 main 又前進而衝突：同樣合入、restamp，再驗一次（CI 或本機檢查）。
     if (merged.status !== 0 && MERGE_CONFLICT.test(merged.stderr)) {
-      const { sha: head } = await mergeMainAndRestamp(main, branch, tree, pr.number, checkCommand);
-      console.log(`CHECKS_PASSED ${pr.number} ${await waitChecks(main, pr.number, head)}`);
+      await absorbMain();
+      await verify();
       merged = run('gh', ['pr', 'merge', String(pr.number), '--merge'], main);
     }
     if (merged.status !== 0) throw new Stop(`merge ${pr.number} ${merged.stderr.trim().split('\n').pop()}`);

@@ -32,7 +32,7 @@ const CHECK_POLL = /^gh pr view \S+ --json headRefOid,statusCheckRollup/gm;
  * 其他 job 照有 step 的樣本；annotations 是那個 check run 的 annotations
  * （預設是 run 41164091250 的真實樣本，`'error'` 是讀不到）；visibility 是 `gh repo view --json visibility` 的值。
  */
-function fixture(t, { seed = {}, checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false, localCheckExit = 0, unstartedJobs = [], missingJobs = [], annotations = GH_SAMPLES['check-run-annotations'], visibility = 'PUBLIC' } = {}) {
+function fixture(t, { seed = {}, mainMovesAtMerge = null, checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false, localCheckExit = 0, unstartedJobs = [], missingJobs = [], annotations = GH_SAMPLES['check-run-annotations'], visibility = 'PUBLIC' } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'land-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const sh = (cwd, ...args) => {
@@ -132,6 +132,14 @@ else if (sub === 'comment') { s.comments.push({ number: Number(args[2]), body: a
 else if (sub === 'merge') {
   const pr = find(args[2]);
   git('fetch', '-q', 'origin'); git('checkout', '-q', '-B', 'main', 'origin/main');
+  // mainMovesAtMerge：等 CI 的期間別的 PR 先合入 main（只發生一次）。
+  const moves = ${JSON.stringify(mainMovesAtMerge)};
+  if (moves && !s.moved) {
+    for (const [path, content] of Object.entries(moves)) fs.writeFileSync(${JSON.stringify(merger)} + '/' + path, content);
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-am', 'main moves during CI');
+    git('push', '-q', 'origin', 'main');
+    s.moved = true; save();
+  }
   // 和 main 衝突時 GitHub 拒絕合併（retro 1031b，PR #168 的真實訊息）。
   try { git('-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '-q', '--no-ff', '-m', 'Merge pull request #' + pr.number, 'origin/' + pr.head); }
   catch { git('merge', '--abort'); console.error('GraphQL: Pull Request has merge conflicts'); process.exit(1); }
@@ -577,6 +585,27 @@ test('PR 只有戳記檔和 main 衝突：合入 origin/main、restamp、跑檢�
   assert.equal(sh(origin, 'show', 'main:stamp.json') + '\n', stamp({ 'a.txt': 'a1\n', 'b.txt': 'b1\n' }));
   assert.equal(sh(main, 'rev-parse', 'HEAD'), pr.mergeCommit.oid);
   assert.equal(existsSync(wt), false);
+});
+
+test('等 CI 期間 main 前進而合併被拒（--local-checks）：合入、restamp，改附新 tip 的本機檢查結果，不等 CI', t => {
+  const { wt, origin, body, sh, land, calls, prs, comments, last, commitFeature } = fixture(t, {
+    seed: STAMP_SEED, checks: [FAIL], mainMovesAtMerge: { 'src/b.txt': 'b1\n', 'stamp.json': stamp({ 'a.txt': 'a0\n', 'b.txt': 'b1\n' }) },
+  });
+  commitFeature({ 'src/a.txt': 'a1\n', 'stamp.json': stamp({ 'a.txt': 'a1\n', 'b.txt': 'b0\n' }) });
+  const tip = sh(wt, 'rev-parse', 'HEAD');
+
+  const result = land(['feature', '--body-file', body, '--local-checks', tip]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const restamped = result.stdout.match(/^RESTAMPED (\d+) ([0-9a-f]{40})$/m);
+  assert.ok(restamped, result.stdout);
+  // CI 沒啟動（FAIL 只會被 waitChecks 讀到）：兩次都改用本機檢查，第二則留言附 restamp 後的 tip。
+  assert.doesNotMatch(calls(), CHECK_POLL);
+  assert.equal(comments().length, 2);
+  assert.match(comments()[1].body, new RegExp(restamped[2]));
+  assert.match(result.stdout, new RegExp(`^LOCAL_CHECKS ${restamped[1]} ${restamped[2]} CHECK_PASS`, 'm'));
+  const [pr] = prs();
+  assert.equal(last(result), `LANDED ${pr.number} ${pr.mergeCommit.oid}`);
+  assert.equal(sh(origin, 'show', 'main:stamp.json') + '\n', stamp({ 'a.txt': 'a1\n', 'b.txt': 'b1\n' }));
 });
 
 test('戳記檔和其他檔一起衝突：merge --abort，STOP merge 列出衝突檔，分支不留合併中途狀態、不 push', t => {
