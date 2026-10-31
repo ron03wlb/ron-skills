@@ -30,7 +30,7 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 - bare 防護 hook（`.claude/settings.json` 的 `PreToolUse`（Bash）掛 `scripts/claude-hook-unbare.sh`）：Orca 從 WSL 操作 worktree 時，可能在任何 session 進行中把主 checkout 的 `core.bare` 設成 true；hook 從 git common dir 找到主 checkout，呼叫 `scripts/pilot-unbare.sh` 還原並記入 `.scratch/pilot/decisions.md`。
 - 主 checkout 防護 hook（`.claude/settings.json` 的 `PreToolUse`（Edit|Write|Bash）掛 `scripts/claude-hook-main-checkout.mjs`）：退回會讓主 checkout 的 `git status` 不乾淨的寫入（Bash 辨識 `sed -i`、`perl -i`、`>`／`>>` 與 `tee` 的目標），包括追蹤檔與未被 gitignore 的新檔，只管本專案的 repo（`$CLAUDE_PROJECT_DIR`）；Bash 目標裡的 `$變數` 用同一條指令的賦值或環境變數代換，解析不了的不算目標；pilot 的 Probe 看到主 checkout 有改動就停止合併。`.scratch/` 等 gitignored 檔照常寫。
 - 本機 pre-commit（`.githooks/pre-commit`，clone 後執行一次 `ln -s ../../.githooks/pre-commit .git/hooks/pre-commit` 啟用）：跑 `bin/check`。
-- CI（`.github/workflows/checks.yml`）：每次 push 與每週一跑 `bin/check --upstream`；上游改到補丁位置時會先在這裡變紅。
+- CI（`.github/workflows/checks.yml`）：ubuntu 在每次 push、PR、每週一與手動觸發都跑 `bin/check --upstream`；macOS 只在 PR、每週一與手動觸發時跑同一條（private repo 以 10 倍計費，push 不跑，#87）；上游改到補丁位置時會先在這裡變紅。
 - `overlays/<name>.patch`：對 Matt 或 pstack skill 的最小改動，同步時套在 `~/.local/share/ron-skills/overlay/<name>` 的副本上，上游 checkout 本身不變。
 - 只處理指向 Matt、本 repo 或 overlay 副本的 symlink；實體目錄與其他來源的連結不動。
 

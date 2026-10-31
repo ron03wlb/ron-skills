@@ -20,3 +20,15 @@ jobs:
           node-version: '24.21.0'
       - name: Checks on upstream main
         run: bin/check --upstream
+  # private repo 的 macOS runner 以 10 倍計費（#87）：只在 PR、每週與手動觸發時跑，push 只跑上面的 ubuntu。
+  # 除了 if 與 runs-on，內容與 ubuntu job 一字不差（tests/ci-workflow-jobs.test.mjs 比對）。
+  checks-macos:
+    if: contains(fromJSON('["pull_request", "schedule", "workflow_dispatch"]'), github.event_name)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.21.0'
+      - name: Checks on upstream main
+        run: bin/check --upstream
