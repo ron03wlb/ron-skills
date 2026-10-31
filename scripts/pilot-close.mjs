@@ -7,6 +7,7 @@
 // Orca 一律用 `path:` 選擇器：Orca 開的 worktree 用 `branch:` 找不到（selector_not_found，#49）。
 // Orca rm 會順便刪掉它能證明已合入的本機分支，這時 branch 步驟就 SKIP。
 // 所有子行程的 stdin 都接 /dev/null（Orca CLI 會吃掉 stdin）；stderr 照常顯示，只濾掉 WSL 上 Orca 每次都印的 crashpad 錯誤行（#73）。
+// 本 repo 的留言與關單都經 scripts/gh-tracker.mjs：.claude/settings.json 只放行它（#96）；跨 repo 的對應單留言照 #79 直接用 gh。
 // 對應單的交接內容要人寫：coordinator 先寫 <主 checkout>/.scratch/pilot/counterpart-<n>.md，內容要有 merge SHA 與 `ron03wlb/ron-skills#<n>`，
 // 重跑時才認得出已經留過言。
 //
@@ -93,6 +94,7 @@ function syncMain(main, sha) {
 }
 
 const issueView = (step, n, repo, fields) => JSON.parse(must(step, 'gh', ['issue', 'view', String(n), '--repo', repo, '--json', fields]));
+const tracker = (step, ...args) => must(step, 'node', [join(here, 'gh-tracker.mjs'), ...args]);
 const api = (step, path) => JSON.parse(must(step, 'gh', ['api', `repos/${REPO}/${path}`]));
 
 /**
@@ -106,7 +108,7 @@ function* closeMember({ cli, main, key, pr, sha, regression }, { n, branch, hand
   if (issue.comments.some(c => c.body.includes(sha))) yield 'SKIP';
   else {
     const body = [`已隨 https://github.com/${REPO}/pull/${pr} 合入 \`main\`（merge ${sha}），batch ${key}。`, regression].filter(Boolean).join('\n\n');
-    must('evidence', 'gh', ['issue', 'comment', n, '--repo', REPO, '--body', body]);
+    tracker('evidence', 'comment', n, '--body', body);
     yield 'DONE';
   }
 
@@ -116,7 +118,7 @@ function* closeMember({ cli, main, key, pr, sha, regression }, { n, branch, hand
   at.step = 'close';
   if (issue.state === 'CLOSED') yield 'SKIP';
   else {
-    must('close', 'gh', ['issue', 'close', n, '--repo', REPO]);
+    tracker('close', 'close', n);
     yield 'DONE';
   }
 
@@ -197,9 +199,9 @@ function closeParent(n) {
   const children = api('parent', `issues/${parent}/sub_issues?per_page=100`).map(c => `- #${c.number} ${c.state_reason}`);
   const body = `子單全部結束，關閉母單：\n\n${children.join('\n')}`;
   if (!issueView('parent', parent, REPO, 'comments').comments.some(c => c.body === body)) {
-    must('parent', 'gh', ['issue', 'comment', String(parent), '--repo', REPO, '--body', body]);
+    tracker('parent', 'comment', String(parent), '--body', body);
   }
-  must('parent', 'gh', ['issue', 'close', String(parent), '--repo', REPO]);
+  tracker('parent', 'close', String(parent));
   return 'DONE';
 }
 

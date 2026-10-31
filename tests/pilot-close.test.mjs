@@ -23,7 +23,7 @@ const REPO = 'ron03wlb/ron-skills';
 
 // origin（bare）、主 checkout（main 已合入 issue 分支並 push）、Orca 建的成員 worktree，以及假 gh 與假 Orca。
 // 假 gh 的狀態在 gh.json：issues 以號碼（跨 repo 用 `<owner>/<repo>#<m>`）為鍵，parent 指向母單，母單的子單由 parent 反查。
-// 每次呼叫都記下參數與讀到的 stdin 位元組數；假 Orca 每次都在 stderr 印一行 WSL crashpad 錯誤和一行一般錯誤。
+// 每次呼叫都記下參數（換行轉義成 \n，一次呼叫一行）與讀到的 stdin 位元組數；假 Orca 每次都在 stderr 印一行 WSL crashpad 錯誤和一行一般錯誤。
 //   pushed     issue 分支也 push 到 origin；
 //   unmerged   合入之後 issue 分支又多一個 commit（branch -d 會拒絕）；
 //   body       Issue #76 的本文；
@@ -76,9 +76,11 @@ regression: abc1234 exit 0 CHECK_PASS tests 300+40
   writeFileSync(ghState, JSON.stringify({ issues }));
   const log = join(temp, 'calls.log');
   writeFileSync(log, '');
-  const record = `const fs = require('fs'); const args = process.argv.slice(2); const arg = k => args[args.indexOf(k) + 1];
+  // gh-tracker.mjs 把旗標寫成 `--長名=值`、repo 寫成 `github.com/<owner>/<repo>`，兩種寫法都認。
+  const record = `const fs = require('fs'); const args = process.argv.slice(2);
+const arg = k => (args.includes(k) ? args[args.indexOf(k) + 1] : args.find(a => a.startsWith(k + '='))?.slice(k.length + 1));
 let stdin = 0; try { stdin = fs.readFileSync(0).length; } catch {}
-fs.appendFileSync(${JSON.stringify(log)}, require('path').basename(process.argv[1]) + ' ' + args.join(' ') + ' <stdin ' + stdin + '>\\n');`;
+fs.appendFileSync(${JSON.stringify(log)}, require('path').basename(process.argv[1]) + ' ' + args.join(' ').replace(/\\n/g, '\\\\n') + ' <stdin ' + stdin + '>\\n');`;
   const gh = join(temp, 'bin/gh');
   mkdirSync(join(temp, 'bin'));
   writeFileSync(gh, `#!/usr/bin/env node
@@ -87,14 +89,15 @@ const GH_SAMPLES = ${JSON.stringify(GH_SAMPLES)};
 const mergeSample = ${mergeSample.toString()};
 const out = (name, patch) => console.log(JSON.stringify(mergeSample(GH_SAMPLES[name], patch, name)));
 const state = JSON.parse(fs.readFileSync(${JSON.stringify(ghState)}, 'utf8')); const save = () => fs.writeFileSync(${JSON.stringify(ghState)}, JSON.stringify(state));
-const key = n => (arg('--repo') === ${JSON.stringify(REPO)} ? n : arg('--repo') + '#' + n);
+const repoOf = () => arg('--repo').replace(/^github\\.com\\//, '');
+const key = n => (repoOf() === ${JSON.stringify(REPO)} ? n : repoOf() + '#' + n);
 const [a, b, n] = args;
 if (a === 'issue' && b === 'view') {
   const issue = state.issues[key(n)];
   const full = { state: issue.state, body: issue.body, comments: issue.comments.map(body => ({ body })) };
   out('issue-view', Object.fromEntries(arg('--json').split(',').map(f => [f, full[f]])));
 } else if (a === 'issue' && b === 'comment') {
-  state.issues[key(n)].comments.push(args.includes('--body-file') ? fs.readFileSync(arg('--body-file'), 'utf8') : arg('--body')); save();
+  state.issues[key(n)].comments.push(arg('--body-file') ? fs.readFileSync(arg('--body-file'), 'utf8') : arg('--body')); save();
 } else if (a === 'issue' && b === 'close') {
   Object.assign(state.issues[key(n)], { state: 'CLOSED', reason: 'completed' }); save();
 } else if (a === 'api') {
@@ -189,6 +192,21 @@ test('照 Close 依序做完每一步，母單子單全部結束就留言關閉�
   assert.deepEqual(lines(again), ['SKIP 76 main', ...STEPS.map(step => `SKIP 76 ${step}`), 'CLOSED 76']);
   assert.equal(f.issues()[76].comments.length, 1);
   assert.equal(f.issues()[35].comments.length, 1);
+});
+
+// .claude/settings.json 只放行 gh-tracker.mjs（#96）：本 repo 的留言、關單都要經過它，跨 repo 的對應單照 #79 用裸 gh。
+test('本 repo 的留言與關單（成員和母單）都經 gh-tracker.mjs；對應單留言照舊直接用 gh', t => {
+  const f = fixture(t, { body: '## 背景\napp 對應單：acme/app#7\n' });
+  writeFileSync(join(f.repo, '.scratch/pilot/counterpart-76.md'), `成員 ron03wlb/ron-skills#76 已合入（merge ${f.mergeSha}）。\n`);
+  const result = f.close();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const writes = f.calls().split('\n').filter(line => /^gh issue (comment|close) /.test(line));
+  assert.deepEqual(writes.map(line => line.split(' ').slice(0, 4).join(' ')),
+    ['gh issue comment 76', 'gh issue comment 7', 'gh issue close 76', 'gh issue comment 35', 'gh issue close 35']);
+  for (const line of writes.filter(line => !line.startsWith('gh issue comment 7 '))) assert.match(line, new RegExp(`--repo github\\.com/${REPO}\\b`), line);
+  assert.match(writes[1], /--repo acme\/app --body-file /);
+  assert.equal(f.issues()[76].state, 'CLOSED');
+  assert.equal(f.issues()[35].state, 'CLOSED');
 });
 
 test('分支沒合進 main：branch -d 被拒時 STOP，分支還在，current 不改', t => {
