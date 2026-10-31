@@ -27,3 +27,20 @@ test('retro overlay 在開 tracker Issue 前依候選提到的名稱查開著的
   assert.match(step, /blocked_by/);
   assert.doesNotMatch(step, /retro-collect\.mjs/, '查重不能只在收集模式裡');
 });
+
+// #126：/retro 結束時由該分頁自己切成待關閉；收集模式略過步驟 5，但這一步不能跟著略過。
+test('retro overlay 的最後一步呼叫 tab-state 待關閉，一般模式與收集模式都要', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'retro-overlay-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(upstream, dir, { recursive: true });
+  const applied = spawnSync('git', ['apply', patch], { cwd: dir, encoding: 'utf8', env });
+  assert.equal(applied.status, 0, applied.stderr);
+
+  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
+  const steps = skill.split('## Reference')[0].split('\n\n');
+  const last = steps.findLast(paragraph => /^\d+\. /.test(paragraph));
+  assert.match(last, /node scripts\/tab-state\.mjs 待關閉/);
+  assert.match(last, /collect mode/i);
+  const collect = steps.find(paragraph => paragraph.includes('**Collect mode.**'));
+  assert.match(collect, /tab-state/, '收集模式的段落要指向切成待關閉的那一步');
+});

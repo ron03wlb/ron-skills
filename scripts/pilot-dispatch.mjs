@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { orca, sendToSession } from './orca-session-send.mjs';
+import { withState } from './tab-state.mjs';
 
 const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>...（需要 ORCA_CLI_COMMAND）';
 const here = dirname(fileURLToPath(import.meta.url));
@@ -108,10 +109,10 @@ async function dispatchMember(cli, main, checkpoint, { n, branch }, signal) {
   const ctx = { cli, signal };
   let handle;
   try {
-    handle = (await orca(ctx, 'terminal', 'create', '--worktree', `path:${worktree}`, '--title', `#${n}`, '--command', 'claude')).terminal.handle;
+    handle = (await orca(ctx, 'terminal', 'create', '--worktree', `path:${worktree}`, '--title', withState(`#${n}`, '處理中'), '--command', 'claude')).terminal.handle;
   } catch (error) {
     // 殺掉 create 時 Orca 可能已開好分頁卻沒回 handle。
-    if (signal.aborted) return { worktree, stop: `${signal.reason}（請確認有沒有留下標題 #${n} 的分頁）` };
+    if (signal.aborted) return { worktree, stop: `${signal.reason}（請確認有沒有留下標題 處理中｜#${n} 的分頁）` };
     return { worktree, stop: `terminal ${error.message}` };
   }
   const sent = await sendToSession(ctx, handle, `/issue-run ${n} --worker ${checkpoint}`);

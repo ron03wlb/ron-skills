@@ -53,7 +53,7 @@ if (a === 'worktree' && b === 'create') {
   if (mode === 'ok' || mode === 'bare') console.log(JSON.stringify({ ok: true, result: { worktree: { path } } }));
   else fail(mode === 'late' ? 'request_timeout' : 'invalid_argument');
 }
-else if (b === 'create') reply('create', { terminal: { handle: 'term_' + arg('--title').slice(1) } });
+else if (b === 'create') reply('create', { terminal: { handle: 'term_' + arg('--title').replace(/^.*#/, '') } });
 else if (b === 'wait' && ${waitHangs}) setInterval(() => {}, 1000);
 else if (b === 'wait') reply('wait', { wait: { satisfied: true } });
 else if (b === 'send') { fs.appendFileSync(${JSON.stringify(log)} + '.sent', arg('--text') + '\\n'); reply('send', { send: { accepted: true } }); }
@@ -82,7 +82,7 @@ test('create 回 ok:false 但 worktree 已建好：以目錄與 git worktree lis
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(lines(result).pop(), 'DISPATCHED 46 term_46');
   assert.match(calls(), /^worktree create --name issue-46 --base-branch pilot\/integration --branch issue\/46-pilot-dispatch --issue 46 --json$/m);
-  assert.match(calls(), new RegExp(`^terminal create --worktree path:${root}/issue-46 --title #46 --command claude --json$`, 'm'));
+  assert.match(calls(), new RegExp(`^terminal create --worktree path:${root}/issue-46 --title 處理中｜#46 --command claude --json$`, 'm'));
   assert.equal(sent().trim(), `/issue-run 46 --worker ${repo}/.scratch/pilot/batch-46.md`);
 });
 
@@ -91,7 +91,7 @@ test('create 失敗而且沒有目錄：STOP create，不開分頁；其他成�
   const result = dispatch(['23-46', '46:pilot-dispatch', '23:pilot-probe']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.deepEqual(lines(result), ['STOP 46 create orca worktree create：invalid_argument', 'DISPATCHED 23 term_23']);
-  assert.doesNotMatch(calls(), /terminal create .* --title #46 /);
+  assert.doesNotMatch(calls(), /terminal create .* --title 處理中｜#46 /);
 });
 
 // 重現 2026-10-30：在 `while read` 迴圈裡呼叫 orca-ide，它把 stdin 讀光，迴圈只派到第一個成員。

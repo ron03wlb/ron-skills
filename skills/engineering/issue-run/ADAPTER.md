@@ -52,6 +52,11 @@ Default: no gated tickets; any need for one found mid-run is a stop.
 
 Repo-specific stop conditions on top of the skill's.
 
+## Tab state
+
+When this session's Orca tab title switches its state prefix (分頁狀態: `處理中`, `待 Retro`, `待關閉`; the format is in the user's global Orca session titles rule), and the command that switches it.
+Default, with the setup-workflow `tab-state.mjs` and `claude-hook-tab-state.mjs`: switch with `node scripts/tab-state.mjs <state>`, which replaces only the prefix and keeps the rest of the title. `待 Retro` once the delivery is merged (`land.mjs` prints `LANDED`, or a pilot worker writes its `DONE` result line), once a coordinator's handoff completes (`HANDED_OFF`), or, for other work, once the user confirms the topic is done; opening a PR is not enough. `待關閉` when `/retro` finishes: its adopted items are merged or filed, or its candidates went to the collect flow; `/retro`'s last step switches it. The hook makes the detectable switches (`LANDED`, `HANDED_OFF`, `DONE`) itself and, on `Stop`, exits 2 when the title has no valid prefix. A project adds, overrides, or disables hook triggers in `docs/agents/tab-state.json` (format in the hook's header). Without Orca: none.
+
 ## Pilot
 
 What `/issue-pilot` needs on top of the sections above: pool query, worker cap and batch size, dispatch, watch and probe commands, stage, regression, integrate, push gate, close, and handoff. The files under `.scratch/pilot/`, batch checkpoints included, follow [PILOT-STORE.md](../issue-pilot/PILOT-STORE.md): write only the values that differ per project here, never a file format. Besides those, name:
