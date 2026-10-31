@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 本 repo 的 tracker 寫入：.claude/settings.json 只放行這支，auto mode 才不會把留言、關單擋成 External System Writes（#96）。
+// 本 repo 的 tracker 寫入：.claude/settings.json 的 tracker 寫入只放行這支，auto mode 才不會把留言、關單擋成 External System Writes（#96）。
 // 前綴規則 Bash(gh issue comment:*) 也放行 -R other/repo、Issue URL 與 -wR 這類短旗標串，所以這裡固定 repo、只收白名單旗標與數字 Issue 號碼。
 // 用法：node scripts/gh-tracker.mjs comment <n> (--body|-b <text> | --body-file|-F <file>)
 //       node scripts/gh-tracker.mjs close <n> [--comment|-c <text>] [--reason|-r <reason>]
