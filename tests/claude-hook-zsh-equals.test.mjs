@@ -79,3 +79,25 @@ test('加引號或跳脫的 pattern、一般的 *.md 參數、不含萬用字元
     assert.equal(bash(command).status, 0, command);
   }
 });
+
+// session cbef7b39 的原指令：分支名稱不是檔案，zsh 把沒加引號的 `issue/193-*` 當 glob，印 `(eval):1: no matches found: issue/193-*`（#218）。
+test('未加引號、含 * 或 ? 的 ref 字（issue/、pilot/、retro/、origin/ 開頭）被擋下，提示加引號或 git branch --list', () => {
+  const result = bash('git merge-base issue/193-* pilot/integration 2>/dev/null || git branch --list "issue/193-*"');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /NOMATCH/);
+  assert.match(result.stderr, /`issue\/193-\*`/);
+  assert.match(result.stderr, /'issue\/193-\*'/);
+  assert.match(result.stderr, /git branch --list/);
+  assert.deepEqual(nomatchWords('git log pilot/stage-* retro/10?1h origin/issue/*'), ['pilot/stage-*', 'retro/10?1h', 'origin/issue/*']);
+});
+
+test('加引號的 ref pattern、不含萬用字元的 ref、路徑裡的 issue/ 放行', () => {
+  for (const command of [
+    "git branch --list 'issue/193-*'",
+    'git for-each-ref "refs/heads/pilot/*"',
+    'git merge-base issue/193-land-sync-main pilot/integration',
+    'ls .scratch/issue-run-*/state.md',
+  ]) {
+    assert.deepEqual(nomatchWords(command), [], command);
+  }
+});
