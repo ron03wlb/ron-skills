@@ -351,3 +351,21 @@ test('平台：Platforms 沒有 macOS 時不跑可攜性規則', t => {
   const { lines } = health(repo(t, { 'docs/agents/issue-run.md': ADAPTER, 'scripts/probe.sh': '#!/usr/bin/env bash\ncat /proc/cpuinfo\n' })); // portability-ok: fixture 內容，測 health 抓得到 /proc/
   assert.equal(lines.at(-1), 'HEALTHY', lines.join('\n'));
 });
+
+test('平台：check-portability.mjs 自己失敗（讀不到的檔案拋例外）時 exit 2，不說成 HEALTHY', { skip: process.getuid?.() === 0 && 'root 讀得到 000 的檔案' }, t => {
+  const root = repo(t, { 'docs/agents/issue-run.md': macAdapter, 'secret.txt': 'x\n' });
+  chmodSync(join(root, 'secret.txt'), 0o000);
+  const { status, stderr, lines } = health(root);
+  assert.equal(status, 2, lines.join('\n'));
+  assert.match(stderr, /check-portability\.mjs 失敗/);
+});
+
+test('平台：bin/ 與 git hook 目錄也掃，標題寫成小寫的 ## platforms 也認得', t => {
+  const root = repo(t, {
+    'docs/agents/issue-run.md': macAdapter.replace('## Platforms', '## platforms'),
+    'bin/check': '#!/usr/bin/env bash\nreadlink -f "$0"\n', // portability-ok: fixture 內容
+    '.githooks/pre-push': '#!/usr/bin/env bash\nxargs -r echo\n', // portability-ok: fixture 內容
+  });
+  const platform = health(root).lines.filter(line => line.startsWith('FINDING platform'));
+  assert.deepEqual(platform.map(line => line.replace(/^FINDING platform (\S+) .*# (.*)$/, '$1 $2')), ['xargs-r .githooks/pre-push:2', 'readlink-f bin/check:2']);
+});

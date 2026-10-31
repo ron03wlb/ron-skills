@@ -39,7 +39,8 @@ const readOrWarn = path => {
 // 本 repo 的名稱：主 checkout 的目錄名（worktree 的目錄名不算），以及 origin 的 repo 名。
 const commonDir = git('rev-parse', '--path-format=absolute', '--git-common-dir');
 const names = new Set([basename(dirname(commonDir))]);
-const origin = git('remote', 'get-url', 'origin')?.match(/([^/:]+?)(\.git)?$/)?.[1];
+const originUrl = git('remote', 'get-url', 'origin');
+const origin = originUrl?.match(/([^/:]+?)(\.git)?$/)?.[1];
 if (origin) names.add(origin);
 
 const adapterPath = 'docs/agents/issue-run.md';
@@ -108,15 +109,16 @@ for (const [path, entry] of Object.entries(copies)) {
 // 缺段落：adapter 存在時，`## Platforms` 一律要有；程式碼 host 不是 local（origin 指向網路主機）時還要 `## Delivery`。
 // 補法是重跑 /setup-workflow 逐站確認後補齊，不另寫遷移 script。
 const adapterText = isFile(join(root, adapterPath)) ? readOrWarn(adapterPath) : null;
+// 段落標題不分大小寫（`## platforms` 也算），標題後面可以接說明；回傳到下一個 `## ` 之前的內文，沒有這段時 null。
+const adapterLines = adapterText?.split('\n') ?? [];
 const section = name => {
-  const lines = adapterText?.split('\n') ?? [];
-  const start = lines.findIndex(text => new RegExp(`^##\\s+${name}\\b`).test(text));
+  const start = adapterLines.findIndex(text => new RegExp(`^##\\s+${name}\\b`, 'i').test(text));
   if (start < 0) return null;
-  const end = lines.findIndex((text, i) => i > start && /^##\s/.test(text));
-  return lines.slice(start + 1, end < 0 ? undefined : end).join('\n');
+  const end = adapterLines.findIndex((text, i) => i > start && /^##\s/.test(text));
+  return adapterLines.slice(start + 1, end < 0 ? undefined : end).join('\n');
 };
 if (adapterText !== null) {
-  const required = ['Platforms', ...(codeHost(git('remote', 'get-url', 'origin')).value === 'local' ? [] : ['Delivery'])];
+  const required = ['Platforms', ...(codeHost(originUrl).value === 'local' ? [] : ['Delivery'])];
   for (const name of required.filter(name => section(name) === null)) {
     finding('missing-section', `${name} adapter 缺 ## ${name}：重跑 /setup-workflow 逐站確認後補齊`, adapterPath);
   }
@@ -150,10 +152,11 @@ for (const file of scanned) {
 // 這裡在目標 repo 執行它、只留這些目錄的結果；它印 `<file>:<line>: <規則> <改法>`（只差大小寫的是 `<file>: case …`，沒有行號）。
 if (/\bmacOS\b/i.test(section('Platforms') ?? '')) {
   const result = spawnSync('node', [join(here, '../templates/check-portability.mjs')], { cwd: root, encoding: 'utf8', maxBuffer: 64 << 20 });
-  if (![0, 1].includes(result.status)) fail(`check-portability.mjs 失敗：${result.stderr.trim()}`);
-  for (const text of lines(result.stderr)) {
-    const match = text.match(/^(.+?)(?::(\d+))?: (\S+) (.+)$/);
-    if (!match || !scriptDirs.some(dir => match[1].startsWith(dir))) continue;
+  // 它拋例外（讀不到的檔案、git 失敗）時同樣 exit 1，stderr 是 stack trace：有任何一行不是違規格式就當成沒跑成。
+  const violations = lines(result.stderr).map(text => text.match(/^(.+?)(?::(\d+))?: (\S+) (.+)$/));
+  if (![0, 1].includes(result.status) || violations.some(match => !match)) fail(`check-portability.mjs 失敗：${result.stderr.trim()}`);
+  for (const match of violations) {
+    if (!scriptDirs.some(dir => match[1].startsWith(dir))) continue;
     finding('platform', `${match[3]} ${match[4]}`, match[2] ? `${match[1]}:${match[2]}` : match[1]);
   }
 }
