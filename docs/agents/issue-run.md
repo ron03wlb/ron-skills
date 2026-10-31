@@ -4,7 +4,7 @@
 
 ## Platforms
 
-macOS, WSL2, Linux（母單 #82 決策 R1-Q1；原生 Windows 不支援）。本檔列的每條指令三種平台都要能跑；只為某個平台加的 workaround 寫明是哪個平台（例如 pilot.md 的 Bare guard 是 WSL 專屬，其他平台跑了無害）。
+macOS, WSL2, Linux（母單 #82 決策 R1-Q1；原生 Windows 不支援）。本檔列的每條指令三種平台都要能跑；只為某個平台加的 workaround 寫明是哪個平台（例如 pilot-exceptions.md 的 Bare guard 是 WSL 專屬，其他平台跑了無害）。
 
 ## Tracker
 
@@ -53,7 +53,7 @@ candidate 是分支 tip。acceptance 是在 candidate SHA、工作樹乾淨時�
 - `STOP worktree-rm`：PR 已經合入，只剩收尾沒做完；照常留言、關單，再回報人處理 worktree。
 - 其他 `STOP <原因>`（如 `ci-failed`、`merge`）或 exit 1：停下回報人，不硬合。
 
-pilot 底下的 worker 不落地：push、開 PR、合併與關單都由 coordinator 照 [pilot.md](pilot.md) 的 Push gate 與 Close 做。
+pilot 底下的 worker 不落地：push、開 PR、合併與關單都由 coordinator 照 [pilot-after-merge.md](pilot-after-merge.md) 的 Push gate 與 Close 做。
 
 ## 分頁狀態
 
@@ -66,4 +66,4 @@ pilot 底下的 worker 不落地：push、開 PR、合併與關單都由 coordin
 
 ## Pilot
 
-給 `/issue-pilot` coordinator 的設定整份在 [pilot.md](pilot.md)，條目之間空一行，讓改不同條目的修改落在不同的 hunk（#45）；比對整合分支上的 adapter 時，`docs/agents/pilot.md` 也要一起比。
+給 `/issue-pilot` coordinator 的設定在 [pilot.md](pilot.md)，每輪都整份讀；只在某些情況用到的條目拆在 [pilot-after-merge.md](pilot-after-merge.md)、[pilot-conflict.md](pilot-conflict.md)、[pilot-exceptions.md](pilot-exceptions.md)、[pilot-retro-collect.md](pilot-retro-collect.md)，pilot.md 的同名條目是一行 pointer，寫明什麼情況才讀（#166）。條目之間空一行，讓改不同條目的修改落在不同的 hunk（#45）；比對整合分支上的 adapter 時，這幾份都要一起比。

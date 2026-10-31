@@ -5,11 +5,13 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { env } from './helpers/git-fixture.mjs';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
+import { pilotDocs, pilotEntry } from './helpers/pilot-docs.mjs';
 
-// coordinator 照 adapter Pilot 段逐行執行；這裡驗的是它讀到的那幾行。Pilot 段只指向 pilot.md，內容都在那裡（#45）。
+// coordinator 照 adapter Pilot 段逐行執行；這裡驗的是它讀到的那幾行。Pilot 段只留一行，指向 pilot.md 與拆出去的檔（#45、#166）。
 const adapter = readFileSync(new URL('../docs/agents/issue-run.md', import.meta.url), 'utf8');
 const pilot = readFileSync(new URL('../docs/agents/pilot.md', import.meta.url), 'utf8');
-const line = name => pilot.match(new RegExp(`^- \\*\\*${name}\\.\\*\\*.*$`, 'm'))?.[0] ?? '';
+// 條目內容取它所在的那份（移出 pilot.md 的條目在 pilot.md 只剩 pointer，#166）。
+const line = name => pilotEntry(name).line;
 // 路徑依機器決定（#93）：Coordinator checkout、Stage worktree 兩條各定義一次怎麼取得，其他條目只用佔位符。
 const mainCheckout = '<主 checkout>';
 const stageWorktree = '<stage worktree>';
@@ -52,8 +54,8 @@ function mergeAdjacentEdits(t, content) {
   return git('merge', '--no-edit', 'b');
 }
 
-test('pilot.md 條目之間空一行：兩條分支各改相鄰條目可以自動合併', t => {
-  assert.doesNotMatch(pilot, /^- \*\*.*\n- \*\*/m, '相鄰兩個條目之間要空一行');
+test('pilot 各檔條目之間空一行：兩條分支各改相鄰條目可以自動合併', t => {
+  for (const { path, text } of pilotDocs) assert.doesNotMatch(text, /^- \*\*.*\n- \*\*/m, `${path}：相鄰兩個條目之間要空一行`);
   assert.match(pilot, /^- \*\*Close\.\*\*.*\n\n- \*\*Handoff\.\*\*/m, 'Close 與 Handoff 要相鄰');
   const merge = mergeAdjacentEdits(t, pilot);
   assert.equal(merge.status, 0, merge.stdout + merge.stderr);
@@ -79,7 +81,8 @@ test('Stage、Regression、Integrate 改成呼叫 pilot-land.mjs，不再列手�
 });
 
 test('Stage：允許的衝突解法（不同條目、只新增、表格的不同列、相鄰改動、戳記檔在其他檔解完後 restamp），解完照樣跑 Regression', () => {
-  const stage = line('Stage');
+  assert.match(line('Stage'), /解完的 staged SHA 一樣要跑 Regression.*`STOP conflict <n> <檔>=<來源>:<種類> …`.*Stage conflict/);
+  const stage = line('Stage conflict');
   assert.match(stage, /不同的 `- \*\*<名稱>\.\*\*` 條目/);
   // #173：戳記檔是 scripts/restamp.mjs 的 STAMP_FILES，兩個都列出來，restamp 在其他衝突檔解完之後。
   assert.match(stage, /戳記檔（`scripts\/restamp\.mjs` 的 `STAMP_FILES`：`scripts\/workflow-doc-sync\.json`、`docs\/agents\/workflow-templates\.json`）.*其他衝突檔先用下列解法解完.*--restamp/);
@@ -94,7 +97,7 @@ test('Stage：允許的衝突解法（不同條目、只新增、表格的不同
 // #192：batch 79-108 照舊順序先重派 #108，fresh worker 從 #79 合入前的整合分支開始，做完一定再跟 #79 衝突（refresh-twice）；
 // 判斷同一條目又對兩邊跑 diff（29.7 KB）。改成讀 STOP 行的來源與種類欄，衝突對象是同批成員時先搬出、讓其他成員合入，再以自己的 key 重派。
 test('Stage：STOP conflict 標來源與種類；同批成員衝突先 move 出原 batch、重跑合入其餘成員，再以自己的 key --fresh；不再跑兩邊 diff', () => {
-  const stage = line('Stage');
+  const stage = line('Stage conflict');
   assert.match(stage, /`STOP conflict <n> <檔>=<來源>:<種類> …`/);
   assert.match(stage, /`member <m>`.*`integration`.*`member <m>\+integration`/);
   assert.match(stage, /`entry <名稱>`.*`code`.*`other`/);
@@ -131,9 +134,11 @@ test('Probe 在主 checkout 跑 pilot-probe.mjs，並處理 NOT_MAIN', () => {
 });
 
 // 重現 #93：pilot.md 寫死 WSL 的 /home/ron/... 與 orca-ide，macOS 上 Probe、Dispatch、Stage 第一步就失敗。
-test('pilot.md 不寫死機器路徑與 Orca 指令名：Orca 一律 "$ORCA_CLI_COMMAND"', () => {
-  assert.doesNotMatch(pilot, /\/home\/|\/Users\//, '不寫機器專屬的絕對路徑');
-  assert.doesNotMatch(pilot, /orca-ide/, 'Orca 指令寫 "$ORCA_CLI_COMMAND"');
+test('pilot 各檔不寫死機器路徑與 Orca 指令名：Orca 一律 "$ORCA_CLI_COMMAND"', () => {
+  for (const { path, text } of pilotDocs) {
+    assert.doesNotMatch(text, /\/home\/|\/Users\//, `${path}：不寫機器專屬的絕對路徑`);
+    assert.doesNotMatch(text, /orca-ide/, `${path}：Orca 指令寫 "$ORCA_CLI_COMMAND"`);
+  }
   for (const name of ['Watch', 'Stage', 'Close']) {
     assert.match(line(name), /`"\$ORCA_CLI_COMMAND" (terminal|worktree) /, `**${name}.** 的 Orca 指令`);
   }
@@ -155,5 +160,5 @@ test('整份 pilot.md 沒有在主 checkout checkout／switch 的步驟', () => 
   const switches = text => [...text.matchAll(/git -C (<[^>]+>|[^\s<]\S*) (?:checkout|switch)\b/g)].map(([, target]) => target);
   // 手打的 switch 都已改成 pilot-land.mjs（含 #193 的 sync-main），pilot.md 可能一個都沒有：先確認 regex 認得兩種寫法，零命中才有意義。
   assert.deepEqual(switches('`git -C <主 checkout> switch x`、`git -C <stage worktree> checkout y`'), ['<主 checkout>', stageWorktree]);
-  for (const target of switches(pilot)) assert.equal(target, stageWorktree);
+  for (const { text } of pilotDocs) for (const target of switches(text)) assert.equal(target, stageWorktree);
 });
