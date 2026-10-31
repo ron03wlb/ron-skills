@@ -450,28 +450,39 @@ function overlaps(a, b) {
   return out;
 }
 
+/** 重疊比對的 base：整合分支，沒有時主分支；兩個都沒有傳回 undefined。 */
+const overlapOnto = (checkout, { integration = 'pilot/integration', main = 'main' } = {}) =>
+  [`refs/heads/${integration}`, `refs/heads/${main}`].find(ref => rev(checkout, ref));
+
+/** 分支已 commit 的內容相對於與 `onto` 的 merge-base 改了哪些檔或條目：`{ base, units }`；本機沒有這個分支或沒有共同祖先時傳回 undefined。 */
+function branchUnits(checkout, onto, branch) {
+  const tip = branch && rev(checkout, `refs/heads/${branch}`);
+  if (!tip) return undefined;
+  const base = git(checkout, 'merge-base', tip, onto);
+  if (base.status > 1) throw new Error(`git merge-base ${branch} exit ${base.status}：${base.stderr.trim()}`);
+  if (base.status) return undefined;
+  return { base: base.stdout.trim(), units: changedUnits(checkout, base.stdout.trim(), tip) };
+}
+
+/** 開著的 batch（current 不是 closed）裡 running 或 done 的成員列，同一個 Issue 只取第一列。 */
+function activeMembers(batches) {
+  const seen = new Map();
+  for (const { current, members: rows } of batches) {
+    if (/^closed\b/.test(current)) continue;
+    for (const m of rows) if (['running', 'done'].includes(m.state) && !seen.has(m.n)) seen.set(m.n, m);
+  }
+  return [...seen.values()].sort((a, b) => Number(a.n) - Number(b.n));
+}
+
 /**
  * 開著的 batch（current 不是 closed）裡 running 或 done 的成員分支（只看已 commit 的內容），各自相對於與整合分支的 merge-base 改了哪些檔或條目：
  * 兩個成員改到同一處印 `OVERLAP <n> <m> <檔案>[:<條目>]`（號碼小的在前），成員改的地方整合分支自那個 merge-base 以來也改過印
  * `OVERLAP <n> integration <檔案>[:<條目>]`。同一組只印一次；本機沒有那個分支的成員略過；沒有整合分支時改用主分支當 base，兩個都沒有就不比。
  */
-export function overlapLines(checkout, batches, { integration = 'pilot/integration', main = 'main' } = {}) {
-  const onto = [`refs/heads/${integration}`, `refs/heads/${main}`].find(ref => rev(checkout, ref));
+export function overlapLines(checkout, batches, options = {}) {
+  const onto = overlapOnto(checkout, options);
   if (!onto) return [];
-  const members = new Map();
-  for (const { current, members: rows } of batches) {
-    if (/^closed\b/.test(current)) continue;
-    for (const m of rows) {
-      if (!['running', 'done'].includes(m.state) || members.has(m.n)) continue;
-      const tip = m.branch && rev(checkout, `refs/heads/${m.branch}`);
-      if (!tip) continue;
-      const base = git(checkout, 'merge-base', tip, onto);
-      if (base.status > 1) throw new Error(`git merge-base ${m.branch} exit ${base.status}：${base.stderr.trim()}`);
-      if (base.status) continue;
-      members.set(m.n, { base: base.stdout.trim(), units: changedUnits(checkout, base.stdout.trim(), tip) });
-    }
-  }
-  const sorted = [...members].sort(([a], [b]) => Number(a) - Number(b));
+  const sorted = activeMembers(batches).map(m => [m.n, branchUnits(checkout, onto, m.branch)]).filter(([, units]) => units);
   const out = new Set();
   sorted.forEach(([n, a], i) => {
     for (const [m, b] of sorted.slice(i + 1)) for (const where of overlaps(a.units, b.units)) out.add(`OVERLAP ${n} ${m} ${where}`);
@@ -482,6 +493,26 @@ export function overlapLines(checkout, batches, { integration = 'pilot/integrati
     for (const where of overlaps(units, integrationUnits.get(base))) out.add(`OVERLAP ${n} integration ${where}`);
   }
   return [...out];
+}
+
+/**
+ * 派工前的重疊（pilot-dispatch.mjs，#174）：成員 `n` 的分支 `branch` 和 `<checkout>/.scratch/pilot/` 開著的 batch 裡其他 running、done 成員，
+ * 照 overlapLines 的同一套比法兩兩比對。傳回 `[{ m, where: [<檔案>[:<條目>]…] }]`，依號碼排序；本機沒有 `branch`（還沒派過）時是空的。
+ */
+export function memberOverlaps(checkout, n, branch, options = {}) {
+  const onto = overlapOnto(checkout, options);
+  const mine = onto && branchUnits(checkout, onto, branch);
+  if (!mine) return [];
+  const pilot = join(checkout, '.scratch/pilot');
+  const batches = batchFiles(pilot).map(file => parseBatch(readFileSync(join(pilot, file), 'utf8')));
+  const out = [];
+  for (const m of activeMembers(batches)) {
+    if (m.n === String(n)) continue;
+    const other = branchUnits(checkout, onto, m.branch);
+    const where = other ? overlaps(mine.units, other.units) : [];
+    if (where.length) out.push({ m: m.n, where });
+  }
+  return out;
 }
 
 /** 經過的時間：`<h>h<m>m` 或 `<m>m`；時間解析不了時 `?`。 */

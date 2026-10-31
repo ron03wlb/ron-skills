@@ -6,6 +6,12 @@
 // 派每個成員之前先讀 Issue 最近一則認領留言（同目錄 issue-pool.mjs 的格式與判斷，含 claim 的前任 coordinator 接手）：不是這個 session
 // （$CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE）的就印 `STOP <n> not-claimed`，不開 worktree、不開分頁（#165：claim 印 STOP 後照樣派出）。
 // 讀留言用 gh，所以只支援 GitHub tracker。
+// 重疊（#174）：認領檢查之後、動手之前，成員分支（本機已有時；--fresh 是要另存成 prior 的那個）和 `.scratch/pilot/` 開著的 batch 裡其他 running、done 成員
+// 照 pilot-probe.mjs 的 OVERLAP 同一套比法（同一個檔，或 `.md` 的同一個 `- **<名稱>.**` 條目）比對，有重疊就印 `STOP <n> overlap <m> <檔案>[:<條目>]…`
+// （多個成員時以 `, <m> …` 接著列），什麼都不動、成員列也不改寫；`--allow-overlap` 才照派。還沒派過、本機沒有分支的成員沒有東西可比。
+// 比對本身失敗（git）時印 `STOP <n> overlap-check <錯誤>`：一般派工的成員記 stop，--fresh 什麼都不動。
+// worktree 已存在（重跑）時，開新分頁前先關掉 worktree 裡每個 terminal，同 --fresh；那一列還是 running、它的分頁也還開著時
+// 印 `STOP <n> running <handle>`，不關分頁、不改寫成員列（只看這次 key 的 checkpoint）；列不出分頁時 `STOP <n> terminal-close …`，成員列也不動。
 // worktree 有沒有建好只看目錄存在、`git worktree list` 裡有這個分支，不信 create 回傳的 ok（曾經建好卻回 "ok": false）。
 // 所有子行程的 stdin 都接 /dev/null：Orca CLI 會吃掉 stdin，`while read` 迴圈因此只派到第一個成員。
 // 總時間有上限（比照 pilot-handoff.mjs）：Bash 工具最多等 600 秒，被殺就來不及寫 checkpoint，所以預算到了（timeout）或收到 SIGTERM、SIGINT（signal <名稱>）
@@ -24,12 +30,12 @@
 //   prior 已在、分支又有了 commit 就是第二次重派：印 `STOP refresh-twice <n>`，由 coordinator 開 gate；gate 選了再重派時帶 --again，另存成 `-prior2`（依序編號）。
 //   認領不在這裡做：coordinator 照 Dispatch 先跑 claim；這裡只在動手前同樣檢查認領，不是這個 session 的就 `STOP <n> not-claimed`，什麼都不動。
 //
-// 用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--integration <分支>] [--stuck-after <分鐘>m]（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
-//       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--integration <分支>] [--stuck-after <分鐘>m]
+// 用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--integration <分支>] [--stuck-after <分鐘>m]（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
+//       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--integration <分支>] [--stuck-after <分鐘>m]
 //   --integration worktree 的 base 與表頭的整合分支，預設 pilot/integration；--stuck-after 成員行的 stuck-after，預設 90m。
-// stdout：每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
+// stdout：每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
-//   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop），STOP 原因只在 stdout。
+//   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop；running、overlap 的 STOP 不改寫那一列），STOP 原因只在 stdout。
 //   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
 // exit：0 全部派出；4 有成員 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
@@ -38,10 +44,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { claimedBy, defaultSession } from './issue-pool.mjs';
 import { orca, sendToSession } from './orca-session-send.mjs';
+import { memberOverlaps } from './pilot-probe.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
 
-const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--integration <分支>] [--stuck-after <分鐘>m]（需要 ORCA_CLI_COMMAND）\n'
-  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--integration <分支>] [--stuck-after <分鐘>m]';
+const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--integration <分支>] [--stuck-after <分鐘>m]（需要 ORCA_CLI_COMMAND）\n'
+  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--integration <分支>] [--stuck-after <分鐘>m]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const WORKTREE_CREATE = fileURLToPath(new URL('./orca-worktree-create.mjs', import.meta.url));
 const BUDGET_MS = Number(process.env.PILOT_DISPATCH_BUDGET_MS || 510000);
@@ -133,6 +140,28 @@ function claimStop(n) {
   }
 }
 
+/** 重疊檢查：`branch` 和開著的 batch 裡其他 running、done 成員有重疊時傳回 STOP 原因（不含 `STOP <n> ` 前綴），否則 undefined。 */
+function overlapStop(main, n, branch, integration) {
+  let found;
+  try {
+    found = memberOverlaps(main, n, branch, { integration });
+  } catch (error) {
+    return `overlap-check ${error.message.replace(/\s*\n\s*/g, ' ')}`;
+  }
+  return found.length ? `overlap ${found.map(({ m, where }) => `${m} ${where.join(' ')}`).join(', ')}` : undefined;
+}
+
+/** worktree 裡開著的 terminal handle；失敗時丟錯。 */
+async function openTerminals(ctx, worktree) {
+  return (await orca(ctx, 'terminal', 'list', '--worktree', `path:${worktree}`)).terminals.map(({ handle }) => handle);
+}
+
+/** checkpoint 裡成員 `n` 那一列的各欄（去掉前後空白，[1] 是 Issue、[4] 是 handle、[7] 是 state）；沒有檔或沒有這一列傳回 undefined。 */
+function rowOf(checkpoint, n) {
+  if (!existsSync(checkpoint)) return undefined;
+  return readFileSync(checkpoint, 'utf8').split('\n').find(line => line.startsWith(`| ${n} |`))?.split('|').map(cell => cell.trim());
+}
+
 /** 非同步跑子行程（stdin 接 /dev/null），傳回 stdout；`signal` 中止時殺掉它。 */
 async function spawnText(command, args, options) {
   const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], ...options });
@@ -144,16 +173,32 @@ async function spawnText(command, args, options) {
 }
 
 /**
- * 派一個成員；傳回 `{ worktree?, handle }` 或 `{ worktree?, handle?, stop }`（不含 `STOP <n> ` 前綴）。
+ * 派一個成員；傳回 `{ worktree?, handle }` 或 `{ worktree?, handle?, stop, keep? }`（不含 `STOP <n> ` 前綴；`keep` 時什麼都沒動，成員列也不改寫）。
  * worktree 已存在（重跑 STOP 的成員）時不再 create：再呼叫一次，Orca 會去重出 `issue-<n>-2`。
  * `signal` 中止時（reason 為 `timeout` 或 `signal <名稱>`）進行中的步驟丟錯，STOP 原因改用 reason；create 被中止時仍跑 Bare guard。
  */
-async function dispatchMember(cli, main, checkpoint, integration, { n, branch }, signal) {
+async function dispatchMember(cli, main, checkpoint, integration, { n, branch }, signal, allowOverlap) {
   if (signal.aborted) return { stop: signal.reason };
   const unclaimed = claimStop(n);
   if (unclaimed) return { stop: unclaimed };
   let created = '';
-  if (!worktreeOf(main, branch)) {
+  const existed = worktreeOf(main, branch);
+  const ctx = { cli, signal };
+  if (existed) {
+    // 同 --fresh：那一列還是 running、它的分頁也還開著，就是 worker 正在跑，不關它（整批重跑時只該重派 STOP 的成員）。
+    let open;
+    try {
+      open = await openTerminals(ctx, existed);
+    } catch (error) {
+      // 還沒動任何東西：成員列照舊，running 的 worker 下次重跑仍擋得住。
+      return { stop: signal.aborted ? signal.reason : `terminal-close ${error.message}`, keep: true };
+    }
+    const row = rowOf(checkpoint, n);
+    if (row?.[7] === 'running' && open.includes(row[4])) return { stop: `running ${row[4]}`, keep: true };
+  }
+  const overlap = !allowOverlap && overlapStop(main, n, branch, integration);
+  if (overlap) return { worktree: existed, stop: overlap, keep: !overlap.startsWith('overlap-check ') };
+  if (!existed) {
     try {
       created = await spawnText('node', [WORKTREE_CREATE, '--name', `issue-${n}`, '--base-branch', integration, '--branch', branch, '--issue', n],
         { cwd: main, env: { ...process.env, ORCA_BIN: cli }, signal });
@@ -173,7 +218,13 @@ async function dispatchMember(cli, main, checkpoint, integration, { n, branch },
     try { detail = JSON.parse(detail).error ?? detail; } catch { /* 非 JSON 就原樣附上 */ }
     return { stop: `create ${detail}` };
   }
-  const ctx = { cli, signal };
+  if (existed) {
+    try {
+      for (const handle of await openTerminals(ctx, worktree)) await orca(ctx, 'terminal', 'close', '--terminal', handle);
+    } catch (error) {
+      return { worktree, stop: signal.aborted ? signal.reason : `terminal-close ${error.message}` };
+    }
+  }
   const title = withState(`#${n}`, '處理中');
   let handle;
   try {
@@ -196,7 +247,7 @@ const hasBranch = (main, branch) => run('git', ['-C', main, 'rev-parse', '--veri
  * --fresh 的重派前置：做到「worktree 停在從整合分支新開的分支、batch-<n>.md 準備好」為止（步驟見檔頭）。
  * 傳回 `{ checkpoint, prior, sha, worktree }`，或 `{ stop }`（整段 STOP 字串，不含 `STOP `）。
  */
-async function refresh(cli, main, key, integration, { n, branch }, note, again, signal) {
+async function refresh(cli, main, key, integration, { n, branch }, note, again, allowOverlap, signal) {
   const unclaimed = claimStop(n);
   if (unclaimed) return { stop: `${n} ${unclaimed}` };
   const priors = [];
@@ -207,6 +258,9 @@ async function refresh(cli, main, key, integration, { n, branch }, note, again, 
     || run('git', ['-C', main, 'rev-list', '--count', `${integration}..${branch}`]).stdout.trim() === '0');
   if (latest && !resuming && !again) return { stop: `refresh-twice ${n}` };
   if (!latest && !hasBranch(main, branch)) return { stop: `${n} git 沒有分支 ${branch}` };
+  // fresh worker 要重做的是 prior 那份改動：比對它（中斷後續做時是已另存的 prior）。
+  const overlap = !allowOverlap && overlapStop(main, n, resuming ? latest : branch, integration);
+  if (overlap) return { stop: `${n} ${overlap}` };
   const prior = resuming ? latest : priorName(branch, priors.length + 1);
   const worktree = worktreeOf(main, branch) ?? (resuming ? worktreeOf(main, prior) : undefined);
   if (!worktree) return { stop: `${n} worktree 找不到 ${branch} 的 worktree` };
@@ -214,12 +268,11 @@ async function refresh(cli, main, key, integration, { n, branch }, note, again, 
   const ctx = { cli, signal };
   let open;
   try {
-    open = (await orca(ctx, 'terminal', 'list', '--worktree', `path:${worktree}`)).terminals.map(({ handle }) => handle);
+    open = await openTerminals(ctx, worktree);
   } catch (error) {
     return { stop: signal.aborted ? `${n} ${signal.reason}` : `${n} terminal-close ${error.message}` };
   }
-  const row = resuming && existsSync(checkpoint)
-    ? readFileSync(checkpoint, 'utf8').split('\n').find(line => line.startsWith(`| ${n} |`))?.split('|').map(cell => cell.trim()) : undefined;
+  const row = resuming ? rowOf(checkpoint, n) : undefined;
   if (row?.[7] === 'running' && open.includes(row[4])) return { stop: `${n} running ${row[4]}` };
   const git = (...args) => run('git', ['-C', worktree, ...args]);
   const status = git('status', '--porcelain');
@@ -269,6 +322,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   for (let i = 0; i < args.length; i++) {
     if (!args[i].startsWith('--')) { positional.push(args[i]); continue; }
     if (args[i] === '--again') { bad ||= 'again' in given; given.again = true; continue; }
+    if (args[i] === '--allow-overlap') { bad ||= 'allowOverlap' in given; given.allowOverlap = true; continue; }
     const name = { '--integration': 'integration', '--stuck-after': 'stuckAfter', '--fresh': 'fresh', '--note': 'note' }[args[i]];
     const value = args[++i];
     if (!name || !value || value.startsWith('--') || name in given) bad = true;
@@ -299,13 +353,14 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     if (fresh) {
       const [member] = members;
       const started = now();
-      const ready = await refresh(cli, main, key, options.integration, member, readFileSync(given.note, 'utf8'), Boolean(given.again), controller.signal);
+      const ready = await refresh(cli, main, key, options.integration, member, readFileSync(given.note, 'utf8'), Boolean(given.again), Boolean(given.allowOverlap), controller.signal);
       if (ready.stop) {
         console.log(`STOP ${ready.stop}`);
         clearTimeout(budget);
         process.exit(4);
       }
-      const result = await dispatchMember(cli, main, ready.checkpoint, options.integration, member, controller.signal);
+      // 重疊已在 refresh 比對過；這時的分支是剛從整合分支開的，沒有改動可比。
+      const result = await dispatchMember(cli, main, ready.checkpoint, options.integration, member, controller.signal, true);
       writeRow(ready.checkpoint, member.n, [member.branch, result.worktree ?? ready.worktree, result.handle ?? '', started, options.stuckAfter, result.stop ? 'stop' : 'running']);
       console.log(result.stop ? `STOP ${member.n} ${result.stop}` : `DISPATCHED ${member.n} ${result.handle}\nPRIOR ${member.n} ${ready.prior} ${ready.sha}`);
       clearTimeout(budget);
@@ -316,9 +371,9 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     let stopped = false;
     for (const member of members) {
       const started = now();
-      const result = await dispatchMember(cli, main, checkpoint, options.integration, member, controller.signal);
+      const result = await dispatchMember(cli, main, checkpoint, options.integration, member, controller.signal, Boolean(given.allowOverlap));
       stopped ||= Boolean(result.stop);
-      writeRow(checkpoint, member.n, [member.branch, result.worktree ?? '', result.handle ?? '', started, options.stuckAfter, result.stop ? 'stop' : 'running']);
+      if (!result.keep) writeRow(checkpoint, member.n, [member.branch, result.worktree ?? '', result.handle ?? '', started, options.stuckAfter, result.stop ? 'stop' : 'running']);
       console.log(result.stop ? `STOP ${member.n} ${result.stop}` : `DISPATCHED ${member.n} ${result.handle}`);
     }
     clearTimeout(budget);
