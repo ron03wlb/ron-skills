@@ -61,6 +61,8 @@ test('close、edit、create：短名換成長名，固定 repo', () => {
     [['issue', 'close', '96', '--comment=done', '--reason=not planned', '--repo', 'github.com/ron03wlb/ron-skills']]);
   assert.deepEqual(run('edit', '96', '--add-label', 'parent', '--remove-label', 'ready-for-agent', '--add-assignee', '@me').calls,
     [['issue', 'edit', '96', '--add-label=parent', '--remove-label=ready-for-agent', '--add-assignee=@me', '--repo', 'github.com/ron03wlb/ron-skills']]);
+  assert.deepEqual(run('edit', '96', '--remove-assignee', '@me').calls,
+    [['issue', 'edit', '96', '--remove-assignee=@me', '--repo', 'github.com/ron03wlb/ron-skills']]);
   assert.deepEqual(run('create', '-t', 'T', '-F', 'body.md', '-l', 'needs-triage').calls,
     [['issue', 'create', '--title=T', '--body-file=body.md', '--label=needs-triage', '--repo', 'github.com/ron03wlb/ron-skills']]);
 });
