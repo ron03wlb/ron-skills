@@ -64,7 +64,7 @@ pilot 已達標，2026-10-21 起是唯一編排：`deliver-batch`、`deliver-spe
 
 ## land
 
-`node scripts/land.mjs <branch> --body-file <file> [--title <title>]`：把做完的分支一次合入 `main`，依序是 push、開 PR（已經開著就沿用）、等 CI、以 merge commit 合併，接著移除 worktree（透過 Orca）、還原 `core.bare`、刪除本機和 `origin` 的分支，主 checkout 用 `--ff-only` 跟上，最後執行 `bin/sync-skills`。最後一行是 `LANDED <pr> <sha>`，或 `STOP <原因>`（exit 4）；中斷後用同一條指令重跑，會從斷掉的地方接著做，不重開 PR、不重複合併。CI 超過 480 秒還沒跑完時印 `STOP checks-timeout`，重跑會接著等。`--keep-branch` 保留分支，只用 `--ff-only` 讓它跟上 `origin/main` 再 push，給 `pilot/integration` 用（adapter 的 Push gate 等 #27 合入後改用這支）。
+`node scripts/land.mjs <branch> --body-file <file> [--title <title>]`：把做完的分支一次合入 `main`，依序是 push、開 PR（已經開著就沿用）、等 CI、以 merge commit 合併，接著移除 worktree（透過 Orca）、還原 `core.bare`、刪除本機和 `origin` 的分支，主 checkout 用 `--ff-only` 跟上，最後執行 `bin/sync-skills`。最後一行是 `LANDED <pr> <sha>`，或 `STOP <原因>`（exit 4）；中斷後用同一條指令重跑，會從斷掉的地方接著做，不重開 PR、不重複合併。CI 超過 480 秒還沒跑完時印 `STOP checks-timeout`，重跑會接著等。`--keep-branch` 保留分支，只用 `--ff-only` 讓它跟上 `origin/main` 再 push，給 `pilot/integration` 用（adapter 的 Push gate 等 #27 合入後改用這支）。`--local-checks <sha>` 只在 GitHub Actions 沒啟動（帳務停擺，job 0 個 step）時用：不等 CI，改確認分支 tip 是 `<sha>`、在它的暫時 worktree 跑 `bin/check --upstream` 通過，合併前在 PR 留言附 SHA 與 `CHECK_PASS` 行；CI 跑了但失敗不能改用它。
 
 ## retro-collect
 
