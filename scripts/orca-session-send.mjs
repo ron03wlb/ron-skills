@@ -85,7 +85,11 @@ export async function sendPrompt(ctx, handle, text) {
  * @returns {Promise<string | null>} 排進佇列回 null，否則回 STOP 原因：`draft-not-empty`、`draft-unavailable` 或 `send`。
  */
 export async function queuePrompt(ctx, handle, text) {
-  const readDraft = async () => (await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal?.draft;
+  // 欄位缺省或不是字串（如 null）都算讀不到。
+  const readDraft = async () => {
+    const draft = (await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal?.draft;
+    return typeof draft === 'string' ? draft : undefined;
+  };
   const poll = async done => {
     for (let i = 0; i < CONFIRM_POLLS; i++) {
       await sleep(CONFIRM_MS, undefined, { signal: ctx.signal });

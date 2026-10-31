@@ -118,7 +118,7 @@ test('文字進了輸入框卻沒提交：不算送達，只補 Enter 一次後�
 
 // 忙碌中的 session 的假 Orca：wait 永遠不成立，畫面一直有 `esc to interrupt` 和開頭相同的上一則提醒（也會捲出畫面），
 // 所以排隊只能看 composer：不帶 `--enter` 的文字進 `draft`（前 `lostText` 次被吞），Enter 把 `draft` 清空排進佇列（前 `lostEnter` 次被吞）。
-// `draft` 是第一次 read 前 composer 已有的文字；`noDraft` 為 'always' 時 read 一律不帶 `draft` 欄位，'enter' 時第一次 Enter 之後才不帶。
+// `draft` 是第一次 read 前 composer 已有的文字；`noDraft` 為 'always' 時 read 一律不帶 `draft` 欄位，'enter' 時第一次 Enter 之後才不帶，'null' 時一律回 `draft: null`。
 function busySession(t, { lostText = 0, lostEnter = 0, draft = '', noDraft } = {}) {
   return fakeOrca(t, temp => {
     const state = join(temp, 'state.json');
@@ -138,7 +138,7 @@ else if (b === 'send') {
     const result = mergeSample(ORCA_SAMPLES.read, { terminal }, 'read');
     delete result.terminal.draft;
     console.log(JSON.stringify({ ok: true, result }));
-  } else reply('read', { terminal });
+  } else reply('read', { terminal: ${JSON.stringify(noDraft)} === 'null' ? { ...terminal, draft: null } : terminal });
 }
 fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
 `;
@@ -204,6 +204,9 @@ test('--queue：讀不到 draft 欄位時 STOP draft-unavailable；打字前就�
   assert.equal(after.status, 4);
   assert.equal(after.stdout.trim(), 'STOP draft-unavailable term_w');
   assert.deepEqual(gone.sends(), [QUEUE_TYPE, QUEUE_ENTER]);
+  const nulled = busySession(t, { noDraft: 'null' });
+  assert.equal(nulled.send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']).stdout.trim(), 'STOP draft-unavailable term_w');
+  assert.deepEqual(nulled.sends(), []);
 });
 
 test('send 被拒：STOP send；handle 失效：STOP orca <錯誤碼>', t => {
