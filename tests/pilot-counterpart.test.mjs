@@ -19,3 +19,14 @@ test('沒有對應單：跨 repo 引用不算，不輸出、exit 0', () => {
   assert.equal(result.stdout, '');
 });
 
+
+// #79 的驗收：spay2 在自架 GitLab（http、IP），對應單寫成 issue 網址；Close 要用 glab issue note -m，glab 沒有 -F／--body-file。
+test('GitLab 對應單（spay/spay2#692）：印出 gitlab 與專案網址，COMMAND 是 glab issue note -R … -m', () => {
+  const file = '/repo/.scratch/pilot/counterpart-30.md';
+  const result = spawnSync('node', [script, '--file', file], { encoding: 'utf8',
+    input: '依賴 #29（正本）。spay2 對應單：http://192.168.200.202/spay/spay2/-/issues/692。\n\n## 背景\n' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'COUNTERPART spay/spay2#692 gitlab http://192.168.200.202/spay/spay2\n'
+    + `COMMAND glab issue note 692 -R http://192.168.200.202/spay/spay2 -m "$(cat ${file})"\n`);
+  assert.doesNotMatch(result.stdout, /--body-file|\s-F\s/);
+});

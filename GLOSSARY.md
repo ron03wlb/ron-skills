@@ -49,7 +49,7 @@ _Avoid_: Program store、scratch、狀態檔
 _Avoid_: epic、map、總單
 
 **對應單**:
-另一個 repo 裡處理同一件事的 issue，在本文寫成「對應單：<owner>/<repo>#<m>」；這張 issue 合入後，pilot 到對應單留言交接。整句寫在「」、code span 或 code block 裡的是引用，不算。
+另一個 repo 裡處理同一件事的 issue，在本文寫成「對應單：<owner>/<repo>#<m>」（github.com），GitLab 或 GitHub Enterprise 上的寫成 issue 網址（「對應單：http://192.168.200.202/spay/spay2/-/issues/692」），host 決定用 `gh` 還是 `glab` 留言；這張 issue 合入後，pilot 到對應單留言交接。整句寫在「」、code span 或 code block 裡的是引用，不算。
 _Avoid_: 關聯單、mirror issue
 
 **池子**:
