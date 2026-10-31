@@ -5,7 +5,7 @@
 // Bare guard 是同目錄專案自備的 pilot-unbare.sh（`<checkout> <時機>`，時機 `dispatch #<n>`；Orca 從 WSL 建 worktree 會把主 checkout 設成 bare），沒有就略過。
 // 派每個成員之前先讀 Issue 最近一則認領留言（同目錄 issue-pool.mjs 的格式與判斷，含 claim 的前任 coordinator 接手）：不是這個 session
 // （$CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE）的就印 `STOP <n> not-claimed`，不開 worktree、不開分頁（#165：claim 印 STOP 後照樣派出）。
-// 讀留言用 gh，所以只支援 GitHub tracker（同 issue-pool.mjs）。
+// 讀留言用 gh，所以只支援 GitHub tracker。
 // worktree 有沒有建好只看目錄存在、`git worktree list` 裡有這個分支，不信 create 回傳的 ok（曾經建好卻回 "ok": false）。
 // 所有子行程的 stdin 都接 /dev/null：Orca CLI 會吃掉 stdin，`while read` 迴圈因此只派到第一個成員。
 // 總時間有上限（比照 pilot-handoff.mjs）：Bash 工具最多等 600 秒，被殺就來不及寫 checkpoint，所以預算到了（timeout）或收到 SIGTERM、SIGINT（signal <名稱>）
@@ -19,7 +19,7 @@
 //   不刪 worktree、不 `branch -D`（auto mode 擋 reset --hard 這類指令，就地改名也不必重建 worktree 與分頁），不刪 prior 分支。
 //   每一步先看做過沒有：已有 prior、分支還沒有自己的 commit（相對整合分支）時是同一次重派中斷了，同一行指令接著做；留言已含 `prior:` 行就不再留。
 //   batch-<n>.md 那列已是 running、它的分頁還開在這個 worktree 時，這次重派已經做完、fresh worker 正在跑：印 `STOP <n> running <handle>`，不關分頁。
-//   留言用 gh，所以 --fresh 只支援 GitHub tracker（同 issue-pool.mjs）。
+//   留言用 gh，所以 --fresh 只支援 GitHub tracker。
 //   prior 依序找 `-prior`、`-prior2`…：手動重派留下的 `-prior` 也算，那張 Issue 第一次跑 --fresh 就是 refresh-twice。
 //   prior 已在、分支又有了 commit 就是第二次重派：印 `STOP refresh-twice <n>`，由 coordinator 開 gate；gate 選了再重派時帶 --again，另存成 `-prior2`（依序編號）。
 //   認領不在這裡做：coordinator 照 Dispatch 先跑 claim；這裡只在動手前同樣檢查認領，不是這個 session 的就 `STOP <n> not-claimed`，什麼都不動。

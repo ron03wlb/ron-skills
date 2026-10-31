@@ -22,6 +22,7 @@ A `local` side needs no CLI, and a `local` code host has no remote delivery (no 
 | Create an Issue | `gh issue create --title <title> --body-file <file>` | `glab issue create --title <title> --description-file <file> --yes` | |
 | Comment on an Issue | `gh issue comment <n> --body-file <file>` | `glab issue note <n> -m "$(cat <file>)"` | `glab issue note` has no `--body-file` or `-F`; only `-m`/`--message` |
 | Change labels | `gh issue edit <n> --add-label <add> --remove-label <remove>` | `glab issue update <n> --label <add> --unlabel <remove>` | |
+| Assign yourself | `gh issue edit <n> --add-assignee @me` | `glab issue update <n> --assignee +<username>` | `glab` has no `@me`: `<username>` is `glab api user`'s `username`; a bare username replaces the assignees, `+` adds |
 | Close an Issue | `gh issue close <n> --comment <text>` | `glab issue close <n>` | `glab issue close` takes no comment: post it with **Comment on an Issue** first |
 | Create a label | `gh label create <name>` | `glab label create --name <name>` | |
 | Comment in another repo | `gh issue comment <n> --repo <owner>/<repo> --body-file <file>` | `glab issue note <n> -R <owner>/<repo> -m "$(cat <file>)"` | `--repo` and `-R` are on every issue and PR/MR subcommand; `glab -R` also takes `group/subgroup/repo` or a full URL |
@@ -38,13 +39,15 @@ CI configuration lives in `.github/workflows/` (one `.yml` per workflow) on GitH
 
 Checked 2026-10-31 for #89. `gh`: `gh version 2.92.0 (2026-04-28)` on macOS, each subcommand's `--help` run locally. `glab`: not installed on the checking machine, so the record is glab v1.126.0's `docs/source/<command>.md` at that tag in `gitlab-org/cli`, which `make gen-docs` generates from the same command definitions `--help` prints (each page says so). Re-run `<command> --help` when bumping either CLI.
 
+The assignee flags were added for #108 the same way (`gh issue edit --help` locally, glab v1.126.0's `docs/source/issue/update.md`). `templates/issue-pool.mjs` also reads through `glab api` (its `docs/source/api/_index.md`: `graphql`, the `:id` placeholder, `--hostname`, `--paginate`, `--output ndjson`, `-X DELETE`; that page says `--paginate` merges REST arrays into one, but v1.126.0's `internal/commands/api/api.go` writes each page as is, so a multi-page read needs `--output ndjson`), on GitLab's GraphQL work item widgets and REST issue notes.
+
 | Command | Flags confirmed |
 | --- | --- |
 | `gh issue view --help` | `-c, --comments`, `--json fields`, `-R, --repo` |
 | `gh issue list --help` | `-s, --state {open\|closed\|all}`, `-l, --label`, `--json fields` |
 | `gh issue create --help` | `-t, --title`, `-F, --body-file`, `-l, --label` |
 | `gh issue comment --help` | `-F, --body-file`, `-R, --repo [HOST/]OWNER/REPO` |
-| `gh issue edit --help` | `--add-label`, `--remove-label`, `-F, --body-file` |
+| `gh issue edit --help` | `--add-label`, `--remove-label`, `-F, --body-file`, `--add-assignee` (`@me` assigns yourself) |
 | `gh issue close --help` | `-c, --comment` |
 | `gh label create --help` | `<name>` positional, `-R, --repo` |
 | `gh pr create --help` | `-B, --base`, `-H, --head`, `-t, --title`, `-F, --body-file` |
@@ -57,7 +60,7 @@ Checked 2026-10-31 for #89. `gh`: `gh version 2.92.0 (2026-04-28)` on macOS, eac
 | `glab issue list --help` | `-l, --label`, `-O, --output text\|json`, `-F, --output-format details\|ids\|urls` |
 | `glab issue create --help` | `-t, --title`, `--description-file`, `-y, --yes` |
 | `glab issue note --help` | `-m, --message` only (plus `--attach`, `--internal`); no `--body-file`; inherits `-R, --repo` (`OWNER/REPO`, `GROUP/NAMESPACE/REPO`, or the full URL or Git URL; rechecked for #79, which passes the project URL so a self-hosted http host such as `http://192.168.200.202/spay/spay2` resolves) |
-| `glab issue update --help` | `-l, --label`, `-u, --unlabel` |
+| `glab issue update --help` | `-l, --label`, `-u, --unlabel`, `-a, --assignee` (`+` adds, `!`/`-` removes, otherwise replaces) |
 | `glab issue close --help` | `<id>` positional and `-R, --repo` only; no comment flag |
 | `glab label create --help` | `-n, --name`, `-d, --description` |
 | `glab mr create --help` | `-b, --target-branch`, `-s, --source-branch`, `-t, --title`, `--description-file`, `-y, --yes` |

@@ -1,4 +1,4 @@
-// tracker host 與程式碼 host 的判定，setup-workflow 的 Host 站（detect.mjs --host）使用；人看的說明在 ../../HOSTS.md。
+// tracker host 與程式碼 host 的判定，setup-workflow 的 Host 站（detect.mjs --host）與 issue-pool.mjs 使用；人看的說明在 ../../HOSTS.md。
 // host 只有 github、gitlab、local 三種：github.com 與名稱含 github 的主機（GitHub Enterprise）算 github，
 // 其他網路主機一律當自架 GitLab（http、IP 也算，例如 http://192.168.200.202/spay/spay2）；沒有 remote 或 remote 是本機路徑算 local。
 
@@ -22,6 +22,21 @@ export function hostKind(hostname) {
 /** 文件裡第一個屬於 kind 的網址主機（tracker 和程式碼不在同一種 host 時，tracker 的主機從 issue-tracker.md 找）；沒有時 null。 */
 export function hostInDoc(doc, kind) {
   return [...(doc ?? '').matchAll(/https?:\/\/[^\s`'")<>]+/g)].map(([url]) => remoteHostname(url)).find(host => host && hostKind(host) === kind) ?? null;
+}
+
+/** 文件裡第一個屬於 kind、帶專案路徑的網址：origin（scheme 與主機）、host、path（GitHub 取 <owner>/<repo>，GitLab 取 `/-/` 之前的
+ * 完整 group/…/project，去掉 .git）；沒有時 null。issue-pool 在 tracker 與程式碼不同種 host 時以它找 tracker 專案。 */
+export function projectInDoc(doc, kind) {
+  for (const [match] of (doc ?? '').matchAll(/https?:\/\/[^\s`'")<>]+/g)) {
+    const url = match.replace(/[.,;:]+$/, '');
+    const host = remoteHostname(url);
+    if (!host || hostKind(host) !== kind) continue;
+    const { origin, pathname } = new URL(url);
+    const parts = pathname.replace(/\/-\/.*$/, '').replace(/\.git$/, '').split('/').filter(Boolean);
+    const path = (kind === 'github' ? parts.slice(0, 2) : parts).join('/');
+    if (path.includes('/')) return { origin, host, path };
+  }
+  return null;
 }
 
 /** 程式碼 host：依 origin URL。 */
@@ -50,6 +65,7 @@ export const COMMANDS = {
   createIssue: { label: 'Create an Issue', github: 'gh issue create --title <title> --body-file <file>', gitlab: 'glab issue create --title <title> --description-file <file> --yes' },
   commentIssue: { label: 'Comment on an Issue', github: 'gh issue comment <n> --body-file <file>', gitlab: 'glab issue note <n> -m "$(cat <file>)"' },
   editLabels: { label: 'Change labels', github: 'gh issue edit <n> --add-label <add> --remove-label <remove>', gitlab: 'glab issue update <n> --label <add> --unlabel <remove>' },
+  assignSelf: { label: 'Assign yourself', github: 'gh issue edit <n> --add-assignee @me', gitlab: 'glab issue update <n> --assignee +<username>' },
   closeIssue: { label: 'Close an Issue', github: 'gh issue close <n> --comment <text>', gitlab: 'glab issue close <n>' },
   createLabel: { label: 'Create a label', github: 'gh label create <name>', gitlab: 'glab label create --name <name>' },
   otherRepo: { label: 'Comment in another repo', github: 'gh issue comment <n> --repo <owner>/<repo> --body-file <file>', gitlab: 'glab issue note <n> -R <owner>/<repo> -m "$(cat <file>)"' },
