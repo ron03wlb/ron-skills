@@ -63,8 +63,8 @@
 
 | skill | 做什麼 | 等級 | 來源 |
 | --- | --- | --- | --- |
-| `/retro` | 回顧一次 session，提出環境改善（檢查、導覽、規範） | L2（人輸入） | Matt（ron-skills overlay：開 Issue 前依候選提到的名稱查開著的 Issue；寫入前查並行修改；退役 coordinator 改為收集模式；最後把分頁切成待關閉） |
-| `/retro-collect` | 收集退役 coordinator 的 `/retro` 檔，在一個 retro worktree 實作全部採用項 | L3（人輸入） | ron-skills |
+| `/retro` | 回顧一次 session，提出環境改善（檢查、導覽、規範） | L2（人輸入） | Matt（ron-skills overlay：開 Issue 前依候選提到的名稱查開著的 Issue；寫入前查並行修改；adapter 有 Retro collect 條目時改為收集模式，候選開成 `retro-candidates` Issue；最後把分頁切成待關閉） |
+| `/retro-collect` | 收集開著的 `retro-candidates` Issue，在一個 retro worktree 實作採用項，太大的另開 `retro` Issue，合入後關單 | L2（人輸入；adapter 要有 Retro collect 條目） | ron-skills |
 | `handoff` | 把對話壓成交接文件，讓新的 session 接手 | 輔助 | Matt |
 
 ## 怎麼看完整清單

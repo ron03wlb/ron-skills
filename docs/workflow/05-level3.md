@@ -75,7 +75,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Close | 進到主線之後的證據留言、關單、關掉成員 terminal、移除 worktree 與分支（遠端沒有該分支時略過） |
 | Handoff | 交棒的指令 |
 | Project tick hooks | 每輪要跑的專案檢查 |
-| Retro collect | `/retro-collect` 需要的事實 |
+| Retro collect | `/retro-collect` 需要的事實：retro worktree、檢查、合入與 push |
 
 沒有專用腳本也能起步：Probe、Watch 可以先寫成手動指令序列，等真的跑出摩擦再做成腳本。ron-skills 就是這樣：手拼 probe 漏過 terminal 已結束卻沒有結果行的 worker，之後才把 Probe 做成 `scripts/pilot-probe.mjs`，一次印出主 checkout、開著的請求與 gate、各 worker 與 batch 的狀態。它和 Dispatch 的 `scripts/pilot-dispatch.mjs` 後來都搬成 setup-workflow 正本：整合分支不是 `pilot/integration` 時帶 `--integration <分支>`，Orca 跑在 WSL 時把 Bare guard 放在同目錄的 `pilot-unbare.sh`。Push gate 也一樣：先在 adapter 寫成 push、開 PR、等 CI、合併、跟上主線的指令序列，實際跑過之後才收斂成 `scripts/land.mjs`。pilot 帶 `--keep-branch`，保留整合分支並讓它以 `--ff-only` 跟上主線；手動分支（retro、單獨跑的 `/issue-run`）不帶，合入後一併移除 worktree 與分支。兩者共用同一個結果行：`LANDED <pr> <merge sha>` 或 `STOP <原因>`，每一步都能從中斷處重跑。
 
@@ -107,7 +107,7 @@ Codex 呼叫失敗時改用 `code-review` skill，並在報告註明 Codex 不�
 
 ## `/retro-collect`
 
-coordinator 退役後，在每個退役分頁輸入 `/retro`：它以收集模式只把建議寫進 `.scratch/retro/<session 前 8 碼>.md`，不自己實作。全部收齊後在任一 session 輸入 `/retro-collect`：彙整成一份計畫、在單一 retro worktree 實作全部採用項、照 adapter 的 **Retro collect** 行合入並 push，最後關掉已收集的分頁。adapter 沒寫這一行時它會停下並說明。
+adapter 有 **Retro collect** 條目時，任何 session 跑 `/retro`（退役 coordinator、`/issue-run --pool`、手動 `/issue-run` 或一般 session）都以收集模式進行：先依候選提到的名稱查開著的 Issue，再把其餘候選開成一張掛 `retro-candidates` label 的 Issue（一個 session 一張，內文逐條列候選），不自己實作。候選寫在 tracker，另一台機器也看得到（[ADR 0003](../adr/0003-tracker-shared-state.md)）。之後在任一 session 輸入 `/retro-collect`：認領所有開著的 `retro-candidates` Issue、彙整成一份計畫（合併重複）、在單一 retro worktree 實作採用項，照 adapter 的 **Retro collect** 條目合入並 push，最後在每張 Issue 留言結果並關掉。太大、要排依賴或要 worker 跑完整流程的候選，另開一張 `retro` Issue 交給 pilot，計畫裡標 `blocked → #<n>`；pilot 的 Pool 先挑 `retro` 單，`retro-candidates` 不進池子。它不看 Orca 分頁，adapter 沒寫 **Retro collect** 條目時會停下並說明。
 
 ## 專案自訂的分級
 

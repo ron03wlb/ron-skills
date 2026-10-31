@@ -20,7 +20,7 @@
     { "id": "memory", "type": "database", "label": "Memory", "sublabel": "一檔一事實", "stage": 2, "row": 0, "tag": "提醒" },
     { "id": "skill", "type": "backend", "label": "Skill／repo 規範", "sublabel": "skill／CLAUDE.md", "stage": 2, "row": 2, "tag": "規則" },
     { "id": "script", "type": "security", "label": "檢查／gate", "sublabel": "接進單一檢查入口", "stage": 3, "row": 1, "tag": "可執行" },
-    { "id": "branch", "type": "database", "label": "retro 分支", "sublabel": "不開 Issue", "stage": 4, "row": 0, "tag": "只改工具與文件" },
+    { "id": "branch", "type": "database", "label": "retro 分支", "sublabel": "候選來自 retro-candidates", "stage": 4, "row": 0, "tag": "只改工具與文件" },
     { "id": "main", "type": "database", "label": "主線", "sublabel": "下一個 session 生效", "stage": 4, "row": 2, "tag": "生效" }
   ],
   "flows": [
