@@ -386,6 +386,14 @@ test('moved 成員不擋 STAGEABLE，⏺ 開頭的結果行也讀得到', t => {
   assert.ok(out.includes('STAGEABLE 21-27'), out.join('\n'));
 });
 
+// adapter 的 Stage 條目把移走的成員寫成 `moved batch-<n>`；只認全等的 `moved` 時，batch-126-128 剩下 done 的 #128 一直不是 STAGEABLE。
+test('moved batch-<n> 的成員同樣不擋 STAGEABLE', t => {
+  const { batch, probe } = fixture(t);
+  batch('126-128', 'dispatched 2026-10-31T09:07:00+08:00', [{ n: 126, state: 'moved batch-126' }, { n: 128, state: 'done', candidate: SHA }]);
+  const out = lines(probe());
+  assert.ok(out.includes('STAGEABLE 126-128'), out.join('\n'));
+});
+
 // 整合分支與主分支是專案的值：由參數傳入，預設 pilot/integration 與 main。
 test('--integration、--main 換掉整合分支與主分支', t => {
   const { repo, git, pilot, probe } = fixture(t);

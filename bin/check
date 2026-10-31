@@ -16,6 +16,7 @@ if [[ ${1:-} == --upstream ]]; then
 fi
 
 node scripts/check-node-version.mjs
+node scripts/check-conflict-markers.mjs
 bin/sync-skills --check
 node scripts/check-links.mjs
 # auto mode 放行的 tracker 寫入（#96）靠 permissions.allow；格式錯的規則 Claude Code 只略過不報錯。
