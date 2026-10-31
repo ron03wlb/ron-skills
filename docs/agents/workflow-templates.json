@@ -3,8 +3,8 @@
   "copies": {
     "scripts/check-portability.mjs": {
       "template": "skills/engineering/setup-workflow/templates/check-portability.mjs",
-      "commit": "dbbef6d0cf188fbb37669e736f15bf14f8f5bfe8",
-      "sha256": "5cc078758aeac085674a5e13ab147a410535643150e436124e4241056bbde291"
+      "commit": "83b7b97e2729c717bcd8f4ca7ff06be36b2d5d07",
+      "sha256": "a9c58d8979f19a939cd8c0f425d8bd21c8681fa3348ef68f0c3bfeae9c3f60ca"
     },
     "scripts/claude-hook-language.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-language.mjs",
