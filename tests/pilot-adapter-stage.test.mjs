@@ -78,12 +78,14 @@ test('Stage、Regression、Integrate 改成呼叫 pilot-land.mjs，不再列手�
   }
 });
 
-test('Stage：允許的衝突解法（不同條目、只新增、表格的不同列、戳記檔在其他檔解完後 restamp），解完照樣跑 Regression', () => {
+test('Stage：允許的衝突解法（不同條目、只新增、表格的不同列、相鄰改動、戳記檔在其他檔解完後 restamp），解完照樣跑 Regression', () => {
   const stage = line('Stage');
   assert.match(stage, /不同的 `- \*\*<名稱>\.\*\*` 條目/);
   // #173：戳記檔是 scripts/restamp.mjs 的 STAMP_FILES，兩個都列出來，restamp 在其他衝突檔解完之後。
   assert.match(stage, /戳記檔（`scripts\/restamp\.mjs` 的 `STAMP_FILES`：`scripts\/workflow-doc-sync\.json`、`docs\/agents\/workflow-templates\.json`）.*其他衝突檔先用下列解法解完.*--restamp/);
   assert.match(stage, /Markdown 表格列.*以第一格為鍵.*（`rows`，#162/);
+  assert.match(stage, /一邊只改了 base 的某幾行、另一邊只在 base 行之間插入新行.*（`adjacent`，#175/);
+  assert.match(stage, /`adjacent`.*插入的行裡有被改的 base 行.*換上的行和插入的行相同/);
   assert.match(stage, /新增不重疊的段落/);
   assert.match(stage, /解完的 staged SHA 一樣要跑 Regression/);
 });
