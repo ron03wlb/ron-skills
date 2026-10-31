@@ -21,7 +21,8 @@
 //            `.md` 的改動都在 `- **<名稱>.**` 條目裡時附改動的條目名稱，依名稱排序、以 `,` 分隔，名稱本身可能有空格（不能有 `,`）；刪掉或改名的條目也列（取改動前的名稱）；
 //            有條目以外的改動或不是 `.md` 時省略名稱欄，表示要讀整份）
 //   開著的列：REQUEST <requests.md 原文>｜GATE <id> <Issue> <question 或段落標題>｜GATE_MALFORMED <id> <把 resolved 寫進別的欄位的那一行>
-//   Issue 依賴：DEPS_PROSE <n> #<m>（開著的 `ready-for-agent` Issue 內文以「依賴」帶出 #m，#m 還開著，blocked_by 卻沒有它；Pool 只讀 blocked_by）｜
+//   Issue 依賴：DEPS_PROSE <n> #<m>（開著的 `ready-for-agent` Issue 內文以「依賴」或先後寫法（「排在 #m 之後」「以 #m 為 blocker」「等 #m 合入」）帶出 #m，#m 還開著，blocked_by 卻沒有它；Pool 只讀 blocked_by）｜
+//               DEPS_PROSE <n> last（內文寫「最後做」卻沒號碼，blocked_by 也是空的；要等哪些單由 coordinator 判斷）｜
 //               DEPS_PROSE_FAILED <錯誤>（在主 checkout 跑 gh 失敗，其他檢查照跑；同一次查詢的 PARENT_* 也不印）
 //   母單（#164）：PARENT_LABEL <n>（開著、或已關閉卻有開著子單的母單，沒有 `parent` label 或還掛 triage label）｜
 //               PARENT_REOPEN <n>（開著的子單的母單 #n 在同一個 repo、已關閉）；各依號碼、每張一次
@@ -154,19 +155,52 @@ export function openRows(pilot) {
 /**
  * 內文以「依賴」帶出的 Issue 號碼：從 `依賴` 到句末（`。`、`；`、`;`、`，`、`,` 或換行）之間的每個 `#m`，依出現順序、不重複。
  * 實際寫法有「依賴：#58、#77」「依賴 #58（註解）、#77」「依賴 ①（#103）」，所以不要求 #m 緊接在後；`owner/repo#m` 是別的 repo，
- * 「不依賴」「無依賴」是否定，都不算。括號裡的逗號不斷句（「依賴 #77（同一支腳本，接在它之後改）」）。
+ * 「不依賴」「無依賴」是否定，都不算。括號裡的逗號不斷句（「依賴 #77（同一支腳本，接在它之後改）」）。再接上 orderDeps 的先後寫法。
  */
 export function proseDeps(body) {
   const deps = [];
   for (const [clause] of (body ?? '').matchAll(/(?<![不無])依賴(?:（[^）\n]*）|[^。；;，,\n])*/g)) {
     for (const [, m] of clause.matchAll(/(?<![\w/.-])#(\d+)\b/g)) if (!deps.includes(Number(m))) deps.push(Number(m));
   }
+  for (const m of orderDeps(body)) if (!deps.includes(m)) deps.push(m);
   return deps;
 }
 
+const ISSUE_REF = /(?<![\w/.-])#(\d+)\b/g;
+const refs = text => [...text.matchAll(ISSUE_REF)].map(([, m]) => Number(m));
+// 號碼清單（「#63、#64（同一條目）和 #65」）或回指同一句前面號碼的代名詞。
+const TARGET = String.raw`((?:#\d+\b|（[^）\n]*）|[、和與及\s])+|它們|它|這些|上述)`;
+const ORDER = [
+  new RegExp(String.raw`[排接]在\s*${TARGET}\s*(?:之後|後面)`, 'g'),
+  new RegExp(String.raw`以\s*${TARGET}\s*為\s*blocker`, 'gi'),
+  new RegExp(String.raw`等\s*${TARGET}\s*都?(?:合入|合併|關閉)`, 'g'),
+];
+
+/**
+ * 內文以先後寫法帶出的 Issue 號碼：「排在 #m 之後」「以 #m、#n 為 blocker」「等 #m 合入」裡的每個 #m；寫成「它」「它們」時
+ * 指同一句（到 `。`、`；`、`;` 或換行）前面出現的號碼（#166「…#94 修改，拆檔會和它們全部衝突：以它們為 blocker」、
+ * #176「正被 #94 改，排在它之後」）。整句沒有號碼的不算。
+ */
+export function orderDeps(body) {
+  const deps = [];
+  for (const [sentence] of (body ?? '').matchAll(/[^。；;\n]+/g)) {
+    for (const pattern of ORDER) {
+      for (const match of sentence.matchAll(pattern)) {
+        const found = /^(它們|它|這些|上述)$/.test(match[1]) ? refs(sentence.slice(0, match.index)) : refs(match[1]);
+        for (const m of found) if (!deps.includes(m)) deps.push(m);
+      }
+    }
+  }
+  return deps;
+}
+
+/** 內文寫「最後做」、那一小句（到 `，`、`,` 或句末）沒有號碼（「不必最後做」不算）：要等哪些單交給 coordinator 判斷。 */
+export const proseLast = body => [...(body ?? '').matchAll(/(?:（[^）\n]*）|[^。；;，,\n])+/g)].some(([clause]) => /(?<!不必?|無須|不用)最後做/.test(clause) && !refs(clause).length);
+
 /**
  * 依賴只寫在內文、沒建 blocked_by 的 ready Issue（`issues` 是本 repo 開著的 Issue，GraphQL 節點）：每個還開著、
- * 卻不在 blocked_by（同一個 repo）裡的依賴印一行 `DEPS_PROSE <n> #<m>`。
+ * 卻不在 blocked_by（同一個 repo）裡的依賴印一行 `DEPS_PROSE <n> #<m>`；寫「最後做」卻沒號碼、blocked_by 也還沒有任何一張時
+ * 再印一行 `DEPS_PROSE <n> last`。
  */
 export function depsProse(issues, repo) {
   const open = new Set(issues.map(({ number }) => number));
@@ -175,6 +209,7 @@ export function depsProse(issues, repo) {
     if (!issue.labels.nodes.some(({ name }) => name === 'ready-for-agent')) continue;
     const blocked = new Set(issue.blockedBy.nodes.filter(({ repository }) => repository.nameWithOwner === repo).map(({ number }) => number));
     for (const m of proseDeps(issue.body)) if (m !== issue.number && open.has(m) && !blocked.has(m)) out.push(`DEPS_PROSE ${issue.number} #${m}`);
+    if (!blocked.size && proseLast(issue.body)) out.push(`DEPS_PROSE ${issue.number} last`);
   }
   return out;
 }
