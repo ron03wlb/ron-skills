@@ -54,7 +54,9 @@ else if (b === 'send') {
 else if (b === 'close') reply('close', { close: { handle: arg('--terminal') } });
 else if (b === 'list') {
   // 主 checkout 原有現任 coordinator 的分頁（標題同名，還沒被 Claude 改名）；create 開出分頁後，另有一個人剛開、標題不同的分頁。
-  const opened = ${!createError && !orphanLate} && /^terminal create /m.test(fs.readFileSync(${JSON.stringify(log)}, 'utf8'));
+  // 第一次 list 是 create 前的快照，之後的 list 都在 create 之後：不靠 create 行程寫進 log 判斷，高負載下它可能還沒啟動就被殺（#185）。
+  const calls = fs.readFileSync(${JSON.stringify(log)}, 'utf8');
+  const opened = ${!createError && !orphanLate} && (/^terminal create /m.test(calls) || (calls.match(/^terminal list --worktree /gm) || []).length > 1);
   const here = [['term_current', 'issue-pilot coordinator'], ['term_peer', 'ron-skills-peer'], ['term_twin1', 'twin'], ['term_twin2', 'twin'],
     ...(opened ? [['term_pilot', 'issue-pilot coordinator'], ['term_other', 'ron@Ron-NB: ~/code/ron-skills']] : [])];
   const all = [...here.map(([handle, title]) => ({ handle, title, worktreePath: ${JSON.stringify(repo)} })), { handle: 'term_far', title: 'ron-skills-peer', worktreePath: '/elsewhere/repo' }];
@@ -294,7 +296,8 @@ test('terminal create 超過上限：STOP create、還原 coordinator 檔、關�
   assert.match(last, /term_other/);
   assert.equal(readFileSync(coordinator, 'utf8'), original);
   const calls = readFileSync(log, 'utf8');
-  assert.ok(calls.startsWith(`terminal list --worktree path:${repo} --json\nterminal create `), calls);
+  // create 行程可能在寫 log 前就被殺（高負載），只要求快照在最前面（#185）。
+  assert.ok(calls.startsWith(`terminal list --worktree path:${repo} --json\n`), calls);
   assert.match(calls, /^terminal close --terminal term_pilot --json$/m);
   assert.doesNotMatch(calls, /^terminal close --terminal term_(current|other) /m);
 });
