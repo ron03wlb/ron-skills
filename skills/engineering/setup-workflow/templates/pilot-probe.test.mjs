@@ -298,6 +298,57 @@ test('merged 的 batch 最後一行 regression 沒通過或沒寫 exit：印 NOT
   assert.deepEqual(out.filter(line => /^RESUME_PUSH (95|96|97|98)$/.test(line)), []);
 });
 
+// #136：G4（GitHub Actions 帳務）擋住所有 push 時，每輪 probe 對每個沒進 origin/main 的 batch 各印一行 NOT_IN_MAIN／RESUME_PUSH，
+// coordinator 要逐行判斷「還在 gate 底下」，RESUME_PUSH 還可能被誤當成要接著做 Push gate。開著的 gate 的 parked 以 `all-push` 開頭時，
+// 這些行合成一行 PUSH_PARKED <gate id> <batch 數> batches；IN_MAIN 照印（Close 不 push），gate resolved 後恢復原本的各行。
+test('有 parked all-push 的開著 gate 時只印 PUSH_PARKED，resolved 後恢復 NOT_IN_MAIN／RESUME_PUSH', t => {
+  const { batch, probe, git, pilot } = fixture(t);
+  git('switch', '-q', '-c', 'pilot/integration');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'staged');
+  const staged = git('rev-parse', 'HEAD');
+  git('switch', '-q', 'main');
+  batch('11', `merged ${staged}`, [{ n: 11, state: 'done', candidate: 'abc1234' }]);
+  writeFileSync(join(pilot, 'batch-11.md'), readFileSync(join(pilot, 'batch-11.md'), 'utf8') + `regression: ${staged} exit 0 CHECK_PASS tests 1+2\n`);
+  batch('12', `merged ${staged}`, [{ n: 12, state: 'done', candidate: 'abc1234' }]);
+  batch('13', `pushed ${staged}`, [{ n: 13, state: 'done', candidate: 'abc1234' }]);
+  batch('14', `pushed ${git('rev-parse', 'main')}`, [{ n: 14, state: 'done', candidate: 'abc1234' }]);
+  const gates = resolved => `# Gates
+
+| id | Issue | question | options | default | parks | opened | status |
+|---|---|---|---|---|---|---|---|
+| G2 | #12 | 要不要拆？ | 拆｜不拆 | 拆 | all-push | 2026-10-30T13:40:00+08:00 | resolved 2026-10-30T13:50:00+08:00 拆 |
+
+## G3 只擋 batch 13
+- Issue：batch 13
+- parked：batch 13 的 Push gate
+- opened：2026-10-31T09:00:00+08:00
+
+## G4 GitHub Actions 帳務
+- Issue：batch 120
+- parked：all-push（帳務恢復前不 push）
+- opened：2026-10-31T10:00:00+08:00
+${resolved ? '- resolved 2026-10-31T12:00:00+08:00 帳務已恢復\n' : ''}`;
+  writeFileSync(join(pilot, 'gates.md'), gates(false));
+  let out = lines(probe());
+  assert.deepEqual(out.filter(line => /^(PUSH_PARKED|NOT_IN_MAIN|RESUME_PUSH|IN_MAIN) /.test(line)), ['IN_MAIN 14', 'PUSH_PARKED G4 3 batches'], out.join('\n'));
+  assert.ok(out.includes('GATE G4 GitHub Actions 帳務'), out.join('\n'));
+
+  // 表格形式的 gate 讀 parks 欄；`all-pushes` 不是固定寫法，不算。
+  writeFileSync(join(pilot, 'gates.md'), `${gates(true)}
+| id | Issue | question | options | default | parks | opened | status |
+|---|---|---|---|---|---|---|---|
+| G5 | batch 11 | 改名？ | 改｜不改 | 改 | all-pushes | 2026-10-31T11:00:00+08:00 | open |
+| G6 | batch 120 | 帳務？ | 等｜不等 | 等 | all-push | 2026-10-31T11:30:00+08:00 | open |
+`);
+  out = lines(probe());
+  assert.deepEqual(out.filter(line => /^(PUSH_PARKED|NOT_IN_MAIN|RESUME_PUSH|IN_MAIN) /.test(line)), ['IN_MAIN 14', 'PUSH_PARKED G6 3 batches'], out.join('\n'));
+
+  writeFileSync(join(pilot, 'gates.md'), gates(true));
+  out = lines(probe());
+  assert.deepEqual(out.filter(line => /^(PUSH_PARKED|NOT_IN_MAIN|RESUME_PUSH|IN_MAIN) /.test(line)),
+    ['RESUME_PUSH 11', 'NOT_IN_MAIN 12 no-regression', 'NOT_IN_MAIN 13', 'IN_MAIN 14'], out.join('\n'));
+});
+
 // 主 checkout 的狀態沒問題時不印任何一行，有問題才各印一行：Bare guard 印的行、不在 main、有 hold 檔、
 // `git status --short` 有內容（每行一個 DIRTY，帶 status 原文）。
 test('主 checkout 正常時不印狀態行；沒有 Bare guard 時略過', t => {
