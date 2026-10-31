@@ -12,6 +12,7 @@
 //   搬完舊 batch 的成員全是 moved 時，把 `current:` 寫成 `closed moved`。
 // stdout：`MOVED <key> <n> batch-<n>`，舊 batch 因此關閉時行尾加 ` closed`；park 就地改時印 `PARKED_MEMBER <n> after #<m>`；`UNPARKED <n>`。
 //   重跑已做完的 move／park 照樣印同一行（中斷在寫新檔與改舊行之間時只補完舊行，目標檔已有這個成員就不重寫）。
+//   重跑以目標檔已有這個成員為準，不核對那一列的 state（probe --apply 可能已改過它）：中斷後要換成另一個子命令或 --state 時，先看目標檔。
 //   STOP（檔案不動）：`STOP <key> missing`（沒有 batch-<key>.md）、`STOP <n> rows <列數>`（成員列不是剛好一列）、`STOP <n> same-batch`（move 的 <key> 就是 <n>）、
 //   `STOP <n> members <數目>`（就地 park 的 batch 還有別的成員）、`STOP <n> state <state>`（park 的成員不是 done、unpark 的不是 parked、move／park 的成員已移到別處）、`STOP <n> target batch-<n>.md`（目標檔已存在卻沒有這個成員）。
 // exit：0 成功；4 STOP；2 用法錯誤（--reason 不能空白、含換行、三個連續空白或 `|`）。

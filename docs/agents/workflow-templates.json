@@ -63,8 +63,8 @@
     },
     "scripts/pilot-batch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-batch.mjs",
-      "commit": "b2a9471c81ff3e3e1a9a85f1b6a9daa34fa83535",
-      "sha256": "c2aa79ae101ca5ae6925e1d77fe13a478d95af8998713177aae463775c036e77"
+      "commit": "9dba2117986d3b2858b8c220b984893bb0ec4e38",
+      "sha256": "dc9c3e027576bbb08f0f78e42952bc0d978eeb407d55eb9cc1bec93ea14c17da"
     },
     "scripts/pilot-counterpart.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-counterpart.mjs",
