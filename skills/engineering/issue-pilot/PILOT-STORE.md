@@ -35,6 +35,7 @@ Append-only, one line per event, no header:
 - **Start line**, appended when a session becomes coordinator: `<time>   session <$CLAUDE_CODE_SESSION_ID>   pid <$CLAUDE_PID>   <session name>`.
 - **Handoff line**, appended by `pilot-handoff` itself once the handoff completed, right before it prints `HANDED_OFF <handle>`, and never on `STOP`: `<time>   handoff from-session <old session id> → terminal <handle>   reason <reason>`. A session named by a handoff line's `from-session` is retired.
 - **Old start line**, still accepted by readers and never rewritten: `<time>  <session id>  <session name>  coordinator start` (two spaces, no pid).
+- **Readers besides the coordinator**: `issue-pool.mjs claim` takes over a claim from this machine's session that a handoff line retired, when the claiming session has a start line and no handoff line of its own; it prints `CLAIMED <n> takeover <session>`.
 
 ## `.scratch/pilot/hold`
 
