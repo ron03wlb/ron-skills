@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { git, write } from './helpers/git-fixture.mjs';
+import { env, git, write } from './helpers/git-fixture.mjs';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
 import { STAMP_FILES, restamp } from '../scripts/restamp.mjs';
 
@@ -69,7 +69,8 @@ function conflict(t) {
   git(tree, 'commit', '-q', '-m', 'main');
 
   git(tree, 'switch', '-q', 'feature');
-  const merge = spawnSync('git', ['-C', tree, 'merge', '--no-edit', 'main'], { encoding: 'utf8' });
+  // 合併會衝突、exit 非 0，不能用 git()；identity 照 git() 帶，沒有全域 identity 的 CI 也合得出衝突（#197）。
+  const merge = spawnSync('git', ['-C', tree, '-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '--no-edit', 'main'], { encoding: 'utf8', env });
   assert.notEqual(merge.status, 0, '要有衝突');
   const conflicted = git(tree, 'diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean);
   assert.deepEqual(conflicted, [MANIFEST, STAMPS]);
