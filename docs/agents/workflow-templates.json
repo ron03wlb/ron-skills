@@ -67,8 +67,8 @@
     },
     "scripts/pilot-capacity.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-capacity.mjs",
-      "commit": "73866ba14c51551339840a46525275da1361ef12",
-      "sha256": "c8399822beaf2dea813df8ae92b8b29d1594e98d0671840ff8497f62474fded0"
+      "commit": "ab589a14be02cf0e8215f16431060c1780313bf1",
+      "sha256": "7be3a06f4bc7c0f6ae26a2cc4013de2f8d14f0686cc49eb29783e814f443c5cc"
     },
     "scripts/pilot-counterpart.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-counterpart.mjs",

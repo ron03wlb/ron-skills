@@ -44,7 +44,13 @@ function withLock(file, fn) {
       if (error.code !== 'EEXIST') throw error;
       let age = 0;
       try { age = Date.now() - statSync(lock).mtimeMs; } catch { continue; }
-      if (age > LOCK_STALE_MS) { rmSync(lock, { recursive: true, force: true }); continue; }
+      // 先改名成自己的名稱再刪：兩個等待者同時判定遺留時，只有一個 rename 得到，另一個不會刪掉對方剛拿到的新鎖。
+      if (age > LOCK_STALE_MS) {
+        const stale = `${lock}.stale.${process.pid}`;
+        try { renameSync(lock, stale); } catch { continue; }
+        rmSync(stale, { recursive: true, force: true });
+        continue;
+      }
       if (Date.now() > deadline) throw new Error(`帳本鎖 ${lock} 等了 ${LOCK_WAIT_MS / 1000} 秒還在`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
     }
