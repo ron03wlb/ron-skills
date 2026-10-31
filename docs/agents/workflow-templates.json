@@ -18,8 +18,8 @@
     },
     "scripts/claude-hook-tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-tab-state.mjs",
-      "commit": "a29424ef3f1e8b8dd742c39f6bb8cc22401095d1",
-      "sha256": "4dbc8c5f2cd476d3fbe21e8d213a82eb5011ac327af122a010117d4a0051175d"
+      "commit": "c70f3e702b4b6494149c80c169443466c1ab59c3",
+      "sha256": "f3fbcb76eb883b4a6c22a35752d06a967a237725264170d88bbd7007c124c451"
     },
     "scripts/issue-pool.mjs": {
       "template": "skills/engineering/setup-workflow/templates/issue-pool.mjs",
@@ -38,8 +38,8 @@
     },
     "scripts/orca-session-split.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-split.mjs",
-      "commit": "a29424ef3f1e8b8dd742c39f6bb8cc22401095d1",
-      "sha256": "97cdaccd92f64cd0f5ff9d842881e1408c21fe23bdf125e31f020d77bf37a484"
+      "commit": "c70f3e702b4b6494149c80c169443466c1ab59c3",
+      "sha256": "361a58f9750105f25380081b89675ed0531260d0bd32e67fdd648a8a38975fc6"
     },
     "scripts/orca-worktree-create.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-worktree-create.mjs",
@@ -58,8 +58,8 @@
     },
     "scripts/pilot-handoff.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-handoff.mjs",
-      "commit": "a29424ef3f1e8b8dd742c39f6bb8cc22401095d1",
-      "sha256": "f67120f42073f0d1b4cf3c33bef597b20fa96223102577766ca452b534ddfc7d"
+      "commit": "c70f3e702b4b6494149c80c169443466c1ab59c3",
+      "sha256": "4a77d9a371795754496a1d8231de775821478f4d443929b8872078dc0d96148c"
     },
     "scripts/pilot-hold.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-hold.mjs",
@@ -83,8 +83,8 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "a29424ef3f1e8b8dd742c39f6bb8cc22401095d1",
-      "sha256": "2f6e05b1008a6833148a41d5dd4c9e32603d8ff1216a77d0fd1877321b9cb1eb"
+      "commit": "c70f3e702b4b6494149c80c169443466c1ab59c3",
+      "sha256": "3834a9d51b5c79da82fd7af4a2749cccf02ef61916e731796f10ac6bf9bf5aec"
     }
   }
 }

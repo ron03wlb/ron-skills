@@ -7,23 +7,23 @@
 // - Stop：最後一段 assistant 文字命中 Stop 觸發條件就換狀態；接著檢查標題，沒有 `<狀態>｜` 前綴就 exit 2，stderr 交回 agent 改名。
 //   只檢查格式，不判斷狀態對不對；stop_hook_active 為 true（已因 Stop hook 續跑一次）時不檢查。
 // 預設觸發條件見 DEFAULT_TRIGGERS；`/retro` 的待關閉由 retro 最後一步自己呼叫 tab-state。專案可以在 `docs/agents/tab-state.json`
-// 新增、覆寫或停用觸發條件：`{ "triggers": { "<名稱>": { "event": "PostToolUse"|"Stop", "match": "<regex，逐行比對>", "state": "<狀態>" } | null } }`，
-// 同名覆寫、null 停用；PostToolUse 的 match 比對 Bash 的 stdout，Stop 的比對最後一段 assistant 文字。檔案不存在或不是合法 JSON 就用預設值。
+// 新增、覆寫或停用觸發條件：`{ "triggers": { "<名稱>": { "event": "PostToolUse"|"Stop", "match": "<regex，逐行比對>", "skipCommand": "<regex>", "state": "<狀態>" } | null } }`，
+// 同名覆寫、null 停用；PostToolUse 的 match 比對 Bash 的 stdout，Stop 的比對最後一段 assistant 文字；
+// 選填的 skipCommand 命中 Bash 指令時不觸發（Stop 沒有指令，不看它）。檔案不存在或不是合法 JSON 就用預設值。
 // 沒有 ORCA_TERMINAL_HANDLE、輸入不合法、Orca 呼叫失敗時一律 exit 0 不輸出。
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { STATES, currentTitle, hasState, recordTitle, setState } from './tab-state.mjs';
+import { STATES, currentTitle, hasState, orcaContext, recordTitle, setState } from './tab-state.mjs';
 
 export const DEFAULT_TRIGGERS = {
-  // land.mjs 合入後的最後一行
-  landed: { event: 'PostToolUse', match: '^LANDED \\S+ [0-9a-f]{7,40}$', state: '待 Retro' },
+  // land.mjs 合入後的最後一行；pilot 的 coordinator 以 `--keep-branch` 落地整合分支，它還在運作，不算
+  landed: { event: 'PostToolUse', match: '^LANDED \\S+ [0-9a-f]{7,40}$', skipCommand: '--keep-branch\\b', state: '待 Retro' },
   // pilot-handoff.mjs 交接完成，舊 coordinator 退役
   'pilot-handoff': { event: 'PostToolUse', match: '^HANDED_OFF \\S+$', state: '待 Retro' },
   // L3 worker 寫出 DONE 結果行
   'worker-done': { event: 'Stop', match: '^DONE \\d+ [0-9a-f]{7,40}$', state: '待 Retro' },
 };
-const ORCA_STEP_MS = 10000;
 
 /** 預設值加上專案 `docs/agents/tab-state.json` 的新增、覆寫（同名）與停用（null）。 */
 export function triggers(project) {
@@ -38,16 +38,21 @@ export function triggers(project) {
   return Object.values(merged).filter(trigger => STATES.includes(trigger?.state) && typeof trigger.match === 'string');
 }
 
-/** 第一個命中 `text` 的觸發條件的狀態；match 寫壞的觸發條件略過。 */
-export function matchedState(list, event, text) {
+/** 第一個命中 `text`、而且 skipCommand 沒命中 `command` 的觸發條件的狀態；regex 寫壞的觸發條件略過。 */
+export function matchedState(list, event, text, command = '') {
   for (const trigger of list.filter(trigger => trigger.event === event)) {
-    try { if (new RegExp(trigger.match, 'm').test(text)) return trigger.state; } catch { /* 略過寫壞的 regex */ }
+    try {
+      if (trigger.skipCommand && new RegExp(trigger.skipCommand).test(command)) continue;
+      if (new RegExp(trigger.match, 'm').test(text)) return trigger.state;
+    } catch { /* 略過寫壞的 regex */ }
   }
   return null;
 }
 
 const unquote = word => word.startsWith("'") ? word.slice(1, -1) : word.startsWith('"') ? word.slice(1, -1).replace(/\\(.)/g, '$1') : word;
 const WORD = `("(?:[^"\\\\]|\\\\.)*"|'[^']*'|\\S+)`;
+// 一段 `terminal rename` 指令：到換行或引號外的 `; & |` 為止。
+const RENAME = /\bterminal\s+rename\b(?:"(?:[^"\\]|\\.)*"|'[^']*'|[^\n;&|"'])*/g;
 
 /**
  * 指令裡改本分頁標題的 `terminal rename` 設的最後一個標題；`--terminal` 是 handle 本身或 `$ORCA_TERMINAL_HANDLE`（省略時是目前分頁）。
@@ -55,7 +60,7 @@ const WORD = `("(?:[^"\\\\]|\\\\.)*"|'[^']*'|\\S+)`;
  */
 export function renamedTitle(command, handle) {
   let title = null;
-  for (const [segment] of String(command ?? '').matchAll(/\bterminal\s+rename\b[^\n;&|]*/g)) {
+  for (const [segment] of String(command ?? '').matchAll(RENAME)) {
     const terminal = segment.match(new RegExp(`--terminal(?:\\s+|=)${WORD}`))?.[1];
     const value = segment.match(new RegExp(`--title(?:\\s+|=)${WORD}`))?.[1];
     if (value === undefined) continue;
@@ -86,14 +91,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   let input;
   try { input = JSON.parse(readFileSync(0, 'utf8')); } catch { process.exit(0); }
   if (!handle || !input) process.exit(0);
-  const ctx = { cli: process.env.ORCA_CLI_COMMAND || 'orca', signal: AbortSignal.timeout(ORCA_STEP_MS) };
+  const ctx = orcaContext();
   const list = triggers(process.env.CLAUDE_PROJECT_DIR || input.cwd);
   try {
     if (String(input.hook_event_name).startsWith('PostToolUse')) {
       if (input.tool_name !== 'Bash') process.exit(0);
       const title = renamedTitle(input.tool_input?.command, handle);
       if (title !== null) recordTitle(handle, title);
-      const state = matchedState(list, 'PostToolUse', output(input.tool_response));
+      const state = matchedState(list, 'PostToolUse', output(input.tool_response), String(input.tool_input?.command ?? ''));
       if (state) await setState(ctx, handle, state);
     } else if (input.hook_event_name === 'Stop') {
       let text = '';

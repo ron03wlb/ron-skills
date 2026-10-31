@@ -84,7 +84,7 @@ Canonical scripts in `<skill>/templates/`. A row's level is the lowest level tha
 | `concurrent-edits.mjs`, `inflight-overlap.mjs`, `integration-status.mjs` | L2 | named in the adapter's Worktrees and Pilot steps |
 | `adr-next.mjs` | L2, repos with `docs/adr/` | named in the repo's ADR rules |
 | `claude-hook-main-checkout.mjs` | L3, always | `PreToolUse` matcher `Edit\|Write\|Bash`: blocks writes (Bash: `sed -i`, `perl -i`, `>`/`>>`, `tee` targets; `$VAR`s expand from assignments in the same command or the environment, and unresolvable ones are skipped) that would dirty the main checkout's `git status` (tracked files and new files that are not gitignored) of the project's own repo (`$CLAUDE_PROJECT_DIR`), which stop the pilot's Probe from merging |
-| `tab-state.mjs`, `claude-hook-tab-state.mjs` | L1, with Orca | the hook on `.claude/settings.json` `PostToolUse` matcher `Bash` and `Stop`; the adapter's Tab state section names `node scripts/tab-state.mjs <state>` |
+| `tab-state.mjs`, `claude-hook-tab-state.mjs` (bring `orca-session-send.mjs` with them) | L1, with Orca | the hook on `.claude/settings.json` `PostToolUse` matcher `Bash` and `Stop`; the adapter's Tab state section names `node scripts/tab-state.mjs <state>` |
 | `orca-worktree-create.mjs`, `orca-session-send.mjs`, `orca-session-split.mjs` | L3, with Orca | the adapter's Dispatch and Handoff lines |
 | `pilot-handoff.mjs` | L3, with Orca | the adapter's Pilot Handoff line; pass `--held-check <command>` when the project has an "integration merge in progress" check |
 | `issue-pool.mjs` | L3, GitHub trackers | the adapter's Pilot Pool line (list the buckets, pick `ready` in order) and Dispatch line (`claim <n>` before each member) |
