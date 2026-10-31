@@ -19,7 +19,7 @@
 <article>
 <h1>04 L2 導入</h1>
 <p>L1 靠「agent 照 skill 做」維持秩序；只要同時有兩個以上的 session、或有人另開終端手動 commit，這份秩序就擋不住。L2 把幾個容易出事的動作收成<strong>入口</strong>：每個動作只有一條路，路上有檢查，失敗時印出修正指示。</p>
-<p>本章只寫每個入口的<strong>契約</strong>（必須做什麼、exit code、拒絕什麼），不提供腳本：入口用什麼語言、怎麼實作由各 repo 自己決定。唯二的範本是 pre-push hook 與 <code>pilot_git.py</code>。</p>
+<p>本章只寫每個入口的<strong>契約</strong>（必須做什麼、exit code、拒絕什麼），不提供腳本：入口用什麼語言、怎麼實作由各 repo 自己決定。範本只有 pre-push hook、<code>pilot_git.py</code>，以及 <code>/setup-workflow</code> 寫的遠端 CI 與複製的 <code>land.mjs</code>（見 <a href="#ci-執行端">CI 執行端</a>）。</p>
 <h2 id="什麼時候進-l2">什麼時候進 L2</h2>
 <ul>
 <li>同時開兩個以上的 session 交付不同 Issue，開始互相踩檔案或分支。</li>
@@ -63,6 +63,12 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   git worktree remove --force &quot;$tmp&quot;
 done</code></pre>
 <p>git hook 擋得住人，但 agent 可以加 <code>--no-verify</code> 跳過它；要連這個也擋，再加一個 Claude Code <code>PreToolUse</code> hook，拒絕含 <code>--no-verify</code>、<code>git commit -n</code>、<code>-c core.hooksPath=</code> 的 Bash 指令（見 <a href="06-quality-gates.html#1-編輯時">06 品質校驗時間軸</a>）。</p>
+<h2 id="ci-執行端">CI 執行端</h2>
+<p>合併前跑單一檢查入口、把結果當作 CI 證據的地方有兩個：<strong>遠端</strong>（GitHub Actions、GitLab pipeline）是預設；<strong>本機</strong>只在遠端沒啟動時用（帳務停擺、沒有 runner，<code>land.mjs</code> 印 <code>STOP ci-not-started</code>）。遠端跑了而失敗，不能改用本機。程式碼 host 是 <code>local</code>（沒有 remote）時只有本機。</p>
+<ul>
+<li><strong>遠端.</strong> <code>/setup-workflow</code> 升到 L2 時以它的 <code>scripts/ci.mjs</code> 依程式碼 host 寫最小設定：GitHub 寫 <code>.github/workflows/checks.yml</code>、GitLab 寫 <code>.gitlab-ci.yml</code>，<code>push</code> 與 PR／MR 都跑單一檢查入口，Node 版本鎖成跑 setup 那台機器的版本。專案已經有 CI 檔就不動，只檢查有沒有呼叫單一檢查入口，沒有就回報缺口；<code>detect.mjs</code> 也把它印成 <code>GAP ci</code>，但不算等級訊號。</li>
+<li><strong>本機.</strong> 合入前在要合入的 tip SHA、工作樹乾淨時跑單一檢查入口，PR 留言附 SHA 與結果行。GitHub 上用 setup-workflow 的 <code>land.mjs</code>：<code>node scripts/land.mjs &lt;branch&gt; --local-checks &lt;sha&gt; --check-command '&lt;單一檢查入口&gt;'</code>，它在 tip 的暫時 detached worktree 跑檢查。不用 pre-push hook、<code>act</code> 或 <code>gitlab-runner exec</code> 代替。</li>
+</ul>
 <h2 id="兩段式結案">兩段式結案</h2>
 <p>L1 的結案是人看到 PR 合併後手動關單。L2 把它收成一個入口，分兩次執行，中間隔著 push：</p>
 <p><strong>結案入口契約</strong></p>

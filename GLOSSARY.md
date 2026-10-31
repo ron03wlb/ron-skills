@@ -20,6 +20,10 @@ _Avoid_: tracker 種類
 `origin` 所在的平台，`github`、`gitlab`（含 http、IP 的自架 GitLab）或 `local`（沒有 remote，沒有 PR／MR 與遠端 CI）；adapter 的 Delivery 段依它寫指令。
 _Avoid_: remote 種類、git host
 
+**CI 執行端**:
+合併前跑單一檢查入口、把結果當作 CI 證據的地方，分遠端（GitHub Actions、GitLab pipeline）與本機（交付端在要合入的 SHA 上自己跑）；預設遠端，遠端沒啟動時才改用本機。
+_Avoid_: 方案、模式
+
 **adapter**:
 專案寫給 agent 讀的一份設定，記錄自己的 tracker、檢查、交付指令，以及 L3 的 Pilot 段。
 _Avoid_: 設定檔、profile
