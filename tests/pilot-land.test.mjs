@@ -943,3 +943,239 @@ test('請求分支：key 不是 req-<n>、分支不是 retro/<x>，或既有 che
   assert.match(other.last, /^STOP checkpoint .*retro\/b/);
   assert.equal(f.checks(), 0);
 });
+
+// #193：land.mjs 印 STOP behind-main 時，coordinator 手打 switch -C pilot/stage-sync-main、merge origin/main、解衝突、restamp、
+// bin/check、ff、branch -d（6 次呼叫，`git -C $S` 還被 main-checkout hook 擋下）。sync-main 一行做完，沿用 Stage 的解法與 Regression。
+/**
+ * 主 checkout、bare origin、停在 pilot/integration 的 stage worktree。`integration` 與 `upstream` 是 (stageTree 或 clone) => void，
+ * 各自在整合分支與 origin/main 上 commit；`batches` 是 { key: checkpoint 文字 }（可以是函式，收到 integration 的 tip）。
+ */
+function syncMainFixture(t, { integration, upstream, base = {}, batches = {} }) {
+  const temp = mkdtempSync(join(realTmpdir(), 'pilot-sync-'));
+  t.after(() => rmSync(temp, { recursive: true, force: true }));
+  const repo = join(temp, 'repo');
+  mkdirSync(repo);
+  git(repo, 'init', '-q', '-b', 'main');
+  git(repo, 'config', 'user.name', 't');
+  git(repo, 'config', 'user.email', 't@t');
+  write(repo, { '.gitignore': '.scratch/\n', 'bin/check': FAKE_CHECK, ...base });
+  chmodSync(join(repo, 'bin/check'), 0o755);
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-qm', 'base');
+  const origin = join(temp, 'origin.git');
+  git(temp, 'clone', '-q', '--bare', repo, origin);
+  git(repo, 'remote', 'add', 'origin', origin);
+  git(repo, 'fetch', '-q', 'origin');
+  git(repo, 'branch', 'pilot/integration');
+  const stageTree = join(temp, 'pilot-stage');
+  git(repo, 'worktree', 'add', '-q', stageTree, 'pilot/integration');
+  const commitIn = (tree, change, message) => {
+    if (!change) return;
+    change(tree);
+    git(tree, 'add', '-A');
+    git(tree, 'commit', '-qm', message);
+  };
+  commitIn(stageTree, integration, 'integration');
+  const clone = join(temp, 'clone');
+  git(temp, 'clone', '-q', origin, clone);
+  commitIn(clone, upstream, 'upstream');
+  git(clone, 'push', '-q', 'origin', 'main');
+  const tip = git(repo, 'rev-parse', 'pilot/integration');
+  for (const [key, text] of Object.entries(batches)) write(repo, { [`.scratch/pilot/batch-${key}.md`]: typeof text === 'function' ? text(tip) : text });
+  const log = join(temp, 'check.log');
+  writeFileSync(log, '');
+  // 同 land()：預設 PILOT_LOAD_NOW=0，不受真機負載與 ~/.zshrc 的 PILOT_LOAD_MAX 影響。
+  const sync = (extra = {}, args = []) => {
+    const result = spawnSync('node', [script, 'sync-main', ...args], { cwd: repo, encoding: 'utf8', env: { ...landEnv, FAKE_CHECK_LOG: log, PILOT_LOAD_NOW: '0', ...extra } });
+    const lines = result.stdout.trim().split('\n');
+    return { ...result, lines, last: lines.at(-1) };
+  };
+  return {
+    temp, repo, stageTree, sync,
+    tip: () => git(repo, 'rev-parse', 'pilot/integration'),
+    upstream: () => git(repo, 'rev-parse', 'origin/main'),
+    checks: () => readFileSync(log, 'utf8').split('\n').filter(Boolean).length,
+    batch: key => readFileSync(join(repo, `.scratch/pilot/batch-${key}.md`), 'utf8'),
+  };
+}
+
+/** 在 tree 改一個 check-workflow-sync 追蹤的來源並 restamp。 */
+const restampedChange = (source, content, extra = {}) => tree => {
+  write(tree, { [source]: content, ...extra });
+  const result = spawnSync('node', [join(tree, 'scripts/check-workflow-sync.mjs'), '--restamp'], { cwd: tree, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+};
+
+const SYNC_BASE = () => ({
+  ...Object.fromEntries(SYNC_SOURCES.map(path => [path, `# ${path}\n`])),
+  'scripts/check-workflow-sync.mjs': readFileSync(SYNC, 'utf8'),
+  'scripts/workflow-doc-sync.json': stampsFor(Object.fromEntries(SYNC_SOURCES.map(path => [path, `# ${path}\n`]))),
+});
+
+test('sync-main：整合分支與 origin/main 各改了戳記，一行指令 restamp 合入、跑 Regression、快轉整合分支，印 SYNCED', t => {
+  const f = syncMainFixture(t, {
+    base: SYNC_BASE(),
+    integration: restampedChange(SYNC_SOURCES[0], '# integration\n'),
+    upstream: restampedChange(SYNC_SOURCES[1], '# upstream\n'),
+  });
+  const before = f.tip();
+  const result = f.sync();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const sha = f.tip();
+  assert.equal(result.last, `SYNCED ${sha} CHECK_PASS tests 3+4+5`);
+  assert.ok(result.lines.includes('RESOLVED sync-main restamp scripts/workflow-doc-sync.json'), result.stdout);
+  git(f.repo, 'merge-base', '--is-ancestor', f.upstream(), sha);
+  git(f.repo, 'merge-base', '--is-ancestor', before, sha);
+  assert.equal(git(f.repo, 'show', `${sha}:${SYNC_SOURCES[0]}`), '# integration');
+  assert.equal(git(f.repo, 'show', `${sha}:${SYNC_SOURCES[1]}`), '# upstream');
+  const check = spawnSync('node', [join(f.stageTree, 'scripts/check-workflow-sync.mjs')], { cwd: f.stageTree, encoding: 'utf8' });
+  assert.equal(check.status, 0, check.stdout + check.stderr);
+  assert.equal(f.checks(), 1);
+  assert.match(readFileSync(join(f.repo, '.scratch/pilot/reg-sync-main.log'), 'utf8'), /CHECK_PASS/);
+  assert.equal(git(f.repo, 'branch', '--list', 'pilot/stage-sync-main'), '', 'stage 分支已刪');
+  assert.equal(git(f.stageTree, 'symbolic-ref', '--short', 'HEAD'), 'pilot/integration');
+  assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
+});
+
+test('sync-main：解不了的衝突印 STOP conflict sync-main <檔案>，merge --abort、stage worktree 乾淨、整合分支不動、沒跑 Regression', t => {
+  const f = syncMainFixture(t, {
+    base: { 'x.txt': 'x\n' },
+    integration: tree => write(tree, { 'x.txt': 'integration\n' }),
+    upstream: tree => write(tree, { 'x.txt': 'upstream\n' }),
+  });
+  const before = f.tip();
+  const result = f.sync();
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(result.last, 'STOP conflict sync-main x.txt');
+  assert.equal(f.tip(), before);
+  assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
+  assert.equal(f.checks(), 0);
+});
+
+test('sync-main：Regression 沒過印 STOP regression sync-main <exit>，整合分支不動', t => {
+  const f = syncMainFixture(t, {
+    integration: tree => write(tree, { 'a.txt': 'a\n' }),
+    upstream: tree => write(tree, { 'b.txt': 'b\n' }),
+  });
+  const before = f.tip();
+  const result = f.sync({ FAKE_CHECK_EXIT: '3' });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(result.last, 'STOP regression sync-main 3');
+  assert.equal(f.tip(), before);
+  assert.equal(f.checks(), 1);
+});
+
+// #193 redispatch：sync-main 分叉時也要跑 Regression，和 batch 一樣先過 #178 的 load 關卡；只快轉時不跑 Regression，不受關卡影響。
+test('sync-main：分叉且 load 超過門檻時印 STOP load，不切 stage 分支、不跑 Regression、整合分支不動；load 降下來重跑就 SYNCED', t => {
+  const f = syncMainFixture(t, {
+    integration: tree => write(tree, { 'a.txt': 'a\n' }),
+    upstream: tree => write(tree, { 'b.txt': 'b\n' }),
+  });
+  const before = f.tip();
+  for (const [extra, args, last] of [
+    [{ PILOT_LOAD_NOW: '45.678', PILOT_LOAD_MAX: '30' }, [], 'STOP load 45.68 30'],
+    [{ PILOT_LOAD_NOW: '12', PILOT_LOAD_MAX: '30' }, ['--load-max', '10'], 'STOP load 12 10'],
+  ]) {
+    const result = f.sync(extra, args);
+    assert.equal(result.status, 4, result.stdout + result.stderr);
+    assert.equal(result.last, last);
+    assert.equal(f.tip(), before);
+    assert.equal(f.checks(), 0);
+    assert.equal(git(f.repo, 'branch', '--list', 'pilot/stage-sync-main'), '');
+    assert.equal(git(f.stageTree, 'symbolic-ref', '--short', 'HEAD'), 'pilot/integration');
+  }
+  const result = f.sync();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.last, new RegExp(`^SYNCED ${f.tip()} CHECK_PASS`));
+});
+
+test('sync-main：只是落後時不受 load 關卡影響，照常快轉', t => {
+  const f = syncMainFixture(t, { upstream: tree => write(tree, { 'b.txt': 'b\n' }) });
+  const result = f.sync({ PILOT_LOAD_NOW: '100000', PILOT_LOAD_MAX: '1' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.last, `SYNCED ${f.upstream()} ff`);
+});
+
+// #193 留言：手動 sync-main 之後 merged batch 的 regression 行還是各自的 staged SHA，Probe 印 `NOT_IN_MAIN <key> tip <sync sha>`，
+// 只能靠 decisions.md 的交接列才知道可以放行。sync-main 通過時在每個 `current: merged` 的 batch 追加 regression 行，Probe 改印 RESUME_PUSH。
+const PROBE = new URL('../scripts/pilot-probe.mjs', import.meta.url).pathname;
+const PR_BODY = new URL('../scripts/pilot-pr-body.mjs', import.meta.url).pathname;
+
+test('sync-main：通過時在每個 merged batch 追加 regression 行，Probe 印 RESUME_PUSH；其他 batch 不動', t => {
+  const merged = tip => `# batch 5\ncurrent: merged ${tip}\nintegration: pilot/integration @ 1234567\n\n`
+    + '| Issue | branch | worktree | handle | started | stuck-after | state | candidate |\n|---|---|---|---|---|---|---|---|\n'
+    + `| 5 | issue/5-x | /w/issue-5 | term_5 | 2026-10-31T07:00:00+08:00 | 90m | done | abc1234 |\nregression: ${tip} exit 0 CHECK_PASS tests 1+1+1\n`;
+  const closed = '# batch 4\ncurrent: closed\n\nregression: 1111111111111111111111111111111111111111 exit 0\n';
+  const f = syncMainFixture(t, {
+    integration: tree => write(tree, { 'a.txt': 'a\n' }),
+    upstream: tree => write(tree, { 'b.txt': 'b\n' }),
+    batches: { 5: merged, 4: closed },
+  });
+  const bin = join(f.temp, 'bin');
+  write(bin, { gh: '#!/bin/sh\necho "gh offline" >&2\nexit 1\n' });
+  chmodSync(join(bin, 'gh'), 0o755);
+  const probe = () => spawnSync('node', [PROBE, f.repo], { encoding: 'utf8', env: { ...env, PATH: `${bin}:${env.PATH}` } }).stdout.split('\n');
+
+  const result = f.sync();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const sha = f.tip();
+  assert.match(f.batch('5'), new RegExp(`\\nregression: ${sha} exit 0 sync-main CHECK_PASS tests 3\\+4\\+5\\n$`));
+  assert.equal(f.batch('4'), closed);
+  const out = probe();
+  assert.ok(out.includes('RESUME_PUSH 5'), out.join('\n'));
+  assert.ok(!out.some(line => line.startsWith('NOT_IN_MAIN 5')), out.join('\n'));
+  // Push gate 第 1 步接著產生 PR body：認得 sync-main 行，不印 STOP regression。
+  const body = spawnSync('node', [PR_BODY, f.repo], { encoding: 'utf8', env });
+  assert.equal(body.status, 0, body.stdout + body.stderr);
+  assert.match(body.stdout, new RegExp(`^- batch 5：staged ${f.batch('5').match(/^current: merged (\w+)/m)[1]}，.*，\`regression: ${sha} exit 0 sync-main CHECK_PASS tests 3\\+4\\+5\`$`, 'm'));
+});
+
+// #193 留言：retro 分支直接落地進 main 之後，整合分支只是落後、可以快轉；coordinator 每次都手動 merge --ff-only origin/main。
+test('sync-main：整合分支是 origin/main 的祖先時直接快轉，印 SYNCED <sha> ff，不建 merge commit、不跑 Regression', t => {
+  const f = syncMainFixture(t, { upstream: tree => write(tree, { 'b.txt': 'b\n' }) });
+  const result = f.sync();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.tip(), f.upstream());
+  assert.equal(result.last, `SYNCED ${f.upstream()} ff`);
+  assert.equal(f.checks(), 0);
+  assert.equal(git(f.stageTree, 'symbolic-ref', '--short', 'HEAD'), 'pilot/integration');
+  assert.equal(git(f.repo, 'branch', '--list', 'pilot/stage-sync-main'), '');
+});
+
+test('sync-main：整合分支已包含 origin/main 時不動，印 SYNCED <tip> current', t => {
+  const f = syncMainFixture(t, { integration: tree => write(tree, { 'a.txt': 'a\n' }) });
+  const before = f.tip();
+  const result = f.sync();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.last, `SYNCED ${before} current`);
+  assert.equal(f.tip(), before);
+  assert.equal(f.checks(), 0);
+});
+
+test('sync-main：多餘的參數是用法錯誤，exit 2', t => {
+  const result = spawnSync('node', [script, 'sync-main', 'x'], { encoding: 'utf8', env });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /sync-main/);
+});
+
+// #193 review：regression 行原本在快轉之後才寫，寫到一半失敗時整合分支已前進，重跑只印 SYNCED current、補不回來，Probe 又印 NOT_IN_MAIN。
+test('sync-main：merged batch 寫不進去時整合分支不動；修好後重跑照常 SYNCED 並補上 regression 行', t => {
+  const merged = tip => `# batch 5\ncurrent: merged ${tip}\n\nregression: ${tip} exit 0\n`;
+  const f = syncMainFixture(t, {
+    integration: tree => write(tree, { 'a.txt': 'a\n' }),
+    upstream: tree => write(tree, { 'b.txt': 'b\n' }),
+    batches: { 5: merged },
+  });
+  const before = f.tip();
+  const file = join(f.repo, '.scratch/pilot/batch-5.md');
+  chmodSync(file, 0o444);
+  const failed = f.sync();
+  assert.notEqual(failed.status, 0, failed.stdout + failed.stderr);
+  assert.equal(f.tip(), before, '整合分支不動');
+  chmodSync(file, 0o644);
+  const again = f.sync();
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.equal(again.last, `SYNCED ${f.tip()} CHECK_PASS tests 3+4+5`);
+  assert.ok(again.lines.includes('RECORDED 5'), again.stdout);
+  assert.match(f.batch('5'), new RegExp(`\\nregression: ${f.tip()} exit 0 sync-main CHECK_PASS tests 3\\+4\\+5\\n$`));
+});
