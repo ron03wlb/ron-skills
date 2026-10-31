@@ -333,6 +333,16 @@ ${resolved ? '- resolved 2026-10-31T12:00:00+08:00 帳務已恢復\n' : ''}`;
   assert.deepEqual(out.filter(line => /^(PUSH_PARKED|NOT_IN_MAIN|RESUME_PUSH|IN_MAIN) /.test(line)), ['IN_MAIN 14', 'PUSH_PARKED G4 3 batches'], out.join('\n'));
   assert.ok(out.includes('GATE G4 GitHub Actions 帳務'), out.join('\n'));
 
+  // 表格形式的 gate 讀 parks 欄；`all-pushes` 不是固定寫法，不算。
+  writeFileSync(join(pilot, 'gates.md'), `${gates(true)}
+| id | Issue | question | options | default | parks | opened | status |
+|---|---|---|---|---|---|---|---|
+| G5 | batch 11 | 改名？ | 改｜不改 | 改 | all-pushes | 2026-10-31T11:00:00+08:00 | open |
+| G6 | batch 120 | 帳務？ | 等｜不等 | 等 | all-push | 2026-10-31T11:30:00+08:00 | open |
+`);
+  out = lines(probe());
+  assert.deepEqual(out.filter(line => /^(PUSH_PARKED|NOT_IN_MAIN|RESUME_PUSH|IN_MAIN) /.test(line)), ['IN_MAIN 14', 'PUSH_PARKED G6 3 batches'], out.join('\n'));
+
   writeFileSync(join(pilot, 'gates.md'), gates(true));
   out = lines(probe());
   assert.deepEqual(out.filter(line => /^(PUSH_PARKED|NOT_IN_MAIN|RESUME_PUSH|IN_MAIN) /.test(line)),

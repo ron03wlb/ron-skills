@@ -670,13 +670,13 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
       // 開著的 gate 擋住所有 push 時，每個沒進主分支的 batch 都在等它，NOT_IN_MAIN／RESUME_PUSH 合成一行（#136）。
       const parking = openGates(readStore(pilot, 'gates.md')).find(parksAllPush);
       let parked = 0;
-      const notInMain = line => (parking ? parked++ : out.push(line));
+      const unpushed = line => (parking ? parked++ : out.push(line));
       for (const { key, sha, regression, regressionExit, merged } of landing) {
-        if (!sha) notInMain(`NOT_IN_MAIN ${key} no-sha`);
+        if (!sha) unpushed(`NOT_IN_MAIN ${key} no-sha`);
         else if (git(checkout, 'merge-base', '--is-ancestor', sha, `origin/${main}`).status === 0) {
           out.push(`IN_MAIN ${key}`);
           if (apply && merged) out.push(...applyPushed(join(pilot, `batch-${key}.md`), key));
-        } else notInMain(merged ? mergedNotInMain(checkout, integration, key, regression, regressionExit) : `NOT_IN_MAIN ${key}`);
+        } else unpushed(merged ? mergedNotInMain(checkout, integration, key, regression, regressionExit) : `NOT_IN_MAIN ${key}`);
       }
       if (parked) out.push(`PUSH_PARKED ${parking.id} ${parked} batches`);
     }
