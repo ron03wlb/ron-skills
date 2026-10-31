@@ -58,8 +58,8 @@
     },
     "scripts/pilot-handoff.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-handoff.mjs",
-      "commit": "c70f3e702b4b6494149c80c169443466c1ab59c3",
-      "sha256": "4a77d9a371795754496a1d8231de775821478f4d443929b8872078dc0d96148c"
+      "commit": "1d6282e1a34793695c4a79b42e1e234cf445d531",
+      "sha256": "251d8f9557cf48987ef1af18ad2c3695af4a775c5938aacc1923ed3411fab2ed"
     },
     "scripts/pilot-hold.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-hold.mjs",

@@ -117,16 +117,19 @@ async function heldMerge(command, main, signal) {
 
 /**
  * `--to` 的對象：本 repo 任一 worktree 上 handle 與 `to` 相同，或自動標題、記錄的標題與 `to` 是同一主題（sameTopic）的分頁（別的 repo 同名分頁不算）。
- * 傳回 `{ handle }`，或 `{ stop }`：to-not-found、to-ambiguous（附各 handle）、to-self（呼叫者自己的分頁，或 coordinator 檔裡自己的名字）。
+ * 傳回 `{ handle }`，或 `{ stop }`：to-not-found、to-ambiguous（附各 handle）、to-self（只對到呼叫者自己的分頁，或 coordinator 檔裡自己的名字；同時對到自己與別人時排除自己）。
  */
 async function resolveTarget(cli, paths, to, { self, name }, signal) {
   if (to === name || sameTopic(to, name)) return { stop: `to-self ${to}` };
   const { terminals } = await orca({ cli, signal: AbortSignal.any([signal, AbortSignal.timeout(ORCA_STEP_MS)]) }, 'terminal', 'list');
-  const matches = terminals.filter(terminal => paths.includes(terminal.worktreePath)
+  const all = terminals.filter(terminal => paths.includes(terminal.worktreePath)
     && (terminal.handle === to || sameTopic(terminal.title, to) || sameTopic(recordedTitle(terminal.handle), to)));
-  if (!matches.length) return { stop: `to-not-found ${to}` };
+  if (!all.length) return { stop: `to-not-found ${to}` };
+  // 新開的 coordinator 分頁標題都相同，交接雙方因此同主題：先排除自己，再判斷 ambiguous。
+  const matches = all.filter(terminal => terminal.handle !== self);
+  if (!matches.length) return { stop: `to-self ${to}` };
   if (matches.length > 1) return { stop: `to-ambiguous ${to} ${matches.map(terminal => terminal.handle).join(' ')}` };
-  return matches[0].handle === self ? { stop: `to-self ${to}` } : { handle: matches[0].handle };
+  return { handle: matches[0].handle };
 }
 
 /** `signal` 中止時（reason 為 `timeout` 或 `signal <名稱>`）進行中的步驟丟錯，STOP 原因改用 reason。 */
