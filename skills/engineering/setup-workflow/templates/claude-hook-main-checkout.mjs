@@ -84,11 +84,12 @@ function tokenize(command) {
     else if (c === '"') {
       let j = i + 1; let text = '';
       for (; j < command.length && command[j] !== '"'; j += 1) {
-        if (command[j] === '\\' && j + 1 < command.length) { j += 1; text += command[j] === '$' ? LITERAL_DOLLAR : command[j]; } else text += command[j];
+        if (command[j] === '\\' && j + 1 < command.length) { j += 1; if (command[j] !== '\n') text += command[j] === '$' ? LITERAL_DOLLAR : command[j]; } else text += command[j];
       }
       if (j >= command.length) throw new Error('quote');
       word = (word ?? '') + text; i = j;
-    } else if (c === '\\' && i + 1 < command.length) { word = (word ?? '') + (command[i + 1] === '$' ? LITERAL_DOLLAR : command[i + 1]); i += 1; }
+    } else if (c === '\\' && command[i + 1] === '\n') i += 1; // 續行：反斜線加換行兩個都去掉，不成字也不分段（#185）
+    else if (c === '\\' && i + 1 < command.length) { word = (word ?? '') + (command[i + 1] === '$' ? LITERAL_DOLLAR : command[i + 1]); i += 1; }
     else if (/\s/.test(c) && c !== '\n') flush();
     else if (c === '\n' || c === ';') { flush(); tokens.push({ op: ';' }); }
     else if (c === '&' || c === '|') {

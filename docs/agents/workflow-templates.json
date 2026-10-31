@@ -18,8 +18,8 @@
     },
     "scripts/claude-hook-main-checkout.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-main-checkout.mjs",
-      "commit": "0650633b6e564daef9e8c71f58764766081ad13d",
-      "sha256": "d05f9201002d7a754cd49a476612537a8bc03085d15669dde1a7d12f265c04ce"
+      "commit": "6781d30d92b829e3d83d415e296e950704362550",
+      "sha256": "2e0a8e4e96fa4ca2dd7d87c61fa2f63909b890f6c1df0d8a30e21923b8de56cd"
     },
     "scripts/claude-hook-tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-tab-state.mjs",
