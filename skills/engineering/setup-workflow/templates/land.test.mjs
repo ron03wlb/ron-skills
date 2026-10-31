@@ -1,20 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { mergeSample } from './helpers/fake-orca.mjs';
-import { checksVerdict, firstSentence, pickMergedPr, pickPr, rollupBucket, rollupChecks } from '../scripts/land.mjs';
-import { realTmpdir } from './helpers/real-tmpdir.mjs';
+import { mergeSample } from './test/fake-orca.mjs';
+import { GH_SAMPLES } from './test/gh-samples.mjs';
+import { checksVerdict, firstSentence, pickMergedPr, pickPr, rollupBucket, rollupChecks } from './land.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
-const script = new URL('../scripts/land.mjs', import.meta.url).pathname;
+const script = new URL('./land.mjs', import.meta.url).pathname;
 // 同 pilot-unbare.test.mjs：清掉 pre-commit 匯出的 GIT_*，否則 fixture 的 git 指令會寫進本 repo。
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
 const IDENTITY = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
 
-// 假 gh 的輸出一律從真實樣本長出來（PR #39，statusCheckRollup 取自 PR #125），同 helpers/fake-orca.mjs 的做法，替身不能自創 gh 沒有的欄位。
-const samplesDir = new URL('./helpers/fixtures/gh/', import.meta.url).pathname;
-const GH_SAMPLES = Object.fromEntries(readdirSync(samplesDir).map(file => [file.replace(/\.json$/, ''), JSON.parse(readFileSync(join(samplesDir, file), 'utf8'))]));
+// 假 gh 的輸出一律從真實樣本長出來（test/gh-samples.mjs；statusCheckRollup 取自真實 PR），替身不能自創 gh 沒有的欄位。
 
 // statusCheckRollup 的 CheckRun 項目；`{ head, checks }` 是 PR 的 head 還停在別的 SHA 時那次查詢看到的結果。
 const PASS = [{ status: 'COMPLETED', conclusion: 'SUCCESS' }];
@@ -52,7 +51,7 @@ function fixture(t, { checks = [PASS], orcaFails = false, selfHosted = false, br
   // selfHosted：repo 自己帶 land.mjs 等腳本，從要被移除的 worktree 裡執行（land 合入自己的分支就是這樣）。
   if (selfHosted) {
     mkdirSync(join(main, 'scripts'));
-    for (const name of ['land.mjs', 'orca-session-send.mjs', 'pilot-unbare.sh']) cpSync(new URL(`../scripts/${name}`, import.meta.url).pathname, join(main, 'scripts', name));
+    for (const name of ['land.mjs', 'orca-session-send.mjs']) cpSync(new URL(`./${name}`, import.meta.url).pathname, join(main, 'scripts', name));
     sh(main, 'add', 'scripts');
   }
   // 假 bin/check：記下參數、所在 SHA 與工作樹是否乾淨，印 CHECK_PASS 行後以 localCheckExit 結束（--local-checks 用）。
@@ -181,7 +180,7 @@ test('--local-checks：tip 等於 SHA、本機 bin/check 通過時不讀 checks�
   const { wt, body, sh, land, calls, prs, comments, last } = fixture(t, { checks: [FAIL] });
   const tip = sh(wt, 'rev-parse', 'HEAD');
 
-  const result = land(['feature', '--body-file', body, '--local-checks', tip]);
+  const result = land(['feature', '--body-file', body, '--local-checks', tip, '--check-command', 'bin/check --upstream']);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.doesNotMatch(calls(), CHECK_POLL);
   assert.doesNotMatch(calls(), /^gh pr checks /m);
@@ -219,7 +218,8 @@ test('--local-checks：本機 bin/check 失敗時 STOP local-checks-failed，不
   const result = land(['feature', '--body-file', body, '--local-checks', tip]);
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.match(last(result), new RegExp(`^STOP local-checks-failed ${tip} exit 1 `));
-  assert.match(calls(), /^check --upstream /m);
+  // 沒帶 --check-command 時跑 bin/check（目標專案常見的單一檢查入口），不帶參數。
+  assert.match(calls(), new RegExp(`^check +${tip} dirty=\\[\\]$`, 'm'));
   assert.equal(remoteHas('feature'), false);
   assert.equal(prs().length, 0);
   assert.doesNotMatch(calls(), /^gh pr merge /m);

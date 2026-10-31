@@ -15,7 +15,8 @@ Default: `docs/agents/issue-tracker.md` from `/setup-matt-pocock-skills`.
 ## Delivery
 
 How a candidate reaches the shared branch on the code host: the code host the Host station confirmed (`github` or `gitlab`, with its hostname; it may differ from the tracker host), its CLI, the PR or MR create, read, wait-for-CI and merge commands from [HOSTS.md](../setup-workflow/HOSTS.md), and where CI is configured (`.github/workflows/` or `.gitlab-ci.yml`).
-Default: none when the code host is `local` (no remote): there is no PR, MR or remote CI, and the human merges locally.
+Name both **CI runners** (CI 執行端) and when to switch. Remote (GitHub Actions, GitLab pipeline) is the default. Local applies only when the remote did not start (billing, no runner: `land.mjs` prints `STOP ci-not-started`): run the `## Checks` entry on the tip SHA to merge, with a clean tree, and comment the SHA and its result line on the PR; on GitHub that is `node scripts/land.mjs <branch> --local-checks <sha> --check-command '<check entry>'`. A remote run that started and failed never falls back to local. With the setup-workflow `land.mjs` (GitHub only), the delivery command is `node scripts/land.mjs <branch> --body-file <file>`.
+Default: none when the code host is `local` (no remote): there is no PR, MR or remote CI, the local runner is the only one, and the human merges locally.
 
 ## Readiness
 
