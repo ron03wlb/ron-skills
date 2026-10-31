@@ -8,7 +8,6 @@
 // 總時間有上限（比照 pilot-handoff.mjs）：Bash 工具最多等 600 秒，被殺就來不及寫 checkpoint，所以預算到了（timeout）或收到 SIGTERM、SIGINT（signal <名稱>）
 // 都中止進行中的步驟，進行中與還沒派的成員都 STOP 並寫進 checkpoint。預設預算 510 秒，加上收尾的 git 與寫檔，在 540 秒內結束。
 //
-//
 // --fresh（#124）把一個成員重派成 fresh worker（Stage 的同一條目衝突之後），worktree 與分支名稱不變，舊分支就地另存：
 //   工作樹有未提交改動 → `STOP dirty <n>`，什麼都不動；關掉 worktree 裡每個 terminal（checkpoint 可能只記了其中一個）；
 //   `branch -m <分支> <分支>-prior`；`switch -c <分支> <整合分支>`；worker 的 `.scratch/issue-run-<n>` 改名成 `issue-run-<n>-prior`（fresh worker 才不讀到舊 checkpoint）；
@@ -28,7 +27,7 @@
 // stdout：每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
 //   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop），STOP 原因只在 stdout。
-//   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
+//   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
 // exit：0 全部派出；4 有成員 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
