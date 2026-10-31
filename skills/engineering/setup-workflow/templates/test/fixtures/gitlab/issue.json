@@ -1,0 +1,1 @@
+{"id": 9001, "iid": 12, "project_id": 42, "title": "Pool：GitLab 樣本", "state": "opened", "labels": ["ready-for-agent"], "assignees": [{"id": 7, "username": "ron", "name": "Ron"}], "updated_at": "2026-10-30T22:29:05.000Z", "web_url": "https://gitlab.example.com/acme/app/-/issues/12"}
