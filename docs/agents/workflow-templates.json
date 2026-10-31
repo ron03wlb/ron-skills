@@ -98,8 +98,8 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "29065acca08058992a98e2b8febc1e5e0a5a9dd9",
-      "sha256": "88ad6707861dcf16c11bb03ba10f2d893ba5e99127e05f7c080d0b80236febac"
+      "commit": "3132e756a9358dcd00f37157e0646db2f507826c",
+      "sha256": "c0055d1a545be8a747f2d112eacdd7a189d0a7ac0f3702561297e0abd25d8ffc"
     }
   }
 }
