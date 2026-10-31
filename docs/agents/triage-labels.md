@@ -14,13 +14,18 @@ When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the 
 
 Edit the "Label in our tracker" column to match whatever vocabulary you actually use.
 
+## `ready-for-agent` 的輸入條件
+
+標 `ready-for-agent` 之前，先照 [issue-run.md](issue-run.md#readiness) 的 **Readiness** 檢查驗收與做法用到的輸入取得到；取不到的維持 `needs-info`。
+
 ## `parent` label
 
 帶 `parent` label 的 issue 是母單（見 [issue-tracker.md](issue-tracker.md#母單)）：`/triage` 不把它放進 Unlabeled 桶，也不給它掛上表中任何 triage label。母單的 label 由 pilot 的 Reconcile 整理（[issue-run.md](issue-run.md) 的 **Probe**）。
 
-## `priority` 與 `retro` label
+## `priority`、`retro` 與 `retro-candidates` label
 
-兩個都不是 triage 角色，可以和上表的 label 同時掛。`scripts/issue-pool.mjs` 讀它們：
+三個都不是 triage 角色。`scripts/issue-pool.mjs` 讀它們：
 
-- **`priority`**：`ready` 桶排在最前，勝過 block 開著的單的數目和號碼。
-- **`retro`**：retro 收集來的改進候選，還沒細化；不進池子。沒被指派、也不是母單或 `ready-for-human` 時，不論掛了 `needs-*` 或 `ready-for-agent`，都歸到 `retro` 桶（優先序寫在腳本檔頭）。
+- **`retro`**：`/retro-collect` 判定太大、交給 worker 的 retro 候選，可以和上表的 label 同時掛，照一般 triage 進池子；`ready` 桶排在最前，勝過 `priority`。
+- **`priority`**：可以和上表的 label 同時掛；`ready` 桶排在 `retro` 之後，勝過 block 開著的單的數目和號碼。
+- **`retro-candidates`**：一個 session 的 `/retro` 在收集模式開的候選清單，等 `/retro-collect`；不掛任何 triage label，也不進池子。沒被指派、也不是母單或 `ready-for-human` 時，不論掛了什麼，都歸到 `retro-candidates` 桶（優先序寫在腳本檔頭）。`/triage` 比照 `parent`，不把它放進 Unlabeled 桶，也不給它掛 triage label。

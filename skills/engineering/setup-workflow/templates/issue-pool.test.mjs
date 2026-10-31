@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeSample } from './test/fake-orca.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./issue-pool.mjs', import.meta.url));
 // 真實 gh 回應的樣本（ron03wlb/ron-skills 2026-10-31）：issues.json 是列表用的 `gh api graphql`，issue-view.json 是 claim 讀的
@@ -43,7 +43,7 @@ const view = ({ assignees = [], comments = [] } = {}) => mergeSample(VIEW, {
 /** PATH 上的假 gh：`api graphql` 回 issues 頁面；`issue view` 依序回 views 的第 i 個（用完就一直回最後一個），其餘只記錄 argv；
  * 每次呼叫一行 JSON 寫進 calls.log。 */
 function fakeGh({ issues = [], views = [view()] } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'issue-pool-'));
+  const dir = mkdtempSync(join(realTmpdir(), 'issue-pool-'));
   const page = mergeSample(SAMPLE, { data: { repository: { issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: issues } } } }, 'page');
   writeFileSync(join(dir, 'page.json'), JSON.stringify(page));
   writeFileSync(join(dir, 'views.json'), JSON.stringify(views));
@@ -76,6 +76,7 @@ test('標 ready-for-agent、沒被 block、不是母單、沒被認領的 Issue 
 
 const BUCKET_CASES = [
   ['blocked', '有開著的 blocked_by', issue(7, { labels: ['ready-for-agent'], blockedBy: [3] })],
+  ['blocked', '掛 retro 也照樣被開著的 blocked_by 擋住', issue(7, { labels: ['ready-for-agent', 'retro'], blockedBy: [3] })],
   ['parent', '有 sub-issue 的母單，即使標了 ready-for-agent', issue(7, { labels: ['ready-for-agent'], subIssues: 2 })],
   ['needs-triage', '標 needs-triage', issue(7, { labels: ['bug', 'needs-triage'] })],
   ['needs-info', '標 needs-info', issue(7, { labels: ['needs-info'] })],
@@ -83,7 +84,7 @@ const BUCKET_CASES = [
   ['unlabeled', '沒有任何 triage label', issue(7, { labels: ['enhancement'] })],
   ['claimed', '已被指派、24 小時內有留言', issue(7, { labels: ['ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(30), commentAt: hoursAgo(2) })],
   ['stale', '已被指派、超過 24 小時沒有新留言', issue(7, { labels: ['ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(30), commentAt: hoursAgo(25) })],
-  ['retro', '標 retro', issue(7, { labels: ['retro', 'needs-triage'] })],
+  ['retro-candidates', '標 retro-candidates（retro 的候選清單，等 /retro-collect）', issue(7, { labels: ['retro-candidates', 'ready-for-agent'] })],
   ['human', '標 ready-for-human、指派給人很久沒留言（不是 agent 的認領）', issue(7, { labels: ['ready-for-human'], assignees: ['ron'], assignedAt: hoursAgo(72) })],
 ];
 for (const [bucket, why, fixture] of BUCKET_CASES) {
@@ -110,6 +111,14 @@ test('ready 排序：掛 priority 的先，勝過 block 較多開著的單', () 
     issue(20, { labels: ['ready-for-agent'], blockedBy: [5] }),
     issue(21, { labels: ['ready-for-agent'], blockedBy: [5] }),
   ]), ['#9', '#5']);
+});
+
+// #106：`retro` 是 retro 判定太複雜、要交給 worker 的單，照一般 triage 進池子，而且先挑；候選清單另掛 `retro-candidates`。
+test('ready 排序：掛 retro 的先，勝過掛 priority 的', () => {
+  assert.deepEqual(readyOrder([
+    issue(9, { labels: ['ready-for-agent', 'priority'] }),
+    issue(12, { labels: ['ready-for-agent', 'retro'] }),
+  ]), ['#12', '#9']);
 });
 
 test('ready 排序：直接或間接 block 開著的單較多的先，勝過號碼小的', () => {

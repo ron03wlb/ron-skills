@@ -75,7 +75,7 @@ Canonical scripts in `<skill>/templates/`. A row's level is the lowest level tha
 
 | Template | Level or extension | Wire-up |
 | --- | --- | --- |
-| `check-markdown-links.mjs`, `check-text-encoding.mjs`, `check-secrets.mjs` | L1 | steps in the check entry |
+| `check-markdown-links.mjs`, `check-text-encoding.mjs`, `check-secrets.mjs`, `check-portability.mjs` | L1 | steps in the check entry |
 | `claude-hook-language.mjs` | L1, when the repo's agent rules require a non-English user-facing language | `.claude/settings.json` `Stop`, `PostToolUse`, `PostToolUseFailure` |
 | `node-test-guarded.mjs` | L1, Node test suites | the check entry runs tests through it |
 | `claude-hook-git-bypass.mjs` | L2 | `PreToolUse` matcher `Bash` |
@@ -84,9 +84,11 @@ Canonical scripts in `<skill>/templates/`. A row's level is the lowest level tha
 | `concurrent-edits.mjs`, `inflight-overlap.mjs`, `integration-status.mjs` | L2 | named in the adapter's Worktrees and Pilot steps |
 | `adr-next.mjs` | L2, repos with `docs/adr/` | named in the repo's ADR rules |
 | `claude-hook-main-checkout.mjs` | L3, always | `PreToolUse` matcher `Edit\|Write\|Bash`: blocks writes (Bash: `sed -i`, `perl -i`, `>`/`>>`, `tee` targets; `$VAR`s expand from assignments in the same command or the environment, and unresolvable ones are skipped) that would dirty the main checkout's `git status` (tracked files and new files that are not gitignored) of the project's own repo (`$CLAUDE_PROJECT_DIR`), which stop the pilot's Probe from merging |
+| `tab-state.mjs`, `claude-hook-tab-state.mjs` (bring `orca-session-send.mjs` with them) | L1, with Orca | the hook on `.claude/settings.json` `PostToolUse` matcher `Bash` and `Stop`; the adapter's Tab state section names `node scripts/tab-state.mjs <state>` |
 | `orca-worktree-create.mjs`, `orca-session-send.mjs`, `orca-session-split.mjs` | L3, with Orca | the adapter's Dispatch and Handoff lines |
 | `pilot-handoff.mjs` | L3, with Orca | the adapter's Pilot Handoff line; pass `--held-check <command>` when the project has an "integration merge in progress" check |
 | `issue-pool.mjs` | L3, GitHub trackers | the adapter's Pilot Pool line (list the buckets, pick `ready` in order) and Dispatch line (`claim <n>` before each member) |
 | `pilot-register.mjs`, `pilot-decision.mjs`, `pilot-request.mjs`, `pilot-hold.mjs`, `pilot-sources.mjs` | L3 | the adapter's Pilot **Sessions**, **Sources**, and **Decisions, requests, hold** lines; their commands and result lines are in [PILOT-STORE.md](../issue-pilot/PILOT-STORE.md#canonical-scripts) |
+| `pilot-probe.mjs`, `pilot-dispatch.mjs` | L3, with Orca | the adapter's Pilot **Probe** and **Dispatch** lines; pass `--integration <branch>` when the integration branch is not `pilot/integration` (and `--main <branch>` to the probe when the main branch is not `main`); put the project's Bare guard beside them as `scripts/pilot-unbare.sh` when Orca runs under WSL. Commands and result lines are in [PILOT-STORE.md](../issue-pilot/PILOT-STORE.md#canonical-scripts) |
 | `pilot-counterpart.mjs` | L3, when Issues name cross-repo counterparts (`對應單：<owner>/<repo>#<m>`) | the adapter's Pilot Close step (or the Pilot line it points to) |
 | `run-codex-review.mjs` | `codex` | the adapter's Review |

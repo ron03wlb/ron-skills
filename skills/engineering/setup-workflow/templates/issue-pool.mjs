@@ -3,9 +3,9 @@
 // 用法：node scripts/issue-pool.mjs [--repo <owner>/<name>] [--stale-hours <h>]
 //       node scripts/issue-pool.mjs claim <n> [--repo <owner>/<name>] [--session <id>]
 // 一張只歸一個桶，依序取第一個符合的：parent（有 sub-issue）、human（`ready-for-human`，指派給人不算認領）、
-// stale（已指派，超過 --stale-hours（預設 24）沒有新留言或新指派）、claimed（已指派）、retro（`retro` label）、blocked（有開著的 blocked_by）、
+// stale（已指派，超過 --stale-hours（預設 24）沒有新留言或新指派）、claimed（已指派）、retro-candidates（`retro-candidates` label：retro 的候選清單，等 `/retro-collect`）、blocked（有開著的 blocked_by）、
 // needs-info、needs-triage、ready（`ready-for-agent`）、unlabeled。所以 ready 桶就是池子。過期的認領只歸到 stale，不自動釋放。
-// 輸出順序：ready 桶先印，依 `priority` label 的先、直接或間接 block 最多開著的單的先（關鍵路徑）、號碼小的先；
+// 輸出順序：ready 桶先印，依 `retro` label 的先（retro 判定太複雜、交給 worker 的單）、`priority` label 的先、直接或間接 block 最多開著的單的先（關鍵路徑）、號碼小的先；
 // 其餘依上面的桶順序、桶內號碼小的先。
 // stdout：每張一行 `<桶> #<n> <標題>`；exit 0。gh 失敗時 stderr 印原因、exit 1；用法錯誤 exit 2。
 // claim 是 session 開始處理一張 Issue 前的認領：先留「認領：<機器>／<session>」（整則留言只有這一行；session 預設
@@ -51,7 +51,7 @@ export function bucketOf(issue, { staleHours = 24, now = Date.now() } = {}) {
   if (issue.subIssuesSummary.total > 0) return 'parent';
   if (labels.has('ready-for-human')) return 'human';
   if (issue.assignees.nodes.length) return now - lastActivity(issue) > staleHours * 3600_000 ? 'stale' : 'claimed';
-  if (labels.has('retro')) return 'retro';
+  if (labels.has('retro-candidates')) return 'retro-candidates';
   if (openNodes(issue.blockedBy).length) return 'blocked';
   if (labels.has('needs-info')) return 'needs-info';
   if (labels.has('needs-triage')) return 'needs-triage';
@@ -59,7 +59,7 @@ export function bucketOf(issue, { staleHours = 24, now = Date.now() } = {}) {
   return 'unlabeled';
 }
 
-const BUCKETS = ['ready', 'parent', 'human', 'stale', 'claimed', 'retro', 'blocked', 'needs-info', 'needs-triage', 'unlabeled'];
+const BUCKETS = ['ready', 'parent', 'human', 'stale', 'claimed', 'retro-candidates', 'blocked', 'needs-info', 'needs-triage', 'unlabeled'];
 
 /** 直接或間接被這張 block、而且還開著的 Issue 數；沿本 repo 列表裡的 blocking 邊走，別的 repo 或不在列表裡的開著的單只算一張。 */
 function blockingCount(issue, byNumber, repo) {
@@ -81,12 +81,13 @@ export function pool(issues, { repo, ...options }) {
   const byNumber = new Map(issues.map(issue => [issue.number, issue]));
   const rows = issues.map(issue => ({
     issue, bucket: bucketOf(issue, options),
+    retro: issue.labels.nodes.some(({ name }) => name === 'retro') ? 1 : 0,
     priority: issue.labels.nodes.some(({ name }) => name === 'priority') ? 1 : 0,
     blocks: blockingCount(issue, byNumber, repo),
   }));
   const rank = row => BUCKETS.indexOf(row.bucket);
   return rows.sort((a, b) => rank(a) - rank(b)
-    || (a.bucket === 'ready' && (b.priority - a.priority || b.blocks - a.blocks))
+    || (a.bucket === 'ready' && (b.retro - a.retro || b.priority - a.priority || b.blocks - a.blocks))
     || a.issue.number - b.issue.number);
 }
 

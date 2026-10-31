@@ -42,8 +42,8 @@ agent 每個 session 都從零開始。踩過的坑要不再踩，就得寫在�
 
 互動版：[diagrams/07-retro-loop.html](diagrams/07-retro-loop.html)（來源 [`diagrams/src/07-retro-loop.dataflow.json`](diagrams/src/07-retro-loop.dataflow.json)）
 
-- **`/retro`**：session 結束後輸入，它讀這次的紀錄提出改善項目（導覽、自動檢查、規範、無效規則、工具成本），依嚴重度排列。採用的項目放在 retro 分支實作，不開 Issue。
-- **`/retro-collect`**（L3）：退役 coordinator 的 `/retro` 只寫檔不實作，全部收齊後由它在一個 retro worktree 一次實作（見 [05](05-level3.md#retro-collect)）。
+- **`/retro`**：session 結束後輸入，它讀這次的紀錄提出改善項目（導覽、自動檢查、規範、無效規則、工具成本），依嚴重度排列。adapter 有 **Retro collect** 條目時，候選開成一張 `retro-candidates` Issue，不自己實作。
+- **`/retro-collect`**：收集所有開著的 `retro-candidates` Issue，在一個 retro worktree 一次實作，合入後關掉這些 Issue；太大的候選另開 `retro` Issue 交給 pilot（見 [05](05-level3.md#retro-collect)）。
 - **你自己**：同一句指示對 agent 說第二次時，就是該升級的訊號。
 
 ## 什麼不該寫

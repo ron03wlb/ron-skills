@@ -52,6 +52,11 @@ Default: no gated tickets; any need for one found mid-run is a stop.
 
 Repo-specific stop conditions on top of the skill's.
 
+## Tab state (分頁狀態)
+
+When this session's Orca tab title switches its state prefix (分頁狀態: `處理中`, `待 Retro`, `待關閉`; the format is in the user's global Orca session titles rule), and the command that switches it.
+Default, with the setup-workflow `tab-state.mjs` and `claude-hook-tab-state.mjs`: switch with `node scripts/tab-state.mjs <state>`, which replaces only the prefix and keeps the rest of the title. `待 Retro` once the delivery is merged (`land.mjs` prints `LANDED`; not the pilot coordinator's `--keep-branch` landing), when a pilot worker writes its `DONE` result line (before the coordinator merges it), once a coordinator's handoff completes (`HANDED_OFF`), or, for other work, once the user confirms the topic is done; opening a PR is not enough. `待關閉` when `/retro` finishes: its adopted items are merged or filed, or its candidates went to the collect flow; `/retro`'s last step switches it. The hook makes the detectable switches (`LANDED`, `HANDED_OFF`, `DONE`) itself and, on `Stop`, exits 2 when the title has no valid prefix. A project adds, overrides, or disables hook triggers in `docs/agents/tab-state.json` (format in the hook's header). Without Orca: none.
+
 ## Pilot
 
 What `/issue-pilot` needs on top of the sections above: pool query, worker cap and batch size, dispatch, watch and probe commands, stage, regression, integrate, push gate, close, and handoff. The files under `.scratch/pilot/`, batch checkpoints included, follow [PILOT-STORE.md](../issue-pilot/PILOT-STORE.md): write only the values that differ per project here, never a file format. Besides those, name:
@@ -64,7 +69,7 @@ What `/issue-pilot` needs on top of the sections above: pool query, worker cap a
 - **Decisions, requests, hold.** The commands that write `decisions.md`, mark `requests.md` lines, and set or clear `hold`. Default: the coordinator writes them by hand per [PILOT-STORE.md](../issue-pilot/PILOT-STORE.md); with the setup-workflow templates, `pilot-decision`, `pilot-request`, and `pilot-hold` ([Canonical scripts](../issue-pilot/PILOT-STORE.md#canonical-scripts)).
 - **Coordinator checkout.** The checkout the coordinator runs in and keeps `.scratch/pilot/` under, for a project whose coordinator does not live in the main checkout. Default: the repo's main checkout.
 - **Project tick hooks.** Scripts the coordinator runs each tick after Drain and before Pick, in order, from the coordinator checkout, for project checks ron-skills does not model (a daily collection dispatch, a quota check). Exit 0 continues; any other exit opens a gate with the script's output and skips Pick and Dispatch for that tick. Default: none; the step is skipped.
-- **Retro collect.** What `/retro-collect` needs: the collector script, retro worktree naming, checks, merge, and push. Default: none; `/retro-collect` stops and says so.
+- **Retro collect.** What `/retro-collect` needs to turn the open `retro-candidates` Issues into one retro unit: the checkout it runs from, the command that claims each collected Issue, the retro worktree's name, branch, and target branch, the checks, and how it merges and pushes. `/retro` runs in collect mode only when this entry exists. Default: none; `/retro-collect` stops and says so.
 
 Run every Pilot command once in the repo before writing it into the adapter; a command copied from another repo's adapter fails on that repo's paths (ron-skills retro 4f58fc81#1). Orca under WSL records repos by their Windows UNC path, so `orca worktree create --repo path:<WSL path>` returns `repo_not_found`, wrapped as `agent_session_operation_unknown` when `--agent` rides along: omit `--repo` and run it from the repo's checkout, which Orca infers it from. A repo without delivery scripts can start from ron-skills' own [`docs/agents/pilot.md`](../../../docs/agents/pilot.md).
 

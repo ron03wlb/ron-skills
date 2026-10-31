@@ -1,33 +1,38 @@
 #!/usr/bin/env node
-// pilot 的 Reconcile 用這一支對帳（之後只剩整理母單要另外做）：主 checkout、`.scratch/pilot/` 的請求、gate、batch checkpoint
-// 與每個 running 成員的 terminal，各印一行狀態，不必再手動拼 `orca-ide terminal read` 的 JSON（手拼時漏過 exited 卻沒有結果行的 worker，#23）。
+// setup-workflow 正本（#58）：pilot 的 Reconcile 用這一支對帳（之後只剩整理母單要另外做）。主 checkout、`.scratch/pilot/` 的請求、gate、
+// batch checkpoint 與每個 running 成員的 terminal，各印一行狀態，不必再手動拼 `orca terminal read` 的 JSON（手拼時漏過 exited 卻沒有結果行的 worker）。
+// 存檔格式照 issue-pilot 的 PILOT-STORE.md；專案不同的值由參數傳入。
 //
-// 用法：node scripts/pilot-probe.mjs <主 checkout>（讀 running 成員要 ORCA_CLI_COMMAND；沒有時其他檢查照跑）
+// 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>]
+//   --integration 整合分支，預設 pilot/integration；--main 主分支，預設 main。讀 running 成員要 ORCA_CLI_COMMAND，沒有時其他檢查照跑。
+//   Bare guard：同目錄有 pilot-unbare.sh（專案自備，`<checkout> <時機>`，還原時印 UNBARE）時先跑它（時機 probe），沒有就略過。
 // stdout 每行一項，沒事的項目不印（全部正常且沒有 batch 時不輸出）：
 //   主 checkout：UNBARE <checkout>（Bare guard 剛還原 core.bare）｜NOT_MAIN <分支>｜HOLD｜DIRTY <git status --short 的一行>
-//   adapter：ADAPTER_AHEAD <檔案>（pilot/integration 上的 docs/agents/issue-run.md 或 pilot.md 比 main 新，#52）
+//   adapter：ADAPTER_AHEAD <檔案>（整合分支上的 adapter 比主分支新：docs/agents/issue-run.md，以及它 `## Pilot` 段連到的同目錄 .md）
 //   開著的列：REQUEST <requests.md 原文>｜GATE <id> <Issue> <question 或段落標題>｜GATE_MALFORMED <id> <把 resolved 寫進別的欄位的那一行>
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
 //                 WORKER <n> STUCK exited|stuck-after <分鐘>|orca <錯誤碼>|no-orca|checkpoint <欄位> <值>
 //                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）
-//   batch：STAGEABLE <key>（dispatched 且每個成員都 done 或 stop；moved 的成員已移到別的 batch，不算）；
-//          current 是 merged／pushed 的 batch 在 git fetch 後印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
-//          還沒進 origin/main 的 merged batch 改印 RESUME_PUSH <key>（pilot/integration 的 tip 等於最後一次 regression SHA，#37），
+//   batch：STAGEABLE <key>（dispatched 且每個成員都 done 或 stop；moved（含 `moved batch-<n>`）的成員已移到別的 batch，不算）；
+//          current 是 merged／pushed 的 batch 在 git fetch 後比 origin/<主分支>，印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
+//          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA），
 //          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
 // exit：0 印完；2 用法錯誤；1 其他失敗（Bare guard 或 git status 失敗等）。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isOpenRequest } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 
-const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout>';
+const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>]';
+const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 
 /** Markdown 表格一列的各欄（去掉首尾的 `|` 與空白）；不是表格列時回空陣列。 */
 const tableCells = line => line.split('|').slice(1, -1).map(cell => cell.trim());
 
 /**
- * 在主 checkout 跑 git；stdin 一律不給（逐一呼叫外部指令時被吃掉 stdin 會讓後面的步驟讀不到，#23 retro）。
+ * 在主 checkout 跑 git；stdin 一律不給（逐一呼叫外部指令時被吃掉 stdin 會讓後面的步驟讀不到）。
  * 清掉繼承的 GIT_DIR 等，否則從 pre-commit hook 或 worktree 呼叫時會讀到別的 repo（見 pilot-unbare.sh）。
  */
 function git(checkout, ...args) {
@@ -35,16 +40,21 @@ function git(checkout, ...args) {
   return spawnSync('git', ['-C', checkout, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
-/** 主 checkout 的狀態行：Bare guard（pilot-unbare.sh，時機 probe）、不在 main、hold 檔、`git status --short` 的每一行。 */
-export function checkoutState(checkout) {
-  const unbare = spawnSync(join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh'), [checkout, 'probe'],
-    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  if (unbare.status !== 0) throw new Error(`pilot-unbare.sh exit ${unbare.status}：${unbare.stderr.trim()}`);
-  const out = unbare.stdout.split('\n').filter(Boolean);
+/** Bare guard：同目錄有專案自備的 pilot-unbare.sh 才跑（Orca 從 WSL 操作 worktree 會把主 checkout 設成 bare），傳回它印的行。 */
+function bareGuard(checkout, when) {
+  if (!existsSync(GUARD)) return [];
+  const unbare = spawnSync(GUARD, [checkout, when], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (unbare.status !== 0) throw new Error(`pilot-unbare.sh ${(unbare.stderr ?? '').trim() ? `exit ${unbare.status}：${unbare.stderr.trim()}` : `exit ${unbare.status ?? unbare.error?.code}`}`);
+  return unbare.stdout.split('\n').filter(Boolean);
+}
+
+/** 主 checkout 的狀態行：Bare guard（時機 probe）、不在主分支、hold 檔、`git status --short` 的每一行。 */
+export function checkoutState(checkout, main = 'main') {
+  const out = bareGuard(checkout, 'probe');
   const current = git(checkout, 'branch', '--show-current');
   if (current.status !== 0) throw new Error(`git branch --show-current exit ${current.status}：${current.stderr.trim()}`);
   const branch = current.stdout.trim();
-  if (branch !== 'main') out.push(`NOT_MAIN ${branch || '(detached)'}`);
+  if (branch !== main) out.push(`NOT_MAIN ${branch || '(detached)'}`);
   if (existsSync(join(checkout, '.scratch/pilot/hold'))) out.push('HOLD');
   const status = git(checkout, 'status', '--short');
   if (status.status !== 0) throw new Error(`git status exit ${status.status}：${status.stderr.trim()}`);
@@ -52,8 +62,18 @@ export function checkoutState(checkout) {
   return out;
 }
 
-/** 下一批在 pilot/integration 上 stage，主 checkout 的 adapter 卻是 main 的版本（#52）。 */
-const ADAPTERS = ['docs/agents/issue-run.md', 'docs/agents/pilot.md'];
+/** 下一批在整合分支上 stage，主 checkout 的 adapter 卻是主分支的版本。 */
+const ADAPTER = 'docs/agents/issue-run.md';
+
+/**
+ * adapter 的 `## Pilot` 段連到的同目錄 `.md`（Pilot 段指向自己的檔案時，那份也是 adapter，見 issue-pilot SKILL 的 Sources）。
+ * 其他目錄的連結（skill、契約）與其他段落的連結都不算。
+ */
+export function pilotFiles(text) {
+  const section = text.match(/^## Pilot[ \t]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1] ?? '';
+  const dir = ADAPTER.slice(0, ADAPTER.lastIndexOf('/') + 1);
+  return [...new Set([...section.matchAll(/\]\((?:\.\/)?([^)/#\s]+\.md)(?:#[^)\s]*)?\)/g)].map(m => `${dir}${m[1]}`))];
+}
 
 /** `rev-parse --verify -q`：不存在時回空字串（exit 1、沒有 stderr），其他失敗 throw。 */
 function rev(checkout, ref) {
@@ -62,21 +82,30 @@ function rev(checkout, ref) {
   return result.stdout.trim();
 }
 
+/** 分支上的檔案內容；沒有這個檔時回空字串。 */
+function show(checkout, ref, path) {
+  const result = git(checkout, 'show', `${ref}:${path}`);
+  return result.status === 0 ? result.stdout : '';
+}
+
 /**
- * pilot/integration 上比 main 新的 adapter 檔：integration 有這個檔、內容與 main 不同，而且 main 最後一次改它的 commit
- * 已經在 integration 裡（main 從沒有這個檔也算）。main 自己改過、integration 還沒跟上時，integration 那份比較舊，不印；
- * 兩邊都改過（歷史分岔）時分不出誰新，也不印。integration 刪掉的檔讀不到，不印。沒有 pilot/integration 或 main 時不比。
+ * 整合分支上比主分支新的 adapter 檔：整合分支有這個檔、內容與主分支不同，而且主分支最後一次改它的 commit
+ * 已經在整合分支裡（主分支從沒有這個檔也算）。主分支自己改過、整合分支還沒跟上時，整合分支那份比較舊，不印；
+ * 兩邊都改過（歷史分岔）時分不出誰新，也不印。整合分支刪掉的檔讀不到，不印。沒有整合分支或主分支時不比。
+ * 比的檔案是 adapter 本身，加上兩邊任一版 adapter 的 Pilot 段連到的檔案（新連上的檔只在整合分支那邊）。
  */
-export function adapterAhead(checkout) {
-  if (!rev(checkout, 'refs/heads/pilot/integration') || !rev(checkout, 'refs/heads/main')) return [];
-  return ADAPTERS.filter(path => {
-    const ahead = rev(checkout, `refs/heads/pilot/integration:${path}`);
-    if (!ahead || ahead === rev(checkout, `refs/heads/main:${path}`)) return false;
-    const touched = git(checkout, 'log', '-1', '--format=%H', 'refs/heads/main', '--', path);
-    if (touched.status !== 0) throw new Error(`git log main -- ${path} exit ${touched.status}：${touched.stderr.trim()}`);
+export function adapterAhead(checkout, { integration = 'pilot/integration', main = 'main' } = {}) {
+  const [ahead, base] = [`refs/heads/${integration}`, `refs/heads/${main}`];
+  if (!rev(checkout, ahead) || !rev(checkout, base)) return [];
+  const files = [...new Set([ADAPTER, ...[ahead, base].flatMap(ref => pilotFiles(show(checkout, ref, ADAPTER)))])];
+  return files.filter(path => {
+    const blob = rev(checkout, `${ahead}:${path}`);
+    if (!blob || blob === rev(checkout, `${base}:${path}`)) return false;
+    const touched = git(checkout, 'log', '-1', '--format=%H', base, '--', path);
+    if (touched.status !== 0) throw new Error(`git log ${main} -- ${path} exit ${touched.status}：${touched.stderr.trim()}`);
     const last = touched.stdout.trim();
     if (!last) return true;
-    const ancestor = git(checkout, 'merge-base', '--is-ancestor', last, 'refs/heads/pilot/integration');
+    const ancestor = git(checkout, 'merge-base', '--is-ancestor', last, ahead);
     if (ancestor.status > 1) throw new Error(`git merge-base --is-ancestor exit ${ancestor.status}：${ancestor.stderr.trim()}`);
     return ancestor.status === 0;
   }).map(path => `ADAPTER_AHEAD ${path}`);
@@ -89,7 +118,7 @@ export function adapterAhead(checkout) {
 export function openRows(pilot) {
   const read = name => (existsSync(join(pilot, name)) ? readFileSync(join(pilot, name), 'utf8') : '');
   const out = read('requests.md').split('\n')
-    .filter(line => line.trim() && !line.startsWith('#') && !/\s(?:applied|declined)\s+\S/.test(line.split(/\ssource\s/).slice(1).at(-1) ?? ''))
+    .filter(isOpenRequest)
     .map(line => `REQUEST ${line.trim()}`);
   for (const line of read('gates.md').split('\n')) {
     const cells = tableCells(line);
@@ -159,25 +188,25 @@ export async function workerState(ctx, member, now = Date.now()) {
 }
 
 /**
- * 還沒進 origin/main 的 `merged` batch：Push gate 的前提是 pilot/integration 的 tip 等於最後一次 Regression SHA（#37）。
+ * 還沒進 origin/<主分支> 的 `merged` batch：Push gate 的前提是整合分支的 tip 等於最後一次 Regression SHA。
  * 符合時 coordinator 從 Push gate 第 1 步接著做；Integrate 之後又有 commit、或沒有 regression 行時，直接推會送出沒驗過的內容。
  */
-function mergedNotInMain(checkout, key, regression) {
+function mergedNotInMain(checkout, integration, key, regression) {
   const passed = regression && rev(checkout, `${regression}^{commit}`);
   if (!passed) return `NOT_IN_MAIN ${key} no-regression`;
-  const tip = rev(checkout, 'refs/heads/pilot/integration');
+  const tip = rev(checkout, `refs/heads/${integration}`);
   return tip === passed ? `RESUME_PUSH ${key}` : `NOT_IN_MAIN ${key} tip ${tip.slice(0, 7) || 'none'}`;
 }
 
-export async function probe(ctx, checkout) {
+export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main' } = {}) {
   const pilot = join(checkout, '.scratch/pilot');
-  const out = [...checkoutState(checkout), ...adapterAhead(checkout), ...openRows(pilot)];
+  const out = [...checkoutState(checkout, main), ...adapterAhead(checkout, { integration, main }), ...openRows(pilot)];
   const batches = (existsSync(pilot) ? readdirSync(pilot) : []).filter(file => /^batch-.+\.md$/.test(file)).sort();
   const landing = [];
   for (const file of batches) {
     const key = file.slice('batch-'.length, -'.md'.length);
     const { current, members, regression, sha } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
-    const active = members.filter(m => m.state !== 'moved');
+    const active = members.filter(m => !/^moved\b/.test(m.state));
     const finished = active.filter(m => m.state === 'done' || m.state === 'stop').length;
     let read = 0;
     for (const member of members.filter(m => m.state === 'running')) {
@@ -193,8 +222,8 @@ export async function probe(ctx, checkout) {
     if (fetch.status !== 0) out.push(`FETCH_FAILED ${fetch.stderr.trim().split('\n').find(line => line.startsWith('fatal:')) ?? fetch.stderr.trim().split('\n')[0]}`);
     else for (const { key, sha, regression, merged } of landing) {
       if (!sha) out.push(`NOT_IN_MAIN ${key} no-sha`);
-      else if (git(checkout, 'merge-base', '--is-ancestor', sha, 'origin/main').status === 0) out.push(`IN_MAIN ${key}`);
-      else out.push(merged ? mergedNotInMain(checkout, key, regression) : `NOT_IN_MAIN ${key}`);
+      else if (git(checkout, 'merge-base', '--is-ancestor', sha, `origin/${main}`).status === 0) out.push(`IN_MAIN ${key}`);
+      else out.push(merged ? mergedNotInMain(checkout, integration, key, regression) : `NOT_IN_MAIN ${key}`);
     }
   }
   return out;
@@ -203,12 +232,23 @@ export async function probe(ctx, checkout) {
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const cli = process.env.ORCA_CLI_COMMAND;
-  if (args.length !== 1) {
+  const positional = [];
+  const options = {};
+  let bad = false;
+  for (let i = 0; i < args.length; i++) {
+    if (!args[i].startsWith('--')) { positional.push(args[i]); continue; }
+    const name = { '--integration': 'integration', '--main': 'main' }[args[i]];
+    const value = args[++i];
+    if (!name || !value || value.startsWith('--') || name in options) bad = true;
+    else options[name] = value;
+  }
+  const [checkout] = positional;
+  if (bad || positional.length !== 1) {
     console.error(USAGE);
     process.exit(2);
   }
   try {
-    for (const line of await probe({ cli }, args[0])) console.log(line);
+    for (const line of await probe({ cli }, checkout, options)) console.log(line);
   } catch (error) {
     console.error(error.message);
     process.exit(1);

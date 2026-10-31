@@ -40,13 +40,15 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 | --- | --- |
 | `grilling`、`grill-me`、`grill-with-docs` | `effort: high`；`grilling` 另把「派子代理查事實」改為自己用工具查、範圍大才派，並在第一輪前列出與主題相關、還開著的 Issue |
 | `domain-modeling` | repo 自訂的 ADR 版面與索引編號優先；主 checkout 不能寫時，詞條與 ADR 原文寫進負責實作的 Issue，由它在 worktree 提交 |
-| `retro` | 候選開成 Issue 前，依它提到的名稱查開著的 Issue：同一件事就留言補證據不另開，只是同檔不同事就讓新單依賴它；寫入前檢查其他 session 的並行修改；repo 有 `scripts/retro-collect.mjs` 且本 session 是退役 coordinator 時改為收集模式：只寫 retro 檔、不實作，等 `/retro-collect` |
+| `retro` | 候選開成 Issue 前，依它提到的名稱查開著的 Issue：同一件事就留言補證據不另開，只是同檔不同事就讓新單依賴它；寫入前檢查其他 session 的並行修改；adapter 有 **Retro collect** 條目時一律改為收集模式：不實作，把候選開成一張 `retro-candidates` label 的 Issue（一個 session 一張），等 `/retro-collect` |
 | `poteto-mode` | 本機 harness：先讀上游 `docs/harness/claude-code.md` 做名稱對照；repo 規則與語言優先、無 GitHub PR（對應 candidate／整合分支）、無 cloud（Orca terminal）、Claude 加 Codex 兩家、未連結 skill 改用 Matt 對應 |
 | `arena` | 只用在昂貴、難逆轉且多解的設計決策；一席 Claude worktree 子代理、一席 Codex，Codex 唯讀當 judge；Eval 只用於 worker／review／stop-policy 的 skill 變更 |
 
 ## issue-run
 
 `/issue-run <ref> [<ref>...]`：把已 ready 的 Issue 不中斷地跑到本機 candidate commit。方法照 Matt 的 `implement` / `implement-spec`，專案事實全部讀 repo 的 adapter；沒有 adapter 時用 Matt setup 文件與 [ADAPTER.md](skills/engineering/issue-run/ADAPTER.md) 的預設值。push、合併到共用分支、產品決策仍由人負責。
+
+`/loop /issue-run --pool [<N>]`：不開 coordinator，在同一個 session 照 `scripts/issue-pool.mjs` 的 `ready` 順序先認領再開工，一次跑一張到 candidate（不開 Orca 分頁、不並行，不需要 Pilot 段，只要 repo 有 `scripts/issue-pool.mjs`）；`<N>` 是最多跑幾張，預設跑完。每次醒來先接續自己認領、還沒做完的單，一張停下時留言寫明停點、跳過依賴它的單，池子空了或還有停下的單在等人時拉長間隔但不結束 loop。被 `/loop` 驅動，所以 `issue-run` 不設 `disable-model-invocation`，description 限定只在人輸入 `/issue-run`、`/loop /issue-run --pool` 或 coordinator 派工時觸發。
 
 新專案導入：照 [ron-skills 交付流程](https://ron-skills-workflow.pages.dev/site/) 分 L1 基本、L2 守門、L3 常駐三級導入（來源 [docs/workflow/](docs/workflow/README.md)）；入口是在該 repo 輸入 `/setup-workflow`（[SKILL.md](skills/engineering/setup-workflow/SKILL.md)）：偵測等級與擴充、建議往上一級，經人確認後寫 tracker、label、domain docs 與 adapter（以 `ADAPTER.md` 為骨架），並複製 script 正本、在 `docs/agents/workflow-templates.json` 記錄每個副本的 ron-skills commit 與 sha256；已導入的專案用 `/setup-workflow health` 體檢等級標示錯誤、分歧與隱性跨 repo 依賴，只回報不寫檔。pilot 要在其他 worktree 跑 git 時，照 ADAPTER.md 的 **Permissions** 段複製 [templates/pilot_git.py](skills/engineering/issue-run/templates/pilot_git.py)，allow 只放行該腳本，不寫 `git -C *`（中間的 `*` 能夾帶 git 選項，Claude Code 每次啟動都會警告）。
 
@@ -66,7 +68,7 @@ pilot 已達標，2026-10-21 起是唯一編排：`deliver-batch`、`deliver-spe
 
 ## retro-collect
 
-`/retro-collect [<session8>...]`：收集退役 coordinator 以收集模式寫下的 `/retro` 檔，彙整成一份計畫，在單一 retro worktree 實作全部採用項，合入整合分支並推送，最後關掉已收集的分頁。流程是人在每個舊分頁輸入 `/retro`，再於任一 session 輸入 `/retro-collect`。專案事實讀 adapter Pilot 段的 **Retro collect** 行。
+`/retro-collect [<n>...]`：認領所有開著的 `retro-candidates` Issue（`/retro` 收集模式開的，不限 session 與機器），彙整成一份計畫並合併重複，在單一 retro worktree 實作採用項，太大的候選另開 `retro` Issue 交給 pilot，合入後在每張 Issue 留言結果並關掉。專案事實（在哪個 checkout 跑、認領指令、worktree 與目標分支、檢查、合入）讀 adapter Pilot 段的 **Retro collect** 條目，Tracker 段給 tracker 指令。
 
 ## learning
 

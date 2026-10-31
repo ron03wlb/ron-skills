@@ -4,7 +4,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, re
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { mergeSample } from './helpers/fake-orca.mjs';
-import { checksVerdict, pickMergedPr, pickPr } from '../scripts/land.mjs';
+import { checksVerdict, pickMergedPr, pickPr, rollupBucket, rollupChecks } from '../scripts/land.mjs';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const script = new URL('../scripts/land.mjs', import.meta.url).pathname;
@@ -12,17 +12,21 @@ const script = new URL('../scripts/land.mjs', import.meta.url).pathname;
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
 const IDENTITY = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
 
-// 假 gh 的輸出一律從 PR #39 的真實樣本長出來（同 helpers/fake-orca.mjs 的做法），替身不能自創 gh 沒有的欄位。
+// 假 gh 的輸出一律從真實樣本長出來（PR #39，statusCheckRollup 取自 PR #125），同 helpers/fake-orca.mjs 的做法，替身不能自創 gh 沒有的欄位。
 const samplesDir = new URL('./helpers/fixtures/gh/', import.meta.url).pathname;
 const GH_SAMPLES = Object.fromEntries(readdirSync(samplesDir).map(file => [file.replace(/\.json$/, ''), JSON.parse(readFileSync(join(samplesDir, file), 'utf8'))]));
 
-const PASS = [{ bucket: 'pass', state: 'SUCCESS' }];
-const PENDING = [{ bucket: 'pending', state: 'IN_PROGRESS' }];
-const FAIL = [{ bucket: 'fail', state: 'FAILURE' }];
+// statusCheckRollup 的 CheckRun 項目；`{ head, checks }` 是 PR 的 head 還停在別的 SHA 時那次查詢看到的結果。
+const PASS = [{ status: 'COMPLETED', conclusion: 'SUCCESS' }];
+const PENDING = [{ status: 'IN_PROGRESS', conclusion: '' }];
+const FAIL = [{ status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/r/actions/runs/2/job/2' }];
+const OLD_HEAD = 'cdaebee0000000000000000000000000000000000';
+const CHECK_POLL = /^gh pr view \S+ --json headRefOid,statusCheckRollup/gm;
 
 /**
  * bare remote、主 checkout（在 main）、feature 分支的 worktree，以及 PATH 上的假 gh、假 Orca。
- * 假 gh 的狀態存在 gh-state.json：`checks` 依序回應每次 `pr checks`（`'none'` 是 CI 還沒登記），最後一筆重複使用。
+ * 假 gh 的狀態存在 gh-state.json：`checks` 依序回應每次 `pr view --json headRefOid,statusCheckRollup`（`'none'` 是 CI 還沒登記，
+ * `{ head, checks }` 是 PR 的 head 還沒更新到剛 push 的 SHA），最後一筆重複使用。
  * 假 gh 的 `pr merge` 真的在 remote 上做 --no-ff 合併；假 Orca 的 `worktree rm` 照真實行為把主 checkout 設成 bare、一起刪掉本機分支。
  * branchSelectorMissing：照 `orca-ide worktree create --branch` 開的 worktree，`branch:` 選擇器回 selector_not_found，只認 `path:`（#49）。
  */
@@ -80,13 +84,14 @@ else if (sub === 'create') {
   const pr = { head, number: 40 + s.prs.length, state: 'OPEN', url: 'https://github.com/o/r/pull/' + (40 + s.prs.length), headRefOid: git('rev-parse', 'origin/' + head), mergeCommit: null };
   s.prs.push(pr); save(); console.log(pr.url);
 }
-else if (sub === 'view') console.log(JSON.stringify(out(find(args[2]))));
-else if (sub === 'checks') {
+else if (sub === 'view' && arg('--json').includes('statusCheckRollup')) {
+  const pr = find(args[2]);
   const next = s.checks.length > 1 ? s.checks.shift() : s.checks[0]; save();
-  if (next === 'none') { console.error("no checks reported on the 'x' branch"); process.exit(1); }
-  console.log(JSON.stringify(next.map(c => mergeSample(SAMPLES['pr-checks'][0], c, 'check'))));
-  if (next.some(c => c.bucket === 'pending')) process.exit(8);
+  const entry = next === 'none' ? { checks: [] } : Array.isArray(next) ? { checks: next } : next;
+  const { head = pr.headRefOid, checks } = entry;
+  console.log(JSON.stringify(mergeSample(SAMPLES['pr-view-checks'], { headRefOid: head, statusCheckRollup: checks }, 'pr')));
 }
+else if (sub === 'view') console.log(JSON.stringify(out(find(args[2]))));
 else if (sub === 'merge') {
   const pr = find(args[2]);
   git('fetch', '-q', 'origin'); git('checkout', '-q', '-B', 'main', 'origin/main');
@@ -136,7 +141,7 @@ test('手動分支：push、開 PR、等 CI 登記並通過、合併、收尾、
   const [pr] = prs();
   assert.equal(pr.state, 'MERGED');
   assert.equal(last(result), `LANDED ${pr.number} ${pr.mergeCommit.oid}`);
-  assert.equal((calls().match(/^gh pr checks /gm) || []).length, 3);
+  assert.equal((calls().match(CHECK_POLL) || []).length, 3);
   assert.equal(existsSync(wt), false);
   assert.equal(sh(main, 'branch', '--list', 'feature'), '');
   assert.equal(remoteHas('feature'), false);
@@ -178,16 +183,38 @@ test('從要被移除的 worktree 執行：收尾仍能還原 bare 並 LANDED', 
   assert.equal(sh(main, 'rev-parse', '--is-bare-repository'), 'false');
 });
 
-test('CI 紅燈：STOP ci-failed，不合併、不收尾', t => {
+test('CI 紅燈：STOP ci-failed，附新 head 的 run 網址，不合併、不收尾', t => {
   const { wt, body, land, calls, prs, remoteHas, last } = fixture(t, { checks: [PENDING, FAIL] });
 
   const result = land(['feature', '--body-file', body]);
   assert.equal(result.status, 4);
-  assert.match(last(result), /^STOP ci-failed 40 /);
+  assert.equal(last(result), `STOP ci-failed 40 ${FAIL[0].detailsUrl}`);
   assert.doesNotMatch(calls(), /^gh pr merge /m);
   assert.equal(prs()[0].state, 'OPEN');
   assert.equal(existsSync(wt), true);
   assert.equal(remoteHas('feature'), true);
+});
+
+// 真實發生過的錯（#128，PR #125）：push 後 PR 的 head 還停在前一個 SHA，讀到它失敗的 run 就 STOP ci-failed；重跑才 LANDED。
+test('PR 的 head 還是前一個 SHA 時不採計它的 checks：等到新 head 通過才合併', t => {
+  const { body, land, calls, prs, last } = fixture(t, { checks: [{ head: OLD_HEAD, checks: FAIL }, { head: OLD_HEAD, checks: PASS }, PENDING, PASS] });
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /STOP ci-failed/);
+  assert.match(result.stdout, /^CHECKS_PASSED 40 1$/m);
+  assert.equal(last(result), `LANDED 40 ${prs()[0].mergeCommit.oid}`);
+  assert.equal((calls().match(CHECK_POLL) || []).length, 4);
+});
+
+test('PR 的 head 一直沒更新到 push 的 SHA：STOP checks-timeout，不合併', t => {
+  const { body, land, calls, prs, last } = fixture(t, { checks: [{ head: OLD_HEAD, checks: PASS }] });
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 4);
+  assert.equal(last(result), 'STOP checks-timeout 40');
+  assert.doesNotMatch(calls(), /^gh pr merge /m);
+  assert.equal(prs()[0].state, 'OPEN');
 });
 
 // 真實發生過的錯：Push gate 中途斷掉，重跑時重開 PR 或重複合併（#27 commit 8dcea3d「Push gate 中斷可接回」）。
@@ -364,4 +391,26 @@ test('checksVerdict：空的是 pending；有失敗或取消是 fail；全部通
   assert.equal(checksVerdict([{ bucket: 'pass' }, { bucket: 'pending' }]), 'pending');
   assert.equal(checksVerdict([{ bucket: 'pass' }, { bucket: 'cancel' }]), 'fail');
   assert.equal(checksVerdict([{ bucket: 'pass' }, { bucket: 'skipping' }]), 'pass');
+});
+
+test('rollupBucket：CheckRun 看 status 與 conclusion，StatusContext 看 state，分類同 gh pr checks', () => {
+  assert.equal(rollupBucket({ status: 'COMPLETED', conclusion: 'SUCCESS' }), 'pass');
+  assert.equal(rollupBucket({ status: 'COMPLETED', conclusion: 'NEUTRAL' }), 'skipping');
+  assert.equal(rollupBucket({ status: 'COMPLETED', conclusion: 'SKIPPED' }), 'skipping');
+  assert.equal(rollupBucket({ status: 'COMPLETED', conclusion: 'TIMED_OUT' }), 'fail');
+  assert.equal(rollupBucket({ status: 'COMPLETED', conclusion: 'CANCELLED' }), 'cancel');
+  assert.equal(rollupBucket({ status: 'QUEUED', conclusion: '' }), 'pending');
+  assert.equal(rollupBucket({ state: 'ERROR' }), 'fail');
+  assert.equal(rollupBucket({ state: 'PENDING' }), 'pending');
+});
+
+test('rollupChecks：head 不符回空；同一個 run 重跑只留最新一筆，push 與 pull_request 兩個 run 都留', () => {
+  const run = (id, startedAt, conclusion) => ({ status: 'COMPLETED', conclusion, startedAt, name: 'checks', workflowName: 'w', detailsUrl: `https://github.com/o/r/actions/runs/${id}/job/${id}${startedAt.slice(1)}` });
+  const view = statusCheckRollup => ({ headRefOid: 'new', statusCheckRollup });
+  assert.deepEqual(rollupChecks({ headRefOid: 'old', statusCheckRollup: [run(1, 't1', 'FAILURE')] }, 'new'), []);
+  assert.deepEqual(rollupChecks(view(null), 'new'), []);
+  // 重跑：run 1 第一次失敗、第二次通過。
+  assert.deepEqual(rollupChecks(view([run(1, 't1', 'FAILURE'), run(1, 't2', 'SUCCESS')]), 'new').map(check => check.bucket), ['pass']);
+  // push 與 pull_request：不同 run id，晚開始的通過也不能蓋掉另一個 run 的失敗。
+  assert.equal(checksVerdict(rollupChecks(view([run(1, 't1', 'FAILURE'), run(2, 't2', 'SUCCESS')]), 'new')), 'fail');
 });
