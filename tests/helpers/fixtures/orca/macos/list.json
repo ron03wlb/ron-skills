@@ -1,0 +1,32 @@
+{
+  "terminals": [
+    {
+      "handle": "term_sample",
+      "ptyId": "sample",
+      "incarnationId": "sample",
+      "orphaned": false,
+      "worktreeId": "sample",
+      "worktreePath": "sample",
+      "branch": "sample",
+      "tabId": "sample",
+      "leafId": "sample",
+      "title": "sample",
+      "paneTitle": "sample",
+      "connected": true,
+      "writable": true,
+      "lastOutputAt": 1793402558357,
+      "preview": "sample",
+      "executionHostId": "sample",
+      "agentIdentity": "sample"
+    }
+  ],
+  "hostScope": {
+    "hostIds": [
+      "sample"
+    ],
+    "omittedHostIds": []
+  },
+  "topologyRevisions": {},
+  "totalCount": 1,
+  "truncated": false
+}
