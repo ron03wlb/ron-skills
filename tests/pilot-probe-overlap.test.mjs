@@ -55,10 +55,10 @@ const append = (name, text) => md => {
   return md.replace(new RegExp(`^(- \\*\\*${name}\\.\\*\\*.*)$`, 'm'), `$1${text}`);
 };
 
-test('兩個成員都改了 pilot.md 的 Handoff 條目時印 OVERLAP 56 57 docs/agents/pilot.md:Handoff', t => {
+test('兩個成員都改了 pilot.md 的 Handoff 條目時印 OVERLAP 56 57 1 files **Handoff.**', t => {
   const result = fixture(t, { 56: append('Handoff', '（#56）'), 57: append('Handoff', '（#57）') });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(result.stdout.split('\n').filter(line => line.startsWith('OVERLAP ')), ['OVERLAP 56 57 docs/agents/pilot.md:Handoff']);
+  assert.deepEqual(result.stdout.split('\n').filter(line => line.startsWith('OVERLAP ')), ['OVERLAP 56 57 1 files **Handoff.**']);
 });
 
 test('兩個成員改的是 pilot.md 的不同條目時不印 OVERLAP', t => {
@@ -73,7 +73,7 @@ test('兩個成員都在 Handoff 後面各加一個新條目時，印插入點�
   const result = fixture(t, { 56: insert('New56'), 57: insert('New57') });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(result.stdout.split('\n').filter(line => line.startsWith('OVERLAP ')),
-    ['OVERLAP 56 57 docs/agents/pilot.md:Project tick hooks']);
+    ['OVERLAP 56 57 1 files **Project tick hooks.**']);
 });
 
 // review 第二輪：插入新條目和改隔一行空行的條目，git 不會衝突（中間的空行沒人改），不印。
