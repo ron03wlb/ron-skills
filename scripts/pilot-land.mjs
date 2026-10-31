@@ -9,7 +9,11 @@
 //                 entries    每個衝突 hunk 裡兩邊改的是不同的 `- **<名稱>.**` 條目：各取改過的那一版（#45）；
 //                 rows       衝突 hunk 三份的行都是 Markdown 表格列（`|` 開頭）、以第一格為鍵兩邊改的是不同列：各取各的版本、
 //                            依原順序排好，新增的列都留下；同一列兩邊都改照樣 abort（#162）。
-//               additions、entries 與 rows 只解三個版本都是 UTF-8 文字的檔案，其他的照樣 abort。
+//                 adjacent   衝突 hunk 裡一邊只改了 base 的某幾行、另一邊只在 base 行之間插入新行（沒改任何 base 行），插入點不在
+//                            改動的那幾行中間：兩邊都套用；純刪除、兩邊動到同一個 `- **<名稱>.**` 條目（含插入的新條目切開它）、
+//                            兩邊都改了同一個 base 行、改動或插入碰到表格列（歸 rows）、最短 diff 的對齊不只一種而合出不同結果
+//                            （接上 hunk 前後各一行）、換上的行和插入的行相同（非空行或同名條目）、碰到檔尾沒換行的行照樣 abort（#175）。
+//               additions、entries、rows 與 adjacent 只解三個版本都是 UTF-8 文字的檔案，其他的照樣 abort。
 //               staged SHA 與 stage 時的 integration tip 寫成 checkpoint 的 `current: staged <sha> onto <tip>`。
 //   Regression  在 staged SHA 跑 <stage worktree>/bin/check --upstream，完整輸出寫到 <主 checkout>/.scratch/pilot/reg-<key>.log，
 //               checkpoint 追加 `regression: <sha> exit <code>`（通過時附 bin/check 最後一行 CHECK_PASS）。
@@ -153,19 +157,22 @@ function appendRegression(file, value) {
   if (readCheckpoint(file).regression !== value) throw new Stop(`checkpoint ${file} 的 regression: 沒寫成 ${value}`);
 }
 
+/** 這行是 `- **<名稱>.**` 條目的開頭時傳回名稱，否則 undefined。 */
+const entryName = line => line.match(/^- \*\*([^*]+?)\.\*\*/)?.[1];
+
 /** 依 `- **<名稱>.**` 條目切段：第一段是條目前的文字（可能是空的），之後每段從條目開頭那行起。 */
 function entries(text) {
   const pieces = [{ name: '', text: '' }];
   for (const line of text.split(/(?<=\n)/)) {
-    const name = line.match(/^- \*\*([^*]+?)\.\*\*/)?.[1];
+    const name = entryName(line);
     if (name) pieces.push({ name, text: line });
     else pieces.at(-1).text += line;
   }
   return pieces;
 }
 
-/** 一個衝突 hunk 照允許的解法解；解不了傳回 undefined。`kinds` 收集用到的解法。 */
-function resolveHunk(base, ours, theirs, kinds) {
+/** 一個衝突 hunk 照允許的解法解；解不了傳回 undefined。`kinds` 收集用到的解法；`context` 是 hunk 前後各一行與 hunk 之前所在的條目名稱（adjacent 用）。 */
+function resolveHunk(base, ours, theirs, kinds, context) {
   if (base === '') {
     // 不重疊：兩邊新增的非空行不能有相同的（diff3 不剝掉共有的行，同一個標題接起來就重複了），條目也不能同名。
     const lines = text => text.split('\n').filter(line => line.trim());
@@ -179,6 +186,21 @@ function resolveHunk(base, ours, theirs, kinds) {
     kinds.add('rows');
     return byRows;
   }
+  const byEntries = resolveEntries(base, ours, theirs);
+  if (byEntries !== undefined) {
+    kinds.add('entries');
+    return byEntries;
+  }
+  const byAdjacent = resolveAdjacent(base, ours, theirs, context);
+  if (byAdjacent !== undefined) {
+    kinds.add('adjacent');
+    return byAdjacent;
+  }
+  return undefined;
+}
+
+/** entries：兩邊改的是不同的 `- **<名稱>.**` 條目時各取改過的那一版（#45）；解不了傳回 undefined。 */
+function resolveEntries(base, ours, theirs) {
   const [b, o, t] = [base, ours, theirs].map(entries);
   const names = pieces => pieces.map(p => p.name).join('\n');
   if (b.length < 2 || names(o) !== names(b) || names(t) !== names(b)) return undefined;
@@ -187,9 +209,105 @@ function resolveHunk(base, ours, theirs, kinds) {
     if (t[i].text === text || t[i].text === o[i].text) return o[i].text;
     return undefined;
   });
-  if (merged.includes(undefined)) return undefined;
-  kinds.add('entries');
-  return merged.join('');
+  return merged.includes(undefined) ? undefined : merged.join('');
+}
+
+/** 對齊數超過這個值就不自己解：重複行很多的 hunk 不值得逐一比對。 */
+const ALIGNMENTS = 64;
+
+/**
+ * 一邊相對 base 的所有最長共同子序列對齊；每種對齊是一份 `{ start, end, lines }` 清單（換掉 base 的 [start, end) 行，
+ * start === end 是純插入）。超過 ALIGNMENTS 種傳回 undefined。
+ */
+function alignments(base, side) {
+  const [n, m] = [base.length, side.length];
+  const lcs = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--) lcs[i][j] = base[i] === side[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  const found = [];
+  // 從 (i, j) 起，下一個對上的行可以是任何不減少共同行數的 (k, l)；中間沒對上的就是一個改動。
+  const walk = (i, j, edits) => {
+    if (found.length > ALIGNMENTS) return;
+    const step = (k, l) => (k > i || l > j ? [...edits, { start: i, end: k, lines: side.slice(j, l) }] : edits);
+    if (lcs[i][j] === 0) {
+      found.push(step(n, m));
+      return;
+    }
+    for (let k = i; k < n; k++)
+      for (let l = j; l < m; l++)
+        if (base[k] === side[l] && lcs[k][l] === lcs[i][j] && lcs[k + 1][l + 1] === lcs[i][j] - 1) walk(k + 1, l + 1, step(k, l));
+  };
+  walk(0, 0, []);
+  return found.length > ALIGNMENTS ? undefined : found;
+}
+
+/**
+ * adjacent：一邊只改了 hunk 裡 base 的某幾行（每個改動都把至少一行 base 換成至少一行新行，純刪除不算），另一邊只在 base 行之間
+ * 插入新行、沒改任何 base 行，插入點都不在改動的那幾行中間（落在改動的開頭或結尾就是相鄰）時兩邊都套用（#175）。
+ * 同一點的插入排在改動之前。兩邊各自所有最長共同子序列對齊（接上 hunk 前後各一行）的每種組合都要成立、合出同一個結果，
+ * 不然結果取決於對齊方式（重複行能滑動、拆段插入），不自己解；對齊動到 hunk 外那一行時也不解：hunk 外的對齊看不到。
+ */
+function resolveAdjacent(base, ours, theirs, { before, after, entry = '' } = {}) {
+  // 檔尾沒有換行的行接上插入行會黏成同一行：hunk 碰到這種行就不自己解。
+  if (![base, ours, theirs].every(text => text === '' || text.endsWith('\n'))) return undefined;
+  const split = text => (text === '' ? [] : text.split(/(?<=\n)/));
+  const lead = before === undefined ? [] : [before];
+  const tail = after === undefined ? [] : [after];
+  const b = split(base);
+  const [o, t] = [ours, theirs].map(text => alignments([...lead, ...b, ...tail], [...lead, ...split(text), ...tail]));
+  if (!o || !t) return undefined;
+  const inHunk = edits => {
+    const shifted = edits.map(({ start, end, lines }) => ({ start: start - lead.length, end: end - lead.length, lines }));
+    return shifted.every(({ start, end }) => start >= 0 && end <= b.length) ? shifted : undefined;
+  };
+  const results = new Set();
+  for (const ourEdits of o)
+    for (const theirEdits of t) {
+      const [oe, te] = [ourEdits, theirEdits].map(inHunk);
+      const merged = oe && te && applyAdjacent(b, oe, te, { after, entry });
+      if (merged === undefined) return undefined;
+      results.add(merged);
+    }
+  return results.size === 1 ? [...results][0] : undefined;
+}
+
+/** adjacent 的一種對齊：兩邊的改動清單合得起來就傳回結果，不然 undefined。`after` 是 hunk 後一行，`entry` 是 hunk 之前所在的條目。 */
+function applyAdjacent(b, o, t, { after, entry }) {
+  const inserts = edits => edits.length > 0 && edits.every(({ start, end }) => start === end);
+  const modifies = edits => edits.length > 0 && edits.every(({ start, end, lines }) => start < end && lines.length > 0);
+  const [changed, inserted] = modifies(o) && inserts(t) ? [o, t] : modifies(t) && inserts(o) ? [t, o] : [];
+  if (!changed) return undefined;
+  // 動到表格列（改掉的 base 行、換上或插入的行）歸 rows 判斷：一邊改欄數、一邊加列逐行套用會留下欄數不對的列。
+  const touched = [...changed, ...inserted].flatMap(({ start, end, lines }) => [...b.slice(start, end), ...lines]);
+  if (touched.some(line => line.startsWith('|'))) return undefined;
+  // 兩邊動到同一個 `- **<名稱>.**` 條目是同一條目衝突（Stage 條目要 Fresh redispatch），不自己解。
+  // 每個 base 行歸到它所在的條目（hunk 之前的條目接續下來）。插入歸到它接著的那一行的條目；自己以條目開頭時是新條目，
+  // 但後面接的還是前一個條目的內文（不是下一個條目的開頭）時，等於把前一個條目切開，也算動到它。
+  const owner = [];
+  for (const line of b) owner.push(entryName(line) ?? owner.at(-1) ?? entry);
+  const edited = changed.flatMap(({ start, end }) => owner.slice(start, end));
+  const homes = inserted.map(({ start, lines }) => {
+    const previous = start ? owner[start - 1] : entry;
+    const next = start < b.length ? b[start] : after;
+    return entryName(lines[0]) === undefined || (next !== undefined && entryName(next) === undefined) ? previous : '';
+  });
+  if (homes.some(name => name && edited.includes(name))) return undefined;
+  // 換上的行和插入的行相同（非空行或同名條目），兩邊都套用就重複了，同 additions 的判斷。
+  const added = inserted.flatMap(({ lines }) => lines);
+  const replacing = changed.flatMap(({ lines }) => lines);
+  const names = lines => entries(lines.join('')).map(p => p.name).filter(Boolean);
+  if (replacing.some(line => line.trim() && added.includes(line)) || names(replacing).some(name => names(added).includes(name))) return undefined;
+  if (inserted.some(({ start: at }) => changed.some(({ start, end }) => start < at && at < end))) return undefined;
+  let out = '';
+  for (let i = 0; i <= b.length; ) {
+    for (const edit of inserted) if (edit.start === i) out += edit.lines.join('');
+    const edit = changed.find(({ start }) => start === i);
+    if (edit) {
+      out += edit.lines.join('');
+      i = edit.end;
+    } else out += b[i++] ?? '';
+  }
+  return out;
 }
 
 /** Markdown 表格列的第一格：開頭的 `|` 之後到下一個沒跳脫的 `|`，去掉前後空白。 */
@@ -266,19 +384,29 @@ function resolveFile(tree, path, kinds) {
     const merged = run('git', ['merge-file', '-p', '--diff3', `--marker-size=${MARKER}`, '-L', 'ours', '-L', 'base', '-L', 'theirs', ...files]);
     if (merged.status === null || merged.status > 127) return undefined;
     let out = '';
+    let last;
+    let entry = '';
     let hunk;
-    for (const line of merged.stdout.split(/(?<=\n)/)) {
+    const lines = merged.stdout.split(/(?<=\n)/);
+    for (const [i, line] of lines.entries()) {
       const marker = line.replace(/\n$/, '');
       if (!hunk && marker === `${'<'.repeat(MARKER)} ours`) hunk = { part: 'ours', ours: '', base: '', theirs: '' };
       else if (hunk && marker === `${'|'.repeat(MARKER)} base`) hunk.part = 'base';
       else if (hunk && marker === '='.repeat(MARKER)) hunk.part = 'theirs';
       else if (hunk && marker === `${'>'.repeat(MARKER)} theirs`) {
-        const resolved = resolveHunk(hunk.base, hunk.ours, hunk.theirs, kinds);
+        const resolved = resolveHunk(hunk.base, hunk.ours, hunk.theirs, kinds, { before: last, after: lines[i + 1], entry });
         if (resolved === undefined) return undefined;
         out += resolved;
+        const pieces = resolved.split(/(?<=\n)/).filter(Boolean);
+        last = pieces.at(-1) ?? last;
+        entry = pieces.map(entryName).filter(Boolean).at(-1) ?? entry;
         hunk = undefined;
       } else if (hunk) hunk[hunk.part] += line;
-      else out += line;
+      else {
+        out += line;
+        last = line;
+        entry = entryName(line) ?? entry;
+      }
     }
     return hunk ? undefined : out;
   } finally {
@@ -301,7 +429,7 @@ function resolveConflicts(tree, files) {
     kinds.add('restamp');
   }
   // 固定順序，restamp 最後：它在其他解法之後才跑（`entries+restamp`、`rows+restamp`）。
-  return ['additions', 'entries', 'rows', 'restamp'].filter(kind => kinds.has(kind)).join('+');
+  return ['additions', 'entries', 'rows', 'adjacent', 'restamp'].filter(kind => kinds.has(kind)).join('+');
 }
 
 /** Stage：從 `tip` 重開 stage 分支、依號碼合入成員；傳回 staged SHA。 */
