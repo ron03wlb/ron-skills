@@ -6,9 +6,10 @@ import { readFileSync } from 'node:fs';
 // 規則只寫在 adapter 的 Readiness；/triage 讀的是 triage-labels.md，所以那裡只放 pointer，不複製規則。
 const adapter = readFileSync(new URL('../docs/agents/issue-run.md', import.meta.url), 'utf8');
 const labels = readFileSync(new URL('../docs/agents/triage-labels.md', import.meta.url), 'utf8');
-const readiness = adapter.match(/^## Readiness\n([\s\S]*?)(?=^## )/m)[1];
+const readiness = adapter.match(/^## Readiness\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1] ?? '';
 
 test('Readiness 要求驗收與做法用到的輸入都取得到，否則維持 needs-info', () => {
+  assert.ok(readiness, 'issue-run.md 要有 ## Readiness 段');
   assert.match(readiness, /本 repo、tracker 或公開來源/);
   assert.match(readiness, /`needs-info`/);
   assert.match(readiness, /缺的是什麼、去哪裡拿/);
