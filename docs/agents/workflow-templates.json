@@ -36,6 +36,11 @@
       "commit": "927e6e301524e3c262f91b11d5ab279b8e9a6239",
       "sha256": "c973a4015ad145519b0fd99ee10d569600971ae3c7ddba01c4a35acc255e226a"
     },
+    "scripts/lib/hosts.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/lib/hosts.mjs",
+      "commit": "be3da4580a6a2b33cffcec86521dfeee0d53d987",
+      "sha256": "ca23e2352c04ed730d538d465a7c8efeb24b3d6b3260438ed43df8e6ef205fc5"
+    },
     "scripts/lib/pilot-store.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/pilot-store.mjs",
       "commit": "76eb90190bc130315ec18c68075bc3dc7f3e415c",
@@ -58,8 +63,8 @@
     },
     "scripts/pilot-counterpart.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-counterpart.mjs",
-      "commit": "c8797598f3dd08fb609cb9d6918ca060a15d23f9",
-      "sha256": "55f5cc9366a7d32bdeb1757409938935c649de08e593f3968fe3254e5e66858c"
+      "commit": "9c102eb2809708c28510dd8d64a39f0fb9d125ed",
+      "sha256": "c31c9403d7ebb17c569bdbca6cdeacf8b2a45a94de0e4c1adda8230f0ecb818d"
     },
     "scripts/pilot-decision.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-decision.mjs",

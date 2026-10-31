@@ -76,6 +76,7 @@ regression: abc1234 exit 0 CHECK_PASS tests 300+40
   const issues = { 76: { state: 'OPEN', body, comments: [], parent: 35 }, 35: { state: 'OPEN', body: '', comments: [] } };
   for (const [n, state] of Object.entries(siblings)) issues[n] = { state, body: '', comments: [], parent: 35, reason: state === 'CLOSED' ? 'not_planned' : null };
   issues['acme/app#7'] = { state: 'OPEN', body: '', comments: [] };
+  issues['http://192.168.200.202/spay/spay2#692'] = { state: 'OPEN', body: '', comments: [] };
   writeFileSync(ghState, JSON.stringify({ issues }));
   const log = join(temp, 'calls.log');
   writeFileSync(log, '');
@@ -100,6 +101,7 @@ if (a === 'issue' && b === 'view') {
   const full = { state: issue.state, body: issue.body, comments: issue.comments.map(body => ({ body })) };
   out('issue-view', Object.fromEntries(arg('--json').split(',').map(f => [f, full[f]])));
 } else if (a === 'issue' && b === 'comment') {
+  if (state.issues[key(n)].deny) { console.error('HTTP 403: Resource not accessible by integration'); process.exit(1); }
   state.issues[key(n)].comments.push(arg('--body-file') ? fs.readFileSync(arg('--body-file'), 'utf8') : arg('--body')); save();
 } else if (a === 'issue' && b === 'close') {
   Object.assign(state.issues[key(n)], { state: 'CLOSED', reason: 'completed' }); save();
@@ -120,6 +122,21 @@ if (a === 'issue' && b === 'view') {
   }
 } else { console.error('fake gh: unknown ' + args.join(' ')); process.exit(1); }
 `);
+  // 假 glab：照 `glab issue view --help`、`glab issue note --help`，-R 是專案網址，留言只有 -m；view --comments 印文字，留言內文在其中。
+  // deny 的對應單留言時回 403，模擬沒有權限或被擋下的寫入。
+  const glab = join(temp, 'bin/glab');
+  writeFileSync(glab, `#!/usr/bin/env node
+${record}
+const state = JSON.parse(fs.readFileSync(${JSON.stringify(ghState)}, 'utf8')); const save = () => fs.writeFileSync(${JSON.stringify(ghState)}, JSON.stringify(state));
+const [a, b, n] = args; const issue = state.issues[arg('-R') + '#' + n];
+if (!issue) { console.error('glab: 404 Not Found'); process.exit(1); }
+if (a === 'issue' && b === 'view' && args.includes('--comments')) console.log('title:\\tx\\nstate:\\topen\\n\\n' + issue.comments.map(c => 'ron commented\\n' + c).join('\\n'));
+else if (a === 'issue' && b === 'note' && args.includes('-m')) {
+  if (issue.deny) { console.error('glab: 403 Forbidden'); process.exit(1); }
+  issue.comments.push(arg('-m')); save();
+} else { console.error('glab: unknown ' + args.join(' ')); process.exit(1); }
+`);
+  chmodSync(glab, 0o755);
   const terminals = join(temp, 'terminals.json');
   writeFileSync(terminals, JSON.stringify(['term_76']));
   const cli = join(temp, 'bin/orca');
@@ -158,7 +175,8 @@ else fail('unknown');
   const calls = () => readFileSync(log, 'utf8');
   const branchExists = () => spawnSync('git', ['-C', repo, 'rev-parse', '--verify', '-q', `refs/heads/${branch}`], { env }).status === 0;
   const remoteHas = () => spawnSync('git', ['-C', origin, 'rev-parse', '--verify', '-q', `refs/heads/${branch}`], { env }).status === 0;
-  return { temp, origin, repo, worktree, mergeSha, close, issues: ghIssues, checkpoint, calls, branchExists, remoteHas, terminals: () => JSON.parse(readFileSync(terminals, 'utf8')) };
+  const deny = id => { const state = JSON.parse(readFileSync(ghState, 'utf8')); state.issues[id].deny = true; writeFileSync(ghState, JSON.stringify(state)); };
+  return { temp, origin, repo, worktree, mergeSha, close, issues: ghIssues, deny, checkpoint, calls, branchExists, remoteHas, terminals: () => JSON.parse(readFileSync(terminals, 'utf8')) };
 }
 
 const lines = result => result.stdout.trim().split('\n');
@@ -414,4 +432,48 @@ test('請求分支成員的 branch 不是 retro/<x>：任何寫入之前 STOP br
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.deepEqual(lines(result), ['STOP branch-malformed - "main"']);
   assert.equal(f.calls(), '');
+});
+
+// #79：GitLab 對應單（spay2 在自架 GitLab）照 COMMAND 用 glab issue note -R <專案網址> -m 留言；重跑時讀 glab issue view --comments 認出已留過。
+const SPAY2 = 'http://192.168.200.202/spay/spay2#692';
+test('GitLab 對應單：用 glab issue note -m 留言，不用 --body-file；再重跑就 SKIP', t => {
+  const f = fixture(t, { body: '## 背景\nspay2 對應單：http://192.168.200.202/spay/spay2/-/issues/692\n' });
+  writeFileSync(join(f.repo, '.scratch/pilot/counterpart-76.md'), `成員 ron03wlb/ron-skills#76 已合入（merge ${f.mergeSha}）。\n`);
+  const first = f.close();
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  assert.deepEqual(lines(first).slice(0, 3), ['SKIP 76 main', 'DONE 76 evidence', 'DONE 76 counterpart']);
+  const note = f.calls().split('\n').find(line => line.startsWith('glab issue note '));
+  assert.match(note, /^glab issue note 692 -R http:\/\/192\.168\.200\.202\/spay\/spay2 -m 成員 ron03wlb\/ron-skills#76 /);
+  assert.doesNotMatch(f.calls(), /glab .*(--body-file|\s-F\s)/);
+  assert.equal(f.issues()[SPAY2].comments.length, 1);
+  const second = f.close();
+  assert.ok(lines(second).includes('SKIP 76 counterpart'), second.stdout);
+  assert.equal(f.issues()[SPAY2].comments.length, 1);
+});
+
+// 跨 repo 寫入被權限或分類器擋下時不卡住 batch：印出交接檔與一行可直接 `!` 執行的指令交給人，Close 照常往下做。
+test('對應單留言失敗：印 HANDOFF 與 ! 指令、該步 MANUAL，batch 照常 Close', t => {
+  const f = fixture(t, { body: '## 背景\nspay2 對應單：http://192.168.200.202/spay/spay2/-/issues/692\napp 對應單：acme/app#7\n' });
+  const file = join(f.repo, '.scratch/pilot/counterpart-76.md');
+  writeFileSync(file, `成員 ron03wlb/ron-skills#76 已合入（merge ${f.mergeSha}）。\n`);
+  f.deny(SPAY2);
+  f.deny('acme/app#7');
+  const result = f.close();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result).slice(0, 5), ['SKIP 76 main', 'DONE 76 evidence',
+    `HANDOFF 76 spay/spay2#692 ! glab issue note 692 -R http://192.168.200.202/spay/spay2 -m "$(cat ${file})"`,
+    `HANDOFF 76 acme/app#7 ! gh issue comment 7 --repo acme/app --body-file ${file}`,
+    'MANUAL 76 counterpart']);
+  assert.ok(lines(result).includes('DONE 76 close'));
+  assert.equal(lines(result).at(-1), 'CLOSED 76');
+  assert.match(result.stderr, /403 Forbidden/);
+  assert.equal(f.issues()[SPAY2].comments.length, 0);
+});
+
+// 裸的 <owner>/<repo>#<m> 是 github.com：GitLab 的 spay/spay2#692 寫成裸 ref 時 gh 讀不到，STOP 要指出改寫成 issue 網址（#79 review）。
+test('裸 ref 在 GitHub 讀不到：STOP 指出 GitLab 對應單要寫成 issue 網址', t => {
+  const f = fixture(t, { body: '## 背景\nspay2 對應單：spay/spay2#692\n' });
+  const result = f.close();
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(lines(result).pop(), /^STOP 76 counterpart spay\/spay2#692 .*issue 網址/);
 });
