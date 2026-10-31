@@ -23,6 +23,9 @@
 //          current 是 merged／pushed 的 batch 在 git fetch 後比 origin/<主分支>，印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
 //          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA），
 //          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
+//   重疊：OVERLAP <n> <m|integration> <檔案>[:<條目>]（開著的 batch 裡 running、done 的成員分支已 commit 的內容，相對於與整合分支的 merge-base：
+//          兩個成員改到同一個檔，或整合分支自成員的 merge-base 以來也改了它改的檔；`.md` 檔的改動都在 `- **<名稱>.**` 條目裡時細到條目，
+//          相接的行與同一處的插入也算，git 合併時會衝突）
 // exit：0 印完；2 用法錯誤；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS 等）。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -259,6 +262,108 @@ function applyPushed(file, key) {
   return /^pushed\b/.test(parseBatch(readFileSync(file, 'utf8')).current) ? [] : [`APPLY_MISS ${key} current verify`];
 }
 
+/** 一行一個 `- **<名稱>.**` 的條目（adapter 的 Pilot 設定就是這種格式）。 */
+const ENTRY = /^- \*\*(.+?)\.\*\*/;
+
+/**
+ * 第 `i` 行（0 起算）所在的條目名稱：往上找到 `- **<名稱>.**` 那一行為止，中間只能是空行或縮排的續行；
+ * 先碰到其他不縮排的行（標題、段落、別的 bullet）或檔頭時回 null。
+ */
+function entryAt(lines, i) {
+  for (let j = Math.min(i, lines.length - 1); j >= 0; j--) {
+    const name = lines[j].match(ENTRY)?.[1];
+    if (name) return name;
+    if (lines[j].trim() && !/^\s/.test(lines[j])) return null;
+  }
+  return null;
+}
+
+/**
+ * `from..to` 改了哪些檔：Map<檔案, { whole, entries }>。`.md` 檔的改動行（空行不算）都落在條目裡時只記條目名稱
+ * （刪掉的行看 from 的版本、加上的行看 to 的版本），有任何一行不在條目裡，或不是 `.md`，就記整個檔（whole）。
+ */
+export function changedUnits(checkout, from, to) {
+  const run = (...args) => {
+    const result = git(checkout, ...args);
+    if (result.status !== 0) throw new Error(`git ${args[0]} exit ${result.status}：${result.stderr.trim()}`);
+    return result.stdout;
+  };
+  const units = new Map();
+  for (const path of run('diff', '--name-only', '-z', '--no-renames', from, to).split('\0').filter(Boolean)) {
+    const unit = { whole: !path.endsWith('.md'), entries: new Set() };
+    units.set(path, unit);
+    if (unit.whole) continue;
+    const versions = { '-': show(checkout, from, path).split('\n'), '+': show(checkout, to, path).split('\n') };
+    for (const [, oldStart, oldCount = '1', newStart, newCount = '1'] of run('diff', '-U0', '--no-color', '--no-renames', '--diff-algorithm=histogram', from, to, '--', path)
+      .matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
+      for (const [side, start, count] of [['-', oldStart, oldCount], ['+', newStart, newCount]]) {
+        for (let i = Number(start) - 1; i < Number(start) - 1 + Number(count); i++) {
+          if (!versions[side][i]?.trim()) continue;
+          const name = entryAt(versions[side], i);
+          if (name) unit.entries.add(name);
+          else unit.whole = true;
+        }
+      }
+      // git 照位置合併：改到相接的行、或在同一處插入也會衝突，所以 from 那邊緊鄰 hunk 前後的行所在的條目也算。
+      // 空行不算（中間隔著沒人改的空行就不會衝突）；純插入的前後都是空行或檔尾時，才往上找插入點所在的條目，同一處的插入才對得上。
+      const old = versions['-'];
+      const [start, count] = [Number(oldStart), Number(oldCount)];
+      // `-<行>,<n>` 的 hunk 佔 0 起算的 start-1 到 start+n-2；n 是 0 時是插在第 start 行之後。
+      const around = count ? [start - 2, start + count - 1] : [start - 1, start];
+      const anchors = around.filter(i => i >= 0 && old[i]?.trim()).map(i => entryAt(old, i));
+      if (!count && !anchors.length && around[0] >= 0) anchors.push(entryAt(old, around[0]));
+      for (const name of anchors) if (name) unit.entries.add(name);
+    }
+  }
+  return units;
+}
+
+/** 兩組改動重疊的地方：同一個檔有一邊改了整個檔時印檔名，否則印兩邊都改的每個條目。 */
+function overlaps(a, b) {
+  const out = [];
+  for (const [path, unit] of a) {
+    const other = b.get(path);
+    if (!other) continue;
+    if (unit.whole || other.whole) out.push(path);
+    else for (const name of unit.entries) if (other.entries.has(name)) out.push(`${path}:${name}`);
+  }
+  return out;
+}
+
+/**
+ * 開著的 batch（current 不是 closed）裡 running 或 done 的成員分支（只看已 commit 的內容），各自相對於與整合分支的 merge-base 改了哪些檔或條目：
+ * 兩個成員改到同一處印 `OVERLAP <n> <m> <檔案>[:<條目>]`（號碼小的在前），成員改的地方整合分支自那個 merge-base 以來也改過印
+ * `OVERLAP <n> integration <檔案>[:<條目>]`。同一組只印一次；本機沒有那個分支的成員略過；沒有整合分支時改用主分支當 base，兩個都沒有就不比。
+ */
+export function overlapLines(checkout, batches, { integration = 'pilot/integration', main = 'main' } = {}) {
+  const onto = [`refs/heads/${integration}`, `refs/heads/${main}`].find(ref => rev(checkout, ref));
+  if (!onto) return [];
+  const members = new Map();
+  for (const { current, members: rows } of batches) {
+    if (/^closed\b/.test(current)) continue;
+    for (const m of rows) {
+      if (!['running', 'done'].includes(m.state) || members.has(m.n)) continue;
+      const tip = m.branch && rev(checkout, `refs/heads/${m.branch}`);
+      if (!tip) continue;
+      const base = git(checkout, 'merge-base', tip, onto);
+      if (base.status > 1) throw new Error(`git merge-base ${m.branch} exit ${base.status}：${base.stderr.trim()}`);
+      if (base.status) continue;
+      members.set(m.n, { base: base.stdout.trim(), units: changedUnits(checkout, base.stdout.trim(), tip) });
+    }
+  }
+  const sorted = [...members].sort(([a], [b]) => Number(a) - Number(b));
+  const out = new Set();
+  sorted.forEach(([n, a], i) => {
+    for (const [m, b] of sorted.slice(i + 1)) for (const where of overlaps(a.units, b.units)) out.add(`OVERLAP ${n} ${m} ${where}`);
+  });
+  const integrationUnits = new Map();
+  for (const [n, { base, units }] of sorted) {
+    if (!integrationUnits.has(base)) integrationUnits.set(base, changedUnits(checkout, base, onto));
+    for (const where of overlaps(units, integrationUnits.get(base))) out.add(`OVERLAP ${n} integration ${where}`);
+  }
+  return [...out];
+}
+
 /** 經過的時間：`<h>h<m>m` 或 `<m>m`；時間解析不了時 `?`。 */
 function age(time, at) {
   const minutes = Math.floor((at - Date.parse(time)) / 60000);
@@ -302,9 +407,11 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   const pilot = join(checkout, '.scratch/pilot');
   const out = [...checkoutState(checkout, main), ...adapterAhead(checkout, { integration, main }), ...openRows(pilot)];
   const landing = [];
+  const batches = [];
   for (const file of batchFiles(pilot)) {
     const key = file.slice('batch-'.length, -'.md'.length);
     const { current, members, regression, sha } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
+    batches.push({ current, members });
     const active = members.filter(m => !/^moved\b/.test(m.state));
     const finished = active.filter(m => m.state === 'done' || m.state === 'stop').length;
     const results = [];
@@ -318,6 +425,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     if (/^dispatched\b/.test(current) && active.length && finished + results.length === active.length) out.push(`STAGEABLE ${key}`);
     if (/^(merged|pushed)\b/.test(current)) landing.push({ key, sha, regression, merged: /^merged\b/.test(current) });
   }
+  out.push(...overlapLines(checkout, batches, { integration, main }));
   if (landing.length) {
     const fetch = git(checkout, 'fetch', '-q', 'origin');
     if (fetch.status !== 0) out.push(`FETCH_FAILED ${fetch.stderr.trim().split('\n').find(line => line.startsWith('fatal:')) ?? fetch.stderr.trim().split('\n')[0]}`);
