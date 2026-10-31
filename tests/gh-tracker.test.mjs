@@ -2,15 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 // scripts/gh-tracker.mjs 是 auto mode 唯一放行的 tracker 寫入（#96）：只寫 ron03wlb/ron-skills，其他 repo 照 #79 交給人。
 const script = new URL('../scripts/gh-tracker.mjs', import.meta.url).pathname;
 
 /** PATH 上放假 gh：每次呼叫記一行 JSON argv；`api --hostname github.com repos/.../issues/<n> --jq .id` 回 9000+n（Issue 的 database id）。 */
 function run(...args) {
-  const temp = mkdtempSync(join(tmpdir(), 'gh-tracker-'));
+  const temp = mkdtempSync(join(realTmpdir(), 'gh-tracker-'));
   const log = join(temp, 'calls.jsonl');
   writeFileSync(join(temp, 'gh'), `#!/usr/bin/env node
 const args = process.argv.slice(2);
