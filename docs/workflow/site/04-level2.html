@@ -69,7 +69,7 @@ done</code></pre>
 <div class="table-wrap"><table><thead><tr><th>項目</th><th>第一次</th><th>第二次</th></tr></thead><tbody><tr><td>必須做</td><td>經合入入口把 candidate 合進整合分支；印出要 push 的 SHA 與 push 指令</td><td><code>git fetch</code> 後確認該 SHA 已在遠端整合分支（<code>git merge-base --is-ancestor &lt;sha&gt; origin/&lt;integration&gt;</code>）；貼證據留言；關單並設 <code>completed</code>；刪 worktree 與本機、遠端的工作分支</td></tr><tr><td>exit code</td><td><code>3</code> 停在 <code>PUSH_REQUIRED</code>（不是錯誤，是等人 push 的停點）；其他非 0 照合入入口</td><td><code>0</code> 已結案；<code>3</code> SHA 還不在遠端，仍是 <code>PUSH_REQUIRED</code></td></tr><tr><td>拒絕</td><td>Issue 不是 <code>in-progress</code>；還有開著的子單</td><td>SHA 不在遠端時關單</td></tr></tbody></table></div>
 <p>這樣「關了但還沒進主線」的 Issue 就不會出現：關單的前提由入口查，不靠人記得。</p>
 <h2 id="retro"><code>/retro</code></h2>
-<p>每次 session 結束、或同一種失誤出現第二次時，輸入 <code>/retro</code>。它讀這次 session 的紀錄，提出環境改善：缺的導覽指標、該加的自動檢查、該刪的無效規則。採用的改善放在 retro 分支，不開 Issue；只改工具與文件。</p>
+<p>每次 session 結束、或同一種失誤出現第二次時，輸入 <code>/retro</code>。它讀這次 session 的紀錄，提出環境改善：缺的導覽指標、該加的自動檢查、該刪的無效規則。採用的改善放在 retro 分支，不開 Issue；只改工具與文件。有 Orca 時，<code>/retro</code> 結束前最後一步把分頁標題換成 <code>待關閉｜</code>（<code>node scripts/tab-state.mjs 待關閉</code>），之後分頁可以關。</p>
 <p>新增的檢查要先證明自己：把真實發生過的那次錯誤做成 fixture，附指令與 exit code 證明檢查在它上面會失敗（見 <a href="07-rules.html">07 規則沉澱</a>）。</p>
 <h2 id="權限規則">權限規則</h2>
 <p>無人值守的 agent 需要 <code>.claude/settings.json</code> 的 allow 規則才不會每一步都停下來問。規則只由人改，只有一條原則：<strong><code>*</code> 只放在規則最後，放在 git 會當成選項解析的參數之後。</strong></p>
