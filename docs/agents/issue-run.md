@@ -2,9 +2,19 @@
 
 沒寫到的段落都沿用 [ADAPTER.md](../../skills/engineering/issue-run/ADAPTER.md) 的預設值。
 
+## Platforms
+
+macOS, WSL2, Linux（母單 #82 決策 R1-Q1；原生 Windows 不支援）。本檔列的每條指令三種平台都要能跑；只為某個平台加的 workaround 寫明是哪個平台（例如 pilot.md 的 Bare guard 是 WSL 專屬，其他平台跑了無害）。
+
 ## Tracker
 
 [issue-tracker.md](issue-tracker.md)。讀 Issue 一律用 `--json`：`gh issue view <n> --comments` 在非 tty 環境不會輸出任何東西。
+
+## Delivery
+
+程式碼 host 是 `github`（`github.com`，`origin` 為 `ron03wlb/ron-skills`），CLI 是 `gh`，和 tracker 同一個 host。PR 的開、讀、等 CI、合併照 [HOSTS.md](../../skills/engineering/setup-workflow/HOSTS.md) 的 GitHub 欄（`gh pr create`、`gh pr view`、`gh pr checks --watch`、`gh pr merge --merge --match-head-commit <sha>`），平常不手打：交付指令是 `node scripts/land.mjs <branch> --body-file <file> --check-command 'bin/check --upstream'`，步驟與結果行見 [Evidence and closing](#evidence-and-closing)。CI 設定在 `.github/workflows/checks.yml`，跑 `bin/check --upstream`。
+
+**CI 執行端**：預設是遠端（GitHub Actions）。只有遠端沒啟動時（帳務、沒有 runner：`land.mjs` 印 `STOP ci-not-started`）才改用本機：在要合併的 tip SHA、工作樹乾淨時跑 `node scripts/land.mjs <branch> --local-checks <sha> --check-command 'bin/check --upstream'`，它把 SHA 與結果行留言在 PR。遠端已經啟動而失敗的，不改用本機。
 
 ## Readiness
 
