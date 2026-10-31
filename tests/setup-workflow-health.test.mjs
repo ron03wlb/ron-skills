@@ -369,3 +369,13 @@ test('平台：bin/ 與 git hook 目錄也掃，標題寫成小寫的 ## platfor
   const platform = health(root).lines.filter(line => line.startsWith('FINDING platform'));
   assert.deepEqual(platform.map(line => line.replace(/^FINDING platform (\S+) .*# (.*)$/, '$1 $2')), ['xargs-r .githooks/pre-push:2', 'readlink-f bin/check:2']);
 });
+
+test('平台：Node 的執行期警告（NODE_OPTIONS 帶入）不算 check-portability.mjs 失敗', t => {
+  const root = repo(t, { 'docs/agents/issue-run.md': macAdapter, 'scripts/probe.sh': '#!/usr/bin/env bash\nxargs -r echo\n' }); // portability-ok: fixture 內容
+  write(root, { '.warn.cjs': "process.emitWarning('demo warning');\n" });
+  const result = spawnSync('node', [script, root], { encoding: 'utf8', env: { ...env, NODE_OPTIONS: `--require ${join(root, '.warn.cjs')}` } });
+  const lines = result.stdout.trim().split('\n');
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(lines[0], /^FINDING platform xargs-r .*# scripts\/probe\.sh:2$/);
+  assert.equal(lines.at(-1), 'FINDINGS 1');
+});

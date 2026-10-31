@@ -153,7 +153,8 @@ for (const file of scanned) {
 if (/\bmacOS\b/i.test(section('Platforms') ?? '')) {
   const result = spawnSync('node', [join(here, '../templates/check-portability.mjs')], { cwd: root, encoding: 'utf8', maxBuffer: 64 << 20 });
   // 它拋例外（讀不到的檔案、git 失敗）時同樣 exit 1，stderr 是 stack trace：有任何一行不是違規格式就當成沒跑成。
-  const violations = lines(result.stderr).map(text => text.match(/^(.+?)(?::(\d+))?: (\S+) (.+)$/));
+  // Node 的執行期警告（`(node:<pid>) …Warning: …` 與接著的 `(Use \`node --trace-…\` …)`）不是它的輸出，先去掉；exit 0 時不看 stderr。
+  const violations = result.status === 0 ? [] : lines(result.stderr).filter(text => !/^\((?:node:\d+\)|Use `node --trace-)/.test(text)).map(text => text.match(/^(.+?)(?::(\d+))?: (\S+) (.+)$/));
   if (![0, 1].includes(result.status) || violations.some(match => !match)) fail(`check-portability.mjs 失敗：${result.stderr.trim()}`);
   for (const match of violations) {
     if (!scriptDirs.some(dir => match[1].startsWith(dir))) continue;
