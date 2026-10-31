@@ -113,6 +113,30 @@ test('Bash：sed -i／perl -i／重導向／tee 寫主 checkout 追蹤檔或新�
   }
 });
 
+// macOS 的 BSD sed 把備份後綴寫成獨立的空字串參數 `-i ''`；曾被當成 sed script，script 又被當成主 checkout 內的新檔擋下（#100）。
+test("Bash：sed -i '' 的空字串是備份後綴，sed script 不算寫入目標；目標檔照常判斷", () => {
+  const { main } = fixture();
+  const bash = (command, cwd = main) => hook(JSON.stringify({ tool_name: 'Bash', cwd, tool_input: { command } }));
+  for (const command of [
+    "sed -i '' 's/pending/building/' .scratch/note.md",
+    'sed -i "" "s/pending/building/" .scratch/note.md',
+    "sed -i '' -e 's/a/b/' .scratch/note.md",
+  ]) {
+    const allowed = bash(command);
+    assert.equal(allowed.status, 0, command);
+    assert.equal(allowed.stdout + allowed.stderr, '', command);
+  }
+  for (const command of [
+    "sed -i '' 's/a/b/' docs/a.md",
+    'sed -i "" "s/a/b/" docs/a.md',
+  ]) {
+    const denied = bash(command);
+    assert.equal(denied.status, 2, command);
+    assert.match(denied.stderr, /docs\/a\.md 在主 checkout 內/, command);
+    assert.doesNotMatch(denied.stderr, /s\/a\/b/, command);
+  }
+});
+
 // 真實發生過的錯（retro 2026-10-30）：在主 checkout `git switch -c` 開分支後，另一個 session 也在主 checkout 開分支，commit 落到對方分支。
 test('Bash：主 checkout 切換或新開分支 exit 2；切回預設分支、還原檔案、worktree 內切分支放行', () => {
   const { main, worktree } = fixture();
