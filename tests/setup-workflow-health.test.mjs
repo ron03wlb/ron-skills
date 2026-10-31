@@ -301,3 +301,14 @@ test('清單路徑是目錄時回報 invalid-manifest，不說成讀不到', t =
   assert.equal(status, 1, stderr);
   assert.match(lines.at(-2), /^FINDING divergence invalid-manifest docs\/agents\/workflow-templates\.json /);
 });
+
+// #90 review：health 只要 detect 的等級，不跑等級站（不呼叫 gh 數開放 Issue）。
+test('health 不跑等級站：不呼叫 gh', t => {
+  const root = l3(t);
+  const log = join(root, '.gh-log');
+  write(root, { '.fake-bin/gh': `#!/bin/sh\necho "$@" >> '${log}'\necho 0\n` });
+  chmodSync(join(root, '.fake-bin/gh'), 0o755);
+  const result = spawnSync('node', [script, root], { encoding: 'utf8', env: { ...env, DETECT_GH: join(root, '.fake-bin/gh') } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(spawnSync('cat', [log], { encoding: 'utf8' }).stdout, '');
+});

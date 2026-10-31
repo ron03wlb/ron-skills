@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 // /setup-workflow 的偵測：讀目標 repo 的檔案與 git 歷史，判定導入等級（L0–L3）與擴充，不寫任何檔。
-// 用法：node detect.mjs [<repo>] [--json]（repo 預設 cwd）
+// 用法：node detect.mjs [<repo>] [--answer <id>=yes|no ...] [--no-station] [--json]（repo 預設 cwd；--no-station 只判等級，見下方）
 // 文字輸出每個訊號一行 `SIGNAL <name> met|missing <value>`、每項擴充一行 `EXTENSION <name> <value> ...`，
 // 每個缺口一行 `GAP <name> <原因>`（不是等級訊號，不影響 LEVEL；目前只有 ci：程式碼 host 不是 local，卻沒有 CI 檔或 CI 檔沒呼叫檢查入口），
-// 接著 `RECOMMEND <等級>|none`，最後一行 `LEVEL <等級>`；--json 印同樣內容的物件（缺口在 gaps）。exit 0；不是 git repo 時 exit 2。
+// 接著是等級站：量測證據每項一行 `EVIDENCE <name> <value>`（不設門檻數字），目前等級以上每級的進入條件
+// （docs/workflow/README.md 的導入等級表）每個是非題一行 `QUESTION <等級> <id> yes|no|unanswered <題目>`，
+// 每級一行 `ENTRY <等級> met|unmet <沒符合的條件>`；是非題用 --answer 回答，沒答的算不符。
+// 之後 `RECOMMEND <等級>`：下一級的進入條件都符合時是下一級，否則等於目前等級（一次最多升一級），
+// 最後一行 `LEVEL <等級>`；--json 印同樣內容的物件（缺口在 gaps、證據在 evidence、進入條件在 entry）。exit 0；不是 git repo、--answer 的 id 或值不認得時 exit 2。
+// 開放 Issue 數經 gh 取得，測試以 DETECT_GH 取代 gh 指令。
 //
 // 環境站：node detect.mjs [<repo>] --env [--copy <template>...] [--json]，只看這台機器，repo 只讀它的 CI 設定，不必是 git repo。
 // 每項一行：`ENV platform <macos|wsl|linux|…>`、必要工具 `REQUIRED <name> met|missing|skipped <value>`、
@@ -27,7 +32,15 @@ const json = args.includes('--json');
 const copyAt = args.indexOf('--copy');
 const copyEnd = copyAt < 0 ? -1 : args.findIndex((arg, i) => i > copyAt && arg.startsWith('--'));
 const copy = copyAt < 0 ? [] : args.slice(copyAt + 1, copyEnd < 0 ? undefined : copyEnd);
-const root = resolve(args.find((arg, i) => !arg.startsWith('--') && !(copyAt >= 0 && i > copyAt && (copyEnd < 0 || i < copyEnd))) ?? '.');
+const answers = args.flatMap((arg, i) => (args[i - 1] === '--answer' ? [arg] : arg.startsWith('--answer=') ? [arg.slice(9)] : []));
+const positional = args.filter((arg, i) => !arg.startsWith('--') && args[i - 1] !== '--answer'
+  && !(copyAt >= 0 && i > copyAt && (copyEnd < 0 || i < copyEnd)));
+// 一個 --answer 只帶一個答案：多出來的位置參數或沒有值的 --answer 會讓答案被靜默丟掉，直接拒絕。
+if (positional.length > 1 || args.some((arg, i) => arg === '--answer' && (args[i + 1] ?? '--').startsWith('--'))) {
+  console.error(`detect: 參數不對：${args.join(' ')}（只能有一個 <repo>；每個答案各寫一次 --answer <id>=yes|no）`);
+  process.exit(2);
+}
+const root = resolve(positional[0] ?? '.');
 
 if (args.includes('--env')) process.exit(environment());
 if (args.includes('--host')) process.exit(hostStation());
@@ -45,6 +58,14 @@ function which(name) {
 function versionOf(command) {
   const result = spawnSync(command, ['--version'], { encoding: 'utf8', timeout: 10_000 });
   return result.status === 0 ? `${result.stdout}${result.stderr}`.trim().split('\n')[0] || null : null;
+}
+
+/** 選用工具 Orca：環境站與等級站（L3 的進入條件）共用同一個判定。 */
+function orcaTool() {
+  const command = process.env.ORCA_CLI_COMMAND;
+  const path = command ? which(command) : null;
+  return { met: Boolean(path), value: path, unlocks: 'L3',
+    evidence: [path ? 'ORCA_CLI_COMMAND' : command ? `ORCA_CLI_COMMAND 指向的 ${command} 不存在或不可執行` : 'ORCA_CLI_COMMAND 未設定'] };
 }
 
 // 環境站：平台、必要工具（node、git、要複製 .py 時的 Python）與選用工具（Orca、Codex）。setup 不安裝、不切換 runtime，不符只給修正指令。
@@ -102,12 +123,9 @@ function environment() {
     return { met: false, value: null, evidence: [path ? `${path} --version 失敗或不是 Python 3` : 'PATH 上沒有 python3'], reason: `要複製的 ${scripts.join('、')} 需要 Python 3`, fix: installHint('python') };
   }
 
-  const orcaCommand = process.env.ORCA_CLI_COMMAND;
-  const orcaPath = orcaCommand ? which(orcaCommand) : null;
   const codexPath = which('codex');
   const optional = {
-    orca: { met: Boolean(orcaPath), value: orcaPath, unlocks: 'L3',
-      evidence: [orcaPath ? 'ORCA_CLI_COMMAND' : orcaCommand ? `ORCA_CLI_COMMAND 指向的 ${orcaCommand} 不存在或不可執行` : 'ORCA_CLI_COMMAND 未設定'] },
+    orca: orcaTool(),
     codex: { met: Boolean(codexPath), value: codexPath && (versionOf(codexPath) ?? codexPath), unlocks: 'codex', evidence: [codexPath ?? 'PATH 上沒有 codex'] },
   };
   const required = { node: nodeRuntime(), git: gitTool(), python: python() };
@@ -296,7 +314,6 @@ for (const [name, keys] of Object.entries(LEVEL_SIGNALS)) {
   reached &&= missing.length === 0;
   if (reached) level = name;
 }
-const recommend = { L0: 'L1', L1: 'L2', L2: 'L3', L3: null }[level];
 
 // 擴充：每項附偵測訊號（evidence）、要填的 adapter 段落與要帶入的正本。
 const matching = pattern => files.filter(file => pattern.test(file));
@@ -322,11 +339,90 @@ const extensions = {
   ], 'Review', ['run-codex-review.mjs']),
 };
 
-// 缺口：L2 該有、但不當等級訊號的設定（#139：加成訊號會讓現有 L2 專案被判回 L1）。
+// 缺口：L2 該有、但不當等級訊號的設定（#139：加成訊號會讓現有 L2 專案被判回 L1），也不算進入條件。
 const origin = git('remote', 'get-url', 'origin');
 const gaps = { ci: ciGap(root, check.value, codeHost(origin).value) };
 
-const result = { root, level, recommend, levels, signals, extensions, gaps };
+// --no-station：只判等級（health 用），不跑等級站：不呼叫 gh、不看 Orca，沒有 EVIDENCE、QUESTION、ENTRY，RECOMMEND 等於目前等級。
+const station = !args.includes('--no-station');
+
+// 等級站的量測證據：只列數字與有無，不設門檻，由人對照 README 的進入條件回答是非題。
+// 開放 Issue 數只問 GitHub（gh；測試以 DETECT_GH 取代）：本機沒有 glab 可核對旗標，GitLab 與本機 Markdown 記 unknown。
+// tracker 種類照 Host 站的判定：issue-tracker.md 寫的 CLI，還沒有這份文件時依 origin 推定。
+const ISSUE_LIMIT = 1000;
+function openIssues() {
+  const kind = trackerKind(read(trackerDoc));
+  const tracker = kind === 'none' ? codeHost(origin).value : kind;
+  if (tracker !== 'github') return { value: 'unknown', evidence: [`tracker ${tracker}：只有 GitHub 會計數`] };
+  const listed = spawnSync(process.env.DETECT_GH ?? 'gh', ['issue', 'list', '--state', 'open', '--limit', String(ISSUE_LIMIT), '--json', 'number', '--jq', 'length'],
+    { cwd: root, encoding: 'utf8', timeout: 30_000 });
+  const count = listed.status === 0 ? Number(listed.stdout.trim()) : NaN;
+  if (!Number.isInteger(count)) {
+    const reason = (listed.stderr || listed.error?.message || '').trim().split('\n')[0] || `exit ${listed.status}`;
+    return { value: 'unknown', evidence: [`gh issue list 失敗：${reason}`] };
+  }
+  return { value: count, evidence: [`gh issue list --state open --limit ${ISSUE_LIMIT}${count >= ISSUE_LIMIT ? '（達上限，實際可能更多）' : ''}`] };
+}
+const authors = new Set(lines(git('log', '--all', '--since=90.days', '--format=%aE')).map(email => email.toLowerCase()));
+const issueBranches = lines(git('for-each-ref', '--format=%(refname:short)', 'refs/heads')).filter(ref => ISSUE_BRANCH.test(ref));
+const linked = lines(git('worktree', 'list', '--porcelain')).filter(line => line.startsWith('worktree ')).slice(1).map(line => line.slice(9));
+const ciFiles = matching(/^\.github\/workflows\/[^/]+\.ya?ml$|^\.gitlab-ci\.yml$/);
+const evidence = !station ? {} : {
+  contributors: { value: authors.size, evidence: ['git log --all --since=90.days 的作者 email（不分大小寫去重）'] },
+  issueBranches: { value: issueBranches.length, evidence: issueBranches },
+  worktrees: { value: linked.length, evidence: linked },
+  openIssues: openIssues(),
+  ci: { value: ciFiles.length ? 'yes' : 'no', evidence: ciFiles },
+  gated: { value: extensions.gated.detected ? 'yes' : 'no', evidence: extensions.gated.evidence },
+};
+
+// 等級站：README 各級的進入條件。每級是一串條件，每個條件是擇一的選項：是非題由人回答（--answer），
+// 量得到的選項直接取訊號（L1 的 tracker 與檢查入口：已經有，或人回答會用、願意做；L2：同時開好幾個 session，或發生過事故）。
+const orca = station ? orcaTool() : { met: false, evidence: ['--no-station'] };
+const ENTRY_CONDITIONS = {
+  L1: [
+    [{ id: 'tracker', measured: signals.tracker.met, evidence: ['SIGNAL tracker'] },
+      { id: 'useTracker', ask: '這個 repo 用 Issue tracker（GitHub、GitLab 或本機 Markdown）交付工作嗎？' }],
+    [{ id: 'skills', ask: '這台機器能裝 ron-skills 的 skills（能 clone private 的 ron-skills）嗎？' }],
+    [{ id: 'check', measured: check.met, evidence: ['SIGNAL check'] },
+      { id: 'buildCheck', ask: '願意先做一條能跑完所有檢查的指令（bin/check、npm run check 或 make check）嗎？' }],
+  ],
+  L2: [
+    [{ id: 'delivered', ask: '是否已用 L1 的 /issue-run 交付過幾張 Issue？' }],
+    [{ id: 'sessions', ask: '是否同時開兩個以上 session 做這個 repo？' },
+      { id: 'incident', ask: '是否發生過繞過檢查、合錯分支或狀態對不上？' }],
+  ],
+  L3: [
+    [{ id: 'exitCodes', ask: 'L2 的入口（檢查、合入、push 前 hook）都有固定的 exit code 嗎？' }],
+    [{ id: 'orca', measured: orca.met, evidence: orca.evidence }],
+    [{ id: 'unattended', ask: '是否願意讓 agent 在無人值守時跑 git？' }],
+  ],
+};
+const questions = Object.values(ENTRY_CONDITIONS).flat(2).filter(option => option.ask);
+const answered = {};
+for (const answer of answers) {
+  const [, id, value] = answer.match(/^([^=]+)=(yes|no)$/) ?? [];
+  if (!id || !questions.some(question => question.id === id)) {
+    console.error(`detect: 不認得的 --answer ${answer}（格式 <id>=yes|no，id 是 ${questions.map(question => question.id).join('、')}）`);
+    process.exit(2);
+  }
+  answered[id] = value === 'yes';
+}
+const LEVEL_ORDER = ['L0', ...Object.keys(LEVEL_SIGNALS)];
+const above = name => LEVEL_ORDER.indexOf(name) > LEVEL_ORDER.indexOf(level);
+const entry = Object.fromEntries(Object.entries(ENTRY_CONDITIONS).filter(([name]) => station && above(name)).map(([name, groups]) => {
+  const conditions = groups.map(group => {
+    const options = group.map(option => (option.ask ? { id: option.id, ask: option.ask, value: answered[option.id] ?? null }
+      : { id: option.id, value: option.measured, evidence: option.evidence }));
+    return { id: options.map(option => option.id).join('|'), met: options.some(option => option.value === true), options };
+  });
+  const unmet = conditions.filter(condition => !condition.met).map(condition => condition.id);
+  return [name, { met: unmet.length === 0, unmet, conditions }];
+}));
+const next = LEVEL_ORDER[LEVEL_ORDER.indexOf(level) + 1];
+const recommend = next && entry[next]?.met ? next : level;
+
+const result = { root, level, recommend, levels, signals, extensions, gaps, evidence, entry };
 if (json) {
   console.log(JSON.stringify(result, null, 2));
 } else {
@@ -334,6 +430,19 @@ if (json) {
   for (const [name, e] of Object.entries(extensions)) console.log(`EXTENSION ${name} ${e.value}  section=${e.section} templates=${e.templates.join(',') || '-'}  # ${e.evidence.join('; ') || '-'}`);
   for (const [name, l] of Object.entries(levels)) if (!l.met) console.log(`MISSING ${name} ${l.missing.join(',')}`);
   for (const [name, g] of Object.entries(gaps)) if (!g.met) console.log(`GAP ${name} ${g.evidence.join('; ')}`);
-  console.log(`RECOMMEND ${recommend ?? 'none'}`);
+  for (const [name, e] of Object.entries(evidence)) console.log(`EVIDENCE ${name} ${e.value}  # ${e.evidence.join('; ') || '-'}`);
+  for (const [name, e] of Object.entries(entry)) {
+    for (const { options } of e.conditions) {
+      // 量得到而且已符合的條件不必再問。
+      if (options.some(option => !option.ask && option.value === true)) continue;
+      for (const option of options.filter(one => one.ask)) {
+        const state = option.value === null ? 'unanswered' : option.value ? 'yes' : 'no';
+        const alternatives = options.filter(other => other !== option).map(other => other.id);
+        console.log(`QUESTION ${name} ${option.id} ${state} ${option.ask}${alternatives.length ? `（與 ${alternatives.join('、')} 擇一）` : ''}`);
+      }
+    }
+    console.log(`ENTRY ${name} ${e.met ? 'met' : 'unmet'} ${e.unmet.join(',') || '-'}`);
+  }
+  console.log(`RECOMMEND ${recommend}`);
   console.log(`LEVEL ${level}`);
 }
