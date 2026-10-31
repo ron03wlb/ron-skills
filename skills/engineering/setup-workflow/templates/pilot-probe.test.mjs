@@ -1059,6 +1059,12 @@ test('「最後做」：比 blocked_by 最新一張還新、開著的單印 last
   assert.deepEqual(lines(after.probe()), ['DEPS_PROSE 166 last ok']);
 });
 
+// review：新單自己已在等 #n 時，照 last new 再加 blocked_by 會成環。
+test('「最後做」：比基準新、但 blocked_by 已有 #n 的單不列進 last new', t => {
+  const { probe } = fixture(t, { issues: [issue(166, '最後做。', { blockedBy: [193] }), issue(193, ''), issue(240, '', { blockedBy: [166] })] });
+  assert.deepEqual(lines(probe()), ['DEPS_PROSE 166 last ok']);
+});
+
 test('「最後做」：blocked_by 空時以自己的 createdAt 為基準，retro-candidates、母單不算新單，別的 repo 的 blocker 不當基準', t => {
   const { probe } = fixture(t, { issues: [
     issue(80, '最後做。'),
