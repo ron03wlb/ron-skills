@@ -102,8 +102,8 @@
     },
     "scripts/pilot-pr-body.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-pr-body.mjs",
-      "commit": "76467e4bfdff49cb4816d43f2cdc6b30367a6651",
-      "sha256": "60d65f070d719a2acbc082295309e5fcddbb2bcebce8974ca3b40be54ad52cdd"
+      "commit": "ff2ad34911214720f726fab56dd616f6d30128c2",
+      "sha256": "06d905dc253fbe9baf2ec3c86bda7a89497bba9f1bdb3fd91e3f75b893425d03"
     },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",

@@ -88,6 +88,23 @@ test('merged batch 最後的 regression 不是它的 staged SHA exit 0：STOP re
   }
 });
 
+// #193：pilot-land.mjs sync-main 讓整合分支合入 origin/main 後，在 merged batch 追加 `regression: <sync sha> exit 0 sync-main …`，
+// Probe 才認得新的 tip。PR body 要照樣認得 staged SHA 那一行，並把 sync-main 那一行一起列出，不能印 STOP regression。
+test('最後幾行是 sync-main 的 regression：往前取 staged SHA 那一行驗，兩行都列出', t => {
+  const dir = checkout(t);
+  batch(dir, '7', `merged ${A}`, [row(7, 'issue/7-x', 'done', A)],
+    [`${A} exit 0 CHECK_PASS tests 1+2+3`, `${C} exit 0 sync-main CHECK_PASS tests 4+5+6`, `${B} exit 0 sync-main CHECK_PASS tests 7+8+9`]);
+  const result = run(dir);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout, `## Batches\n\n- batch 7：staged ${A}，\`regression: ${A} exit 0 CHECK_PASS tests 1+2+3\`，`
+    + `\`regression: ${B} exit 0 sync-main CHECK_PASS tests 7+8+9\`\n\nCloses #7\n\n${SIGNATURE}\n`);
+  // sync-main 行之前不是 staged SHA 的 exit 0，或 sync-main 行本身沒過：照樣 STOP。
+  for (const regression of [[`${C} exit 0`, `${B} exit 0 sync-main`], [`${A} exit 0`, `${B} exit 1 sync-main`], [`${B} exit 0 sync-main`]]) {
+    batch(dir, '7', `merged ${A}`, [row(7, 'issue/7-x', 'done', A)], regression);
+    assert.equal(run(dir).stdout, 'STOP regression 7\n', regression.join(';'));
+  }
+});
+
 test('用法錯誤：exit 2', t => {
   const dir = checkout(t);
   for (const args of [[], ['--out', 'x'], [dir, '--out'], [dir, 'extra'], [dir, '--out', 'a', 'b']]) {

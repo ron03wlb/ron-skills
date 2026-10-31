@@ -30,8 +30,18 @@
 // 請求分支（沒有 Issue 的 `retro/<x>`，#143）：`req-<n> --branch retro/<x>`（<n> 是 requests.md 的行號）在 batch-req-<n>.md 不存在時開出它，
 //   唯一的成員列 Issue 欄是 `-`、state `done`、candidate 是分支 tip；已存在時成員要是同一個分支，否則 STOP checkpoint。之後與一般 batch 相同。
 //   分支不存在印 `STOP branch <分支> …`，不開 checkpoint。成員列是 `-` 時，STOP、RESOLVED 行裡的 <n> 是分支名稱。
+// sync-main（Push gate 的 STOP behind-main，#193）：讓 pilot/integration 包含 origin/main，同樣在 stage worktree 做（要乾淨）。先 `git fetch origin`；
+//   已包含印 `SYNCED <tip> current`；整合分支是 origin/main 的祖先時 `merge --ff-only`，印 `SYNCED <sha> ff`（不跑 Regression）；
+//   分叉時先過 load 關卡（同 batch：超過門檻印 `STOP load <load> <門檻>`，stage worktree 與分支都不動），
+//   再 `switch -C pilot/stage-sync-main <tip>`、`merge --no-ff origin/main`，衝突照 Stage 的解法（`RESOLVED sync-main <解法> <檔案…>`），
+//   解不了 abort 後印 `STOP conflict sync-main <檔案…>`；在合併 SHA 跑 Regression（reg-sync-main.log），沒過印 `STOP regression sync-main <exit>`；
+//   通過且整合分支的 tip 沒變（變了 `STOP drift`）時，先對每個 `current: merged <sha>`（<sha> 在合併 SHA 裡）的
+//   batch 追加 `regression: <sha> exit 0 sync-main <CHECK_PASS 行>`（印 `RECORDED <key>`；Probe 才認得新的 tip、印 RESUME_PUSH，pilot-pr-body.mjs
+//   認得 sync-main 標記、往前驗 staged SHA 那一行；寫不進去時 STOP checkpoint），再快轉 pilot/integration、刪 stage 分支，
+//   最後印 `SYNCED <sha> <CHECK_PASS 行>`（bin/check 沒印 CHECK_PASS 時只有 `SYNCED <sha>`）。
+//   STOP 時 pilot/integration 都不動，重跑同一行重新來過。exit 與 batch 相同（SYNCED 是 0）。
 //
-// 用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--load-max <n>]（在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）
+// 用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--load-max <n>] | sync-main [--load-max <n>]（在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）
 // stdout：最後一行是 `MERGED <key> <sha>`，或 `STOP regression <exit>`、`STOP hold`、`STOP drift`（tip 變了，下一輪重新 stage）、
 //   `STOP conflict <n> <檔>=<來源>:<種類> …`（已 abort，stage worktree 乾淨；每個衝突檔一項，#192）：來源是 `member <m>`（本次 stage
 //     依號碼先合入、自己的分支改過這個檔的成員）、`integration`（成員開分支之後整合分支改過），或以 + 相連的多個來源（`member 79+integration`、`member 1+member 3`），
@@ -42,13 +52,13 @@
 //   `RESUME <key> <sha>`、`RESOLVED <n> <解法> <檔案…>`，Bare guard 還原主 checkout 時的 `UNBARE <主 checkout>`。
 // exit：0 MERGED；4 STOP；2 用法錯誤；1 其他失敗（程式錯誤，不印 STOP）。
 import { spawnSync } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { availableParallelism, loadavg, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { STAMP_FILES, restamp } from './restamp.mjs';
 
-const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--load-max <n>]（--branch 時 key 是 req-<n>；門檻預設 $PILOT_LOAD_MAX，再來 3 × 核心數；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
+const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--load-max <n>] | sync-main [--load-max <n>]（--branch 時 key 是 req-<n>；門檻預設 $PILOT_LOAD_MAX，再來 3 × 核心數；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
 const LOAD = /^\d+(\.\d+)?$/;
 const INTEGRATION = 'pilot/integration';
 const MARKER = 32;
@@ -514,29 +524,36 @@ function resolveConflicts(tree, files) {
   return ['additions', 'entries', 'rows', 'adjacent', 'restamp'].filter(kind => kinds.has(kind)).join('+');
 }
 
+/**
+ * 在 stage worktree `merge --no-ff` 一個 ref，衝突照 Stage 條目允許的解法解並印 `RESOLVED <label> <解法> <檔案…>`。
+ * 解不了時先以 `describe(衝突檔)` 取得 STOP 訊息（要讀 index 的三個 stage，在 abort 之前），再 `merge --abort`。
+ */
+function mergeResolving(tree, ref, label, describe) {
+  const merge = gitIn(tree, 'merge', '--no-ff', '--no-edit', ref);
+  if (merge.status === 0) return;
+  const conflicted = must(tree, 'diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean);
+  // 解的途中失敗（restamp、add、commit 被 hook 擋）也先 abort，stage worktree 不停在 merge 中途。
+  try {
+    const how = conflicted.length ? resolveConflicts(tree, conflicted) : undefined;
+    if (how) {
+      must(tree, 'commit', '--no-edit');
+      console.log(`RESOLVED ${label} ${how} ${conflicted.join(' ')}`);
+      return;
+    }
+    if (!conflicted.length) throw new Stop(`merge ${label} ${merge.reason}`);
+    throw new Stop(describe(conflicted));
+  } catch (error) {
+    if (gitIn(tree, 'rev-parse', '-q', '--verify', 'MERGE_HEAD').status === 0) must(tree, 'merge', '--abort');
+    throw error;
+  }
+}
+
 /** Stage：從 `tip` 重開 stage 分支、依號碼合入成員；傳回 staged SHA。 */
 function stage(tree, key, members, tip) {
   must(tree, 'switch', '-q', '-C', `pilot/stage-${key}`, tip);
   for (const [index, { n, branch }] of members.entries()) {
-    const merge = gitIn(tree, 'merge', '--no-ff', '--no-edit', branch);
-    if (merge.status === 0) continue;
-    const conflicted = must(tree, 'diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean);
-    // 解的途中失敗（restamp、add、commit 被 hook 擋）也先 abort，stage worktree 不停在 merge 中途。
-    try {
-      const how = conflicted.length ? resolveConflicts(tree, conflicted) : undefined;
-      if (how) {
-        must(tree, 'commit', '--no-edit');
-        console.log(`RESOLVED ${n} ${how} ${conflicted.join(' ')}`);
-        continue;
-      }
-      if (!conflicted.length) throw new Stop(`merge ${n} ${merge.reason}`);
-      // 種類要讀 index 的三個 stage，在 abort 之前標好。
-      const labels = conflicted.map(path => `${path}=${conflictSource(tree, path, tip, branch, members.slice(0, index))}:${conflictKind(tree, path)}`);
-      throw new Stop(`conflict ${n} ${labels.join(' ')}`);
-    } catch (error) {
-      if (gitIn(tree, 'rev-parse', '-q', '--verify', 'MERGE_HEAD').status === 0) must(tree, 'merge', '--abort');
-      throw error;
-    }
+    mergeResolving(tree, branch, n, conflicted => `conflict ${n} ${conflicted
+      .map(path => `${path}=${conflictSource(tree, path, tip, branch, members.slice(0, index))}:${conflictKind(tree, path)}`).join(' ')}`);
   }
   return must(tree, 'rev-parse', 'HEAD');
 }
@@ -548,17 +565,17 @@ function loadGate(max) {
   if (load > max) throw new Stop(`load ${load} ${max}`);
 }
 
-/** Regression：在 stage worktree 跑 bin/check --upstream，輸出寫到 reg-<key>.log，checkpoint 追加 regression 行；傳回 exit code。 */
-function regression(main, tree, key, sha, file) {
+/** Regression：在 stage worktree 跑 bin/check --upstream，輸出寫到 reg-<key>.log；傳回 exit code、CHECK_PASS 行與 regression 行的值 `line`。 */
+function regression(main, tree, key, sha) {
   const log = join(main, `.scratch/pilot/reg-${key}.log`);
   mkdirSync(dirname(log), { recursive: true });
   const fd = openSync(log, 'w');
   const result = spawnSync(join(tree, 'bin/check'), ['--upstream'], { cwd: tree, env: childEnv, stdio: ['ignore', fd, fd] });
   closeSync(fd);
   const code = result.status ?? 1;
-  const last = readFileSync(log, 'utf8').trimEnd().split('\n').pop();
-  appendRegression(file, `${sha} exit ${code}${code === 0 && last.startsWith('CHECK_PASS ') ? ` ${last}` : ''}`);
-  return code;
+  const last = readFileSync(log, 'utf8').trimEnd().split('\n').pop() ?? '';
+  const pass = code === 0 && last.startsWith('CHECK_PASS ') ? last : '';
+  return { code, pass, line: `${sha} exit ${code}${pass ? ` ${pass}` : ''}` };
 }
 
 /**
@@ -600,7 +617,8 @@ function land(key, loadMax) {
     sha = stage(tree, key, members, tip);
     setCurrent(file, `staged ${sha} onto ${tip}`);
     console.log(`STAGED ${key} ${sha} onto ${tip}`);
-    const code = regression(main, tree, key, sha, file);
+    const { code, line } = regression(main, tree, key, sha);
+    appendRegression(file, line);
     if (code !== 0) throw new Stop(`regression ${code}`);
   }
 
@@ -611,6 +629,66 @@ function land(key, loadMax) {
   must(tree, 'branch', '-d', branch);
   setCurrent(file, `merged ${sha}`);
   return sha;
+}
+
+const SYNC_BRANCH = 'pilot/stage-sync-main';
+
+/** sync-main：讓 pilot/integration 包含 origin/main（Push gate 的 STOP behind-main，#193）；傳回 SYNCED 行 `<sha> <說明>`，其他結果丟 Stop。 */
+function syncMain(loadMax) {
+  const main = mainCheckout();
+  must(main, 'fetch', '-q', 'origin');
+  const tip = must(main, 'rev-parse', INTEGRATION);
+  const upstream = must(main, 'rev-parse', 'origin/main');
+  const ancestor = (a, b) => gitIn(main, 'merge-base', '--is-ancestor', a, b).status === 0;
+  if (ancestor(upstream, tip)) return `${tip} current`;
+  const behind = ancestor(tip, upstream);
+  // 分叉時要跑 Regression：和 batch 的 Stage 一樣，建 stage worktree、切分支之前先過 load 關卡（#178），STOP load 時什麼都不動。
+  if (!behind) loadGate(loadMax);
+  const tree = stageWorktree(main) ?? createStageWorktree(main, 'sync-main');
+  if (must(tree, 'status', '--porcelain')) throw new Stop(`dirty ${tree}`);
+  // 只是落後（retro 直接落地進 main）：快轉到 CI 已驗過的 origin/main，不必再跑 Regression；merged batch 這時都已在 origin/main。
+  if (behind) {
+    must(tree, 'switch', '-q', INTEGRATION);
+    must(tree, 'merge', '--ff-only', '-q', upstream);
+    return `${upstream} ff`;
+  }
+  must(tree, 'switch', '-q', '-C', SYNC_BRANCH, tip);
+  // 合入先記下的 SHA，不是 ref：上面的祖先判斷用的是它，期間別處 fetch 讓 origin/main 前進也合同一個。
+  mergeResolving(tree, upstream, 'sync-main', conflicted => `conflict sync-main ${conflicted.join(' ')}`);
+  const sha = must(tree, 'rev-parse', 'HEAD');
+  const { code, pass } = regression(main, tree, 'sync-main', sha);
+  if (code !== 0) throw new Stop(`regression sync-main ${code}`);
+  if (must(main, 'rev-parse', INTEGRATION) !== tip) throw new Stop('drift');
+  // 先寫 checkpoint 再快轉：寫到一半失敗時整合分支還沒動，重跑會重新合併、再寫一次（最後一行為準）；
+  // 反過來的話重跑只看到「已包含」，補不回 regression 行，Probe 又印 NOT_IN_MAIN（#193 review）。
+  recordSync(main, sha, `${sha} exit 0 sync-main${pass ? ` ${pass}` : ''}`);
+  must(tree, 'switch', '-q', INTEGRATION);
+  must(tree, 'merge', '--ff-only', '-q', SYNC_BRANCH);
+  must(tree, 'branch', '-d', SYNC_BRANCH);
+  return pass ? `${sha} ${pass}` : sha;
+}
+
+/**
+ * sync-main 通過後、快轉之前，每個 `current: merged <sha>`、而且 <sha> 在合併 SHA 裡的 batch 追加同一個 `<sync sha> exit 0 sync-main …` 行並印 `RECORDED <key>`：
+ * Probe 以最後一個 regression 行比對整合分支的 tip，沒有這行就把已驗過的 tip 印成 `NOT_IN_MAIN <key> tip …`；
+ * `sync-main` 標記讓 pilot-pr-body.mjs 往前找 staged SHA 那一行來驗（#193）。
+ */
+function recordSync(main, sha, value) {
+  const dir = join(main, '.scratch/pilot');
+  const files = existsSync(dir) ? readdirSync(dir).filter(name => /^batch-.+\.md$/.test(name)).sort() : [];
+  for (const name of files) {
+    const file = join(dir, name);
+    const merged = readFileSync(file, 'utf8').match(/^current:[ \t]*merged ([0-9a-f]{7,40})\b/m)?.[1];
+    if (!merged || gitIn(main, 'merge-base', '--is-ancestor', merged, sha).status !== 0) continue;
+    // 寫入本身失敗（唯讀、磁碟滿）也是 STOP checkpoint，不是程式錯誤：檔頭與 pilot.md 都這樣承諾，整合分支這時還沒動。
+    try {
+      appendRegression(file, value);
+    } catch (error) {
+      if (error instanceof Stop || !error?.code) throw error;
+      throw new Stop(`checkpoint ${file} 寫不進去：${error.code}`);
+    }
+    console.log(`RECORDED ${name.slice('batch-'.length, -'.md'.length)}`);
+  }
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -630,6 +708,11 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     process.exit(2);
   }
   try {
+    // `sync-main --branch …` 已被上面 req-<n> 的檢查擋成用法錯誤。
+    if (key === 'sync-main') {
+      console.log(`SYNCED ${syncMain(Number(loadMax))}`);
+      process.exit(0);
+    }
     if (request) openRequest(key, request, Number(loadMax));
     console.log(`MERGED ${key} ${land(key, Number(loadMax))}`);
   } catch (error) {

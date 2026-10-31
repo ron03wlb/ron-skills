@@ -152,7 +152,8 @@ test('主 checkout 與 stage worktree 各在自己的條目定義一次怎麼取
 
 // #21 的根因是主 checkout 的工作樹被換掉：路徑改成佔位符後，整份 pilot.md 對主 checkout 都不能 checkout／switch。
 test('整份 pilot.md 沒有在主 checkout checkout／switch 的步驟', () => {
-  const hits = [...pilot.matchAll(/git -C (<[^>]+>|[^\s<]\S*) (?:checkout|switch)\b/g)].map(([, target]) => target);
-  assert.ok(hits.length > 0, '應該找得到 stage worktree 的 switch');
-  for (const target of hits) assert.equal(target, stageWorktree);
+  const switches = text => [...text.matchAll(/git -C (<[^>]+>|[^\s<]\S*) (?:checkout|switch)\b/g)].map(([, target]) => target);
+  // 手打的 switch 都已改成 pilot-land.mjs（含 #193 的 sync-main），pilot.md 可能一個都沒有：先確認 regex 認得兩種寫法，零命中才有意義。
+  assert.deepEqual(switches('`git -C <主 checkout> switch x`、`git -C <stage worktree> checkout y`'), ['<主 checkout>', stageWorktree]);
+  for (const target of switches(pilot)) assert.equal(target, stageWorktree);
 });
