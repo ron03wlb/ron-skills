@@ -959,10 +959,12 @@ test('在同一處各加新條目、或改到相鄰條目的相接行時，算�
 });
 
 // 開單時依賴只寫在內文（「依賴 #87」）、沒建 blocked_by，Pool 只讀 blocked_by，會把兩組同時派出（#94）。
+// createdAt 預設跟著號碼遞增（號碼越大越新），DEPS_PROSE last 以它比新舊（#228）。
+const created = number => new Date(Date.UTC(2026, 0, 1) + number * 3600_000).toISOString();
 const issue = (number, body, { labels = ['ready-for-agent'], blockedBy = [] } = {}) => ({
-  number, body,
+  number, body, createdAt: created(number),
   labels: { nodes: labels.map(name => ({ name })) },
-  blockedBy: { nodes: blockedBy.map(n => (typeof n === 'number' ? { number: n, repository: { nameWithOwner: 'acme/app' } } : n)) },
+  blockedBy: { nodes: blockedBy.map(n => (typeof n === 'number' ? { number: n, createdAt: created(n), repository: { nameWithOwner: 'acme/app' } } : n)) },
 });
 
 test('ready Issue 內文寫「依賴 #m」、#m 開著卻不在 blocked_by 時印 DEPS_PROSE <n> #m', t => {
@@ -1018,7 +1020,7 @@ test('#166 原句：以「它們」為 blocker 的每個還開著的號碼都印
     issue(166, ISSUE_166),
     issue(131, ''), issue(132, ''), issue(134, ''), issue(94, ''),
   ] });
-  assert.deepEqual(lines(probe()), ['DEPS_PROSE 166 #131', 'DEPS_PROSE 166 #132', 'DEPS_PROSE 166 #134', 'DEPS_PROSE 166 #94', 'DEPS_PROSE 166 last']);
+  assert.deepEqual(lines(probe()), ['DEPS_PROSE 166 #131', 'DEPS_PROSE 166 #132', 'DEPS_PROSE 166 #134', 'DEPS_PROSE 166 #94', 'DEPS_PROSE 166 last ok']);
 });
 
 test('#176 原句「排在它之後」：單數的「它」沒號碼不印；「它們」「這些」才回指同一句前面的號碼', t => {
@@ -1045,7 +1047,26 @@ test('「最後做」：同一小句有號碼、「不必／不要／無需最�
     issue(74, '不必最後做；不要最後做；無需最後做。'),
     issue(71, ''), issue(72, ''),
   ] });
-  assert.deepEqual(lines(probe()), ['DEPS_PROSE 70 #71', 'DEPS_PROSE 73 last']);
+  assert.deepEqual(lines(probe()), ['DEPS_PROSE 70 #71', 'DEPS_PROSE 73 last new #72 #74']);
+});
+
+// #228：判斷過 `last` 之後又開了新單（#221），blocked_by 沒掛它，coordinator 要從 Pool 的 blocked 桶才發現。
+test('「最後做」：比 blocked_by 最新一張還新、開著的單印 last new，加進 blocked_by 後印 last ok', t => {
+  const others = [issue(130, ''), issue(193, ''), issue(221, '')];
+  const before = fixture(t, { issues: [issue(166, '以它們為 blocker，最後做。', { blockedBy: [193] }), ...others] });
+  assert.deepEqual(lines(before.probe()), ['DEPS_PROSE 166 last new #221']);
+  const after = fixture(t, { issues: [issue(166, '以它們為 blocker，最後做。', { blockedBy: [193, 221] }), ...others] });
+  assert.deepEqual(lines(after.probe()), ['DEPS_PROSE 166 last ok']);
+});
+
+test('「最後做」：blocked_by 空時以自己的 createdAt 為基準，retro-candidates、母單不算新單，別的 repo 的 blocker 不當基準', t => {
+  const { probe } = fixture(t, { issues: [
+    issue(80, '最後做。'),
+    issue(79, ''), issue(81, ''), issue(82, '', { labels: ['retro-candidates'] }), issue(83, '', { labels: ['parent'] }),
+    issue(90, '最後做。', { blockedBy: [{ number: 85, createdAt: created(85), repository: { nameWithOwner: 'acme/other' } }] }),
+    issue(85, ''), issue(91, ''),
+  ] });
+  assert.deepEqual(lines(probe()), ['DEPS_PROSE 80 last new #81 #85 #90 #91', 'DEPS_PROSE 90 last new #91']);
 });
 
 test('gh 失敗時印 DEPS_PROSE_FAILED，其他檢查照跑', t => {
