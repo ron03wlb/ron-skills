@@ -572,3 +572,86 @@ test('--status 沒有 coordinator 檔、gate 與 batch 時照樣寫出', t => {
   assert.match(status, /^- 沒有開著的 batch$/m);
   assert.match(status, /^- pilot\/integration none$/m);
 });
+
+// 兩個成員都改了 adapter 同一個條目，做完才在 stage 衝突、整批重做（#123）。
+const RULES = '# rules\n\n- **Handoff.** 交接。\n  1. 第一步\n\n- **Close.** 關單。\n\n- **Probe.** 對帳。\n';
+
+/** 從 `from` 開 `issue/<n>-x`，寫入 `files`（路徑 → 內容），commit 後切回 main。 */
+function memberBranch(repo, git, n, from, files) {
+  git('switch', '-q', '-c', `issue/${n}-x`, from);
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(join(repo, path, '..'), { recursive: true });
+    writeFileSync(join(repo, path), text);
+    git('add', path);
+  }
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', `#${n}`);
+  git('switch', '-q', 'main');
+}
+
+function rulesFixture(t) {
+  const f = fixture(t);
+  mkdirSync(join(f.repo, 'docs'), { recursive: true });
+  writeFileSync(join(f.repo, 'docs/rules.md'), RULES);
+  f.git('add', 'docs/rules.md');
+  f.git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'rules');
+  f.git('branch', 'pilot/integration');
+  return f;
+}
+
+const overlapOf = result => result.stdout.split('\n').filter(line => line.startsWith('OVERLAP '));
+
+test('兩個成員改到同一個條目時印 OVERLAP <n> <m> <檔案>:<條目>，同一組只印一次；改不同條目不印', t => {
+  const { repo, git, batch, probe } = rulesFixture(t);
+  memberBranch(repo, git, 8, 'pilot/integration', { 'docs/rules.md': RULES.replace('交接。', '交接（#8）。').replace('第一步', '第一步（#8）') });
+  memberBranch(repo, git, 9, 'pilot/integration', { 'docs/rules.md': RULES.replace('交接。', '交接（#9）。').replace('對帳。', '對帳（#9）。') });
+  memberBranch(repo, git, 10, 'pilot/integration', { 'docs/rules.md': RULES.replace('關單。', '關單（#10）。') });
+  batch('9-10', 'dispatched 2026-10-31T00:00:00+08:00', [{ n: 9, state: 'done', candidate: SHA }, { n: 10, state: 'done', candidate: SHA }]);
+  batch('8', 'dispatched 2026-10-31T00:00:00+08:00', [{ n: 8, state: 'done', candidate: SHA }]);
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(overlapOf(result), ['OVERLAP 8 9 docs/rules.md:Handoff']);
+});
+
+test('成員改的條目在整合分支上自它的 base 以來也改過時印 OVERLAP <n> integration', t => {
+  const { repo, git, batch, probe } = rulesFixture(t);
+  memberBranch(repo, git, 8, 'pilot/integration', { 'docs/rules.md': RULES.replace('關單。', '關單（#8）。'), 'tool.mjs': 'a\n' });
+  git('switch', '-q', 'pilot/integration');
+  writeFileSync(join(repo, 'docs/rules.md'), RULES.replace('關單。', '關單（整合）。').replace('對帳。', '對帳（整合）。'));
+  writeFileSync(join(repo, 'tool.mjs'), 'b\n');
+  git('add', '.');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'integration moved');
+  git('switch', '-q', 'main');
+  batch('8', 'dispatched 2026-10-31T00:00:00+08:00', [{ n: 8, state: 'done', candidate: SHA }]);
+  assert.deepEqual(overlapOf(probe()), ['OVERLAP 8 integration docs/rules.md:Close', 'OVERLAP 8 integration tool.mjs']);
+});
+
+test('條目外的改動算整個檔；closed batch、stop 成員、本機沒有分支的成員不比', t => {
+  const { repo, git, batch, probe } = rulesFixture(t);
+  memberBranch(repo, git, 8, 'pilot/integration', { 'docs/rules.md': RULES.replace('# rules', '# rules v2') });
+  memberBranch(repo, git, 9, 'pilot/integration', { 'docs/rules.md': RULES.replace('對帳。', '對帳（#9）。') });
+  memberBranch(repo, git, 10, 'pilot/integration', { 'docs/rules.md': RULES.replace('對帳。', '對帳（#10）。') });
+  memberBranch(repo, git, 11, 'pilot/integration', { 'docs/rules.md': RULES.replace('對帳。', '對帳（#11）。') });
+  batch('8-9', 'dispatched 2026-10-31T00:00:00+08:00', [{ n: 8 }, { n: 9, state: 'stop' }, { n: 12, state: 'done' }]);
+  batch('10', 'closed 2026-10-31T00:00:00+08:00', [{ n: 10, state: 'done', candidate: SHA }]);
+  batch('11', 'dispatched 2026-10-31T00:00:00+08:00', [{ n: 11, state: 'done', candidate: SHA }]);
+  assert.deepEqual(overlapOf(probe()), ['OVERLAP 8 11 docs/rules.md']);
+});
+
+// review：git 是照改動的位置合併，不看條目名稱；在同一處各加一個新條目、或改到相鄰的行（中間沒有沒改的行）也會衝突。
+test('在同一處各加新條目、或改到相鄰條目的相接行時，算在相接處的條目上', t => {
+  const { repo, git, batch, probe } = rulesFixture(t);
+  memberBranch(repo, git, 8, 'pilot/integration', { 'docs/rules.md': `${RULES}\n- **Eight.** 新的。\n` });
+  memberBranch(repo, git, 9, 'pilot/integration', { 'docs/rules.md': `${RULES}\n- **Nine.** 新的。\n` });
+  const tight = '# rules\n\n- **Handoff.** 交接。\n  1. 第一步\n- **Close.** 關單。\n';
+  git('switch', '-q', '-c', 'tight', 'pilot/integration');
+  writeFileSync(join(repo, 'docs/tight.md'), tight);
+  git('add', '.');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'tight');
+  git('switch', '-q', 'pilot/integration');
+  git('merge', '-q', '--ff-only', 'tight');
+  git('switch', '-q', 'main');
+  memberBranch(repo, git, 10, 'pilot/integration', { 'docs/tight.md': tight.replace('第一步', '第一步（#10）') });
+  memberBranch(repo, git, 11, 'pilot/integration', { 'docs/tight.md': tight.replace('關單。', '關單（#11）。') });
+  batch('8-11', 'dispatched 2026-10-31T00:00:00+08:00', [8, 9, 10, 11].map(n => ({ n, state: 'done', candidate: SHA })));
+  assert.deepEqual(overlapOf(probe()), ['OVERLAP 8 9 docs/rules.md:Probe', 'OVERLAP 10 11 docs/tight.md:Handoff', 'OVERLAP 10 11 docs/tight.md:Close']);
+});
