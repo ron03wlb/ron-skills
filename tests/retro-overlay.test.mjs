@@ -57,7 +57,9 @@ test('retro overlay 收集模式：每個 session 把候選開成一張 retro-ca
   const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
   const step = skill.split('\n\n').find(paragraph => paragraph.includes('**Collect mode.**'));
   assert.ok(step, 'overlay 沒有 Collect mode 段落');
-  assert.doesNotMatch(step, /retro-collect\.mjs|ORCA_TERMINAL_HANDLE|--role/, '收集模式不能再依賴收集腳本或 Orca 分頁');
+  assert.doesNotMatch(step, /retro-collect\.mjs|--role/, '收集模式不能再依賴收集腳本');
+  // #156：handle 只是給 /retro-collect 收完關分頁的記錄，沒有 Orca 也照樣開單。
+  assert.match(step, /starts with an `Orca: <handle>` line when `ORCA_TERMINAL_HANDLE` is set/);
   assert.match(step, /one Issue labelled `retro-candidates`/, '候選清單不能掛 retro：pilot 會把 retro 單當一般 Issue 派出去');
   assert.match(step, /Implement nothing/);
   assert.match(step, /\/retro-collect/);
