@@ -1,17 +1,21 @@
 #!/usr/bin/env node
-// 把開著的 Issue 逐張分桶，pilot 的 Pool 從 ready 桶依序挑；第一版只支援 GitHub（gh CLI）。
-// 用法：node scripts/issue-pool.mjs [--repo <owner>/<name>] [--stale-hours <h>] [--categories <label>,...]
-//       node scripts/issue-pool.mjs claim <n> [--repo <owner>/<name>] [--session <id>]
-// 一張只歸一個桶，依序取第一個符合的：parent（有 sub-issue）、human（`ready-for-human`，指派給人不算認領）、
+// 把開著的 Issue 逐張分桶，pilot 的 Pool 從 ready 桶依序挑；tracker 支援 GitHub（gh）與 GitLab（glab，含自架），本機 Markdown tracker 不支援。
+// 用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...]
+//       node scripts/issue-pool.mjs claim <n> [--repo <專案>] [--session <id>]
+// tracker 讀 repo 根的 docs/agents/issue-tracker.md（寫 glab 是 GitLab、寫 gh 是 GitHub、沒有這份文件時依 origin，同 HOSTS.md；判定在 lib/hosts.mjs），與程式碼 host（origin）分開：
+// 兩者同種時 CLI 從 checkout 推得主機與專案；不同種時取文件裡第一個該種主機的專案網址（GitLab 寫到 `/-/` 之前）。<專案> 是 GitHub 的 <owner>/<name>
+// 或 GitLab 的 group/…/project，覆寫推得的專案。GitLab 的子項目（Issue 底下是 Task）算 sub-issue，所以掛了 Task 的單歸 parent 桶，`is_blocked_by`／`blocks` 連結算相依，系統紀錄裡的「assigned to」算指派
+// （最近 100 則系統紀錄內）；`blocks` 連結是 GitLab Premium 以上才有，Free 版沒有 blocked 桶。
+// 一張只歸一個桶，依序取第一個符合的：parent（有 sub-issue；GitLab 是有子項目）、human（`ready-for-human`，指派給人不算認領）、
 // stale（已指派，超過 --stale-hours（預設 24）沒有新留言或新指派）、claimed（已指派）、retro-candidates（`retro-candidates` label：retro 的候選清單，等 `/retro-collect`）、blocked（有開著的 blocked_by）、
 // needs-info、needs-triage、ready（`ready-for-agent`）、unlabeled。所以 ready 桶就是池子。過期的認領只歸到 stale，不自動釋放。
 // 輸出順序：ready 桶先印，依 `retro` label 的先（retro 判定太複雜、交給 worker 的單）、`priority` label 的先、直接或間接 block 最多開著的單的先（關鍵路徑）、號碼小的先；
 // 其餘依上面的桶順序、桶內號碼小的先。
 // stdout：每張一行 `<桶> #<n> <標題>`；之後對開著、有 triage 狀態 label（TRIAGE_STATES）卻沒有分類 label 的單各印一行 `NO_CATEGORY <n>`（號碼小的先），
 // 母單（有 sub-issue 或 `parent` label）與 `retro-candidates` 不算。分類 label 預設是 DEFAULT_CATEGORIES（triage 的 `bug`、`enhancement`），
-// adapter 用的 label 不同時以 `--categories` 覆寫（逗號分隔）。exit 0。gh 失敗時 stderr 印原因、exit 1；用法錯誤 exit 2。
+// adapter 用的 label 不同時以 `--categories` 覆寫（逗號分隔）。exit 0。gh 或 glab 失敗時 stderr 印原因、exit 1；用法錯誤或本機 Markdown tracker 時 exit 2。
 // claim 是 session 開始處理一張 Issue 前的認領：先留「認領：<機器>／<session>」（整則留言只有這一行；session 預設
-// $CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE），再 `--add-assignee @me`，印 `CLAIMED <n>`。同一個帳號會在好幾台機器上跑，
+// $CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE），再指派給自己（HOSTS.md 的 Assign yourself），印 `CLAIMED <n>`。同一個帳號會在好幾台機器上跑，
 // 指派分不出是誰，所以看認領留言：
 // - 已被指派時，最近一則認領留言必須是這個 session、作者還在指派名單裡，才再認領一次（重派；新留言順便更新 stale 的時間），否則不改 Issue。
 // - 還沒人指派、但最近一則認領是別的 session 在 5 分鐘內留的：對方正在認領，不改 Issue。
@@ -24,26 +28,121 @@ import { readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { codeHost, projectInDoc, trackerKind } from './lib/hosts.mjs';
 
-const USAGE = '用法：node scripts/issue-pool.mjs [--repo <owner>/<name>] [--stale-hours <h>] [--categories <label>,...] | claim <n> [--repo <owner>/<name>] [--session <id>]';
+const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] | claim <n> [--repo <專案>] [--session <id>]';
 const QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{number title labels(first:50){nodes{name}} assignees(first:20){nodes{login}} subIssuesSummary{total} blockedBy(first:50){nodes{number state repository{nameWithOwner}}} blocking(first:50){nodes{number state repository{nameWithOwner}}} comments(last:1){nodes{createdAt}} timelineItems(last:1,itemTypes:[ASSIGNED_EVENT]){nodes{... on AssignedEvent{createdAt}}}}}}}`;
+// GitLab 的 Issue 是 work item：label、指派、子項目、相依與留言都在 widgets 裡；notes 分成留言（comments）與系統紀錄（activity，指派紀錄在這裡）。
+const GITLAB_QUERY = `query($fullPath:ID!,$cursor:String){project(fullPath:$fullPath){workItems(types:[ISSUE],state:opened,first:50,after:$cursor){pageInfo{hasNextPage endCursor} nodes{iid title widgets{__typename ... on WorkItemWidgetLabels{labels(first:50){nodes{title}}} ... on WorkItemWidgetAssignees{assignees(first:20){nodes{username}}} ... on WorkItemWidgetHierarchy{hasChildren} ... on WorkItemWidgetLinkedItems{linkedItems(first:50){nodes{linkType workItem{iid state namespace{fullPath}}}}} ... on WorkItemWidgetNotes{comments:notes(filter:ONLY_COMMENTS,last:1){nodes{createdAt}} activity:notes(filter:ONLY_ACTIVITY,last:100){nodes{createdAt body}}}}}}}}`;
 
-class GhError extends Error {}
-function gh(...args) {
-  const result = spawnSync('gh', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
-  if (result.status !== 0) throw new GhError(`gh ${args.slice(0, 2).join(' ')} 失敗：${(result.stderr || result.error?.message || '').trim()}`);
+class CliError extends Error {}
+class UsageError extends Error {}
+function cli(command, args, env = {}) {
+  const result = spawnSync(command, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } });
+  if (result.status !== 0) throw new CliError(`${command} ${args.slice(0, 2).join(' ')} 失敗：${(result.stderr || result.error?.message || '').trim()}`);
   return result.stdout;
 }
 
-function openIssues(repo) {
-  const [owner, name] = repo.split('/');
-  const issues = [];
-  for (let cursor = null, more = true; more;) {
-    const page = JSON.parse(gh('api', 'graphql', '-F', `owner=${owner}`, '-F', `name=${name}`, ...(cursor ? ['-F', `cursor=${cursor}`] : []), '-f', `query=${QUERY}`)).data.repository.issues;
-    issues.push(...page.nodes);
-    ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
-  }
-  return issues;
+const gitOut = (...args) => {
+  const result = spawnSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  return result.status === 0 ? result.stdout.trim() : undefined;
+};
+
+/** GitLab work item 轉成 GitHub 列表的形狀，分桶與排序共用同一套：子項目算 sub-issue，`is_blocked_by`、`blocks` 連結算相依，
+ * 系統紀錄裡只有「assigned to」算指派。 */
+export function fromWorkItem({ iid, title, widgets }) {
+  const widget = name => widgets.find(({ __typename }) => __typename === `WorkItemWidget${name}`) ?? {};
+  const links = type => (widget('LinkedItems').linkedItems?.nodes ?? []).filter(({ linkType, workItem }) => linkType === type && workItem)
+    .map(({ workItem }) => ({ number: Number(workItem.iid), state: workItem.state, repository: { nameWithOwner: workItem.namespace?.fullPath } }));
+  const notes = widget('Notes');
+  return {
+    number: Number(iid), title,
+    labels: { nodes: (widget('Labels').labels?.nodes ?? []).map(({ title: name }) => ({ name })) },
+    assignees: { nodes: (widget('Assignees').assignees?.nodes ?? []).map(({ username }) => ({ login: username })) },
+    subIssuesSummary: { total: widget('Hierarchy').hasChildren ? 1 : 0 },
+    blockedBy: { nodes: links('is_blocked_by') }, blocking: { nodes: links('blocks') },
+    comments: { nodes: notes.comments?.nodes ?? [] },
+    timelineItems: { nodes: (notes.activity?.nodes ?? []).filter(({ body }) => /^assigned to /.test(body)) },
+  };
+}
+
+/** GitHub tracker：repo 是 <owner>/<name>；host 不是 github.com 時以 GH_HOST 指定（GitHub Enterprise）。 */
+function github({ repo, host }) {
+  const gh = (...args) => cli('gh', args, host && host !== 'github.com' ? { GH_HOST: host } : {});
+  const target = n => [n, ...(repo ? ['--repo', repo] : [])];
+  return {
+    repo: () => repo ?? gh('repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim(),
+    issues(fullName) {
+      const [owner, name] = fullName.split('/');
+      const issues = [];
+      for (let cursor = null, more = true; more;) {
+        const page = JSON.parse(gh('api', 'graphql', '-F', `owner=${owner}`, '-F', `name=${name}`, ...(cursor ? ['-F', `cursor=${cursor}`] : []), '-f', `query=${QUERY}`)).data.repository.issues;
+        issues.push(...page.nodes);
+        ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
+      }
+      return issues;
+    },
+    view: n => JSON.parse(gh('issue', 'view', ...target(n), '--json', 'assignees,comments')),
+    comment: (n, body) => gh('issue', 'comment', ...target(n), '--body', body),
+    assign: n => gh('issue', 'edit', ...target(n), '--add-assignee', '@me'),
+    // `--delete-last` 刪的是這個帳號最新一則，前提見 claim。
+    retract: n => gh('issue', 'comment', ...target(n), '--delete-last', '--yes'),
+  };
+}
+
+/** GitLab tracker（含自架）：repo 是完整的 group/…/project；沒給時 glab 從 checkout 的 remote 推得專案與主機（`:id`）。
+ * 留言與指派用 HOSTS.md 對照表的 `glab issue note`、`glab issue update`；讀取與刪留言用 `glab api`（REST 與 GraphQL）。 */
+function gitlab({ repo, host, origin }) {
+  const glab = (...args) => cli('glab', args);
+  const raw = (...args) => glab('api', ...args, ...(host ? ['--hostname', host] : []));
+  const api = (...args) => JSON.parse(raw(...args));
+  const project = repo ? encodeURIComponent(repo) : ':id';
+  const target = n => [n, ...(repo ? ['-R', origin ? `${origin}/${repo}` : repo] : [])];
+  return {
+    repo: () => repo ?? api(`projects/${project}`).path_with_namespace,
+    issues(fullPath) {
+      const issues = [];
+      for (let cursor = null, more = true; more;) {
+        const page = api('graphql', '-f', `fullPath=${fullPath}`, ...(cursor ? ['-f', `cursor=${cursor}`] : []), '-f', `query=${GITLAB_QUERY}`).data.project.workItems;
+        issues.push(...page.nodes.map(fromWorkItem));
+        ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
+      }
+      return issues;
+    },
+    view(n) {
+      const issue = api(`projects/${project}/issues/${n}`);
+      // --paginate 預設逐頁原樣印出（`[...][...]`，help 說會合併但 v1.126.0 的 api.go 沒有），所以用 ndjson 一行一則。
+      const notes = raw(`projects/${project}/issues/${n}/notes?sort=asc&order_by=created_at&per_page=100`, '--paginate', '--output', 'ndjson')
+        .split('\n').filter(Boolean).map(line => JSON.parse(line));
+      return {
+        assignees: issue.assignees.map(({ username }) => ({ login: username })),
+        comments: notes.filter(({ system }) => !system).map(({ id, author, body, created_at }) => ({ id, author: { login: author.username }, body, createdAt: created_at })),
+      };
+    },
+    comment: (n, body) => glab('issue', 'note', ...target(n), '-m', body),
+    assign: n => glab('issue', 'update', ...target(n), '--assignee', `+${api('user').username}`),
+    // DELETE 回 204、沒有內容，不解析；重讀還看不到自己那則時無從依 id 收回，留著。
+    retract: (n, note) => note && raw('-X', 'DELETE', `projects/${project}/issues/${n}/notes/${note.id}`),
+  };
+}
+
+/** tracker 依 repo 根的 docs/agents/issue-tracker.md 判定（hosts.mjs 的 trackerKind：寫 glab 是 GitLab；沒有這份文件時依 origin），
+ * 與程式碼 host（origin）分開：同種時 CLI 從 checkout 推得主機與專案，不同種時取文件裡第一個該種主機的專案網址；--repo 覆寫專案。 */
+function trackerOf(repoArg) {
+  const top = gitOut('rev-parse', '--show-toplevel');
+  let doc = null;
+  try { doc = top ? readFileSync(join(top, 'docs/agents/issue-tracker.md'), 'utf8') : null; } catch {}
+  const originUrl = gitOut('remote', 'get-url', 'origin');
+  const { value: code, host: codeHostname } = codeHost(originUrl);
+  const documented = trackerKind(doc);
+  if (documented === 'local') throw new UsageError('issue-tracker.md 的 tracker 是本機 Markdown（local），issue-pool 只支援 GitHub 與 GitLab');
+  // 還沒有這份文件時照 HOSTS.md 依 origin 推；origin 也不是 GitLab 時當 GitHub（同第一版）。
+  const kind = documented === 'none' ? (code === 'gitlab' ? 'gitlab' : 'github') : documented;
+  // 同種又給了 --repo 時主機取 origin 的：不帶主機的 `glab … -R <專案>` 會落到 glab 的預設主機，與 checkout 推得的讀取分屬兩台。
+  const remote = code !== kind ? projectInDoc(doc, kind)
+    : repoArg && codeHostname ? { host: codeHostname, origin: /^https?:\/\//i.test(originUrl) ? new URL(originUrl).origin : `https://${codeHostname}` } : null;
+  const options = { repo: repoArg ?? remote?.path, host: remote?.host, origin: remote?.origin };
+  return kind === 'gitlab' ? gitlab(options) : github(options);
 }
 
 const openNodes = ({ nodes }) => nodes.filter(({ state }) => state === 'OPEN');
@@ -149,9 +248,8 @@ export function claimedBy(comments, session) {
   return Boolean(claimer) && (claimer === claimerName(session) || Boolean(takeoverSession(claimer, session)));
 }
 
-function claim(n, repo, session) {
-  const target = [n, ...(repo ? ['--repo', repo] : [])];
-  const read = () => JSON.parse(gh('issue', 'view', ...target, '--json', 'assignees,comments'));
+function claim(n, tracker, session) {
+  const read = () => tracker.view(n);
   const stop = claimer => { console.log(`STOP ${n} claimed ${claimer}`); return 4; };
   const mine = claimerName(session);
   const before = read();
@@ -169,12 +267,14 @@ function claim(n, repo, session) {
   if (blocker && !takeover) return stop(blocker);
   const claimant = takeover ? blocker : mine;
   // 先留言再指派：指派成功、留言失敗時，重跑會被自己沒有留言的指派擋住。
-  gh('issue', 'comment', ...target, '--body', `認領：${claimant}`);
-  gh('issue', 'edit', ...target, '--add-assignee', '@me');
-  const first = read().comments.slice(before.comments.length).find(claimerOf);
+  tracker.comment(n, `認領：${claimant}`);
+  tracker.assign(n);
+  const added = read().comments.slice(before.comments.length);
+  const first = added.find(claimerOf);
   if (first && claimerOf(first) !== claimant) {
-    // 收回搶輸的留言，不然贏家重派時最近一則認領是自己的，會被擋下；輸家的留言在贏家的認領之後，`--delete-last` 刪的是這個帳號最新一則，所以前提是贏家這幾秒內沒有再留言。
-    gh('issue', 'comment', ...target, '--delete-last', '--yes');
+    // 收回搶輸的留言，不然贏家重派時最近一則認領是自己的，會被擋下。GitHub 的 `--delete-last` 刪的是這個帳號最新一則（輸家的留言在贏家的認領之後），
+    // 所以前提是贏家這幾秒內沒有再留言；GitLab 依重讀到的留言 id 刪自己那則。
+    tracker.retract(n, added.findLast(comment => claimerOf(comment) === claimant));
     return stop(claimerOf(first));
   }
   console.log(takeover ? `CLAIMED ${n} takeover ${takeover}` : `CLAIMED ${n}`);
@@ -195,16 +295,17 @@ function main(argv) {
   const [command, n] = positional;
   if (command !== undefined && !(command === 'claim' && /^\d+$/.test(n ?? '') && positional.length === 2)) { console.error(USAGE); return 2; }
   try {
-    if (command === 'claim') return claim(n, repo, session);
-    repo ??= gh('repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim();
-    const issues = openIssues(repo);
+    const tracker = trackerOf(repo);
+    if (command === 'claim') return claim(n, tracker, session);
+    repo = tracker.repo();
+    const issues = tracker.issues(repo);
     for (const { issue, bucket } of pool(issues, { repo, staleHours })) console.log(`${bucket} #${issue.number} ${issue.title}`);
     for (const number of missingCategory(issues, categories)) console.log(`NO_CATEGORY ${number}`);
     return 0;
   } catch (error) {
-    if (!(error instanceof GhError)) throw error;
+    if (!(error instanceof CliError) && !(error instanceof UsageError)) throw error;
     console.error(error.message);
-    return 1;
+    return error instanceof UsageError ? 2 : 1;
   }
 }
 
