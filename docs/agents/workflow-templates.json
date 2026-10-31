@@ -18,8 +18,8 @@
     },
     "scripts/claude-hook-tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-tab-state.mjs",
-      "commit": "c70f3e702b4b6494149c80c169443466c1ab59c3",
-      "sha256": "f3fbcb76eb883b4a6c22a35752d06a967a237725264170d88bbd7007c124c451"
+      "commit": "29065acca08058992a98e2b8febc1e5e0a5a9dd9",
+      "sha256": "6229de428d798acbfb3ef577883d44460541caf7e6c361e3b28507b51f3cf1f9"
     },
     "scripts/issue-pool.mjs": {
       "template": "skills/engineering/setup-workflow/templates/issue-pool.mjs",
@@ -83,8 +83,8 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "c70f3e702b4b6494149c80c169443466c1ab59c3",
-      "sha256": "3834a9d51b5c79da82fd7af4a2749cccf02ef61916e731796f10ac6bf9bf5aec"
+      "commit": "29065acca08058992a98e2b8febc1e5e0a5a9dd9",
+      "sha256": "88ad6707861dcf16c11bb03ba10f2d893ba5e99127e05f7c080d0b80236febac"
     }
   }
 }

@@ -45,10 +45,15 @@ export function recordedTitle(handle) {
   return handle && existsSync(file(handle)) ? readFileSync(file(handle), 'utf8') : null;
 }
 
-/** 記下這個 handle 最後設定的標題。 */
+/** 記下這個 handle 最後設定的標題；記錄只是輔助，寫不進去時傳回 false，不丟錯（開分頁、改名照常算成功）。 */
 export function recordTitle(handle, title) {
-  mkdirSync(dir(), { recursive: true });
-  writeFileSync(file(handle), title);
+  try {
+    mkdirSync(dir(), { recursive: true });
+    writeFileSync(file(handle), title);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** 目前標題：記錄，沒有時是 Orca 的自動標題。`ctx` 是 `{ cli, signal? }`（同 orca-session-send.mjs）。 */

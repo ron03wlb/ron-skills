@@ -88,6 +88,16 @@ test('create 回 ok:false 但 worktree 已建好：以目錄與 git worktree lis
   assert.equal(readFileSync(join(root, 'titles/term_46'), 'utf8'), '處理中｜#46');
 });
 
+// 記錄只是輔助：寫不進去（TAB_STATE_DIR 是檔案）時照樣派出，不能變成沒有 handle 的 STOP、留下關不掉的分頁。
+test('標題記錄寫不進去：照樣派出', t => {
+  const { root, dispatch } = fixture(t);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, 'not-a-dir'), '');
+  const result = dispatch(['46', '46:pilot-dispatch'], { TAB_STATE_DIR: join(root, 'not-a-dir') });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(lines(result).pop(), 'DISPATCHED 46 term_46');
+});
+
 test('create 失敗而且沒有目錄：STOP create，不開分頁；其他成員照樣派出', t => {
   const { dispatch, calls } = fixture(t, { modes: { 46: 'fail' } });
   const result = dispatch(['23-46', '46:pilot-dispatch', '23:pilot-probe']);

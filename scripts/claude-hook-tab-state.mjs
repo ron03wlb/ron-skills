@@ -51,8 +51,9 @@ export function matchedState(list, event, text, command = '') {
 
 const unquote = word => word.startsWith("'") ? word.slice(1, -1) : word.startsWith('"') ? word.slice(1, -1).replace(/\\(.)/g, '$1') : word;
 const WORD = `("(?:[^"\\\\]|\\\\.)*"|'[^']*'|\\S+)`;
-// 一段 `terminal rename` 指令：到換行或引號外的 `; & |` 為止。
-const RENAME = /\bterminal\s+rename\b(?:"(?:[^"\\]|\\.)*"|'[^']*'|[^\n;&|"'])*/g;
+// 頂層指令：以換行或引號外的 `; & |` 切開；開頭是 `[orca] terminal rename` 的才是改名（commit 訊息、echo 裡提到的不算）。
+const COMMANDS = /(?:"(?:[^"\\]|\\.)*"|'[^']*'|[^\n;&|"'])+/g;
+const RENAME = /^\s*(?:\S+\s+)?terminal\s+rename\b/;
 
 /**
  * 指令裡改本分頁標題的 `terminal rename` 設的最後一個標題；`--terminal` 是 handle 本身或 `$ORCA_TERMINAL_HANDLE`（省略時是目前分頁）。
@@ -60,7 +61,8 @@ const RENAME = /\bterminal\s+rename\b(?:"(?:[^"\\]|\\.)*"|'[^']*'|[^\n;&|"'])*/g
  */
 export function renamedTitle(command, handle) {
   let title = null;
-  for (const [segment] of String(command ?? '').matchAll(RENAME)) {
+  for (const [segment] of String(command ?? '').matchAll(COMMANDS)) {
+    if (!RENAME.test(segment)) continue;
     const terminal = segment.match(new RegExp(`--terminal(?:\\s+|=)${WORD}`))?.[1];
     const value = segment.match(new RegExp(`--title(?:\\s+|=)${WORD}`))?.[1];
     if (value === undefined) continue;
