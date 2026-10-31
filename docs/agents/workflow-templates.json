@@ -42,7 +42,7 @@
     },
     "scripts/lib/pilot-store.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/pilot-store.mjs",
-      "commit": "76eb90190bc130315ec18c68075bc3dc7f3e415c",
+      "commit": "125e658a0a8ca19b873589f5356815acb51978d1",
       "sha256": "41ec403267648a888f7d7d4d96d32a2a8c9b583592f92e2ab818aaa47c28117c"
     },
     "scripts/orca-session-send.mjs": {
@@ -102,8 +102,8 @@
     },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",
-      "commit": "e2ec06f9c390567ef53e055ef168b68cb123858f",
-      "sha256": "ee184ec78394b57091a47868589cd631d91dae1edf810c974cfefcb67c20b92d"
+      "commit": "5e4116be9995fb18f183ae258fa3e8334eee426e",
+      "sha256": "030b3b695af5a3cff35278c67ac83d099550756357ee16333e3b894cd066ce57"
     },
     "scripts/pilot-register.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-register.mjs",
