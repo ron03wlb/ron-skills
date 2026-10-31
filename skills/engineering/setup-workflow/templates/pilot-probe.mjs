@@ -13,7 +13,7 @@
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
 //                 WORKER <n> STUCK exited|stuck-after <分鐘>|orca <錯誤碼>|no-orca|checkpoint <欄位> <值>
 //                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）
-//   batch：STAGEABLE <key>（dispatched 且每個成員都 done 或 stop；moved 的成員已移到別的 batch，不算）；
+//   batch：STAGEABLE <key>（dispatched 且每個成員都 done 或 stop；moved（含 `moved batch-<n>`）的成員已移到別的 batch，不算）；
 //          current 是 merged／pushed 的 batch 在 git fetch 後比 origin/<主分支>，印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
 //          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA），
 //          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
@@ -206,7 +206,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   for (const file of batches) {
     const key = file.slice('batch-'.length, -'.md'.length);
     const { current, members, regression, sha } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
-    const active = members.filter(m => m.state !== 'moved');
+    const active = members.filter(m => !/^moved\b/.test(m.state));
     const finished = active.filter(m => m.state === 'done' || m.state === 'stop').length;
     let read = 0;
     for (const member of members.filter(m => m.state === 'running')) {
