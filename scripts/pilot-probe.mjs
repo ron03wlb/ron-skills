@@ -27,7 +27,8 @@
 //            有條目以外的改動或不是 `.md` 時省略名稱欄，表示要讀整份）
 //   開著的列：REQUEST <requests.md 原文>｜GATE <id> <Issue> <question 或段落標題>｜GATE_MALFORMED <id> <把 resolved 寫進別的欄位的那一行>
 //   Issue 依賴：DEPS_PROSE <n> #<m>（開著的 `ready-for-agent` Issue 內文以「依賴」或先後寫法（「排在 #m 之後」「以 #m 為 blocker」「等 #m 合入」）帶出 #m，#m 還開著，blocked_by 卻沒有它；Pool 只讀 blocked_by）｜
-//               DEPS_PROSE <n> last（內文寫「最後做」卻沒號碼；要等哪些單由 coordinator 判斷）｜
+//               DEPS_PROSE <n> last new #<m> [#<k>…]（內文寫「最後做」卻沒號碼，#m… 比 blocked_by 最新一張（空時比自己）還新、開著、不在 blocked_by，
+//                 retro-candidates 與母單不算；要等哪些由 coordinator 判斷）｜DEPS_PROSE <n> last ok（同上但沒有這種新單，不必處理）｜
 //               DEPS_PROSE_FAILED <錯誤>（在主 checkout 跑 gh 失敗，其他檢查照跑；同一次查詢的 PARENT_* 也不印）
 //   母單（#164）：PARENT_LABEL <n>（開著、或已關閉卻有開著子單的母單，沒有 `parent` label 或還掛 triage label）｜
 //               PARENT_REOPEN <n>（開著的子單的母單 #n 在同一個 repo、已關閉）；各依號碼、每張一次
@@ -60,7 +61,7 @@ import { gateLines, isOpenRequest, now, openGates, parksAllPush, tableCells } fr
 import { orca } from './orca-session-send.mjs';
 import { ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 
-const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{number body labels(first:50){nodes{name}} blockedBy(first:50){nodes{number repository{nameWithOwner}}} subIssuesSummary{total} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
+const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{number body createdAt labels(first:50){nodes{name}} blockedBy(first:50){nodes{number createdAt repository{nameWithOwner}}} subIssuesSummary{total} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
 const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const TRACKER = join(dirname(fileURLToPath(import.meta.url)), 'gh-tracker.mjs');
@@ -218,18 +219,31 @@ export function proseLast(body) {
   return false;
 }
 
+// 不算「最後做」要考慮的新單：retro 候選與母單本身不會被實作（#228）。
+const NOT_NEW = ['retro-candidates', 'parent'];
+const hasLabel = (issue, names) => issue.labels.nodes.some(({ name }) => names.includes(name));
+
 /**
  * 依賴只寫在內文、沒建 blocked_by 的 ready Issue（`issues` 是本 repo 開著的 Issue，GraphQL 節點）：每個還開著、
- * 卻不在 blocked_by（同一個 repo）裡的依賴印一行 `DEPS_PROSE <n> #<m>`；寫「最後做」卻沒號碼時再印一行 `DEPS_PROSE <n> last`。
+ * 卻不在 blocked_by（同一個 repo）裡的依賴印一行 `DEPS_PROSE <n> #<m>`。寫「最後做」卻沒號碼時再印一行：比 blocked_by（同一個 repo）
+ * 最新（createdAt 最晚）一張還新、開著、不在 blocked_by 的其他單（不含 retro-candidates 與母單；blocked_by 空時以自己的 createdAt 為基準）
+ * 依號碼印 `DEPS_PROSE <n> last new #<m> [#<k>…]`，沒有就印 `DEPS_PROSE <n> last ok`（#228：判斷過之後又開的新單沒人發現）。
  */
 export function depsProse(issues, repo) {
   const open = new Set(issues.map(({ number }) => number));
   const out = [];
   for (const issue of issues) {
-    if (!issue.labels.nodes.some(({ name }) => name === 'ready-for-agent')) continue;
-    const blocked = new Set(issue.blockedBy.nodes.filter(({ repository }) => repository.nameWithOwner === repo).map(({ number }) => number));
+    if (!hasLabel(issue, ['ready-for-agent'])) continue;
+    const sameRepo = issue.blockedBy.nodes.filter(({ repository }) => repository.nameWithOwner === repo);
+    const blocked = new Set(sameRepo.map(({ number }) => number));
     for (const m of proseDeps(issue.body)) if (m !== issue.number && open.has(m) && !blocked.has(m)) out.push(`DEPS_PROSE ${issue.number} #${m}`);
-    if (proseLast(issue.body)) out.push(`DEPS_PROSE ${issue.number} last`);
+    if (!proseLast(issue.body)) continue;
+    const since = Math.max(...(sameRepo.length ? sameRepo : [issue]).map(({ createdAt }) => Date.parse(createdAt)));
+    const fresh = issues
+      .filter(other => other.number !== issue.number && !blocked.has(other.number) && !hasLabel(other, NOT_NEW) && Date.parse(other.createdAt) > since)
+      .map(({ number }) => number)
+      .sort((a, b) => a - b);
+    out.push(`DEPS_PROSE ${issue.number} last ${fresh.length ? `new ${fresh.map(m => `#${m}`).join(' ')}` : 'ok'}`);
   }
   return out;
 }
