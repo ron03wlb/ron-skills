@@ -82,8 +82,8 @@
     },
     "scripts/pilot-dispatch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-dispatch.mjs",
-      "commit": "b5cbb39bbc3270f8a7b7d84a4b80e9b3c19e02b6",
-      "sha256": "79f31c73e3358e35dfe22ea99e263139b9f6501c18fa124499431d288388c865"
+      "commit": "b600ba7229c27edb686ccc88cdd17dda3b2476a5",
+      "sha256": "8b267bc76e4441ae7e644f3973910c0f815b5e27a6873d4e026c92e510c4e9d8"
     },
     "scripts/pilot-gate.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-gate.mjs",
