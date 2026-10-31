@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 // /setup-workflow 的體檢：比對已導入專案的 adapter、文件與實際使用，回報落差，不寫任何檔。
 // 用法：node health.mjs [<repo>]（repo 預設 cwd；不收任何旗標）
-// 每個落差一行 `FINDING <類別> <說明>  # <證據>`，類別為 level（等級標示錯誤）、divergence（副本與正本分歧，兩邊都改了時下接縮排的 diff）、cross-repo（隱性跨 repo 依賴）；
+// 每個落差一行 `FINDING <類別> <說明>  # <證據>`，類別為 level（等級標示錯誤）、divergence（副本與正本分歧，兩邊都改了時下接縮排的 diff）、cross-repo（隱性跨 repo 依賴）、
+// missing-section（adapter 缺 `## Platforms`，或程式碼 host 不是 local 卻缺 `## Delivery`）、platform（Platforms 列了 macOS 時，scripts/、bin/、git hook 違反可攜性規則）；
 // 最後一行 `HEALTHY`（exit 0）或 `FINDINGS <n>`（exit 1）。掃描時讀不到的檔案在 stderr 印 `health: 略過讀不到的 <path>：<code>` 後略過。
-// 帶旗標、不是 git repo 或 detect.mjs 失敗時 exit 2，沒有最後一行。
+// 帶旗標、不是 git repo、detect.mjs 或 check-portability.mjs 失敗時 exit 2，沒有最後一行。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { codeHost } from '../templates/lib/hosts.mjs';
 
 const fail = message => { console.error(`health: ${message}`); process.exit(2); };
 const args = process.argv.slice(2);
@@ -37,7 +39,8 @@ const readOrWarn = path => {
 // 本 repo 的名稱：主 checkout 的目錄名（worktree 的目錄名不算），以及 origin 的 repo 名。
 const commonDir = git('rev-parse', '--path-format=absolute', '--git-common-dir');
 const names = new Set([basename(dirname(commonDir))]);
-const origin = git('remote', 'get-url', 'origin')?.match(/([^/:]+?)(\.git)?$/)?.[1];
+const originUrl = git('remote', 'get-url', 'origin');
+const origin = originUrl?.match(/([^/:]+?)(\.git)?$/)?.[1];
 if (origin) names.add(origin);
 
 const adapterPath = 'docs/agents/issue-run.md';
@@ -103,6 +106,30 @@ for (const [path, entry] of Object.entries(copies)) {
   finding('divergence', `${kind} ${path} ${ADVICE[kind]}`, `${MANIFEST} commit ${typeof entry.commit === 'string' && entry.commit ? entry.commit : '(未記錄)'} sha256 ${entry.sha256.slice(0, 12)}、副本 ${copySha.slice(0, 12)}、正本 ${entry.template} ${canonicalSha.slice(0, 12)}`, diff);
 }
 
+// 缺段落：adapter 存在時，`## Platforms` 一律要有；程式碼 host 不是 local（origin 指向網路主機）時還要 `## Delivery`。
+// 補法是重跑 /setup-workflow 逐站確認後補齊，不另寫遷移 script。
+const adapterText = isFile(join(root, adapterPath)) ? readOrWarn(adapterPath) : null;
+// 段落標題不分大小寫（`## platforms` 也算），標題後面可以接說明；回傳到下一個 `## ` 之前的內文，沒有這段時 null。
+// code fence（``` 或 ~~~ 開頭的行之間）裡的 `## ` 是範例，不是標題。
+const adapterLines = adapterText?.split('\n') ?? [];
+let fenced = false;
+const headings = adapterLines.map(text => {
+  if (/^\s*(?:```|~~~)/.test(text)) { fenced = !fenced; return false; }
+  return !fenced && /^##\s/.test(text);
+});
+const section = name => {
+  const start = adapterLines.findIndex((text, i) => headings[i] && new RegExp(`^##\\s+${name}\\b`, 'i').test(text));
+  if (start < 0) return null;
+  const end = headings.findIndex((heading, i) => i > start && heading);
+  return adapterLines.slice(start + 1, end < 0 ? undefined : end).join('\n');
+};
+if (adapterText !== null) {
+  const required = ['Platforms', ...(codeHost(originUrl).value === 'local' ? [] : ['Delivery'])];
+  for (const name of required.filter(name => section(name) === null)) {
+    finding('missing-section', `${name} adapter 缺 ## ${name}：重跑 /setup-workflow 逐站確認後補齊`, adapterPath);
+  }
+}
+
 // 隱性跨 repo 依賴：adapter、.claude/settings.json 與 scripts/、bin/、git hook 目錄裡家目錄下的絕對路徑，路徑中沒有本 repo 的名稱就是指向別的 repo。
 // 家目錄下的設定目錄（~/.claude）與只到某個目錄本身（~/code/<repo>）的提及不算：依賴的是那個 repo 裡的檔案，
 // 所以路徑要指到檔案（最後一段有副檔名，如 ~/spay2/send.mjs），或在家目錄下至少三段（~/code/spay2/scripts）。
@@ -115,8 +142,11 @@ const unquote = text => text.replace(/\\?"/g, '').replace(/\.+$/, '');
 const hooksPath = git('config', 'core.hooksPath');
 const scriptDirs = ['scripts/', 'bin/', '.githooks/', '.husky/', ...(hooksPath && !hooksPath.startsWith('/') ? [`${hooksPath.replace(/\/?$/, '/')}`] : [])];
 const scanned = files.filter(file => file === adapterPath || file === '.claude/settings.json' || scriptDirs.some(dir => file.startsWith(dir)));
+const unreadable = new Set();
 for (const file of scanned) {
-  readOrWarn(file)?.split('\n').forEach((text, i) => {
+  const content = readOrWarn(file);
+  if (content === null) unreadable.add(file);
+  content?.split('\n').forEach((text, i) => {
     for (const match of text.matchAll(HOME_PATH)) {
       const path = unquote(match[0]);
       const segments = unquote(match[1]).split('/').filter(Boolean);
@@ -125,6 +155,21 @@ for (const file of scanned) {
       finding('cross-repo', `${path} 指向本 repo 以外的檔案`, `${file}:${i + 1}`);
     }
   });
+}
+
+// 平台：adapter 的 Platforms 列了 macOS 時，對 scripts/、bin/ 與 git hook 目錄跑可攜性規則。規則只在正本 templates/check-portability.mjs（#86），
+// 這裡在目標 repo 執行它，只把這些目錄裡讀得到的檔案當路徑參數交給它，所以它的結果都在範圍內（讀不到的上面已在 stderr 略過；範圍外的檔案它不讀）；
+// 它印 `<file>:<line>: <規則> <改法>`（只差大小寫的是 `<file>: case …`，沒有行號）。沒有路徑時不跑：不帶參數它會掃整個 repo。
+const portable = scanned.filter(file => scriptDirs.some(dir => file.startsWith(dir)) && !unreadable.has(file));
+if (/\bmacOS\b/i.test(section('Platforms') ?? '') && portable.length) {
+  const result = spawnSync('node', [join(here, '../templates/check-portability.mjs'), ...portable], { cwd: root, encoding: 'utf8', maxBuffer: 64 << 20 });
+  // 它拋例外（讀不到的檔案、git 失敗）時同樣 exit 1，stderr 是 stack trace：有任何一行不是違規格式就當成沒跑成。
+  // Node 的執行期警告（`(node:<pid>) …Warning: …` 與接著的 `(Use \`node --trace-…\` …)`）不是它的輸出，先去掉；exit 0 時不看 stderr。
+  const violations = result.status === 0 ? [] : lines(result.stderr).filter(text => !/^\((?:node:\d+\)|Use `node --trace-)/.test(text)).map(text => text.match(/^(.+?)(?::(\d+))?: (\S+) (.+)$/));
+  if (![0, 1].includes(result.status) || violations.some(match => !match)) fail(`check-portability.mjs 失敗：${result.stderr.trim()}`);
+  for (const match of violations) {
+    finding('platform', `${match[3]} ${match[4]}`, match[2] ? `${match[1]}:${match[2]}` : match[1]);
+  }
 }
 
 for (const { line, detail } of findings) console.log([line, ...detail.map(text => `  ${text}`)].join('\n'));
