@@ -19,6 +19,7 @@ const git = (cwd, ...args) => {
   return result.stdout.trim();
 };
 const BRANCH = 'issue/76-pilot-close';
+const MEMBER = BRANCH;
 const REPO = 'ron03wlb/ron-skills';
 
 // origin（bare）、主 checkout（main 已合入 issue 分支並 push）、Orca 建的成員 worktree，以及假 gh 與假 Orca。
@@ -30,7 +31,10 @@ const REPO = 'ron03wlb/ron-skills';
 //   siblings   母單 #35 其他子單 { 號碼: 'OPEN' | 'CLOSED' }；
 //   orcaDeletesBranch  Orca rm 一起刪掉已合入的本機分支（真實行為；false 時 branch 步驟由腳本 branch -d）。
 // 假 gh 的輸出從 helpers/fixtures/gh 的真實樣本長出來（同 land.test.mjs）；Orca rm 沒有樣本，比照 land.test.mjs 回空的 result，腳本只看 ok。
-function fixture(t, { pushed = false, unmerged = false, body = '', siblings = { 70: 'CLOSED' }, orcaDeletesBranch = true } = {}) {
+function fixture(t, { pushed = false, unmerged = false, body = '', siblings = { 70: 'CLOSED' }, orcaDeletesBranch = true, request = false } = {}) {
+  // request：成員是沒有 Issue 的請求分支（Issue 欄 `-`，#143），batch 是 req-10。
+  const BRANCH = request ? 'retro/hook-c-var' : MEMBER;
+  const key = request ? 'req-10' : '76';
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-close-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const origin = join(temp, 'origin.git');
@@ -58,13 +62,13 @@ function fixture(t, { pushed = false, unmerged = false, body = '', siblings = { 
     git(worktree, 'commit', '-qm', 'late');
   }
   mkdirSync(join(repo, '.scratch/pilot'), { recursive: true });
-  writeFileSync(join(repo, '.scratch/pilot/batch-76.md'), `# batch 76
+  writeFileSync(join(repo, `.scratch/pilot/batch-${key}.md`), `# batch ${key}
 current: pushed ${mergeSha.slice(0, 7)}
 integration: pilot/integration @ 5d2e5d4
 
 | Issue | branch | worktree | handle | started | stuck-after | state | candidate |
 |---|---|---|---|---|---|---|---|
-| 76 | ${BRANCH} | ${worktree} | term_76 | 2026-10-31T06:38:56+08:00 | 90m | done | abc1234 |
+| ${request ? '-' : 76} | ${BRANCH} | ${worktree} | term_76 | 2026-10-31T06:38:56+08:00 | 90m | done | abc1234 |
 | 77 | issue/77-other | /nowhere/issue-77 | term_77 | 2026-10-31T06:38:56+08:00 | 90m | moved batch-77 | |
 regression: abc1234 exit 0 CHECK_PASS tests 300+40
 `);
@@ -146,12 +150,12 @@ else fail('unknown');
 `);
   chmodSync(gh, 0o755);
   chmodSync(cli, 0o755);
-  const close = (args = ['76', '100', mergeSha]) => spawnSync('node', [script, ...args], {
+  const close = (args = [key, '100', mergeSha]) => spawnSync('node', [script, ...args], {
     cwd: repo, encoding: 'utf8', input: 'leftover-line\n', timeout: 60000,
     env: { ...env, PATH: `${join(temp, 'bin')}:${env.PATH}`, ORCA_CLI_COMMAND: cli },
   });
   const ghIssues = () => JSON.parse(readFileSync(ghState, 'utf8')).issues;
-  const checkpoint = () => readFileSync(join(repo, '.scratch/pilot/batch-76.md'), 'utf8');
+  const checkpoint = () => readFileSync(join(repo, `.scratch/pilot/batch-${key}.md`), 'utf8');
   const calls = () => readFileSync(log, 'utf8');
   const branchExists = () => spawnSync('git', ['-C', repo, 'rev-parse', '--verify', '-q', `refs/heads/${BRANCH}`], { env }).status === 0;
   const remoteHas = () => spawnSync('git', ['-C', origin, 'rev-parse', '--verify', '-q', `refs/heads/${BRANCH}`], { env }).status === 0;
@@ -374,3 +378,29 @@ for (const [title, row, value] of [
     assert.doesNotMatch(f.checkpoint(), /^current: closed$/m);
   });
 }
+
+// #143：請求分支成員沒有 Issue，Close 只清理 worktree 與分支，不留言、不關單、不碰 tracker。
+test('請求分支成員（Issue 欄 -）：只做 terminal、worktree、branch、remote，不呼叫 gh 與 gh-tracker', t => {
+  const f = fixture(t, { pushed: true, request: true });
+  const result = f.close();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const member = 'retro/hook-c-var';
+  assert.deepEqual(lines(result), ['SKIP req-10 main', `DONE ${member} terminal`, `UNBARE ${f.repo}`, `DONE ${member} worktree`,
+    `SKIP ${member} branch`, `DONE ${member} remote`, 'CLOSED req-10']);
+  assert.doesNotMatch(f.calls(), /^(gh|gh-tracker\.mjs) /m);
+  assert.deepEqual(f.issues()[76].comments, []);
+  assert.equal(f.issues()[76].state, 'OPEN');
+  assert.equal(existsSync(f.worktree), false);
+  assert.equal(f.branchExists(), false);
+  assert.equal(f.remoteHas(), false);
+  assert.match(f.checkpoint(), /^current: closed$/m);
+});
+
+test('請求分支成員的 branch 不是 retro/<x>：任何寫入之前 STOP branch-malformed', t => {
+  const f = fixture(t, { request: true });
+  writeFileSync(join(f.repo, '.scratch/pilot/batch-req-10.md'), f.checkpoint().replace('| retro/hook-c-var |', '| main |'));
+  const result = f.close();
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['STOP branch-malformed - "main"']);
+  assert.equal(f.calls(), '');
+});
