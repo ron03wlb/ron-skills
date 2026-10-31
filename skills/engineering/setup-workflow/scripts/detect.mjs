@@ -49,12 +49,16 @@ function environment() {
   const install = { git: { macos: 'xcode-select --install', other: 'sudo apt install git' }, python: { macos: 'brew install python', other: 'sudo apt install python3' } };
   const installHint = tool => install[tool][platform.value === 'macos' ? 'macos' : 'other'];
 
-  // node：以 CI 鎖定的版本為準，同 ron-skills scripts/check-node-version.mjs 的規則（各 workflow 一致、主版本等於本機）。
+  // node：以 CI 鎖定的版本為準，同 ron-skills scripts/check-node-version.mjs 的規則（各 workflow 一致、主版本等於本機），
+  // 另讀 setup-node 的 node-version-file（.nvmrc 等）。和它不同的是 CI 沒有鎖版本時不擋：目標 repo 不一定有 CI。
   function nodeRuntime() {
     const local = process.env.DETECT_NODE_VERSION ?? process.versions.node;
     const dir = join(root, '.github/workflows');
+    const pinned = path => existsSync(join(root, path)) && readFileSync(join(root, path), 'utf8').trim().match(/^v?([\d.]+)/)?.[1];
     const pins = (existsSync(dir) && statSync(dir).isDirectory() ? readdirSync(dir).filter(file => /\.ya?ml$/.test(file)).sort() : [])
-      .flatMap(file => [...readFileSync(join(dir, file), 'utf8').matchAll(/node-version:\s*['"]?([\d.]+)['"]?/g)].map(([, version]) => ({ file, version })));
+      .flatMap(file => [...readFileSync(join(dir, file), 'utf8').matchAll(/node-version(-file)?:\s*['"]?([^'"\s]+)['"]?/g)]
+        .map(([, fromFile, value]) => ({ file, version: fromFile ? pinned(value) : value.match(/^[\d.]+$/)?.[0] }))
+        .filter(pin => pin.version));
     if (!pins.length) return { met: true, value: local, required: null, evidence: ['.github/workflows 沒有鎖定 node-version'] };
     const split = pins.find(pin => pin.version !== pins[0].version);
     if (split) {

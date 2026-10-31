@@ -147,3 +147,12 @@ test('ORCA_CLI_COMMAND 指向不存在的指令視為沒有 Orca', t => {
   assert.equal(result.optional.orca.met, false);
   assert.deepEqual(result.unavailable, ['L3', 'codex']);
 });
+
+test('CI 以 node-version-file 指定版本時讀那個檔：主版本不同是停點', t => {
+  const files = { '.github/workflows/ci.yml': 'jobs:\n  c:\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version-file: .nvmrc\n', '.nvmrc': 'v20.11.0\n' };
+  const { status, result } = station(t, { files });
+  assert.equal(status, 1);
+  assert.equal(result.required.node.required, '20.11.0');
+  assert.deepEqual(result.stops.map(stop => stop.name), ['node']);
+  assert.equal(station(t, { files, node: '20.5.0' }).status, 0);
+});
