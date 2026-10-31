@@ -64,7 +64,7 @@ test('Pool 段的認領窗口照 issue-pool.mjs claim：5 分鐘只用於還沒�
   const pool = section(read('skills/engineering/issue-run/ADAPTER.md'), 'Pool');
   assert.match(pool, /assigned Issue[^.]*any age/);
   assert.match(pool, /unassigned[^.]*5 minutes/);
-  assert.match(pool, /no claim comment from an assignee always blocks/);
+  assert.match(pool, /latest claim comment is not from an assignee always blocks/);
   assert.match(pool, /taken over in two cases only: a pilot coordinator that succeeded a handed-off coordinator/);
 });
 
