@@ -138,6 +138,15 @@ function takeoverSession(claimer, session) {
   return retired(previous) && started(session) && !retired(session) ? previous : undefined;
 }
 
+/** claim 與 pilot-dispatch 預設的 session。 */
+export const defaultSession = () => process.env.CLAUDE_CODE_SESSION_ID || process.env.ORCA_TERMINAL_HANDLE || 'unknown';
+
+/** 最近一則認領留言是 `session` 的（含 claim 以前任 coordinator 的 session 接手的）時為真；沒有認領留言時為假。pilot-dispatch 派工前用（#165）。 */
+export function claimedBy(comments, session) {
+  const claimer = comments.map(claimerOf).filter(Boolean).at(-1);
+  return Boolean(claimer) && (claimer === `${hostname()}／${session}` || Boolean(takeoverSession(claimer, session)));
+}
+
 function claim(n, repo, session) {
   const target = [n, ...(repo ? ['--repo', repo] : [])];
   const read = () => JSON.parse(gh('issue', 'view', ...target, '--json', 'assignees,comments'));
@@ -171,7 +180,7 @@ function claim(n, repo, session) {
 }
 
 function main(argv) {
-  let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, session = process.env.CLAUDE_CODE_SESSION_ID || process.env.ORCA_TERMINAL_HANDLE || 'unknown';
+  let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, session = defaultSession();
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--repo' && argv[i + 1]) repo = argv[++i];

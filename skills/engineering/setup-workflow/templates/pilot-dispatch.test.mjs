@@ -1,12 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { FAST, orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const script = new URL('./pilot-dispatch.mjs', import.meta.url).pathname;
+const SESSION = 'sess-me';
+const MINE = `認領：${hostname()}／${SESSION}`;
 // pre-commit hook 匯出 GIT_DIR 等變數；繼承下去，腳本的 git 會指回本 repo 而不是 fixture。
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
 const git = (cwd, ...args) => {
@@ -23,7 +26,8 @@ const git = (cwd, ...args) => {
 // `guard` 是專案自備 Bare guard（pilot-unbare.sh）的內容：有給時把 dispatch 與它的相依複製到暫存的 scripts/，guard 放在旁邊。
 // 每次呼叫都把 stdin 讀光並記下讀到幾個位元組：Orca CLI 會吃掉 stdin，`while read` 迴圈因此只派到第一個成員。
 // `waitHangs` 為真時 `terminal wait` 永遠不回。
-function fixture(t, { modes = {}, waitHangs = false, guard } = {}) {
+// `claims[<n>]` 是那張 Issue 原有的留言（排在 comments.json 之前）；沒給時是一則這個 session（SESSION）的認領留言。
+function fixture(t, { modes = {}, waitHangs = false, guard, claims = {} } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-dispatch-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
@@ -85,7 +89,7 @@ else if (b === 'read') {
 else fail('unknown');
 `);
   chmodSync(cli, 0o755);
-  // 假 gh：留言存在 comments.json，`issue view --json comments` 讀、`issue comment --body` 加一則，每次呼叫記進 gh.log。
+  // 假 gh：留言存在 comments.json，`issue view --json comments` 讀（前面接上 claims）、`issue comment --body` 加一則，每次呼叫記進 gh.log。
   const bin = join(temp, 'bin');
   mkdirSync(bin);
   const comments = join(temp, 'comments.json');
@@ -95,7 +99,8 @@ const fs = require('fs');
 const args = process.argv.slice(2); const arg = k => args[args.indexOf(k) + 1];
 fs.appendFileSync(${JSON.stringify(join(temp, 'gh.log'))}, args.join(' ') + '\\n');
 const comments = JSON.parse(fs.readFileSync(${JSON.stringify(comments)}, 'utf8'));
-if (args[0] === 'issue' && args[1] === 'view') console.log(JSON.stringify({ comments: comments.filter(c => c.issue === args[2]).map(({ body }) => ({ body })) }));
+const claims = ${JSON.stringify(claims)}[args[2]] ?? [${JSON.stringify(MINE)}];
+if (args[0] === 'issue' && args[1] === 'view') console.log(JSON.stringify({ comments: [...claims, ...comments.filter(c => c.issue === args[2]).map(({ body }) => body)].map(body => ({ body })) }));
 else if (args[0] === 'issue' && args[1] === 'comment') fs.writeFileSync(${JSON.stringify(comments)}, JSON.stringify([...comments, { issue: args[2], body: arg('--body') }]));
 else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
 `);
@@ -104,14 +109,14 @@ else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
   if (guard !== undefined) {
     const scripts = join(temp, 'scripts');
     mkdirSync(scripts);
-    for (const name of ['pilot-dispatch.mjs', 'orca-session-send.mjs', 'orca-worktree-create.mjs', 'tab-state.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+    for (const name of ['pilot-dispatch.mjs', 'issue-pool.mjs', 'orca-session-send.mjs', 'orca-worktree-create.mjs', 'tab-state.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
     writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
     chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
     dispatchScript = join(scripts, 'pilot-dispatch.mjs');
   }
   const dispatch = (args, extra = {}) => spawnSync('node', [dispatchScript, ...args], {
     cwd: repo, encoding: 'utf8', input: 'leftover-line\nanother-line\n', timeout: 60000,
-    env: { ...env, PATH: `${bin}:${env.PATH}`, ORCA_CLI_COMMAND: cli, ORCA_BIN: '', ...FAST, TAB_STATE_DIR: join(root, 'titles'), ...extra },
+    env: { ...env, PATH: `${bin}:${env.PATH}`, CLAUDE_CODE_SESSION_ID: SESSION, ORCA_CLI_COMMAND: cli, ORCA_BIN: '', ...FAST, TAB_STATE_DIR: join(root, 'titles'), ...extra },
   });
   const checkpoint = key => readFileSync(join(repo, `.scratch/pilot/batch-${key}.md`), 'utf8');
   const calls = () => readFileSync(log, 'utf8');
@@ -119,10 +124,43 @@ else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
   const open = () => (existsSync(terminals) ? JSON.parse(readFileSync(terminals, 'utf8')) : []);
   const posted = () => JSON.parse(readFileSync(comments, 'utf8'));
   const ghCalls = () => (existsSync(join(temp, 'gh.log')) ? readFileSync(join(temp, 'gh.log'), 'utf8') : '');
-  return { temp, repo, root, log, cli, dispatch, checkpoint, calls, sent, open, posted, ghCalls };
+  const comment = (issue, body) => writeFileSync(comments, JSON.stringify([...posted(), { issue, body }]));
+  return { temp, repo, root, log, cli, dispatch, checkpoint, calls, sent, open, posted, ghCalls, comment };
 }
 
 const lines = result => result.stdout.trim().split('\n');
+
+// 派工前讀 Issue 最近一則認領留言（格式同 issue-pool.mjs claim），不是這個 session 的就不派（#165）。
+test('最近一則認領是別的 session：STOP not-claimed，不開 worktree、不開分頁，成員記 stop；自己認領的照常派出', t => {
+  const { repo, dispatch, calls, checkpoint } = fixture(t, { claims: { 133: [MINE, `認領：other-box／${'their-session'}`] } });
+  const result = dispatch(['23-133', '23:pilot-probe', '133:pilot-dispatch']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['DISPATCHED 23 term_23', 'STOP 133 not-claimed']);
+  assert.doesNotMatch(calls(), /^worktree create .*--issue 133 /m);
+  assert.doesNotMatch(calls(), /^terminal create .* --title 處理中｜#133 /m);
+  assert.equal(existsSync(join(repo, '..', 'workspaces', 'issue-133')), false);
+  assert.match(checkpoint('23-133'), /^\| 133 \| issue\/133-pilot-dispatch \|  \|  \| [^|]+ \| 90m \| stop \| \|$/m);
+});
+
+test('沒有認領留言、或認領只是引用在別的文字裡：STOP not-claimed', t => {
+  const { dispatch, calls } = fixture(t, { claims: { 133: [], 134: [`前任寫的：\n${MINE}`] } });
+  const result = dispatch(['133-134', '133:a', '134:b']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['STOP 133 not-claimed', 'STOP 134 not-claimed']);
+  assert.doesNotMatch(calls(), /^worktree create /m);
+});
+
+// claim 以前任 coordinator 的 session 接手（`CLAIMED <n> takeover <session>`）時，留言寫的是前任的 session，照樣算這個 session 的。
+test('認領是 claim 接手的本機前任 coordinator：照常派出', t => {
+  const { repo, dispatch } = fixture(t, { claims: { 133: [`認領：${hostname()}／old-coord`] } });
+  mkdirSync(join(repo, '.scratch/pilot'), { recursive: true });
+  writeFileSync(join(repo, '.scratch/pilot/sessions.md'), '2026-10-31T09:00:00+08:00   session old-coord   pid 4242   coord-1\n'
+    + '2026-10-31T10:00:00+08:00   handoff from-session old-coord → terminal term_1   reason 合入 2 批\n'
+    + `2026-10-31T10:00:05+08:00   session ${SESSION}   pid 4343   coord-2\n`);
+  const result = dispatch(['133', '133:pilot-dispatch']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['DISPATCHED 133 term_133']);
+});
 
 test('create 回 ok:false 但 worktree 已建好：以目錄與 git worktree list 為準，照樣派出', t => {
   const { repo, root, dispatch, calls, sent } = fixture(t, { modes: { 46: 'late' } });
@@ -344,7 +382,7 @@ test('--fresh：工作樹有未提交改動時 STOP dirty，分支、worktree、
   assert.doesNotMatch(fx.calls(), /^terminal close /m);
   assert.equal(fx.checkpoint('23-46'), before);
   assert.equal(existsSync(join(fx.repo, '.scratch/pilot/batch-46.md')), false);
-  assert.equal(fx.ghCalls(), '');
+  assert.doesNotMatch(fx.ghCalls(), /^issue comment /m);
 });
 
 test('--fresh：重派過的 Issue 再衝突時 STOP refresh-twice、什麼都不動；--again 另存成 -prior2', t => {
@@ -401,6 +439,20 @@ test('--fresh：已派出的 fresh worker 還在跑時 STOP running，不關分�
   assert.deepEqual(lines(result), ['STOP 46 running term_46_3']);
   assert.equal(fx.calls().match(/^terminal close /gm).length, closes);
   assert.deepEqual(fx.open().filter(t => t.worktreePath === fx.tree).map(t => t.handle), ['term_46_3']);
+});
+
+test('--fresh：最近一則認領是別的 session 時 STOP not-claimed，分支、分頁、checkpoint 與 Issue 都不動', t => {
+  const fx = conflicted(t);
+  fx.comment('46', '認領：other-box／their-session');
+  const before = fx.checkpoint('23-46');
+  const result = fresh(fx);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['STOP 46 not-claimed']);
+  assert.equal(git(fx.repo, 'branch', '--list', '*-prior*'), '');
+  assert.doesNotMatch(fx.calls(), /^terminal close /m);
+  assert.equal(fx.checkpoint('23-46'), before);
+  assert.equal(existsSync(join(fx.repo, '.scratch/pilot/batch-46.md')), false);
+  assert.doesNotMatch(fx.ghCalls(), /^issue comment /m);
 });
 
 test('--fresh 的參數錯誤時 exit 2，不動任何東西', t => {
