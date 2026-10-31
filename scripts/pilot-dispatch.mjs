@@ -30,8 +30,12 @@
 //   prior 已在、分支又有了 commit 就是第二次重派：印 `STOP refresh-twice <n>`，由 coordinator 開 gate；gate 選了再重派時帶 --again，另存成 `-prior2`（依序編號）。
 //   認領不在這裡做：coordinator 照 Dispatch 先跑 claim；這裡只在動手前同樣檢查認領，不是這個 session 的就 `STOP <n> not-claimed`，什麼都不動。
 //
-// 用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--integration <分支>] [--stuck-after <分鐘>m]（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
-//       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--integration <分支>] [--stuck-after <分鐘>m]
+// 全機上限（#178）：帶 --capacity 時，動手前先以同目錄 pilot-capacity.mjs 的 check 合計全機帳本、加上這次要派的人數（--fresh 是 1）：
+//   超過 $PILOT_MACHINE_WORKER_CAP 就只印 `STOP capacity <合計>/<上限>`、exit 4，不寫 checkpoint、不建 worktree、不開分頁；沒超過先印 `CAPACITY ok <合計>/<上限>`。
+//   沒帶時不讀帳本。帳本的本 repo 那一列由 pilot-probe.mjs --capacity 每輪更新，所以派工前要先跑過這一輪的 probe。
+//
+// 用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--integration <分支>] [--stuck-after <分鐘>m]（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
+//       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--integration <分支>] [--stuck-after <分鐘>m]
 //   --integration worktree 的 base 與表頭的整合分支，預設 pilot/integration；--stuck-after 成員行的 stuck-after，預設 90m。
 // stdout：每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
@@ -46,10 +50,11 @@ import { claimedBy, defaultSession } from './issue-pool.mjs';
 import { orca, sendToSession } from './orca-session-send.mjs';
 import { closeIfAllMoved } from './lib/pilot-store.mjs';
 import { memberOverlaps } from './pilot-probe.mjs';
+import { check as capacityCheck, ledgerPath, machineCap } from './pilot-capacity.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
 
-const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--integration <分支>] [--stuck-after <分鐘>m]（需要 ORCA_CLI_COMMAND）\n'
-  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--integration <分支>] [--stuck-after <分鐘>m]';
+const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--integration <分支>] [--stuck-after <分鐘>m]（需要 ORCA_CLI_COMMAND）\n'
+  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--integration <分支>] [--stuck-after <分鐘>m]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const WORKTREE_CREATE = fileURLToPath(new URL('./orca-worktree-create.mjs', import.meta.url));
 const BUDGET_MS = Number(process.env.PILOT_DISPATCH_BUDGET_MS || 510000);
@@ -325,6 +330,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     if (!args[i].startsWith('--')) { positional.push(args[i]); continue; }
     if (args[i] === '--again') { bad ||= 'again' in given; given.again = true; continue; }
     if (args[i] === '--allow-overlap') { bad ||= 'allowOverlap' in given; given.allowOverlap = true; continue; }
+    if (args[i] === '--capacity') { bad ||= 'capacity' in given; given.capacity = true; continue; }
     const name = { '--integration': 'integration', '--stuck-after': 'stuckAfter', '--fresh': 'fresh', '--note': 'note' }[args[i]];
     const value = args[++i];
     if (!name || !value || value.startsWith('--') || name in given) bad = true;
@@ -338,7 +344,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (fresh ? specs.length || !given.note || !existsSync(given.note) : 'note' in given || given.again) bad = true;
   const members = (fresh ? [given.fresh] : specs).map(spec => spec.match(/^(\d+):([a-z0-9][a-z0-9-]*)$/)).map(m => m && { n: m[1], branch: `issue/${m[1]}-${m[2]}` });
   const cli = process.env.ORCA_CLI_COMMAND;
-  if (bad || !key || !members.length || members.some(m => !m) || !cli) {
+  if (bad || !key || !members.length || members.some(m => !m) || !cli || (given.capacity && machineCap() === undefined)) {
     console.error(USAGE);
     process.exit(2);
   }
@@ -351,6 +357,14 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     if (run('git', ['-C', main, 'rev-parse', '--verify', '-q', `refs/heads/${options.integration}`]).status !== 0) {
       console.error(`整合分支 ${options.integration} 不存在\n${USAGE}`);
       process.exit(2);
+    }
+    if (given.capacity) {
+      const { ok, total, cap } = capacityCheck(ledgerPath(), members.length);
+      console.log(ok ? `CAPACITY ok ${total}/${cap}` : `STOP capacity ${total}/${cap}`);
+      if (!ok) {
+        clearTimeout(budget);
+        process.exit(4);
+      }
     }
     if (fresh) {
       const [member] = members;

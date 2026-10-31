@@ -108,13 +108,13 @@ ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? 
   if (guard !== undefined) {
     const scripts = join(temp, 'scripts');
     mkdirSync(join(scripts, 'lib'), { recursive: true });
-    for (const name of ['pilot-probe.mjs', 'orca-session-send.mjs', 'lib/pilot-store.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+    for (const name of ['pilot-probe.mjs', 'pilot-capacity.mjs', 'orca-session-send.mjs', 'lib/pilot-store.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
     writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
     chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
     probeScript = join(scripts, 'pilot-probe.mjs');
   }
-  const probe = ({ input = 'stdin 不該被 orca 讀到\n', args = [] } = {}) =>
-    spawnSync('node', [probeScript, repo, ...args], { encoding: 'utf8', input, env: { ...probeEnv, ORCA_CLI_COMMAND: cli } });
+  const probe = ({ input = 'stdin 不該被 orca 讀到\n', args = [], extraEnv = {} } = {}) =>
+    spawnSync('node', [probeScript, repo, ...args], { encoding: 'utf8', input, env: { ...probeEnv, ORCA_CLI_COMMAND: cli, ...extraEnv } });
   return { repo, pilot, origin, git, log, batch, probe, probeEnv, ghLog: join(temp, 'gh.log') };
 }
 
@@ -153,6 +153,31 @@ test('超過 stuck-after 印 STUCK，還沒超過印 RUNNING <分鐘>；讀不�
   assert.ok(out.some(line => /^WORKER 1 STUCK stuck-after 1[12]\d$/.test(line)), out.join('\n'));
   assert.ok(out.some(line => /^WORKER 2 RUNNING [78]$/.test(line)), out.join('\n'));
   assert.ok(out.includes('WORKER 3 STUCK orca terminal_handle_stale'), out.join('\n'));
+});
+
+// 全機上限（#178）：--capacity <repo> 把這一輪還在跑的成員數（running 列扣掉這一輪讀到 DONE、STOP 的）寫進全機帳本自己那一列，
+// 合計超過 $PILOT_MACHINE_WORKER_CAP 時印 OVER_CAP <合計> <上限>；只回報，不改派工。沒帶旗標時不碰帳本。
+test('--capacity <repo> 把在跑的成員數寫進帳本，合計超過上限印 OVER_CAP', t => {
+  const { batch, probe, repo } = fixture(t, { screens: {
+    term_1: { status: 'running', tail: ['❯'] },
+    term_2: { status: 'running', tail: ['DONE 2 ' + SHA] },
+    term_3: { status: 'running', tail: ['❯'] },
+  } });
+  batch('1-2', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 1 }, { n: 2 }]);
+  batch('3', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 3, started: ago(500) }, { n: 4, state: 'done', candidate: SHA }]);
+  const ledger = join(repo, '..', 'pilot-workers.tsv');
+  const extraEnv = { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '3' };
+  assert.equal(probe({ extraEnv }).status, 0);
+  assert.throws(() => readFileSync(ledger), /ENOENT/, '沒帶 --capacity 不該寫帳本');
+  let out = lines(probe({ args: ['--capacity', 'acme'], extraEnv }));
+  assert.match(readFileSync(ledger, 'utf8'), /^acme\t2\t\d{4}-/);
+  assert.ok(!out.some(line => line.startsWith('OVER_CAP')), out.join('\n'));
+  writeFileSync(ledger, `${readFileSync(ledger, 'utf8')}investing\t2\t${new Date().toISOString()}\n`);
+  out = lines(probe({ args: ['--capacity', 'acme'], extraEnv }));
+  assert.equal(out.at(-1), 'OVER_CAP 4 3', out.join('\n'));
+  assert.equal(probe({ args: ['--capacity'], extraEnv }).status, 2);
+  assert.equal(probe({ args: ['--capacity', 'a\tb'], extraEnv }).status, 2);
+  assert.equal(probe({ args: ['--capacity', 'acme'], extraEnv: { ...extraEnv, PILOT_MACHINE_WORKER_CAP: 'x' } }).status, 2);
 });
 
 // 真實 Orca CLI 會吃掉 stdin；呼叫時 stdin 一律接 /dev/null，假 Orca 讀光 stdin 也只會讀到空的。
