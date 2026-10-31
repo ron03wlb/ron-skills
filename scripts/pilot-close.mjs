@@ -13,7 +13,8 @@
 //
 // 用法：node scripts/pilot-close.mjs <batch key> <pr> <merge sha>（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
 // stdout：每一步一行 `DONE <n> <step>` 或 `SKIP <n> <step>`；任何一步失敗都印 `STOP <n> <step> <原因>` 並停下
-//   （開頭 main 那步的 <n> 是 batch key；checkpoint 讀不到或沒有 done 成員只印 STOP <key> checkpoint）。Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。
+//   （開頭 main 那步的 <n> 是 batch key；checkpoint 讀不到或沒有 done 成員只印 STOP <key> checkpoint；
+//   done 成員的 branch 不是 `issue/<n>-<slug>` 時，在任何寫入之前只印 STOP branch-malformed <n> <JSON 字串的 branch>）。Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。
 //   全部成員做完，checkpoint 的 `current:` 寫成 `closed`，最後一行 `CLOSED <key>`。
 // exit：0 CLOSED；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND。
 import { spawnSync } from 'node:child_process';
@@ -222,6 +223,13 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     if (!/^current: /m.test(text)) throw new Stop('checkpoint', `${checkpoint} 沒有 current: 行`);
     const members = doneMembers(text);
     if (!members.length) throw new Stop('checkpoint', `${checkpoint} 沒有 done 成員`);
+    // 空的或手寫錯的 branch 會讓 remote 步驟拿它跑 ls-remote（空 pattern 列出全部 heads，exit 0）再 push --delete（#120），
+    // 所以在 Bare guard、main 與任何成員的寫入之前，先確認每個 done 成員的 branch 都是 issue/<這一列的 n>-<slug>。
+    const malformed = members.find(({ n, branch }) => !new RegExp(`^issue/${n}-[a-z0-9-]+$`).test(branch));
+    if (malformed) {
+      console.log(`STOP branch-malformed ${malformed.n} ${JSON.stringify(malformed.branch)}`);
+      process.exit(4);
+    }
     const regression = text.match(/^regression: .*$/gm)?.pop();
     // 上一輪可能中斷在 Orca rm 把主 checkout 設成 bare 之後；那時 worktree 已經不在，worktree 步驟不會再跑 Bare guard。
     const unbare = run(join(here, 'pilot-unbare.sh'), [main, `close #${key}`]);
