@@ -3,6 +3,9 @@
 // batch checkpoint 的格式照 issue-pilot 的 PILOT-STORE.md；專案不同的值（整合分支、stuck-after）由參數傳入。
 // 每個成員依序：orca-worktree-create → Bare guard → 確認 worktree → terminal create → orca-session-send。
 // Bare guard 是同目錄專案自備的 pilot-unbare.sh（`<checkout> <時機>`，時機 `dispatch #<n>`；Orca 從 WSL 建 worktree 會把主 checkout 設成 bare），沒有就略過。
+// 派每個成員之前先讀 Issue 最近一則認領留言（同目錄 issue-pool.mjs 的格式與判斷，含 claim 的前任 coordinator 接手）：不是這個 session
+// （$CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE）的就印 `STOP <n> not-claimed`，不開 worktree、不開分頁（#165：claim 印 STOP 後照樣派出）。
+// 讀留言用 gh，所以只支援 GitHub tracker（同 issue-pool.mjs）。
 // worktree 有沒有建好只看目錄存在、`git worktree list` 裡有這個分支，不信 create 回傳的 ok（曾經建好卻回 "ok": false）。
 // 所有子行程的 stdin 都接 /dev/null：Orca CLI 會吃掉 stdin，`while read` 迴圈因此只派到第一個成員。
 // 總時間有上限（比照 pilot-handoff.mjs）：Bash 工具最多等 600 秒，被殺就來不及寫 checkpoint，所以預算到了（timeout）或收到 SIGTERM、SIGINT（signal <名稱>）
@@ -19,12 +22,12 @@
 //   留言用 gh，所以 --fresh 只支援 GitHub tracker（同 issue-pool.mjs）。
 //   prior 依序找 `-prior`、`-prior2`…：手動重派留下的 `-prior` 也算，那張 Issue 第一次跑 --fresh 就是 refresh-twice。
 //   prior 已在、分支又有了 commit 就是第二次重派：印 `STOP refresh-twice <n>`，由 coordinator 開 gate；gate 選了再重派時帶 --again，另存成 `-prior2`（依序編號）。
-//   認領不在這裡做：coordinator 照 Dispatch 先跑 claim。
+//   認領不在這裡做：coordinator 照 Dispatch 先跑 claim；這裡只在動手前同樣檢查認領，不是這個 session 的就 `STOP <n> not-claimed`，什麼都不動。
 //
 // 用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--integration <分支>] [--stuck-after <分鐘>m]（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
 //       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--integration <分支>] [--stuck-after <分鐘>m]
 //   --integration worktree 的 base 與表頭的整合分支，預設 pilot/integration；--stuck-after 成員行的 stuck-after，預設 90m。
-// stdout：每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
+// stdout：每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
 //   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop），STOP 原因只在 stdout。
 //   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
@@ -33,6 +36,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { claimedBy, defaultSession } from './issue-pool.mjs';
 import { orca, sendToSession } from './orca-session-send.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
 
@@ -41,6 +45,7 @@ const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>..
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const WORKTREE_CREATE = fileURLToPath(new URL('./orca-worktree-create.mjs', import.meta.url));
 const BUDGET_MS = Number(process.env.PILOT_DISPATCH_BUDGET_MS || 510000);
+const DEADLINE = Date.now() + BUDGET_MS;
 
 /** 同步跑子行程；stdin 一律接 /dev/null。 */
 function run(command, args, options = {}) {
@@ -110,6 +115,24 @@ function writeRow(checkpoint, n, cells) {
   writeFileSync(checkpoint, `${lines.join('\n')}\n`);
 }
 
+/**
+ * 認領檢查：這個 session 的認領傳回 undefined，否則傳回 STOP 原因（不含 `STOP <n> ` 前綴）。
+ * spawnSync 期間總預算的計時器不會觸發，所以 gh 自己限時（60 秒與剩餘預算取小），預算用完就是 `timeout`；原因壓成一行，stdout 才維持每個成員一行。
+ */
+function claimStop(n) {
+  const left = DEADLINE - Date.now();
+  if (left <= 0) return 'timeout';
+  const viewed = run('gh', ['issue', 'view', n, '--json', 'comments'], { timeout: Math.min(60000, left) });
+  if (Date.now() >= DEADLINE) return 'timeout';
+  const detail = (viewed.stderr ?? '').trim().replace(/\s*\n\s*/g, ' ');
+  if (viewed.status !== 0) return `claim-check ${detail || `exit ${viewed.status ?? viewed.error?.code}`}`;
+  try {
+    return claimedBy(JSON.parse(viewed.stdout).comments, defaultSession()) ? undefined : 'not-claimed';
+  } catch {
+    return 'claim-check gh issue view 的輸出不是 JSON';
+  }
+}
+
 /** 非同步跑子行程（stdin 接 /dev/null），傳回 stdout；`signal` 中止時殺掉它。 */
 async function spawnText(command, args, options) {
   const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], ...options });
@@ -127,6 +150,8 @@ async function spawnText(command, args, options) {
  */
 async function dispatchMember(cli, main, checkpoint, integration, { n, branch }, signal) {
   if (signal.aborted) return { stop: signal.reason };
+  const unclaimed = claimStop(n);
+  if (unclaimed) return { stop: unclaimed };
   let created = '';
   if (!worktreeOf(main, branch)) {
     try {
@@ -172,6 +197,8 @@ const hasBranch = (main, branch) => run('git', ['-C', main, 'rev-parse', '--veri
  * 傳回 `{ checkpoint, prior, sha, worktree }`，或 `{ stop }`（整段 STOP 字串，不含 `STOP `）。
  */
 async function refresh(cli, main, key, integration, { n, branch }, note, again, signal) {
+  const unclaimed = claimStop(n);
+  if (unclaimed) return { stop: `${n} ${unclaimed}` };
   const priors = [];
   while (hasBranch(main, priorName(branch, priors.length + 1))) priors.push(priorName(branch, priors.length + 1));
   const latest = priors.at(-1);
