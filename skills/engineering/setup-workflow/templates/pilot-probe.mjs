@@ -17,7 +17,9 @@
 //   Bare guard：同目錄有 pilot-unbare.sh（專案自備，`<checkout> <時機>`，還原時印 UNBARE）時先跑它（時機 probe），沒有就略過。
 // stdout 每行一項，沒事的項目不印（全部正常且沒有 batch 時不輸出）：
 //   主 checkout：UNBARE <checkout>（Bare guard 剛還原 core.bare）｜NOT_MAIN <分支>｜HOLD｜DIRTY <git status --short 的一行>
-//   adapter：ADAPTER_AHEAD <檔案>（整合分支上的 adapter 比主分支新：docs/agents/issue-run.md，以及它 `## Pilot` 段連到的同目錄 .md）
+//   adapter：ADAPTER_AHEAD <檔案> [<名稱>[,<名稱>…]]（整合分支上的 adapter 比主分支新：docs/agents/issue-run.md，以及它 `## Pilot` 段連到的同目錄 .md；
+//            `.md` 的改動都在 `- **<名稱>.**` 條目裡時附改動的條目名稱，依名稱排序、以 `,` 分隔，名稱本身可能有空格（不能有 `,`）；刪掉或改名的條目也列（取改動前的名稱）；
+//            有條目以外的改動或不是 `.md` 時省略名稱欄，表示要讀整份）
 //   開著的列：REQUEST <requests.md 原文>｜GATE <id> <Issue> <question 或段落標題>｜GATE_MALFORMED <id> <把 resolved 寫進別的欄位的那一行>
 //   Issue 依賴：DEPS_PROSE <n> #<m>（開著的 `ready-for-agent` Issue 內文以「依賴」帶出 #m，#m 還開著，blocked_by 卻沒有它；Pool 只讀 blocked_by）｜
 //               DEPS_PROSE_FAILED <錯誤>（在主 checkout 跑 gh 失敗，其他檢查照跑；同一次查詢的 PARENT_* 也不印）
@@ -111,6 +113,7 @@ function show(checkout, ref, path) {
  * 已經在整合分支裡（主分支從沒有這個檔也算）。主分支自己改過、整合分支還沒跟上時，整合分支那份比較舊，不印；
  * 兩邊都改過（歷史分岔）時分不出誰新，也不印。整合分支刪掉的檔讀不到，不印。沒有整合分支或主分支時不比。
  * 比的檔案是 adapter 本身，加上兩邊任一版 adapter 的 Pilot 段連到的檔案（新連上的檔只在整合分支那邊）。
+ * 改動都在條目裡時附條目名稱（同 OVERLAP 的 changedUnits，不算相鄰的條目），讓 coordinator 只讀那幾條、不讀整份 diff（#144）。
  */
 export function adapterAhead(checkout, { integration = 'pilot/integration', main = 'main' } = {}) {
   const [ahead, base] = [`refs/heads/${integration}`, `refs/heads/${main}`];
@@ -126,7 +129,10 @@ export function adapterAhead(checkout, { integration = 'pilot/integration', main
     const ancestor = git(checkout, 'merge-base', '--is-ancestor', last, ahead);
     if (ancestor.status > 1) throw new Error(`git merge-base --is-ancestor exit ${ancestor.status}：${ancestor.stderr.trim()}`);
     return ancestor.status === 0;
-  }).map(path => `ADAPTER_AHEAD ${path}`);
+  }).map(path => {
+    const unit = changedUnits(checkout, base, ahead, { paths: [path], adjacent: false }).get(path);
+    return unit && !unit.whole && unit.entries.size ? `ADAPTER_AHEAD ${path} ${[...unit.entries].sort().join(',')}` : `ADAPTER_AHEAD ${path}`;
+  });
 }
 
 /** `.scratch/pilot/` 裡的 batch checkpoint 檔名，依名稱排序。 */
@@ -393,15 +399,16 @@ function entryAt(lines, i) {
 /**
  * `from..to` 改了哪些檔：Map<檔案, { whole, entries }>。`.md` 檔的改動行（空行不算）都落在條目裡時只記條目名稱
  * （刪掉的行看 from 的版本、加上的行看 to 的版本），有任何一行不在條目裡，或不是 `.md`，就記整個檔（whole）。
+ * `paths` 只比這些檔；`adjacent`（預設開）把緊鄰改動、git 合併時會一起衝突的條目也算進去，只想知道改了哪些條目時關掉。
  */
-export function changedUnits(checkout, from, to) {
+export function changedUnits(checkout, from, to, { paths = [], adjacent = true } = {}) {
   const run = (...args) => {
     const result = git(checkout, ...args);
     if (result.status !== 0) throw new Error(`git ${args[0]} exit ${result.status}：${result.stderr.trim()}`);
     return result.stdout;
   };
   const units = new Map();
-  for (const path of run('diff', '--name-only', '-z', '--no-renames', from, to).split('\0').filter(Boolean)) {
+  for (const path of run('diff', '--name-only', '-z', '--no-renames', from, to, '--', ...paths).split('\0').filter(Boolean)) {
     const unit = { whole: !path.endsWith('.md'), entries: new Set() };
     units.set(path, unit);
     if (unit.whole) continue;
@@ -416,6 +423,7 @@ export function changedUnits(checkout, from, to) {
           else unit.whole = true;
         }
       }
+      if (!adjacent) continue;
       // git 照位置合併：改到相接的行、或在同一處插入也會衝突，所以 from 那邊緊鄰 hunk 前後的行所在的條目也算。
       // 空行不算（中間隔著沒人改的空行就不會衝突）；純插入的前後都是空行或檔尾時，才往上找插入點所在的條目，同一處的插入才對得上。
       const old = versions['-'];
