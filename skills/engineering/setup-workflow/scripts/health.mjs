@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 // /setup-workflow 的體檢：比對已導入專案的 adapter、文件與實際使用，回報落差，不寫任何檔。
 // 用法：node health.mjs [<repo>]（repo 預設 cwd；不收任何旗標）
-// 每個落差一行 `FINDING <類別> <說明>  # <證據>`，類別為 level（等級標示錯誤）、divergence（副本與正本分歧，兩邊都改了時下接縮排的 diff）、cross-repo（隱性跨 repo 依賴）；
+// 每個落差一行 `FINDING <類別> <說明>  # <證據>`，類別為 level（等級標示錯誤）、divergence（副本與正本分歧，兩邊都改了時下接縮排的 diff）、cross-repo（隱性跨 repo 依賴）、
+// missing-section（adapter 缺 `## Platforms`，或程式碼 host 不是 local 卻缺 `## Delivery`）、platform（Platforms 列了 macOS 時，scripts/、bin/、git hook 違反可攜性規則）；
 // 最後一行 `HEALTHY`（exit 0）或 `FINDINGS <n>`（exit 1）。掃描時讀不到的檔案在 stderr 印 `health: 略過讀不到的 <path>：<code>` 後略過。
-// 帶旗標、不是 git repo 或 detect.mjs 失敗時 exit 2，沒有最後一行。
+// 帶旗標、不是 git repo、detect.mjs 或 check-portability.mjs 失敗時 exit 2，沒有最後一行。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { codeHost } from '../templates/lib/hosts.mjs';
 
 const fail = message => { console.error(`health: ${message}`); process.exit(2); };
 const args = process.argv.slice(2);
@@ -103,6 +105,23 @@ for (const [path, entry] of Object.entries(copies)) {
   finding('divergence', `${kind} ${path} ${ADVICE[kind]}`, `${MANIFEST} commit ${typeof entry.commit === 'string' && entry.commit ? entry.commit : '(未記錄)'} sha256 ${entry.sha256.slice(0, 12)}、副本 ${copySha.slice(0, 12)}、正本 ${entry.template} ${canonicalSha.slice(0, 12)}`, diff);
 }
 
+// 缺段落：adapter 存在時，`## Platforms` 一律要有；程式碼 host 不是 local（origin 指向網路主機）時還要 `## Delivery`。
+// 補法是重跑 /setup-workflow 逐站確認後補齊，不另寫遷移 script。
+const adapterText = isFile(join(root, adapterPath)) ? readOrWarn(adapterPath) : null;
+const section = name => {
+  const lines = adapterText?.split('\n') ?? [];
+  const start = lines.findIndex(text => new RegExp(`^##\\s+${name}\\b`).test(text));
+  if (start < 0) return null;
+  const end = lines.findIndex((text, i) => i > start && /^##\s/.test(text));
+  return lines.slice(start + 1, end < 0 ? undefined : end).join('\n');
+};
+if (adapterText !== null) {
+  const required = ['Platforms', ...(codeHost(git('remote', 'get-url', 'origin')).value === 'local' ? [] : ['Delivery'])];
+  for (const name of required.filter(name => section(name) === null)) {
+    finding('missing-section', `${name} adapter 缺 ## ${name}：重跑 /setup-workflow 逐站確認後補齊`, adapterPath);
+  }
+}
+
 // 隱性跨 repo 依賴：adapter、.claude/settings.json 與 scripts/、bin/、git hook 目錄裡家目錄下的絕對路徑，路徑中沒有本 repo 的名稱就是指向別的 repo。
 // 家目錄下的設定目錄（~/.claude）與只到某個目錄本身（~/code/<repo>）的提及不算：依賴的是那個 repo 裡的檔案，
 // 所以路徑要指到檔案（最後一段有副檔名，如 ~/spay2/send.mjs），或在家目錄下至少三段（~/code/spay2/scripts）。
@@ -125,6 +144,18 @@ for (const file of scanned) {
       finding('cross-repo', `${path} 指向本 repo 以外的檔案`, `${file}:${i + 1}`);
     }
   });
+}
+
+// 平台：adapter 的 Platforms 列了 macOS 時，對 scripts/、bin/ 與 git hook 目錄跑可攜性規則。規則只在正本 templates/check-portability.mjs（#86），
+// 這裡在目標 repo 執行它、只留這些目錄的結果；它印 `<file>:<line>: <規則> <改法>`（只差大小寫的是 `<file>: case …`，沒有行號）。
+if (/\bmacOS\b/i.test(section('Platforms') ?? '')) {
+  const result = spawnSync('node', [join(here, '../templates/check-portability.mjs')], { cwd: root, encoding: 'utf8', maxBuffer: 64 << 20 });
+  if (![0, 1].includes(result.status)) fail(`check-portability.mjs 失敗：${result.stderr.trim()}`);
+  for (const text of lines(result.stderr)) {
+    const match = text.match(/^(.+?)(?::(\d+))?: (\S+) (.+)$/);
+    if (!match || !scriptDirs.some(dir => match[1].startsWith(dir))) continue;
+    finding('platform', `${match[3]} ${match[4]}`, match[2] ? `${match[1]}:${match[2]}` : match[1]);
+  }
 }
 
 for (const { line, detail } of findings) console.log([line, ...detail.map(text => `  ${text}`)].join('\n'));

@@ -27,7 +27,7 @@ function health(root) {
   return { status: result.status, stderr: result.stderr, lines: result.stdout.trim().split('\n') };
 }
 
-const ADAPTER = '# issue-run adapter: acme\n\n## Checks\n\nOne command: `bin/check`.\n';
+const ADAPTER = '# issue-run adapter: acme\n\n## Platforms\n\nLinux\n\n## Checks\n\nOne command: `bin/check`.\n';
 
 /** L3：tracker、adapter（含 Pilot 段）、檢查入口、跑 bin/check 的 pre-push、整合分支、合入過的 Issue 分支與 stage batch commit。 */
 function l3(t, files = {}) {
@@ -107,7 +107,7 @@ test('隱性跨 repo 依賴：adapter、settings、scripts 裡指向其他 repo 
   assert.equal(status, 1);
   const crossRepo = lines.filter(line => line.startsWith('FINDING cross-repo'));
   assert.equal(crossRepo.length, 3, lines.join('\n'));
-  assert.match(crossRepo.join('\n'), /~\/code\/spay2\/scripts\/orca-session-send\.mjs .*# docs\/agents\/issue-run\.md:9/);
+  assert.match(crossRepo.join('\n'), /~\/code\/spay2\/scripts\/orca-session-send\.mjs .*# docs\/agents\/issue-run\.md:13/);
   assert.match(crossRepo.join('\n'), /\/home\/someone\/code\/other-repo\/scripts\/hook\.mjs .*# \.claude\/settings\.json:1/);
   assert.match(crossRepo.join('\n'), /\$HOME\/work\/tools\/bin\/x\.mjs .*# scripts\/run\.sh:2/);
 });
@@ -311,4 +311,43 @@ test('health 不跑等級站：不呼叫 gh', t => {
   const result = spawnSync('node', [script, root], { encoding: 'utf8', env: { ...env, DETECT_GH: join(root, '.fake-bin/gh') } });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(spawnSync('cat', [log], { encoding: 'utf8' }).stdout, '');
+});
+
+// #92：adapter 缺 ## Platforms，或程式碼 host 不是 local 卻缺 ## Delivery 時，回報 missing-section（重跑 /setup-workflow 逐站補齊）。
+test('缺段落：adapter 沒有 Platforms，origin 在 GitHub 卻沒有 Delivery，各回報一個 missing-section', t => {
+  const root = repo(t, { 'docs/agents/issue-run.md': '# issue-run adapter: acme\n\n## Checks\n\nOne command: `bin/check`.\n' });
+  git(root, 'remote', 'add', 'origin', 'git@github.com:someone/acme.git');
+  const { status, lines } = health(root);
+  assert.equal(status, 1, lines.join('\n'));
+  const missing = lines.filter(line => line.startsWith('FINDING missing-section'));
+  assert.equal(missing.length, 2, lines.join('\n'));
+  assert.match(missing[0], /^FINDING missing-section Platforms .*\/setup-workflow.*# docs\/agents\/issue-run\.md$/);
+  assert.match(missing[1], /^FINDING missing-section Delivery .*# docs\/agents\/issue-run\.md$/);
+  assert.equal(lines.at(-1), 'FINDINGS 2');
+});
+
+test('缺段落：程式碼 host 是 local（沒有 origin）時不要求 Delivery；沒有 adapter 的 repo 不查段落', t => {
+  assert.equal(health(repo(t, { 'docs/agents/issue-run.md': ADAPTER })).lines.at(-1), 'HEALTHY');
+  assert.equal(health(repo(t)).lines.at(-1), 'HEALTHY');
+});
+
+// #92：adapter 的 Platforms 列了 macOS 時，對 scripts/、bin/ 與 git hook 跑 A4 的可攜性規則（正本 check-portability.mjs），附 file:line。
+const macAdapter = ADAPTER.replace('Linux', 'macOS, WSL2');
+test('平台：Platforms 有 macOS、scripts/ 副本含 /proc/ 時回報 platform proc；scripts/、bin/、hook 以外的檔案不掃', t => { // portability-ok: 測試名稱提到 /proc/
+  const root = repo(t, {
+    'docs/agents/issue-run.md': macAdapter,
+    'scripts/probe.mjs': "import { readFileSync } from 'node:fs';\nconst x = 1;\nreadFileSync('/proc/self/status', 'utf8');\n", // portability-ok: fixture 內容，測 health 抓得到 /proc/
+    'tools/other.mjs': "readFileSync('/proc/meminfo');\n", // portability-ok: fixture 內容，測 health 抓得到 /proc/
+  });
+  const { status, lines } = health(root);
+  assert.equal(status, 1, lines.join('\n'));
+  const platform = lines.filter(line => line.startsWith('FINDING platform'));
+  assert.equal(platform.length, 1, lines.join('\n'));
+  assert.match(platform[0], /^FINDING platform proc .*# scripts\/probe\.mjs:3$/);
+  assert.equal(lines.at(-1), 'FINDINGS 1');
+});
+
+test('平台：Platforms 沒有 macOS 時不跑可攜性規則', t => {
+  const { lines } = health(repo(t, { 'docs/agents/issue-run.md': ADAPTER, 'scripts/probe.sh': '#!/usr/bin/env bash\ncat /proc/cpuinfo\n' })); // portability-ok: fixture 內容，測 health 抓得到 /proc/
+  assert.equal(lines.at(-1), 'HEALTHY', lines.join('\n'));
 });

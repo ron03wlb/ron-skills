@@ -1,6 +1,6 @@
 ---
 name: setup-workflow
-description: "Import the ron-skills delivery workflow into a repo: detect its level (L0–L3) and extensions, recommend the next level only when its entry conditions hold, then write the tracker, label, domain-doc and adapter setup and copy the canonical scripts after the human confirms. `/setup-workflow health` runs the health check on an imported repo instead: it reports mislabelled levels, copies that diverge from the canonical scripts, and hidden cross-repo paths, and writes nothing."
+description: "Import the ron-skills delivery workflow into a repo: detect its level (L0–L3) and extensions, recommend the next level only when its entry conditions hold, then write the tracker, label, domain-doc and adapter setup and copy the canonical scripts after the human confirms. `/setup-workflow health` runs the health check on an imported repo instead: it reports mislabelled levels, copies that diverge from the canonical scripts, hidden cross-repo paths, missing adapter sections, and portability violations on macOS, and writes nothing."
 disable-model-invocation: true
 ---
 
@@ -68,7 +68,7 @@ Steps 1–3 are the three **stations**: Environment, Host, Level, in that order.
 
 8. **Copy templates.** Run `node <skill>/scripts/copy-templates.mjs <repo> <template>...`. It copies each template with its runtime dependencies and tests into `scripts/` and records each copy's template path, the last ron-skills commit that changed that template, and the copy's sha256 in `docs/agents/workflow-templates.json`; it refuses a template with uncommitted changes, since the recorded commit would not match the content. Exit 3 (`CONFIRM_OVERWRITE`) means an existing file differs: show the human the printed diff, and rerun with `--yes` only after they confirm. Wire each copy as its row in [Templates](#templates) says, and add the copied tests to the repo's check entry. Done when `copy-templates.mjs <repo> --verify` prints `VERIFIED <n>` and the check entry exits 0.
 
-9. **Remote CI.** Only when the target level is L2 or above: run `node <skill>/scripts/ci.mjs <repo>` for the remote CI runner. It writes the minimal CI for the code host (`.github/workflows/checks.yml` on GitHub, `.gitlab-ci.yml` on GitLab: `push` and PR/MR pipelines run the check entry, Node pinned to this machine's version, the same rule as ron-skills' `check-node-version.mjs`) and prints `CI_WRITTEN <file>`; a `local` code host gets none (`CI_SKIPPED local`). A repo that already has CI files is left untouched: `CI_KEPT <file>` when one calls the check entry, otherwise `GAP ci <reason>`, which goes into the report for the human. Done when it printed one of those last lines.
+9. **Remote CI.** Only when the target level is L2 or above: run `node <skill>/scripts/ci.mjs <repo>` for the remote CI runner. It writes the minimal CI for the code host (`.github/workflows/checks.yml` on GitHub, `.gitlab-ci.yml` on GitLab: `push` and PR/MR pipelines run the check entry, Node pinned to this machine's version, the same rule as `check-node-version.mjs` in the repo that holds this skill) and prints `CI_WRITTEN <file>`; a `local` code host gets none (`CI_SKIPPED local`). A repo that already has CI files is left untouched: `CI_KEPT <file>` when one calls the check entry, otherwise `GAP ci <reason>`, which goes into the report for the human. Done when it printed one of those last lines.
 
 10. **Report.** Report the detected and new level, every file written, the commands with exit codes, and the gaps left: unmet signals of the target level, `GAP ci` from step 3 or step 9, and declined extensions.
 
@@ -76,7 +76,7 @@ Steps 1–3 are the three **stations**: Environment, Host, Level, in that order.
 
 For a repo already imported: compare its adapter, docs and copies with what it actually runs, and report the gaps. It only reads; write nothing, even for a gap with an obvious fix.
 
-1. Run `node <skill>/scripts/health.mjs <repo>`. Each gap is one `FINDING <kind> ...  # <evidence>` line (file:line, or the manifest with its recorded commit and the sha256s); the last line is `HEALTHY` (exit 0) or `FINDINGS <n>` (exit 1). A file it cannot read while scanning is skipped with a `health: 略過讀不到的 <path>：<code>` line on stderr. On exit 2, with no last line, the check did not run: a flag was passed, the target is not a git repo, or `detect.mjs` failed; report its stderr and stop.
+1. Run `node <skill>/scripts/health.mjs <repo>`. Each gap is one `FINDING <kind> ...  # <evidence>` line (file:line, or the manifest with its recorded commit and the sha256s); the last line is `HEALTHY` (exit 0) or `FINDINGS <n>` (exit 1). A file it cannot read while scanning is skipped with a `health: 略過讀不到的 <path>：<code>` line on stderr. On exit 2, with no last line, the check did not run: a flag was passed, the target is not a git repo, or `detect.mjs` or `check-portability.mjs` failed; report its stderr and stop.
 
    | Kind | Gap | Handling to recommend |
    | --- | --- | --- |
@@ -88,6 +88,8 @@ For a repo already imported: compare its adapter, docs and copies with what it a
    | `divergence unreadable` | the manifest itself, or the copy or canonical script an entry names, cannot be read (permissions) | fix the permissions and rerun the check |
    | `divergence missing-copy`, `missing-canonical`, `invalid-entry`, `invalid-manifest` | the manifest records a copy or canonical path that no longer exists or is not a file, has an entry without `template` or `sha256`, or is not a file holding a valid JSON object with an object `copies` | recopy, or drop the entry, as the human decides |
    | `cross-repo` | the adapter, `.claude/settings.json`, `scripts/`, `bin/` or the git hooks use an absolute home path into another repo | copy the file into this repo (as a template when it is generic), or pass the path in through an env var |
+| `missing-section <section>` | the adapter has no `## Platforms`, or the code host is not `local` (`origin` points to a network host) and it has no `## Delivery` | rerun `/setup-workflow` and fill the section station by station; there is no migration script |
+| `platform <rule>` | the adapter's `## Platforms` lists macOS, and a file under `scripts/`, `bin/` or the git hooks breaks a rule of the canonical `check-portability.mjs` (file:line, or the file for a case clash) | apply the fix the finding names, or mark the line `portability-ok: <reason>` |
 
 2. **Report.** The `level` and `cross-repo` rules match text, so read each finding's evidence line and drop a false positive (a repo name that is also a common word, a path in an example, a `~` path inside shell quotes such as `"~/x"` or `'~/x'`, which bash does not expand) with the reason. List each remaining finding with its evidence and the handling above, every file the stderr says was skipped as not checked, then the script's last line verbatim. Done when every finding is listed or the run printed `HEALTHY`.
 
