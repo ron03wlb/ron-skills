@@ -35,9 +35,10 @@
 //          current 是 merged／pushed 的 batch 在 git fetch 後比 origin/<主分支>，印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
 //          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA），
 //          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
-//   重疊：OVERLAP <n> <m|integration> <檔案>[:<條目>]（開著的 batch 裡 running、done 的成員分支已 commit 的內容，相對於與整合分支的 merge-base：
+//   重疊：OVERLAP <n> <m|integration> <檔案數> files [**<條目>.**…]（開著的 batch 裡 running、done 的成員分支已 commit 的內容，相對於與整合分支的 merge-base：
 //          兩個成員改到同一個檔，或整合分支自成員的 merge-base 以來也改了它改的檔；`.md` 檔的改動都在 `- **<名稱>.**` 條目裡時細到條目，
-//          相接的行與同一處的插入也算，git 合併時會衝突）
+//          相接的行與同一處的插入也算，git 合併時會衝突；同一對只印一行，後面列重疊的條目名稱，#176：條目不帶檔名、不同檔的同名條目只列一次，
+//          名稱可能有空格，以 `**`…`.**` 切分；數量固定寫 files，1 也是）
 // exit：0 印完；2 用法錯誤；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS、PARENT_APPLY_FAILED 等）。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -438,16 +439,27 @@ export function changedUnits(checkout, from, to, { paths = [], adjacent = true }
   return units;
 }
 
-/** 兩組改動重疊的地方：同一個檔有一邊改了整個檔時印檔名，否則印兩邊都改的每個條目。 */
-function overlaps(a, b) {
+/** 兩組改動重疊的地方：`[{ path, entries }]`；同一個檔有一邊改了整個檔時 entries 是空的，否則是兩邊都改的條目（沒有就不算重疊）。 */
+function overlapUnits(a, b) {
   const out = [];
   for (const [path, unit] of a) {
     const other = b.get(path);
     if (!other) continue;
-    if (unit.whole || other.whole) out.push(path);
-    else for (const name of unit.entries) if (other.entries.has(name)) out.push(`${path}:${name}`);
+    const entries = unit.whole || other.whole ? [] : [...unit.entries].filter(name => other.entries.has(name));
+    if (unit.whole || other.whole || entries.length) out.push({ path, entries });
   }
   return out;
+}
+
+/** 重疊的地方一處一筆：同一個檔有一邊改了整個檔時是檔名，否則是兩邊都改的每個條目 `<檔案>:<條目>`（pilot-dispatch 的 STOP overlap 用）。 */
+const overlaps = (a, b) => overlapUnits(a, b).flatMap(({ path, entries }) => entries.length ? entries.map(name => `${path}:${name}`) : [path]);
+
+/** 一對的 OVERLAP 行（#176）：`OVERLAP <n> <m|integration> <檔案數> files [**<條目>.**…]`，沒有重疊時 undefined。 */
+function overlapLine(n, m, a, b) {
+  const found = overlapUnits(a, b);
+  if (!found.length) return undefined;
+  const entries = [...new Set(found.flatMap(({ entries }) => entries))].map(name => `**${name}.**`);
+  return ['OVERLAP', n, m, found.length, 'files', ...entries].join(' ');
 }
 
 /** 重疊比對的 base：整合分支，沒有時主分支；兩個都沒有傳回 undefined。 */
@@ -476,23 +488,24 @@ function activeMembers(batches) {
 
 /**
  * 開著的 batch（current 不是 closed）裡 running 或 done 的成員分支（只看已 commit 的內容），各自相對於與整合分支的 merge-base 改了哪些檔或條目：
- * 兩個成員改到同一處印 `OVERLAP <n> <m> <檔案>[:<條目>]`（號碼小的在前），成員改的地方整合分支自那個 merge-base 以來也改過印
- * `OVERLAP <n> integration <檔案>[:<條目>]`。同一組只印一次；本機沒有那個分支的成員略過；沒有整合分支時改用主分支當 base，兩個都沒有就不比。
+ * 兩個成員改到同一處印 `OVERLAP <n> <m> <檔案數> files [**<條目>.**…]`（號碼小的在前），成員改的地方整合分支自那個 merge-base 以來也改過印
+ * `OVERLAP <n> integration <檔案數> files [**<條目>.**…]`。同一對只印一行（#176）：檔案數算兩邊都改的檔，後面列重疊細到條目的那些條目名稱
+ * （去重、依出現順序）；本機沒有那個分支的成員略過；沒有整合分支時改用主分支當 base，兩個都沒有就不比。
  */
 export function overlapLines(checkout, batches, options = {}) {
   const onto = overlapOnto(checkout, options);
   if (!onto) return [];
   const sorted = activeMembers(batches).map(m => [m.n, branchUnits(checkout, onto, m.branch)]).filter(([, units]) => units);
-  const out = new Set();
+  const out = [];
   sorted.forEach(([n, a], i) => {
-    for (const [m, b] of sorted.slice(i + 1)) for (const where of overlaps(a.units, b.units)) out.add(`OVERLAP ${n} ${m} ${where}`);
+    for (const [m, b] of sorted.slice(i + 1)) out.push(overlapLine(n, m, a.units, b.units));
   });
   const integrationUnits = new Map();
   for (const [n, { base, units }] of sorted) {
     if (!integrationUnits.has(base)) integrationUnits.set(base, changedUnits(checkout, base, onto));
-    for (const where of overlaps(units, integrationUnits.get(base))) out.add(`OVERLAP ${n} integration ${where}`);
+    out.push(overlapLine(n, 'integration', units, integrationUnits.get(base)));
   }
-  return [...out];
+  return out.filter(Boolean);
 }
 
 /**

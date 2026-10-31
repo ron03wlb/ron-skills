@@ -12,8 +12,11 @@ const script = new URL('../scripts/pilot-probe.mjs', import.meta.url).pathname;
 const pilotMd = readFileSync(new URL('../docs/agents/pilot.md', import.meta.url), 'utf8');
 const PATH = 'docs/agents/pilot.md';
 
-/** 主 checkout 在 main 上；`edits` 是 Issue 號碼 → 對 pilot.md 原文的改寫，每個各開一個 `issue/<n>-x` 分支，batch 裡記成 done。 */
-function fixture(t, edits) {
+/**
+ * 主 checkout 在 main 上；`edits` 是 Issue 號碼 → 對 pilot.md 原文的改寫，每個各開一個 `issue/<n>-x` 分支，batch 裡記成 done。
+ * `member` 是 Issue 號碼 → 另外寫入的檔（路徑 → 內容）；`integration` 是成員分支開出之後，整合分支上的改寫（路徑 → 對原文的改寫，新檔原文是空字串）。
+ */
+function fixture(t, edits, { member = {}, integration = {} } = {}) {
   const repo = mkdtempSync(join(realTmpdir(), 'pilot-probe-overlap-'));
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   git(repo, 'init', '-q', '-b', 'main');
@@ -26,7 +29,15 @@ function fixture(t, edits) {
   for (const [n, edit] of Object.entries(edits)) {
     git(repo, 'switch', '-q', '-c', `issue/${n}-x`, 'pilot/integration');
     writeFileSync(join(repo, PATH), edit(pilotMd));
-    git(repo, 'commit', '-q', '-am', `#${n}`);
+    for (const [path, text] of Object.entries(member[n] ?? {})) writeFileSync(join(repo, path), text);
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-q', '-m', `#${n}`);
+  }
+  if (Object.keys(integration).length) {
+    git(repo, 'switch', '-q', 'pilot/integration');
+    for (const [path, edit] of Object.entries(integration)) writeFileSync(join(repo, path), edit(path === PATH ? pilotMd : ''));
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-q', '-m', 'integration moved');
   }
   git(repo, 'switch', '-q', 'main');
   mkdirSync(join(repo, '.scratch/pilot'), { recursive: true });
@@ -55,10 +66,10 @@ const append = (name, text) => md => {
   return md.replace(new RegExp(`^(- \\*\\*${name}\\.\\*\\*.*)$`, 'm'), `$1${text}`);
 };
 
-test('兩個成員都改了 pilot.md 的 Handoff 條目時印 OVERLAP 56 57 docs/agents/pilot.md:Handoff', t => {
+test('兩個成員都改了 pilot.md 的 Handoff 條目時印 OVERLAP 56 57 1 files **Handoff.**', t => {
   const result = fixture(t, { 56: append('Handoff', '（#56）'), 57: append('Handoff', '（#57）') });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(result.stdout.split('\n').filter(line => line.startsWith('OVERLAP ')), ['OVERLAP 56 57 docs/agents/pilot.md:Handoff']);
+  assert.deepEqual(result.stdout.split('\n').filter(line => line.startsWith('OVERLAP ')), ['OVERLAP 56 57 1 files **Handoff.**']);
 });
 
 test('兩個成員改的是 pilot.md 的不同條目時不印 OVERLAP', t => {
@@ -73,7 +84,7 @@ test('兩個成員都在 Handoff 後面各加一個新條目時，印插入點�
   const result = fixture(t, { 56: insert('New56'), 57: insert('New57') });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(result.stdout.split('\n').filter(line => line.startsWith('OVERLAP ')),
-    ['OVERLAP 56 57 docs/agents/pilot.md:Project tick hooks']);
+    ['OVERLAP 56 57 1 files **Project tick hooks.**']);
 });
 
 // review 第二輪：插入新條目和改隔一行空行的條目，git 不會衝突（中間的空行沒人改），不印。
@@ -82,4 +93,15 @@ test('在 Handoff 前面插入新條目、另一個成員改 Close 時不印 OVE
   const result = fixture(t, { 56: before, 57: append('Close', '（#57）') });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(result.stdout.split('\n').filter(line => line.startsWith('OVERLAP ')), []);
+});
+
+// #176 驗收：成員和整合分支重疊 5 個檔，其中一個是 pilot.md 的同一條目，只印一行。
+test('成員和整合分支重疊 5 個檔（含 pilot.md 的 Handoff）時只印一行 OVERLAP 56 integration 5 files **Handoff.**', t => {
+  const others = ['a.mjs', 'b.mjs', 'c.mjs', 'd.mjs'];
+  const result = fixture(t, { 56: append('Handoff', '（#56）') }, {
+    member: { 56: Object.fromEntries(others.map(path => [path, '#56\n'])) },
+    integration: { [PATH]: append('Handoff', '（整合）'), ...Object.fromEntries(others.map(path => [path, () => 'integration\n'])) },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.split('\n').filter(line => line.startsWith('OVERLAP ')), ['OVERLAP 56 integration 5 files **Handoff.**']);
 });
