@@ -680,7 +680,7 @@ function recordSync(main, sha, value) {
     const file = join(dir, name);
     const merged = readFileSync(file, 'utf8').match(/^current:[ \t]*merged ([0-9a-f]{7,40})\b/m)?.[1];
     if (!merged || gitIn(main, 'merge-base', '--is-ancestor', merged, sha).status !== 0) continue;
-    // 寫入本身失敗（唯讀、磁碟滿）也是 STOP checkpoint，不是程式錯誤：檔頭與 pilot.md 都這樣承諾，整合分支這時還沒動。
+    // 寫入本身失敗（唯讀、磁碟滿）也是 STOP checkpoint，不是程式錯誤：檔頭與 pilot-after-merge.md 的 Push gate 都這樣承諾，整合分支這時還沒動。
     try {
       appendRegression(file, value);
     } catch (error) {
