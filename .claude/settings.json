@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node scripts/gh-tracker.mjs:*)"
+      "Bash(node scripts/gh-tracker.mjs:*)",
+      "Bash(node scripts/land.mjs:*)",
+      "Bash(node scripts/pilot-close.mjs:*)"
     ]
   },
   "hooks": {
