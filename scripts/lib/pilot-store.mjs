@@ -56,13 +56,14 @@ export const isResolvedSection = body => /^- (?:G\d+ )?resolved\b/m.test(body);
 
 /**
  * gates.md 還開著的 gate：表格 status 欄不以 `resolved` 開頭的列，或 `## G<n>` 段落裡沒有 `resolved` 那一行的 gate。
- * 每個 `{ line, id, issue, title, opened, malformed }`：`line` 是 GATE 行去掉前綴的內容；表格列的 title 是 question 欄，段落的是標題去掉 id。
+ * 每個 `{ line, id, issue, title, parked, opened, malformed }`：`line` 是 GATE 行去掉前綴的內容；表格列的 title 是 question 欄，段落的是標題去掉 id；
+ * `parked` 是表格的 parks 欄或段落的 `- parked：` 那一行。
  */
 export function openGates(text) {
   const gates = [];
   for (const cells of text.split('\n').map(gateRow)) {
     if (cells && !isResolvedRow(cells)) {
-      gates.push({ line: `${cells[0]} ${cells[1]} ${cells[2]}`, id: cells[0], issue: cells[1], title: cells[2], opened: cells[6] ?? '' });
+      gates.push({ line: `${cells[0]} ${cells[1]} ${cells[2]}`, id: cells[0], issue: cells[1], title: cells[2], parked: cells[5] ?? '', opened: cells[6] ?? '' });
     }
   }
   for (const { id, title, body } of gateSections(text)) {
@@ -70,10 +71,13 @@ export function openGates(text) {
     // resolved 寫進別的欄位（`- status：resolved …`）不算解除；指出那一行（retro a6）。
     const malformed = body.match(/^- [^：:\n]+[：:]\s*resolved\s+\d{4}-\d\d-\d\dT.*$/m)?.[0].trim();
     const field = name => body.match(new RegExp(`^- ${name}[：:]\\s*(.*)$`, 'm'))?.[1].trim() ?? '';
-    gates.push({ line: title, id, issue: field('Issue').match(/#\d+/)?.[0] ?? '', title: title.slice(id.length).trim(), opened: field('opened'), malformed });
+    gates.push({ line: title, id, issue: field('Issue').match(/#\d+/)?.[0] ?? '', title: title.slice(id.length).trim(), parked: field('parked'), opened: field('opened'), malformed });
   }
   return gates;
 }
+
+/** gate 的 parked 以固定寫法 `all-push` 開頭：擋住所有 push（例如 GitHub Actions 帳務），probe 把沒進主分支的 batch 合成一行 PUSH_PARKED（#136）。 */
+export const parksAllPush = gate => /^all-push(?![\w-])/.test(gate.parked);
 
 /** pilot-probe 與 pilot-gate list 印的 gate 行：每個開著的 gate 一行 `GATE <line>`，resolved 寫錯欄位的再加 `GATE_MALFORMED <id> <那一行>`。 */
 export const gateLines = text => openGates(text)
