@@ -210,6 +210,36 @@ test('dispatched 的 batch 每個成員都 done 時才印 STAGEABLE <key>；有 
   assert.ok(out.includes('MOVE 24-25 24'), out.join('\n'));
 });
 
+// #191：batch 94 停在 `current: staged`，兩次 Regression 都 exit 1（計時測試在高負載下 flake），成員 done；
+// probe 對 staged 的 batch 什麼都不印，接手的 coordinator 照 probe 行動就漏掉它。最後一行 regression 不是 staged SHA 的 exit 0
+// （exit 不是 0、沒寫 exit、SHA 是先前那次 stage 的，或根本沒有這行）時印 RESTAGE <key> regression-failed <exit 或 none>。
+test('staged 的 batch 最後一行 regression 不是 staged SHA 的 exit 0：印 RESTAGE，通過的不印', t => {
+  const { batch, probe, pilot } = fixture(t);
+  const staged = 'd4a2f71' + '0'.repeat(33);
+  const earlier = '0b8077b' + '0'.repeat(33);
+  const onto = '4c080c6' + '0'.repeat(33);
+  const regress = (key, rows) => writeFileSync(join(pilot, `batch-${key}.md`), readFileSync(join(pilot, `batch-${key}.md`), 'utf8') + rows.map(row => `${row}\n`).join(''));
+  batch('94', `staged ${staged} onto ${onto}`, [{ n: 94, state: 'done', candidate: 'abc1234' }]);
+  regress('94', [`regression: ${earlier} exit 1`, `regression: ${staged} exit 1`]);
+  batch('95', `staged ${staged} onto ${onto}`, [{ n: 95, state: 'done', candidate: 'abc1234' }]);
+  regress('95', [`regression: ${earlier} exit 1`, `regression: ${staged} exit 0 CHECK_PASS tests 1+2+3`]);
+  batch('96', `staged ${staged} onto ${onto}`, [{ n: 96, state: 'done', candidate: 'abc1234' }]);
+  batch('97', `staged ${staged} onto ${onto}`, [{ n: 97, state: 'done', candidate: 'abc1234' }]);
+  regress('97', [`regression: ${earlier} exit 0 CHECK_PASS tests 1+2+3`]);
+  batch('98', `staged ${staged.slice(0, 7)} onto ${onto}`, [{ n: 98, state: 'done', candidate: 'abc1234' }]);
+  regress('98', [`regression: ${staged} exit 0`]);
+  batch('99', `staged ${staged} onto ${onto}`, [{ n: 99, state: 'done', candidate: 'abc1234' }]);
+  regress('99', [`regression: ${staged} bin/check --upstream`]);
+  const out = lines(probe());
+  assert.deepEqual(out.filter(line => /^RESTAGE /.test(line)), [
+    'RESTAGE 94 regression-failed 1',
+    'RESTAGE 96 regression-failed none',
+    'RESTAGE 97 regression-failed none',
+    'RESTAGE 99 regression-failed none',
+  ], out.join('\n'));
+  assert.ok(!out.some(line => /^STAGEABLE 9\d$/.test(line)), out.join('\n'));
+});
+
 // 舊格式 `pushed` 的 batch 在 checkpoint 只剩 `regression: <sha>` 指出合入的內容（Integrate 是 ff-only，staged SHA 就是 pilot/integration 的 tip）；
 // `pushed <sha>`（#37）帶著同一個 SHA，還沒進 origin/main（PR 還開著）時印 NOT_IN_MAIN，coordinator 重跑 Push gate 接著合併。
 // 判斷的是 fetch 之後的 origin/main：另一個 clone 推上去、本機還沒 fetch 的合入也要算 IN_MAIN。
@@ -776,6 +806,26 @@ test('--status 從存檔與 git 重產 status.md，只列開著的 gate 與沒�
   assert.match(status, /^- request 2026-10-30T17:26:01\+08:00   hold 到 #27 合入   source ad$/m);
   assert.doesNotMatch(status, /已處理/);
   for (const ref of ['origin/main', 'main', 'pilot/integration']) assert.match(status, new RegExp(`^- ${ref} ${main.slice(0, 7)}$`, 'm'));
+});
+
+// #191：`--status` 只寫 `staged <sha>`，看不出 Regression 沒過。batch 那行附最後一行 regression 的 SHA 前 7 碼與 exit；
+// staged 而沒有 regression 行時寫 `regression none`，其他狀態沒有就不附。
+test('--status 的 batch 行附最後一次 regression 的結果', t => {
+  const { batch, pilot, probe } = fixture(t);
+  const staged = 'd4a2f71' + '0'.repeat(33);
+  batch('94', `staged ${staged} onto 4c080c6`, [{ n: 94, state: 'done', candidate: 'abc1234' }]);
+  writeFileSync(join(pilot, 'batch-94.md'), readFileSync(join(pilot, 'batch-94.md'), 'utf8') + `regression: 0b8077b exit 1\nregression: ${staged} exit 1\n`);
+  batch('95', `staged ${staged} onto 4c080c6`, [{ n: 95, state: 'done', candidate: 'abc1234' }]);
+  batch('96', `merged ${staged}`, [{ n: 96, state: 'done', candidate: 'abc1234' }]);
+  writeFileSync(join(pilot, 'batch-96.md'), readFileSync(join(pilot, 'batch-96.md'), 'utf8') + `regression: ${staged} bin/check\n`);
+  batch('97', 'dispatched 2026-10-31T11:32:03+08:00', [{ n: 97, state: 'done', candidate: 'abc1234' }]);
+  const result = probe({ args: ['--status'] });
+  assert.equal(result.status, 0, result.stderr);
+  const status = readFileSync(join(pilot, 'status.md'), 'utf8');
+  assert.match(status, new RegExp(`^- batch 94：staged ${staged} onto 4c080c6，regression d4a2f71 exit 1$`, 'm'));
+  assert.match(status, new RegExp(`^- batch 95：staged ${staged} onto 4c080c6，regression none$`, 'm'));
+  assert.match(status, new RegExp(`^- batch 96：merged ${staged}，regression d4a2f71 exit none$`, 'm'));
+  assert.match(status, /^- batch 97：dispatched 2026-10-31T11:32:03\+08:00$/m);
 });
 
 test('--status 沒有 coordinator 檔、gate 與 batch 時照樣寫出', t => {
