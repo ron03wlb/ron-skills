@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeSample } from './test/fake-orca.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./issue-pool.mjs', import.meta.url));
 // 真實 gh 回應的樣本（ron03wlb/ron-skills 2026-10-31）：issues.json 是列表用的 `gh api graphql`，issue-view.json 是 claim 讀的
@@ -43,7 +43,7 @@ const view = ({ assignees = [], comments = [] } = {}) => mergeSample(VIEW, {
 /** PATH 上的假 gh：`api graphql` 回 issues 頁面；`issue view` 依序回 views 的第 i 個（用完就一直回最後一個），其餘只記錄 argv；
  * 每次呼叫一行 JSON 寫進 calls.log。 */
 function fakeGh({ issues = [], views = [view()] } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'issue-pool-'));
+  const dir = mkdtempSync(join(realTmpdir(), 'issue-pool-'));
   const page = mergeSample(SAMPLE, { data: { repository: { issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: issues } } } }, 'page');
   writeFileSync(join(dir, 'page.json'), JSON.stringify(page));
   writeFileSync(join(dir, 'views.json'), JSON.stringify(views));
