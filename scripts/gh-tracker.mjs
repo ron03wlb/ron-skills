@@ -6,14 +6,17 @@
 //       node scripts/gh-tracker.mjs reopen <n> [--comment|-c <text>]
 //       node scripts/gh-tracker.mjs edit <n> [--title|-t、--body|-b、--body-file|-F、--add-label、--remove-label、--add-assignee、--remove-assignee <值>]...
 //       node scripts/gh-tracker.mjs create --title|-t <title> (--body|-b | --body-file|-F) [--label|-l、--assignee|-a <值>]...
-//       node scripts/gh-tracker.mjs sub-issue add|remove <parent> <child>
-//       node scripts/gh-tracker.mjs blocked-by add|remove <n> <blocker>
-// sub-issue、blocked-by 成功時 stdout 只印一行 `SUB_ISSUE <add|remove> <parent> <child>` 或 `BLOCKED_BY <add|remove> <n> <blocker>`，不印 API 回應（整份 issue JSON，#140）。
+//       node scripts/gh-tracker.mjs sub-issue add|remove <parent> <child>...
+//       node scripts/gh-tracker.mjs blocked-by add|remove <n> <blocker>...
+// sub-issue、blocked-by 一次可帶多個對象（#201：10 條依賴要寫迴圈），每個成功的對象在 stdout 印一行 `SUB_ISSUE <add|remove> <parent> <child>` 或
+// `BLOCKED_BY <add|remove> <n> <blocker>`，不印 API 回應（整份 issue JSON，#140）；某個對象失敗時照樣做完其餘的，最後以第一個失敗的 gh exit code 結束。
+// 沒有子命令或子命令不認得時，把上面的用法印到 stderr、exit 2（#219：不帶參數只得到「不支援的子命令」，要再讀檔頭）。
 // 在 repo 根目錄執行：allow 規則比對的是 `node scripts/gh-tracker.mjs` 這個相對路徑。
 // 不合規則時 exit 2、不呼叫 gh；gh 無法執行、或查到的 database id 不是數字時也 exit 2；其餘照 gh 的 exit code。主機也要寫死：不帶主機的 --repo 與 gh api 會用 gh config 的預設主機，不一定是 github.com。
 // gh 收到的環境也沒有 GH_HOST、GH_REPO。
 // --body-file 照樣讀本機任何檔案，內容會公開貼到 Issue 上：只指向要貼的檔。
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 const HOST = 'github.com';
 const REPO = 'ron03wlb/ron-skills';
@@ -69,13 +72,20 @@ function parse(args, { numbers, flags }) {
 
 const [command, ...rest] = process.argv.slice(2);
 if (Object.hasOwn(ISSUE_COMMANDS, command)) gh(['issue', command, ...parse(rest, ISSUE_COMMANDS[command]), '--repo', `${HOST}/${REPO}`]);
-if (!Object.hasOwn(RELATION_COMMANDS, command)) fail(`不支援的子命令：${command ?? '（空）'}`);
-const [action, n, other, ...extra] = rest;
-if (!Object.hasOwn(RELATION_COMMANDS[command], action) || extra.length || ![n, other].every(isNumber)) fail(`用法：${command} add|remove <n> <m>（m、n 是純數字 Issue 號碼）`);
-const lookup = spawnGh(['api', '--hostname', HOST, `repos/${REPO}/issues/${other}`, '--jq', '.id'], ['ignore', 'pipe', 'inherit']);
-if (lookup.status !== 0) process.exit(lookup.status ?? 1);
-const id = lookup.stdout.trim();
-if (!isNumber(id)) fail(`#${other} 的 database id 不是數字：${id}`);
-const relation = spawnGh(['api', '--hostname', HOST, ...RELATION_COMMANDS[command][action](n, id)], ['ignore', 'ignore', 'inherit']);
-if (relation.status !== 0) process.exit(relation.status ?? 1);
-console.log(`${command.replace('-', '_').toUpperCase()} ${action} ${n} ${other}`);
+if (!Object.hasOwn(RELATION_COMMANDS, command)) {
+  const usage = readFileSync(new URL(import.meta.url), 'utf8').split('\n').filter(line => /^\/\/ (用法：|\s+node )/.test(line)).map(line => line.slice(3));
+  fail(`不支援的子命令：${command ?? '（空）'}\n${usage.join('\n')}`);
+}
+const [action, n, ...others] = rest;
+if (!Object.hasOwn(RELATION_COMMANDS[command], action) || !others.length || ![n, ...others].every(isNumber)) fail(`用法：${command} add|remove <n> <m>...（m、n 是純數字 Issue 號碼）`);
+let exitCode = 0;
+for (const other of others) {
+  const lookup = spawnGh(['api', '--hostname', HOST, `repos/${REPO}/issues/${other}`, '--jq', '.id'], ['ignore', 'pipe', 'inherit']);
+  const id = lookup.stdout?.trim();
+  const status = lookup.status !== 0 ? lookup.status ?? 1
+    : !isNumber(id) ? (console.error(`gh-tracker: #${other} 的 database id 不是數字：${id}`), 2)
+    : spawnGh(['api', '--hostname', HOST, ...RELATION_COMMANDS[command][action](n, id)], ['ignore', 'ignore', 'inherit']).status ?? 1;
+  if (status === 0) console.log(`${command.replace('-', '_').toUpperCase()} ${action} ${n} ${other}`);
+  else { console.error(`gh-tracker: ${command} ${action} ${n} ${other} 失敗（exit ${status}）`); exitCode ||= status; }
+}
+process.exit(exitCode);

@@ -17,6 +17,7 @@ const args = process.argv.slice(2);
 require('fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
 if (process.env.GH_HOST) require('fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(['GH_HOST', process.env.GH_HOST]) + '\\n');
 const id = args.join(' ').match(/^api --hostname github\\.com repos\\/[^ ]+\\/issues\\/(\\d+) --jq \\.id$/);
+if (id && id[1] === '404') process.exit(1);
 if (id) console.log(9000 + Number(id[1]));
 if (args.includes('--method')) console.log(JSON.stringify({ number: 1, user: { login: 'x' }, body: 'x'.repeat(40000) }));
 `);
@@ -104,8 +105,34 @@ test('sub-issue、blocked-by：stdout 只印一行結果，不印 API 回應', (
   }
 });
 
-test('sub-issue、blocked-by 只收 add|remove 加兩個數字號碼', () => {
-  for (const args of [['sub-issue', 'add', '90'], ['blocked-by', 'add', '96', 'other/repo#1'], ['blocked-by', 'list', '96', '79'], ['sub-issue', 'add', '90', '96', '--hostname', 'x']]) {
+// #201：替 #191–#194 加 10 條依賴要寫迴圈，第一次寫錯 zsh 的字切分，10 次全印用法錯誤。
+test('blocked-by 一次收多個 blocker，每個印一行', () => {
+  const result = run('blocked-by', 'add', '193', '130', '191', '192');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'BLOCKED_BY add 193 130\nBLOCKED_BY add 193 191\nBLOCKED_BY add 193 192\n');
+  assert.equal(result.calls.length, 6);
+});
+
+test('blocked-by 多個 blocker 其中一個失敗：其餘照做，以 gh 的 exit code 結束', () => {
+  const result = run('blocked-by', 'add', '193', '130', '404', '192');
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, 'BLOCKED_BY add 193 130\nBLOCKED_BY add 193 192\n');
+  assert.match(result.stderr, /blocked-by add 193 404 失敗/);
+});
+
+// #219：不帶參數只印「不支援的子命令：（空）」，coordinator 只好再讀檔頭才知道有 edit --add-label。
+test('沒有子命令或子命令不認得：stderr 印用法、exit 2、不呼叫 gh', () => {
+  for (const args of [[], ['label']]) {
+    const result = run(...args);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /edit <n> \[--title/);
+    assert.match(result.stderr, /blocked-by add\|remove <n> <blocker>\.\.\./);
+    assert.deepEqual(result.calls, []);
+  }
+});
+
+test('sub-issue、blocked-by 只收 add|remove 加數字號碼', () => {
+  for (const args of [['sub-issue', 'add', '90'], ['blocked-by', 'add', '96', '79', 'x'], ['blocked-by', 'add', '96', 'other/repo#1'], ['blocked-by', 'list', '96', '79'], ['sub-issue', 'add', '90', '96', '--hostname', 'x']]) {
     const result = run(...args);
     assert.equal(result.status, 2, args.join(' '));
     assert.deepEqual(result.calls, []);

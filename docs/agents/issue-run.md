@@ -30,6 +30,8 @@ macOS, WSL2, Linux（母單 #82 決策 R1-Q1；原生 Windows 不支援）。本
 
 只有一條：`bin/check`。開發中和寫 brief、驗收條件時都只引用這條，不要自己拼 `node --test …`。單一測試檔可以用 `node --test tests/<name>.test.mjs`。行為不變的重構，以同一條 `bin/check` 在 base 上為綠當作 baseline。
 
+`docs/agents/workflow-templates.json` 列出的 `scripts/` 檔是 setup-workflow 正本（`skills/engineering/setup-workflow/templates/`）的副本，不直接改，也不手動 `cp` 或手算 sha256：改正本、commit 後跑 `node skills/engineering/setup-workflow/scripts/copy-templates.mjs . --no-tests <名稱>`，它複製副本並更新清單裡的 sha256，再 commit 一次（#201：兩次 retro 都先 `cp`，第一次 `bin/check` 才在 `tests/template-copies.test.mjs` 報 sha256 不符，各多跑一輪）。
+
 ## Review
 
 Skill `code-review`，比對基準是分支的 merge-base。不阻擋的 findings 列在 Issue 的證據留言。所有 `SKILL.md`、`ADAPTER.md` 和 `overlays/*.patch` 都會改變 agent 的行為，不算只改文字。
