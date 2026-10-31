@@ -1,4 +1,9 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(node scripts/gh-tracker.mjs:*)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
