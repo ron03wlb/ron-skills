@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 把開著的 Issue 逐張分桶，pilot 的 Pool 從 ready 桶依序挑；tracker 支援 GitHub（gh）與 GitLab（glab，含自架），本機 Markdown tracker 不支援。
 // 用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...]
-//       node scripts/issue-pool.mjs claim <n> [--repo <專案>] [--session <id>]
+//       node scripts/issue-pool.mjs claim <n> [--repo <專案>] [--session <id>] [--take-stale]
 // tracker 讀 repo 根的 docs/agents/issue-tracker.md（寫 glab 是 GitLab、寫 gh 是 GitHub、沒有這份文件時依 origin，同 HOSTS.md；判定在 lib/hosts.mjs），與程式碼 host（origin）分開：
 // 兩者同種時 CLI 從 checkout 推得主機與專案；不同種時取文件裡第一個該種主機的專案網址（GitLab 寫到 `/-/` 之前）。<專案> 是 GitHub 的 <owner>/<name>
 // 或 GitLab 的 group/…/project，覆寫推得的專案。GitLab 的子項目（Issue 底下是 Task）算 sub-issue，所以掛了 Task 的單歸 parent 桶，`is_blocked_by`／`blocks` 連結算相依，系統紀錄裡的「assigned to」算指派
@@ -22,15 +22,18 @@
 // - 寫入後重讀：這次讀到之後新增的認領留言裡，最早一則不是自己就是別台搶先了，收回自己的留言（指派到這裡一定是同一個帳號，不動）。
 // - 擋下的認領者是這台機器上已交接出去的前任 coordinator（主 checkout 的 `.scratch/pilot/sessions.md` 有它的 handoff 行），
 //   而這個 session 是現任 coordinator（有 start 行、沒交接出去）時，改以前任的 session 認領，成功印 `CLAIMED <n> takeover <session>`（#135）。
+// - 擋下的認領者是這台機器上的 session、它的 transcript（`$CLAUDE_CONFIG_DIR` 或 `~/.claude` 底下 `projects/*/<session>.jsonl`）超過 1 小時沒有寫入：
+//   STOP 之前先印 `STALE_CLAIM <n> <機器>／<session> <最後寫入的 ISO 時間>`；帶 `--take-stale` 時改以這個 session 認領，成功印 `CLAIMED <n> stale <session>`。
+//   transcript 沒寫入不代表 session 結束（可能在等人回覆），所以只有不等人的流程（/retro-collect）才帶 --take-stale（#212：#201 的認領者認領一分鐘後被中斷）。
 // 被擋時印 `STOP <n> claimed <機器>／<session>`（沒有認領留言、或最近一則認領的作者已不在指派名單時，是指派者登入名），exit 4。
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { hostname } from 'node:os';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { codeHost, projectInDoc, trackerKind } from './lib/hosts.mjs';
 
-const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] | claim <n> [--repo <專案>] [--session <id>]';
+const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] | claim <n> [--repo <專案>] [--session <id>] [--take-stale]';
 const QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{number title labels(first:50){nodes{name}} assignees(first:20){nodes{login}} subIssuesSummary{total} blockedBy(first:50){nodes{number state repository{nameWithOwner}}} blocking(first:50){nodes{number state repository{nameWithOwner}}} comments(last:1){nodes{createdAt}} timelineItems(last:1,itemTypes:[ASSIGNED_EVENT]){nodes{... on AssignedEvent{createdAt}}}}}}}`;
 // GitLab 的 Issue 是 work item：label、指派、子項目、相依與留言都在 widgets 裡；notes 分成留言（comments）與系統紀錄（activity，指派紀錄在這裡）。
 const GITLAB_QUERY = `query($fullPath:ID!,$cursor:String){project(fullPath:$fullPath){workItems(types:[ISSUE],state:opened,first:50,after:$cursor){pageInfo{hasNextPage endCursor} nodes{iid title widgets{__typename ... on WorkItemWidgetLabels{labels(first:50){nodes{title}}} ... on WorkItemWidgetAssignees{assignees(first:20){nodes{username}}} ... on WorkItemWidgetHierarchy{hasChildren} ... on WorkItemWidgetLinkedItems{linkedItems(first:50){nodes{linkType workItem{iid state namespace{fullPath}}}}} ... on WorkItemWidgetNotes{comments:notes(filter:ONLY_COMMENTS,last:1){nodes{createdAt}} activity:notes(filter:ONLY_ACTIVITY,last:100){nodes{createdAt body}}}}}}}}`;
@@ -214,6 +217,8 @@ export function missingCategory(issues, categories = DEFAULT_CATEGORIES) {
 
 /** 沒人指派時，這段時間內別人留的認領留言算進行中（留言與指派之間的空檔）；更舊的視為已被取消指派。 */
 const IN_FLIGHT_MS = 5 * 60_000;
+/** 本機認領者的 transcript 超過這麼久沒寫入就算沒有活動。 */
+const IDLE_MS = 60 * 60_000;
 
 /** 整則留言只有「認領：<機器>／<session>」一行時回傳認領者；引用或夾在其他文字裡的不算。 */
 const claimerOf = ({ body }) => body.trim().match(/^認領：([^\n]+)$/)?.[1];
@@ -239,6 +244,17 @@ function takeoverSession(claimer, session) {
   return retired(previous) && started(session) && !retired(session) ? previous : undefined;
 }
 
+/** 本機認領者的 transcript 最後寫入時間（ms）；認領者在別台、或找不到它的 transcript 時是 undefined。 */
+function transcriptActivity(claimer) {
+  const [host, session] = claimer.split('／');
+  if (host !== hostname() || !session) return undefined;
+  const projects = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
+  let dirs;
+  try { dirs = readdirSync(projects); } catch { return undefined; }
+  const times = dirs.map(dir => { try { return statSync(join(projects, dir, `${session}.jsonl`)).mtimeMs; } catch { return undefined; } }).filter(Boolean);
+  return times.length ? Math.max(...times) : undefined;
+}
+
 /** claim 與 pilot-dispatch 預設的 session。 */
 export const defaultSession = () => process.env.CLAUDE_CODE_SESSION_ID || process.env.ORCA_TERMINAL_HANDLE || 'unknown';
 
@@ -248,7 +264,7 @@ export function claimedBy(comments, session) {
   return Boolean(claimer) && (claimer === claimerName(session) || Boolean(takeoverSession(claimer, session)));
 }
 
-function claim(n, tracker, session) {
+function claim(n, tracker, session, takeStale) {
   const read = () => tracker.view(n);
   const stop = claimer => { console.log(`STOP ${n} claimed ${claimer}`); return 4; };
   const mine = claimerName(session);
@@ -264,7 +280,14 @@ function claim(n, tracker, session) {
     blocker = claimerOf(last);
   }
   const takeover = blocker && takeoverSession(blocker, session);
-  if (blocker && !takeover) return stop(blocker);
+  let stale;
+  if (blocker && !takeover) {
+    const active = transcriptActivity(blocker);
+    if (active === undefined || Date.now() - active < IDLE_MS) return stop(blocker);
+    console.log(`STALE_CLAIM ${n} ${blocker} ${new Date(active).toISOString()}`);
+    if (!takeStale) return stop(blocker);
+    stale = blocker.split('／')[1];
+  }
   const claimant = takeover ? blocker : mine;
   // 先留言再指派：指派成功、留言失敗時，重跑會被自己沒有留言的指派擋住。
   tracker.comment(n, `認領：${claimant}`);
@@ -277,18 +300,19 @@ function claim(n, tracker, session) {
     tracker.retract(n, added.findLast(comment => claimerOf(comment) === claimant));
     return stop(claimerOf(first));
   }
-  console.log(takeover ? `CLAIMED ${n} takeover ${takeover}` : `CLAIMED ${n}`);
+  console.log(takeover ? `CLAIMED ${n} takeover ${takeover}` : stale ? `CLAIMED ${n} stale ${stale}` : `CLAIMED ${n}`);
   return 0;
 }
 
 function main(argv) {
-  let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, session = defaultSession();
+  let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, session = defaultSession(), takeStale = false;
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--repo' && argv[i + 1]) repo = argv[++i];
     else if (argv[i] === '--stale-hours' && Number(argv[i + 1]) > 0) staleHours = Number(argv[++i]);
     else if (argv[i] === '--categories' && argv[i + 1]) categories = argv[++i].split(',').filter(Boolean);
     else if (argv[i] === '--session' && argv[i + 1]) session = argv[++i];
+    else if (argv[i] === '--take-stale') takeStale = true;
     else if (!argv[i].startsWith('-')) positional.push(argv[i]);
     else { console.error(USAGE); return 2; }
   }
@@ -296,7 +320,7 @@ function main(argv) {
   if (command !== undefined && !(command === 'claim' && /^\d+$/.test(n ?? '') && positional.length === 2)) { console.error(USAGE); return 2; }
   try {
     const tracker = trackerOf(repo);
-    if (command === 'claim') return claim(n, tracker, session);
+    if (command === 'claim') return claim(n, tracker, session, takeStale);
     repo = tracker.repo();
     const issues = tracker.issues(repo);
     for (const { issue, bucket } of pool(issues, { repo, staleHours })) console.log(`${bucket} #${issue.number} ${issue.title}`);
