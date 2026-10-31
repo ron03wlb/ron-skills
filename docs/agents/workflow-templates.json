@@ -33,8 +33,8 @@
     },
     "scripts/land.mjs": {
       "template": "skills/engineering/setup-workflow/templates/land.mjs",
-      "commit": "67e379c9a67efdeb52cfe87dc55c6339198e7cb5",
-      "sha256": "3c147a30284118e6610a402d66d31507040f2f8cddbfd980e44f354de90d19ef"
+      "commit": "fe186727120c709aaf827c496b80fe5a540925f0",
+      "sha256": "cd9f28a35a256d841694d7ece5167e3cb8db046c04d70d6a4521f2be0c0a0013"
     },
     "scripts/lib/hosts.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/hosts.mjs",
