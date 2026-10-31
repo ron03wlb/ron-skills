@@ -133,7 +133,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     if (!args[i].startsWith('--')) { positional.push(args[i]); continue; }
     const name = { '--integration': 'integration', '--stuck-after': 'stuckAfter' }[args[i]];
     const value = args[++i];
-    if (!name || !value || name in given) bad = true;
+    if (!name || !value || value.startsWith('--') || name in given) bad = true;
     else given[name] = value;
   }
   const options = { integration: 'pilot/integration', stuckAfter: '90m', ...given };
@@ -150,6 +150,11 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   for (const name of ['SIGTERM', 'SIGINT']) process.on(name, () => controller.abort(`signal ${name}`));
   try {
     const main = mainCheckout();
+    // 打錯的整合分支會寫出沒有 SHA 的表頭（PILOT-STORE 要 `<branch> @ <sha>`），表頭已存在時重跑也不改寫。
+    if (run('git', ['-C', main, 'rev-parse', '--verify', '-q', `refs/heads/${options.integration}`]).status !== 0) {
+      console.error(`整合分支 ${options.integration} 不存在\n${USAGE}`);
+      process.exit(2);
+    }
     const checkpoint = join(main, `.scratch/pilot/batch-${key}.md`);
     writeHeader(main, checkpoint, key, options.integration);
     let stopped = false;

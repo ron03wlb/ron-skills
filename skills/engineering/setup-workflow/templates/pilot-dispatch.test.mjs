@@ -197,10 +197,20 @@ test('--integration 換掉 worktree 的 base 與表頭的整合分支，--stuck-
 
 test('參數錯誤時 exit 2，不派工', t => {
   const { dispatch, calls } = fixture(t);
-  for (const args of [['46', '46:x', '--integration'], ['46', '46:x', '--stuck-after', '2h'], ['46', '46:x', '--bogus', 'y'], ['46', '46:x', '--integration', 'a', '--integration', 'b']]) {
+  for (const args of [['46', '46:x', '--integration'], ['46', '46:x', '--stuck-after', '2h'], ['46', '46:x', '--bogus', 'y'], ['46', '46:x', '--integration', 'a', '--integration', 'b'], ['46', '46:x', '--integration', '--stuck-after']]) {
     const result = dispatch(args);
     assert.equal(result.status, 2, `${args.join(' ')}：${result.stdout}${result.stderr}`);
     assert.match(result.stderr, /^用法：/);
   }
+  assert.equal(calls(), '');
+});
+
+// 參數化之後才碰得到：打錯的整合分支會寫出 `integration: <分支> @ `（沒有 SHA）的表頭，重跑也不會改寫。
+test('整合分支不存在時 exit 2，不寫 checkpoint、不派工', t => {
+  const { repo, dispatch, calls } = fixture(t);
+  const result = dispatch(['46', '46:pilot-dispatch', '--integration', 'pilot/integ']);
+  assert.equal(result.status, 2, result.stdout + result.stderr);
+  assert.match(result.stderr, /pilot\/integ/);
+  assert.equal(existsSync(join(repo, '.scratch/pilot/batch-46.md')), false);
   assert.equal(calls(), '');
 });

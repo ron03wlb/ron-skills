@@ -63,8 +63,8 @@ ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? 
   let probeScript = script;
   if (guard !== undefined) {
     const scripts = join(temp, 'scripts');
-    mkdirSync(scripts);
-    for (const name of ['pilot-probe.mjs', 'orca-session-send.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+    mkdirSync(join(scripts, 'lib'), { recursive: true });
+    for (const name of ['pilot-probe.mjs', 'orca-session-send.mjs', 'lib/pilot-store.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
     writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
     chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
     probeScript = join(scripts, 'pilot-probe.mjs');
@@ -411,7 +411,7 @@ test('--integration、--main 換掉整合分支與主分支', t => {
 
 test('參數錯誤時 exit 2', t => {
   const { probe } = fixture(t);
-  for (const args of [['--integration'], ['--bogus', 'x'], ['--main', 'a', '--main', 'b']]) {
+  for (const args of [['--integration'], ['--bogus', 'x'], ['--main', 'a', '--main', 'b'], ['--integration', '--main']]) {
     const result = probe({ args });
     assert.equal(result.status, 2, `${args.join(' ')}：${result.stdout}${result.stderr}`);
     assert.match(result.stderr, /^用法：/);
