@@ -38,8 +38,8 @@
 <figure class="diagram" id="diagram-07-retro-loop"><iframe src="../diagrams/07-retro-loop.html" title="/retro 回饋迴圈" loading="lazy"></iframe><figcaption>/retro 回饋迴圈（互動圖：可切換主題、搜尋節點；<a href="../diagrams/07-retro-loop.html" target="_blank" rel="noopener">全頁開啟</a>）</figcaption></figure>
 <p>互動版：<a href="../diagrams/07-retro-loop.html">diagrams/07-retro-loop.html</a>（來源 <a href="../diagrams/src/07-retro-loop.dataflow.json"><code>diagrams/src/07-retro-loop.dataflow.json</code></a>）</p>
 <ul>
-<li><strong><code>/retro</code></strong>：session 結束後輸入，它讀這次的紀錄提出改善項目（導覽、自動檢查、規範、無效規則、工具成本），依嚴重度排列。採用的項目放在 retro 分支實作，不開 Issue。</li>
-<li><strong><code>/retro-collect</code></strong>（L3）：退役 coordinator 的 <code>/retro</code> 只寫檔不實作，全部收齊後由它在一個 retro worktree 一次實作（見 <a href="05-level3.html#retro-collect">05</a>）。</li>
+<li><strong><code>/retro</code></strong>：session 結束後輸入，它讀這次的紀錄提出改善項目（導覽、自動檢查、規範、無效規則、工具成本），依嚴重度排列。adapter 有 <strong>Retro collect</strong> 條目時，候選開成一張 <code>retro-candidates</code> Issue，不自己實作。</li>
+<li><strong><code>/retro-collect</code></strong>：收集所有開著的 <code>retro-candidates</code> Issue，在一個 retro worktree 一次實作，合入後關掉這些 Issue；太大的候選另開 <code>retro</code> Issue 交給 pilot（見 <a href="05-level3.html#retro-collect">05</a>）。</li>
 <li><strong>你自己</strong>：同一句指示對 agent 說第二次時，就是該升級的訊號。</li>
 </ul>
 <h2 id="什麼不該寫">什麼不該寫</h2>
