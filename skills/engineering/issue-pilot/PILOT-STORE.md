@@ -95,7 +95,25 @@ The standing orders: a heading line, then a numbered list, one constraint per it
 
 ## `.scratch/pilot/status.md`
 
-Regenerated from the checkpoints at each drain, never edited by hand: a heading `# pilot status（<time>，coordinator <session name>）`, then one bullet per open batch with its `current:` state, then bullets for the pool, open gates, and batches merged in this session. Only people read it; no script parses it.
+Regenerated from the store and git at each drain, never edited by hand (`pilot-probe --status` writes it): a heading `# pilot status（<time>，coordinator <session name>）`, where the name comes from the `coordinator` file's `pid` line (`(none)` without one), a blank line, then bullets in this order:
+
+```
+- batch 77-124：dispatched 2026-10-31T11:32:03+08:00
+  - #77 done d2121d1
+  - #124 stop
+- gate G2 #12 要不要拆？（開了 1h35m）
+- request 2026-10-30T17:26:01+08:00   hold 到 #27 合入   source ad
+- origin/main 370114b
+- main 370114b
+- pilot/integration 370114b
+```
+
+- One bullet per batch whose `current:` is not `closed`, with its `current:` value (`(沒有 current:)` when the line is missing), and one sub-bullet per member, `moved` ones included: `#<n> <state>` and its candidate, a SHA shortened to 7 characters and any other text as written; `- 沒有開著的 batch` when there is none.
+- One bullet per open gate: id, Issue, question or section title, and how long since `opened`; `- 沒有開著的 gate` when there is none.
+- One bullet per open request, its line as written; `- 沒有開著的 request` when there is none.
+- The SHAs of `origin/<main branch>` (as of the last fetch), the main branch, and the integration branch, `none` for a missing ref.
+
+Only people read it; no script parses it.
 
 ## `.scratch/pilot/briefs/`
 
@@ -134,7 +152,7 @@ The setup-workflow templates that read and write this store, copied into a proje
 | `pilot-request.mjs` | `<checkout> list` | `REQUEST <line no>   <line>` per open request (a line with no ` source ` field counts as open, as the probe reads it) | 0 |
 | `pilot-request.mjs` | `<checkout> apply <line no> [--note <text>]`, `<checkout> decline <line no> --reason <text> [--note <text>]` | `APPLIED <line no>`, `DECLINED <line no>` (a line with no ` source ` field gets `   source unknown` before its mark); `NOT_OPEN <line no>` when that line is not an open request | 0; 1 `NOT_OPEN` |
 | `pilot-hold.mjs` | `<checkout> show`, `set <reason>`, `clear` | `HOLD <since>   <reason>` (`(no since)` for a JSON line without one), `HOLD (no reason)`, `NO_HOLD`; `HOLD_SET`; `HOLD_CLEARED` or `NO_HOLD` | 0 |
-| `pilot-probe.mjs` | `<checkout> [--integration <branch>] [--main <branch>]` (reads running members with `$ORCA_CLI_COMMAND`) | one line per finding, nothing when all is well: `UNBARE`, `NOT_MAIN <branch>`, `HOLD`, `DIRTY <status line>`; `ADAPTER_AHEAD <file>` for `docs/agents/issue-run.md`, or a same-directory `.md` its `## Pilot` section links to, that is newer on the integration branch; `REQUEST <line>`, `GATE …`, `GATE_MALFORMED <id> <line>`; `WORKER <n> DONE <sha>`, `STOP <cause>`, `RUNNING <minutes>`, `STUCK <why>`; `STAGEABLE <key>`; after `git fetch`, `IN_MAIN <key>`, `RESUME_PUSH <key>`, `NOT_IN_MAIN <key> [no-sha\|no-regression\|tip <sha>]`, `FETCH_FAILED <error>` (the script's header comment has the details) | 0; 1 failure |
+| `pilot-probe.mjs` | `<checkout> [--integration <branch>] [--main <branch>] [--apply] [--status]` (reads running members with `$ORCA_CLI_COMMAND`; `--apply` writes each `WORKER <n> DONE <sha>` back to that member's row as state `done` and candidate `<sha>`, each `STOP` as state `stop`, changing only those two cells of the one `running` row, and rewrites `current: merged` as `pushed` for a batch it prints `IN_MAIN` for; `--status` then rewrites `status.md`) | one line per finding, nothing when all is well: `UNBARE`, `NOT_MAIN <branch>`, `HOLD`, `DIRTY <status line>`; `ADAPTER_AHEAD <file>` for `docs/agents/issue-run.md`, or a same-directory `.md` its `## Pilot` section links to, that is newer on the integration branch; `REQUEST <line>`, `GATE …`, `GATE_MALFORMED <id> <line>`; `WORKER <n> DONE <sha>`, `STOP <cause>`, `RUNNING <minutes>`, `STUCK <why>`; `STAGEABLE <key>`; after `git fetch`, `IN_MAIN <key>`, `RESUME_PUSH <key>`, `NOT_IN_MAIN <key> [no-sha\|no-regression\|tip <sha>]`, `FETCH_FAILED <error>` (the script's header comment has the details); the flags change none of these, and `--apply` adds `APPLY_MISS <key> <n> rows <count>` when it finds no single `running` row for that member (it then writes nothing) or `APPLY_MISS <key> <n\|current> verify` when the file does not read back as written | 0; 1 failure or `APPLY_MISS` |
 | `pilot-dispatch.mjs` | `<key> <n>:<slug>... [--integration <branch>] [--stuck-after <minutes>m]` (needs `$ORCA_CLI_COMMAND`; budget `$PILOT_DISPATCH_BUDGET_MS`, default 510000) | per member `DISPATCHED <n> <handle>` or `STOP <n> <cause>`, after creating worktree `issue-<n>` on branch `issue/<n>-<slug>` from the integration branch, a `claude` terminal, and sending `/issue-run <n> --worker <checkpoint>`; it writes the checkpoint's header once and each member's row (state `running` or `stop`, stuck-after default `90m`) | 0; 4 a `STOP` |
 | `pilot-sources.mjs` | `<checkout> [--record] <source>...` | `SOURCE_CHANGED <path>` per source whose hash differs from the record (or has none), `SOURCE_MISSING <path>` per source that does not exist and was not already recorded `missing`; `--record` then rewrites the record and prints `RECORDED <n>` | 0 |
 

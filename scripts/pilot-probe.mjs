@@ -3,8 +3,14 @@
 // batch checkpoint 與每個 running 成員的 terminal，各印一行狀態，不必再手動拼 `orca terminal read` 的 JSON（手拼時漏過 exited 卻沒有結果行的 worker）。
 // 存檔格式照 issue-pilot 的 PILOT-STORE.md；專案不同的值由參數傳入。
 //
-// 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>]
+// 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status]
 //   --integration 整合分支，預設 pilot/integration；--main 主分支，預設 main。讀 running 成員要 ORCA_CLI_COMMAND，沒有時其他檢查照跑。
+//   --apply：把這一輪讀到的 `WORKER <n> DONE <sha>`、`STOP <cause>` 寫回 batch checkpoint 的成員列（state `done` 與 candidate SHA、
+//            state `stop`），只改那一列的這兩欄；`merged` 的 batch 印 IN_MAIN 時把 `current: merged` 改成 `pushed`（SHA 與附註不動）。
+//            對不到唯一一列 running 的成員列時不寫檔，印 APPLY_MISS <key> <n> rows <列數>；寫回後再讀一次沒對上時印 APPLY_MISS <key> <n|current> verify
+//            （檔案已經寫了，不還原）；有 APPLY_MISS 就 exit 1。
+//   --status：最後從 checkpoint、gates.md、requests.md、coordinator 與 git 重寫 `.scratch/pilot/status.md`（格式見 PILOT-STORE.md），不印任何行。
+//   兩個旗標都不改其他輸出行，stdout 與不帶旗標時相同（APPLY_MISS 除外）。
 //   Bare guard：同目錄有 pilot-unbare.sh（專案自備，`<checkout> <時機>`，還原時印 UNBARE）時先跑它（時機 probe），沒有就略過。
 // stdout 每行一項，沒事的項目不印（全部正常且沒有 batch 時不輸出）：
 //   主 checkout：UNBARE <checkout>（Bare guard 剛還原 core.bare）｜NOT_MAIN <分支>｜HOLD｜DIRTY <git status --short 的一行>
@@ -17,15 +23,15 @@
 //          current 是 merged／pushed 的 batch 在 git fetch 後比 origin/<主分支>，印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
 //          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA），
 //          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
-// exit：0 印完；2 用法錯誤；1 其他失敗（Bare guard 或 git status 失敗等）。
+// exit：0 印完；2 用法錯誤；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS 等）。
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { isOpenRequest } from './lib/pilot-store.mjs';
+import { isOpenRequest, now } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 
-const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>]';
+const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 
 /** Markdown 表格一列的各欄（去掉首尾的 `|` 與空白）；不是表格列時回空陣列。 */
@@ -111,25 +117,43 @@ export function adapterAhead(checkout, { integration = 'pilot/integration', main
   }).map(path => `ADAPTER_AHEAD ${path}`);
 }
 
+/** `.scratch/pilot/` 裡的 batch checkpoint 檔名，依名稱排序。 */
+const batchFiles = pilot => (existsSync(pilot) ? readdirSync(pilot) : []).filter(file => /^batch-.+\.md$/.test(file)).sort();
+
+const readStore = (pilot, name) => (existsSync(join(pilot, name)) ? readFileSync(join(pilot, name), 'utf8') : '');
+
+/** requests.md 還開著的行（原文去掉首尾空白）：最後一個 `source` 欄之後沒標 `applied`／`declined`（請求內文提到這兩個字或 source 都不算）。 */
+const openRequests = pilot => readStore(pilot, 'requests.md').split('\n').filter(isOpenRequest).map(line => line.trim());
+
 /**
- * requests.md 與 gates.md 還開著的列。請求是最後一個 `source` 欄之後沒標 `applied`／`declined` 的行（請求內文提到這兩個字或 source 都不算）；
- * gate 是表格 status 欄不以 `resolved` 開頭的列，或 `## G<n>` 段落裡沒有 `resolved` 那一行的 gate。
+ * gates.md 還開著的 gate：表格 status 欄不以 `resolved` 開頭的列，或 `## G<n>` 段落裡沒有 `resolved` 那一行的 gate。
+ * 每個 `{ line, id, issue, title, opened, malformed }`：`line` 是 GATE 行去掉前綴的內容；表格列的 title 是 question 欄，段落的是標題去掉 id。
  */
-export function openRows(pilot) {
-  const read = name => (existsSync(join(pilot, name)) ? readFileSync(join(pilot, name), 'utf8') : '');
-  const out = read('requests.md').split('\n')
-    .filter(isOpenRequest)
-    .map(line => `REQUEST ${line.trim()}`);
-  for (const line of read('gates.md').split('\n')) {
+export function openGates(text) {
+  const gates = [];
+  for (const line of text.split('\n')) {
     const cells = tableCells(line);
-    if (/^G\d+$/.test(cells[0] ?? '') && !/^resolved\b/.test(cells.at(-1))) out.push(`GATE ${cells[0]} ${cells[1]} ${cells[2]}`);
+    if (/^G\d+$/.test(cells[0] ?? '') && !/^resolved\b/.test(cells.at(-1))) {
+      gates.push({ line: `${cells[0]} ${cells[1]} ${cells[2]}`, id: cells[0], issue: cells[1], title: cells[2], opened: cells[6] ?? '' });
+    }
   }
-  for (const [, title, body] of read('gates.md').matchAll(/^## (G\d+\b.*)\n([\s\S]*?)(?=^## |(?![\s\S]))/gm)) {
+  for (const [, title, body] of text.matchAll(/^## (G\d+\b.*)\n([\s\S]*?)(?=^## |(?![\s\S]))/gm)) {
     if (/^- (?:G\d+ )?resolved\b/m.test(body)) continue;
-    out.push(`GATE ${title.trim()}`);
+    const id = title.match(/^G\d+/)[0];
     // resolved 寫進別的欄位（`- status：resolved …`）不算解除；指出那一行（retro a6）。
-    const malformed = body.match(/^- [^：:\n]+[：:]\s*resolved\s+\d{4}-\d\d-\d\dT.*$/m);
-    if (malformed) out.push(`GATE_MALFORMED ${title.match(/^G\d+/)[0]} ${malformed[0].trim()}`);
+    const malformed = body.match(/^- [^：:\n]+[：:]\s*resolved\s+\d{4}-\d\d-\d\dT.*$/m)?.[0].trim();
+    const field = name => body.match(new RegExp(`^- ${name}[：:]\\s*(.*)$`, 'm'))?.[1].trim() ?? '';
+    gates.push({ line: title.trim(), id, issue: field('Issue').match(/#\d+/)?.[0] ?? '', title: title.slice(id.length).trim(), opened: field('opened'), malformed });
+  }
+  return gates;
+}
+
+/** requests.md 與 gates.md 還開著的列。 */
+export function openRows(pilot) {
+  const out = openRequests(pilot).map(line => `REQUEST ${line}`);
+  for (const gate of openGates(readStore(pilot, 'gates.md'))) {
+    out.push(`GATE ${gate.line}`);
+    if (gate.malformed) out.push(`GATE_MALFORMED ${gate.id} ${gate.malformed}`);
   }
   return out;
 }
@@ -198,23 +222,100 @@ function mergedNotInMain(checkout, integration, key, regression) {
   return tip === passed ? `RESUME_PUSH ${key}` : `NOT_IN_MAIN ${key} tip ${tip.slice(0, 7) || 'none'}`;
 }
 
-export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main' } = {}) {
+/**
+ * `--apply`：把這一輪讀到的結果寫回成員列。重讀檔案，只認號碼相同、state 還是 running 的那一列，
+ * 以 `|` 切開後只換 state 與 candidate 兩格（其他格與其他行的 byte 都不動）；DONE 寫 `done` 與 SHA，STOP 寫 `stop`、candidate 不動。
+ * 寫完再讀一次比對，傳回沒寫進去的 APPLY_MISS 行（手寫 sed 對不到列時沒有輸出也沒報錯，coordinator 的 retro）。
+ */
+export function applyResults(file, key, results) {
+  const lines = readFileSync(file, 'utf8').split('\n');
+  const misses = [];
+  const written = [];
+  for (const { n, state, sha } of results) {
+    const rows = lines.flatMap((line, i) => {
+      const cells = tableCells(line);
+      return cells.length >= 8 && cells[0] === n && cells[6] === 'running' ? [i] : [];
+    });
+    if (rows.length !== 1) { misses.push(`APPLY_MISS ${key} ${n} rows ${rows.length}`); continue; }
+    // `split('|')` 的第 0 段是行首 `|` 之前的空字串，所以 tableCells 的第 6、7 格（state、candidate）在這裡是第 7、8 段。
+    const parts = lines[rows[0]].split('|');
+    parts[7] = ` ${state} `;
+    if (sha) parts[8] = ` ${sha} `;
+    lines[rows[0]] = parts.join('|');
+    written.push({ n, state, sha });
+  }
+  if (!written.length) return misses;
+  writeFileSync(file, lines.join('\n'));
+  const { members } = parseBatch(readFileSync(file, 'utf8'));
+  for (const { n, state, sha } of written) {
+    if (!members.some(m => m.n === n && m.state === state && (!sha || m.candidate === sha))) misses.push(`APPLY_MISS ${key} ${n} verify`);
+  }
+  return misses;
+}
+
+/** `--apply`：已進 origin/<主分支> 的 `merged` batch 改成 `pushed`，SHA 與附註照留（Push gate 印 LANDED 之後沒人寫，coordinator 的 retro）。 */
+function applyPushed(file, key) {
+  writeFileSync(file, readFileSync(file, 'utf8').replace(/^(current:[ \t]*)merged\b/m, '$1pushed'));
+  return /^pushed\b/.test(parseBatch(readFileSync(file, 'utf8')).current) ? [] : [`APPLY_MISS ${key} current verify`];
+}
+
+/** 經過的時間：`<h>h<m>m` 或 `<m>m`；時間解析不了時 `?`。 */
+function age(time, at) {
+  const minutes = Math.floor((at - Date.parse(time)) / 60000);
+  if (Number.isNaN(minutes)) return '?';
+  return minutes >= 60 ? `${Math.floor(minutes / 60)}h${minutes % 60}m` : `${minutes}m`;
+}
+
+/**
+ * `--status`：status.md 的內容（PILOT-STORE.md）。沒關的 batch 與成員、開著的 gate（id、Issue、開了多久）、開著的 request、
+ * origin/<主分支>、<主分支>、<整合分支> 的 SHA（本機的 ref，origin 是最後一次 fetch 的結果）。
+ */
+export function statusReport(checkout, { integration = 'pilot/integration', main = 'main' } = {}, at = new Date()) {
+  const pilot = join(checkout, '.scratch/pilot');
+  const coordinator = readStore(pilot, 'coordinator').match(/^pid \d+\b.*\bname (.+)$/m)?.[1].trim() ?? '(none)';
+  const out = [`# pilot status（${now(at)}，coordinator ${coordinator}）`, ''];
+  let open = 0;
+  for (const file of batchFiles(pilot)) {
+    const { current, members } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
+    if (/^closed\b/.test(current)) continue;
+    open++;
+    out.push(`- batch ${file.slice('batch-'.length, -'.md'.length)}：${current || '(沒有 current:)'}`);
+    for (const m of members) out.push(`  - #${m.n} ${m.state}${m.candidate ? ` ${/^[0-9a-f]{7,40}$/.test(m.candidate) ? m.candidate.slice(0, 7) : m.candidate}` : ''}`);
+  }
+  if (!open) out.push('- 沒有開著的 batch');
+  const gates = openGates(readStore(pilot, 'gates.md'));
+  for (const gate of gates) {
+    const title = gate.issue && !gate.title.startsWith(gate.issue) ? `${gate.issue} ${gate.title}` : gate.title;
+    out.push(`- gate ${gate.id} ${title}（開了 ${age(gate.opened, at)}）`);
+  }
+  if (!gates.length) out.push('- 沒有開著的 gate');
+  const requests = openRequests(pilot);
+  for (const line of requests) out.push(`- request ${line}`);
+  if (!requests.length) out.push('- 沒有開著的 request');
+  for (const [name, ref] of [[`origin/${main}`, `refs/remotes/origin/${main}`], [main, `refs/heads/${main}`], [integration, `refs/heads/${integration}`]]) {
+    out.push(`- ${name} ${rev(checkout, ref).slice(0, 7) || 'none'}`);
+  }
+  return `${out.join('\n')}\n`;
+}
+
+export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false } = {}) {
   const pilot = join(checkout, '.scratch/pilot');
   const out = [...checkoutState(checkout, main), ...adapterAhead(checkout, { integration, main }), ...openRows(pilot)];
-  const batches = (existsSync(pilot) ? readdirSync(pilot) : []).filter(file => /^batch-.+\.md$/.test(file)).sort();
   const landing = [];
-  for (const file of batches) {
+  for (const file of batchFiles(pilot)) {
     const key = file.slice('batch-'.length, -'.md'.length);
     const { current, members, regression, sha } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
     const active = members.filter(m => !/^moved\b/.test(m.state));
     const finished = active.filter(m => m.state === 'done' || m.state === 'stop').length;
-    let read = 0;
+    const results = [];
     for (const member of members.filter(m => m.state === 'running')) {
       const state = await workerState(ctx, member);
-      if (/^(DONE|STOP) /.test(state)) read++;
+      const [, kind, value] = state.match(/^(DONE|STOP) (.+)$/) ?? [];
+      if (kind) results.push({ n: member.n, state: kind === 'DONE' ? 'done' : 'stop', sha: kind === 'DONE' ? value : undefined });
       out.push(`WORKER ${member.n} ${state}`);
     }
-    if (/^dispatched\b/.test(current) && active.length && finished + read === active.length) out.push(`STAGEABLE ${key}`);
+    if (apply && results.length) out.push(...applyResults(join(pilot, file), key, results));
+    if (/^dispatched\b/.test(current) && active.length && finished + results.length === active.length) out.push(`STAGEABLE ${key}`);
     if (/^(merged|pushed)\b/.test(current)) landing.push({ key, sha, regression, merged: /^merged\b/.test(current) });
   }
   if (landing.length) {
@@ -222,9 +323,15 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     if (fetch.status !== 0) out.push(`FETCH_FAILED ${fetch.stderr.trim().split('\n').find(line => line.startsWith('fatal:')) ?? fetch.stderr.trim().split('\n')[0]}`);
     else for (const { key, sha, regression, merged } of landing) {
       if (!sha) out.push(`NOT_IN_MAIN ${key} no-sha`);
-      else if (git(checkout, 'merge-base', '--is-ancestor', sha, `origin/${main}`).status === 0) out.push(`IN_MAIN ${key}`);
-      else out.push(merged ? mergedNotInMain(checkout, integration, key, regression) : `NOT_IN_MAIN ${key}`);
+      else if (git(checkout, 'merge-base', '--is-ancestor', sha, `origin/${main}`).status === 0) {
+        out.push(`IN_MAIN ${key}`);
+        if (apply && merged) out.push(...applyPushed(join(pilot, `batch-${key}.md`), key));
+      } else out.push(merged ? mergedNotInMain(checkout, integration, key, regression) : `NOT_IN_MAIN ${key}`);
     }
+  }
+  if (status) {
+    mkdirSync(pilot, { recursive: true });
+    writeFileSync(join(pilot, 'status.md'), statusReport(checkout, { integration, main }));
   }
   return out;
 }
@@ -237,6 +344,12 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   let bad = false;
   for (let i = 0; i < args.length; i++) {
     if (!args[i].startsWith('--')) { positional.push(args[i]); continue; }
+    const flag = { '--apply': 'apply', '--status': 'status' }[args[i]];
+    if (flag) {
+      if (flag in options) bad = true;
+      options[flag] = true;
+      continue;
+    }
     const name = { '--integration': 'integration', '--main': 'main' }[args[i]];
     const value = args[++i];
     if (!name || !value || value.startsWith('--') || name in options) bad = true;
@@ -248,7 +361,9 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     process.exit(2);
   }
   try {
-    for (const line of await probe({ cli }, checkout, options)) console.log(line);
+    const out = await probe({ cli }, checkout, options);
+    for (const line of out) console.log(line);
+    if (out.some(line => line.startsWith('APPLY_MISS '))) process.exit(1);
   } catch (error) {
     console.error(error.message);
     process.exit(1);

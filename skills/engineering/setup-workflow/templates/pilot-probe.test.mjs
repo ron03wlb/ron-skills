@@ -447,3 +447,128 @@ test('ADAPTER_AHEAD 只比 adapter 與它 Pilot 段連到的同目錄檔案', t 
   git('switch', '-q', 'main');
   assert.deepEqual(lines(probe()), ['ADAPTER_AHEAD docs/agents/pilot-rules.md']);
 });
+
+// #77：coordinator 拿 probe 的 WORKER 行手寫 sed 改成員列，表頭或空的 candidate 欄一變就靜默沒寫進去。
+// `--apply` 照 PILOT-STORE.md 把 DONE 寫成 `done` 與 SHA、STOP 寫成 `stop`；stdout 與不帶 `--apply` 時相同，其他行一個 byte 都不動。
+test('--apply 把 DONE、STOP 寫回成員列的 state 與 candidate，其他行不變', t => {
+  const { batch, pilot, probe } = fixture(t, { screens: {
+    term_23: { status: 'running', tail: [`DONE 23 ${SHA}`] },
+    term_46: { status: 'running', tail: ['STOP 46 findings after two review cycles'] },
+    term_50: { status: 'running', tail: ['❯'] },
+  } });
+  batch('23-46-50', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 23 }, { n: 46 }, { n: 50 }, { n: 51, state: 'done', candidate: 'abc1234' }]);
+  const file = join(pilot, 'batch-23-46-50.md');
+  const before = readFileSync(file, 'utf8');
+  const plain = probe();
+  assert.equal(readFileSync(file, 'utf8'), before, '不帶 --apply 時不寫檔');
+  const applied = probe({ args: ['--apply'] });
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.deepEqual(lines(applied).filter(line => !/^WORKER 50 RUNNING/.test(line)), lines(plain).filter(line => !/^WORKER 50 RUNNING/.test(line)));
+  const [old, now] = [before, readFileSync(file, 'utf8')].map(text => text.split('\n'));
+  assert.equal(now.length, old.length);
+  const changed = now.map((line, i) => [old[i], line]).filter(([a, b]) => a !== b);
+  const row23 = old.find(line => line.startsWith('| 23 |'));
+  const row46 = old.find(line => line.startsWith('| 46 |'));
+  assert.deepEqual(changed, [
+    [row23, row23.replace(/\| running \| +\|$/, `| done | ${SHA} |`)],
+    // STOP 的 candidate 欄原樣保留（fixture 的空欄是兩個空白）。
+    [row46, row46.replace('| running |', '| stop |')],
+  ]);
+  // 寫回之後再跑一次：成員已不是 running，不再讀 terminal，也不再改檔。
+  const again = probe({ args: ['--apply'] });
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(readFileSync(file, 'utf8').split('\n').filter(line => line.startsWith('| 23 |'))[0], row23.replace(/\| running \| +\|$/, `| done | ${SHA} |`));
+});
+
+// coordinator 的 retro：sed 沒對到成員列時沒有輸出也沒報錯。`--apply` 寫不回去時印出是哪一列，exit 1。
+test('--apply 對不到唯一的成員列時印 APPLY_MISS 並 exit 1', t => {
+  const { batch, pilot, probe } = fixture(t, { screens: { term_23: { status: 'running', tail: [`DONE 23 ${SHA}`] } } });
+  batch('23', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 23 }, { n: 23 }]);
+  const file = join(pilot, 'batch-23.md');
+  const before = readFileSync(file, 'utf8');
+  const result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.ok(lines(result).includes(`WORKER 23 DONE ${SHA}`), result.stdout);
+  assert.ok(lines(result).includes('APPLY_MISS 23 23 rows 2'), result.stdout);
+  assert.equal(readFileSync(file, 'utf8'), before);
+});
+
+// coordinator 的 retro：Push gate 印 LANDED 之後沒有指令把 `current: merged` 改成 `pushed`。
+// `--apply` 看到 merged 的 batch 已在 origin/<主分支>（IN_MAIN）時寫成 `pushed <sha>`，後面的附註照留；pushed 的 batch 不動。
+test('--apply 把已進 origin/main 的 merged batch 寫成 pushed <sha>', t => {
+  const { batch, pilot, probe, git } = fixture(t);
+  git('switch', '-q', '-c', 'pilot/integration');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'staged');
+  const staged = git('rev-parse', 'HEAD');
+  git('switch', '-q', 'main');
+  git('push', '-q', 'origin', `${staged}:main`);
+  batch('11', `merged ${staged} PR #9`, [{ n: 11, state: 'done', candidate: 'abc1234' }]);
+  batch('12', `pushed ${staged}`, [{ n: 12, state: 'done', candidate: 'abc1234' }]);
+  const [file11, file12] = ['11', '12'].map(key => join(pilot, `batch-${key}.md`));
+  const [before11, before12] = [file11, file12].map(file => readFileSync(file, 'utf8'));
+  assert.ok(lines(probe()).includes('IN_MAIN 11'));
+  assert.equal(readFileSync(file11, 'utf8'), before11, '不帶 --apply 時不寫檔');
+  const result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), ['IN_MAIN 11', 'IN_MAIN 12']);
+  assert.equal(readFileSync(file11, 'utf8'), before11.replace(`current: merged ${staged} PR #9`, `current: pushed ${staged} PR #9`));
+  assert.equal(readFileSync(file12, 'utf8'), before12);
+});
+
+// issue-pilot 要 status.md 從存檔重產、不手寫，adapter 卻沒有指令（#77）。`--status` 寫出每個沒關的 batch 與成員、
+// 開著的 gate（已解除的不列）與 request、主分支與整合分支的 SHA；stdout 照舊。
+test('--status 從存檔與 git 重產 status.md，只列開著的 gate 與沒關的 batch', t => {
+  const { batch, pilot, probe, git } = fixture(t, { screens: { term_77: { status: 'running', tail: [`DONE 77 ${SHA}`] } } });
+  git('branch', 'pilot/integration');
+  const main = git('rev-parse', 'HEAD');
+  writeFileSync(join(pilot, 'coordinator'), `pid 42   loop yes   since ${ago(60)}   name ron-x-1\n`);
+  writeFileSync(join(pilot, 'gates.md'), `# Gates
+
+| id | Issue | question | options | default | parks | opened | status |
+|---|---|---|---|---|---|---|---|
+| G1 | #9 | 試跑誰指定？ | (a)｜(b) | (b) | #10 | ${ago(300)} | resolved ${ago(200)} 選 (b) |
+| G2 | #12 | 要不要拆？ | 拆｜不拆 | 拆 | #12 | ${ago(95)} | open |
+
+## G3 已解除的段落 gate
+- Issue：#38
+- opened：${ago(30)}
+- resolved ${ago(10)} 選預設
+
+## G5 段落 gate
+- Issue：#44
+- opened：${ago(20)}
+`);
+  writeFileSync(join(pilot, 'requests.md'), `2026-10-30T16:54:31+08:00   request: 已處理   source ab   applied 2026-10-30T17:00:43+08:00
+2026-10-30T17:26:01+08:00   hold 到 #27 合入   source ad
+`);
+  batch('77-124', 'dispatched 2026-10-31T11:32:03+08:00', [{ n: 77 }, { n: 124, state: 'stop' }]);
+  batch('8', 'closed 2026-10-30T13:38:21+08:00', [{ n: 8, state: 'done', candidate: 'abc1234' }]);
+  const plain = lines(probe());
+  const result = probe({ args: ['--status', '--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), plain);
+  const status = readFileSync(join(pilot, 'status.md'), 'utf8');
+  assert.match(status, /^# pilot status（\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d，coordinator ron-x-1）\n/);
+  assert.match(status, /^- batch 77-124：dispatched 2026-10-31T11:32:03\+08:00$/m);
+  // --apply 先寫回，status.md 讀到的是寫回之後的 state。
+  assert.match(status, new RegExp(`^  - #77 done ${SHA.slice(0, 7)}$`, 'm'));
+  assert.match(status, /^ {2}- #124 stop$/m);
+  assert.doesNotMatch(status, /batch 8\b/);
+  assert.match(status, /^- gate G2 #12 要不要拆？（開了 1h3\dm）$/m);
+  assert.match(status, /^- gate G5 #44 段落 gate（開了 \d+m）$/m);
+  assert.doesNotMatch(status, /G1|G3/);
+  assert.match(status, /^- request 2026-10-30T17:26:01\+08:00   hold 到 #27 合入   source ad$/m);
+  assert.doesNotMatch(status, /已處理/);
+  for (const ref of ['origin/main', 'main', 'pilot/integration']) assert.match(status, new RegExp(`^- ${ref} ${main.slice(0, 7)}$`, 'm'));
+});
+
+test('--status 沒有 coordinator 檔、gate 與 batch 時照樣寫出', t => {
+  const { pilot, probe } = fixture(t);
+  const result = probe({ args: ['--status'] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '');
+  const status = readFileSync(join(pilot, 'status.md'), 'utf8');
+  assert.match(status, /^# pilot status（[^，]+，coordinator \(none\)）\n/);
+  assert.match(status, /^- 沒有開著的 batch$/m);
+  assert.match(status, /^- pilot\/integration none$/m);
+});
