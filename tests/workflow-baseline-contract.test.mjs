@@ -77,3 +77,18 @@ test('三條底線照實寫範圍：停下的單只不卡無關的單、Retro co
   assert.match(cap, /沒有通用預設/);
   assert.match(cap, /\/issue-queue/);
 });
+
+// #248（#243 R2-Q2）：分頁標題的通用規則寫在 ADAPTER.md 的 Tab state 段，不再要每個人自己寫全域設定。
+test('ADAPTER.md 的 Tab state 段自己寫明標題格式、改名時機、⏸ 與 worktree 顯示名稱', () => {
+  const tab = section(read('skills/engineering/issue-run/ADAPTER.md'), 'Tab state (分頁狀態)');
+  assert.ok(tab, 'ADAPTER.md 沒有 ## Tab state (分頁狀態) 段');
+  assert.doesNotMatch(tab, /global Orca session titles rule/);
+  assert.ok(tab.includes('`<state>｜<issue> <topic>｜<stage>｜<action>`'), '缺 Issue 工作的標題格式');
+  assert.ok(tab.includes('`<state>｜[<category>] <topic>`'), '缺其他工作的標題格式');
+  for (const stage of ['調查', '規劃', '實作', '驗證', '修正', '收尾']) assert.ok(tab.includes(stage), `缺階段 ${stage}`);
+  for (const category of ['設定', '研究', '討論', '維運', '雜項']) assert.ok(tab.includes(category), `缺類別 ${category}`);
+  assert.ok(tab.includes('` ⏸`'), '缺 ⏸ 規則');
+  assert.match(tab, /orca worktree set --worktree path:<path> --display-name "<issue> <topic>" --issue <n>/);
+  assert.match(tab, /--linear-issue/);
+  assert.match(tab, /approval wait/);
+});
