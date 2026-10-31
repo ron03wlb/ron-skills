@@ -193,20 +193,23 @@ function resolveHunk(base, ours, theirs, kinds) {
 
 /** Markdown 表格列的第一格：開頭的 `|` 之後到下一個沒跳脫的 `|`，去掉前後空白。 */
 const firstCell = line => line.match(/^\|((?:\\.|[^|\\])*)/)[1].trim();
+/** 表格列裡沒跳脫的 `|` 數：欄數不同（一邊加了欄）時不逐列合併。 */
+const pipes = line => line.match(/\\.|\|/g).filter(token => token === '|').length;
 
 /**
  * rows：hunk 的 base、ours、theirs 每一行都是 Markdown 表格列（`|` 開頭）時，以第一格為鍵逐列合併（#162）。
  * 只有一邊改（或刪）的列取那一邊，兩邊改成一樣的照留；新增的列接在它在自己那一邊的前一個 base 列之後，同一處 ours 先。
- * 同一列兩邊改成不同內容、一邊刪一邊改、兩邊新增同一個鍵、某一份有重複的鍵、留下的 base 列順序變了：解不了，傳回 undefined。
+ * 同一列兩邊改成不同內容、一邊刪一邊改、兩邊新增同一個鍵、某一份有重複的鍵、留下的 base 列順序變了、各列的欄數不同：解不了，傳回 undefined。
  */
 function resolveRows(base, ours, theirs) {
   const parse = text => (text === '' ? [] : text.replace(/\n$/, '').split('\n'));
   const versions = [base, ours, theirs].map(parse);
   if (!versions[0].length || !versions.flat().every(line => line.startsWith('|'))) return undefined;
+  if (new Set(versions.flat().map(pipes)).size > 1) return undefined;
   const [b, o, t] = versions.map(lines => new Map(lines.map(line => [firstCell(line), line])));
   if ([b, o, t].some((map, i) => map.size !== versions[i].length)) return undefined;
-  const order = new Map([...b.keys()].map((key, i) => [key, i]));
-  const kept = map => [...map.keys()].filter(key => b.has(key)).map(key => order.get(key));
+  const position = new Map([...b.keys()].map((key, i) => [key, i]));
+  const kept = map => [...map.keys()].filter(key => b.has(key)).map(key => position.get(key));
   if ([o, t].some(map => kept(map).some((at, i, all) => i > 0 && all[i - 1] > at))) return undefined;
   if ([...o.keys()].some(key => !b.has(key) && t.has(key))) return undefined;
   // 新增的列依前一個 base 列分組；檔頭那組的鍵是 undefined。

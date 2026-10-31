@@ -390,6 +390,18 @@ test('表格兩邊新增同一個第一格的列：STOP conflict', t => {
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
 });
 
+// review：一邊加欄、另一邊加列，逐列合併會留下欄數不對的列。
+test('表格一邊改了欄數：不逐列合併，STOP conflict', t => {
+  const f = fixture(t, {
+    base: { 'table.md': TABLE },
+    members: [
+      { n: 1, slug: 'a', files: { 'table.md': TABLE.replace('| Note |\n| --- | --- |', '| Note | More |\n| --- | --- | --- |').replace('a v1 |', 'a v1 | x |').replace('b v1 |', 'b v1 | y |') } },
+      { n: 2, slug: 'b', files: { 'table.md': TABLE.replace('| `b.mjs` | b v1 |\n', '| `b.mjs` | b v1 |\n| `b2.mjs` | from 2 |\n') } },
+    ],
+  });
+  assert.equal(f.land().last, 'STOP conflict 2 table.md');
+});
+
 /** 兩個成員各改一個 check-workflow-sync 追蹤的來源並各自 restamp：戳記檔裡相鄰兩行各變一行，git 判成同一個 hunk 衝突（#72）。 */
 function syncMembers(extra = {}) {
   const restamp = tree => {
@@ -424,7 +436,6 @@ test('workflow-doc-sync.json 和解不了的檔一起衝突：STOP conflict，�
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
 });
 
-// batch-56（retro ron-skills-ac）：戳記檔和 pilot.md 的 entries 衝突同時出現，coordinator 手解後 Regression 通過，照舊規則卻要開 gate。
 test('workflow-doc-sync.json 和表格列衝突一起：rows 解完再 restamp，印 rows+restamp', t => {
   const f = syncFixture(t, syncMembers({
     a: { 'table.md': TABLE.replace('a v1', 'a v2') },
@@ -438,6 +449,7 @@ test('workflow-doc-sync.json 和表格列衝突一起：rows 解完再 restamp�
   assert.equal(check.status, 0, check.stdout + check.stderr);
 });
 
+// batch-56（retro ron-skills-ac）：戳記檔和 pilot.md 的 entries 衝突同時出現，coordinator 手解後 Regression 通過，照舊規則卻要開 gate。
 test('workflow-doc-sync.json 和可自己解的檔一起衝突：先解那些檔再 restamp，check-workflow-sync 在結果上通過', t => {
   const f = syncFixture(t, syncMembers({
     a: { 'pilot.md': ENTRIES.replace('close v1', 'close v2') },
