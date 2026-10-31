@@ -1,7 +1,6 @@
 ---
 name: issue-run
-description: "Run ready tracker Issues unattended to a verified local candidate, nesting Matt's skills under the repo's adapter: /issue-run <ref> [<ref>...] | /issue-run <ref> --worker <checkpoint>"
-disable-model-invocation: true
+description: "Run ready tracker Issues unattended to a verified local candidate, nesting Matt's skills under the repo's adapter: /issue-run <ref> [<ref>...] | /issue-run <ref> --worker <checkpoint> | /issue-run --pool [<N>]. Use only when the user runs /issue-run or /loop /issue-run --pool (the loop invokes it through the Skill tool), or a coordinator dispatches a worker; never on your own initiative."
 ---
 
 Deliver the Issues in `$ARGUMENTS` to a verified local **candidate** commit without pausing between steps. You are the **controller**: Matt's skills are the method, the repo's **adapter** supplies every project fact, and the human keeps product decisions, pushes, and merges into shared branches.
@@ -41,6 +40,18 @@ Worker mode replaces step 3's review bound:
 
 1. After two fix → re-review cycles, take each remaining finding's options. When exactly one option satisfies the Issue's acceptance criteria and confirmed decisions (`## 驗收條件`, `## 已確認決策`), adopt it and record it in the checkpoint's rulings. When every option fits the Issue's text, the finding is a genuine product trade-off: comment it on the Issue with its options and carry it to step 2.
 2. Then run one review-only verifier round (the adapter's review command, no fixes) on the final candidate. When any P2 or higher finding left is not a trade-off step 1 commented, end with `STOP <iid> findings after two review cycles`. Otherwise, when step 1 carried any trade-off, end with `STOP <iid> decision <summary>` even if this round no longer lists it: an open product decision never lands as `DONE`. The coordinator handles either per its Stops; a trade-off reported as findings would only send a fresh worker into it again (#30). With neither, P3 findings only go into the rulings and the run ends with `DONE`.
+
+## Pool mode
+
+`/issue-run --pool [<N>]` takes Issues from the tracker pool and runs them one at a time in this session, each as `/issue-run <n>` would, until `<N>` of them were claimed (default: no cap, so the loop never ends by itself). It opens no terminals and runs nothing in parallel, so it needs no Pilot section, only the repo's `scripts/issue-pool.mjs`. Drive it with `/loop /issue-run --pool [<N>]` (self-paced); the skill is model-invocable only so that `/loop` can call it, so never invoke it unless the user's own command names it.
+
+- **Pool.** The pool is the `ready` lines of `node scripts/issue-pool.mjs`, in the order printed; it already leaves out Issues with an open blocker. When the repo has no `scripts/issue-pool.mjs`, stop and tell the human to run `/setup-workflow`; never pick Issues another way.
+- **Checkpoint.** The adapter's checkpoint path with `pool` as the ref (`.scratch/issue-run-pool/state.md` by default), one row per Issue this run took: Issue, claiming session, state (`running`, `done`, `waiting`, `stopped`, `skipped`), candidate SHA, stop point with the URL of its stop comment. Each Issue still keeps its own checkpoint. Its header holds `<N>` and the last wake delay, and gets an `ended` line when the run ends. A run starts when the file is missing or has that line: move an ended file to `state-<date>.md` and begin an empty one. Otherwise the run is still open, so its `<N>` and rows carry over, and a new session on the same machine continues them.
+- **Claim.** Claim before step 0 with `node scripts/issue-pool.mjs claim <n>`, in place of step 2's claim command. Run the Issue on `CLAIMED <n>` and count it toward `<N>`; `STOP <n> claimed …` means another session has it, so record it `skipped` and take the next. To continue a row an earlier session of this run claimed, claim again with `--session <that session>`.
+- **Each wake.** First continue this run's `running` rows per [Resume](#resume), and each `stopped` or `waiting` row whose Issue has, after its stop comment, a comment that is not one a run writes (claim, stop, evidence), or a gated blocker that was closed; leave the others alone, or every wake re-enters the same stop. A row whose Issue the human closed is finished: mark it `done`. Then, while fewer than `<N>` rows printed `CLAIMED`, take the first `ready` Issue with no row or only a `skipped` one. List the pool again after each Issue: one the human closed meanwhile releases its dependents.
+- **Stops.** No human watches the screen, so as in [Worker mode](#worker-mode) never call `AskUserQuestion`. On a [stop](#stops), step 0's included, comment on that Issue the step it stopped at and the decision or capability it needs, mark it `stopped`, record every Issue it blocks, directly or indirectly, as `skipped`, and keep going. A gated ticket at handoff marks the Issue `waiting`.
+- **Report.** End each wake with one report on every Issue it touched: candidate SHA (and the landing result when the adapter lands), each stop with its stop point, and each skipped Issue with its reason.
+- **Pacing.** Under `/loop`, wake again after 1800 seconds when this wake ran an Issue; otherwise double the last delay, up to 3600 seconds. An empty pool never ends the loop, and neither does a `stopped` or `waiting` row still waiting on the human. Only the human's stop ends it, or `<N>` claimed rows all `done`: then write the `ended` line, give the final report, and cancel the loop (`ScheduleWakeup` with `stop: true`).
 
 ## Gated tickets
 

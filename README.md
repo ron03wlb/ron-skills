@@ -48,6 +48,8 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 
 `/issue-run <ref> [<ref>...]`：把已 ready 的 Issue 不中斷地跑到本機 candidate commit。方法照 Matt 的 `implement` / `implement-spec`，專案事實全部讀 repo 的 adapter；沒有 adapter 時用 Matt setup 文件與 [ADAPTER.md](skills/engineering/issue-run/ADAPTER.md) 的預設值。push、合併到共用分支、產品決策仍由人負責。
 
+`/loop /issue-run --pool [<N>]`：不開 coordinator，在同一個 session 照 `scripts/issue-pool.mjs` 的 `ready` 順序先認領再開工，一次跑一張到 candidate（不開 Orca 分頁、不並行，不需要 Pilot 段，只要 repo 有 `scripts/issue-pool.mjs`）；`<N>` 是最多跑幾張，預設跑完。每次醒來先接續自己認領、還沒做完的單，一張停下時留言寫明停點、跳過依賴它的單，池子空了或還有停下的單在等人時拉長間隔但不結束 loop。被 `/loop` 驅動，所以 `issue-run` 不設 `disable-model-invocation`，description 限定只在人輸入 `/issue-run`、`/loop /issue-run --pool` 或 coordinator 派工時觸發。
+
 新專案導入：照 [ron-skills 交付流程](https://ron-skills-workflow.pages.dev/site/) 分 L1 基本、L2 守門、L3 常駐三級導入（來源 [docs/workflow/](docs/workflow/README.md)）；入口是在該 repo 輸入 `/setup-workflow`（[SKILL.md](skills/engineering/setup-workflow/SKILL.md)）：偵測等級與擴充、建議往上一級，經人確認後寫 tracker、label、domain docs 與 adapter（以 `ADAPTER.md` 為骨架），並複製 script 正本、在 `docs/agents/workflow-templates.json` 記錄每個副本的 ron-skills commit 與 sha256；已導入的專案用 `/setup-workflow health` 體檢等級標示錯誤、分歧與隱性跨 repo 依賴，只回報不寫檔。pilot 要在其他 worktree 跑 git 時，照 ADAPTER.md 的 **Permissions** 段複製 [templates/pilot_git.py](skills/engineering/issue-run/templates/pilot_git.py)，allow 只放行該腳本，不寫 `git -C *`（中間的 `*` 能夾帶 git 選項，Claude Code 每次啟動都會警告）。
 
 流程站由 [workflow-site.yml](.github/workflows/workflow-site.yml) 在合入 `main` 後重跑 `bin/check --upstream`（含機密與私有網址掃描）、以 wrangler 部署 `docs/workflow/` 到 Cloudflare Pages，再逐檔比對公開網址；PR 只跑檢查。第一次設定由 Operator 執行 [scripts/setup-workflow-site.sh](scripts/setup-workflow-site.sh)，建立 Pages 專案、只有 Pages 編輯權限的 token 與 GitHub secret。

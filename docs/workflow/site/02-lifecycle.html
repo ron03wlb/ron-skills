@@ -45,6 +45,7 @@
 <p>幾張相關的 Issue 一起交付時：</p>
 <ul>
 <li><strong>手動（L1／L2）</strong>：<code>/issue-run &lt;n&gt; &lt;m&gt; …</code>。controller 依 tracker 的依賴建 task graph，照 <code>implement-spec</code> 每張一個 worktree、各自做到綠燈後合進本次的整合分支，最後在整合分支 tip 跑一次 acceptance。</li>
+<li><strong>池子（L1／L2）</strong>：<code>/loop /issue-run --pool [&lt;N&gt;]</code>。同一個 session 照 <code>scripts/issue-pool.mjs</code> 的 <code>ready</code> 順序先認領再開工，一次一張，每張照 <code>/issue-run &lt;n&gt;</code> 跑完；最多跑 <code>&lt;N&gt;</code> 張，不帶 <code>&lt;N&gt;</code> 時不設上限，loop 不會自己結束。每次醒來先接續自己認領、還沒做完的單，再撿新單；一張停下時在那張單留言寫明停在哪一步，依賴它的單跳過，其他照跑，醒來的最後一次回報。池子空了或還有停下的單在等人時就拉長間隔，不結束 loop。repo 沒有 <code>scripts/issue-pool.mjs</code> 時停下，提示跑 <code>/setup-workflow</code>。</li>
 <li><strong>常駐（L3）</strong>：coordinator 每批挑幾張，每張派一個 worker；全部 <code>DONE</code> 或 <code>STOP</code> 之後，在批次分支依號碼合入、在 staged SHA 跑一次回歸、過了才合進整合分支（見 <a href="05-level3.html">05 L3 導入</a>）。</li>
 </ul>
 <p>一張 Issue 被另一張 STOP 的單擋住時，只有它停；其他獨立的單照常前進。</p>
