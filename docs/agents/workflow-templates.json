@@ -12,8 +12,8 @@
     },
     "scripts/claude-hook-language.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-language.mjs",
-      "commit": "6dd5f16478e8c443ade1f407e0bc355a278bd815",
-      "sha256": "422d8ca68c9f84f534b08cbfab8836390ca85cc267f50e5273da3b33f02b7675"
+      "commit": "d4bb936b4bd5f5147a72cbd23007b1e7b4cfe2ca",
+      "sha256": "0243b55b7ab8422a5cb16354a1598792166cd918cefd019722adab64eb8e250f"
     },
     "scripts/claude-hook-main-checkout.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-main-checkout.mjs",
