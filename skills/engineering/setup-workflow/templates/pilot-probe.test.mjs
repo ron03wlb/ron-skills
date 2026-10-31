@@ -88,8 +88,10 @@ if (fs.existsSync(worldFile)) {
   }));
 }
 if (issues === null) { process.stderr.write('HTTP 502: Bad Gateway\\n'); process.exit(1); }
+// issue-pool 的分桶（POOL_*）要的欄位，fixture 沒寫的補成沒指派、沒有 blocking、沒有子單。
+const node = issue => ({ title: '', assignees: { nodes: [] }, blocking: { nodes: [] }, comments: { nodes: [] }, timelineItems: { nodes: [] }, subIssuesSummary: { total: 0 }, ...issue });
 if (args[0] === 'repo' && args[1] === 'view') process.stdout.write('acme/app\\n');
-else if (args[0] === 'api' && args[1] === 'graphql') process.stdout.write(JSON.stringify({ data: { repository: { issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: issues } } } }));
+else if (args[0] === 'api' && args[1] === 'graphql') process.stdout.write(JSON.stringify({ data: { repository: { issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: issues.map(node) } } } }));
 else process.exit(1);
 `);
   chmodSync(join(bin, 'gh'), 0o755);
@@ -110,7 +112,7 @@ ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? 
   if (guard !== undefined || world !== undefined || tracker !== undefined) {
     const scripts = join(temp, 'scripts');
     mkdirSync(join(scripts, 'lib'), { recursive: true });
-    const names = ['pilot-probe.mjs', 'pilot-capacity.mjs', 'orca-session-send.mjs', 'lib/pilot-store.mjs', ...(tracker === undefined ? [] : ['gh-tracker.mjs', 'lib/hosts.mjs'])];
+    const names = ['pilot-probe.mjs', 'pilot-capacity.mjs', 'orca-session-send.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'lib/pilot-store.mjs', ...(tracker === undefined ? [] : ['gh-tracker.mjs'])];
     for (const name of names) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
     if (guard !== undefined) {
       writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
@@ -127,7 +129,9 @@ ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? 
   return { repo, pilot, origin, git, log, batch, probe, probeEnv, ghLog: join(temp, 'gh.log') };
 }
 
-const lines = result => result.stdout.trim().split('\n');
+// 池子摘要（POOL_EMPTY｜POOL_READY｜POOL_FAILED，#240）每次都印一行；其他測試只看自己的行，比對前去掉它，池子的測試另外看 stdout。
+const rest = result => result.stdout.split('\n').filter(line => !/^POOL_/.test(line)).join('\n');
+const lines = result => rest(result).trim().split('\n');
 
 // 重現過的錯：TUI 畫了框線時結果行尾端帶空白和 `│`，不先去掉就比對不到 DONE。
 test('結果行帶 TUI 框線時仍讀出 DONE 與 STOP', t => {
@@ -394,7 +398,7 @@ test('主 checkout 正常時不印狀態行；沒有 Bare guard 時略過', t =>
   const { probe } = fixture(t);
   const result = probe();
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, '');
+  assert.equal(rest(result), '');
 });
 
 test('Bare guard 先跑（時機 probe），不在 main、有 hold、有改動時各印一行', t => {
@@ -411,7 +415,7 @@ test('Bare guard 失敗時 exit 1，不印狀態行', t => {
   const { probe } = fixture(t, { guard: '#!/bin/sh\necho 壞了 >&2\nexit 3\n' });
   const result = probe();
   assert.equal(result.status, 1);
-  assert.equal(result.stdout, '');
+  assert.equal(rest(result), '');
   assert.match(result.stderr, /pilot-unbare\.sh exit 3：壞了/);
 });
 
@@ -523,9 +527,9 @@ test('pilot/integration 的 adapter 比 main 新時印 ADAPTER_AHEAD <檔案>', 
     git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', message);
   };
   commit({ 'docs/agents/issue-run.md': '# adapter\n' }, 'adapter');
-  assert.equal(probe().stdout, '');
+  assert.equal(rest(probe()), '');
   git('branch', 'pilot/integration');
-  assert.equal(probe().stdout, '');
+  assert.equal(rest(probe()), '');
 
   git('switch', '-q', 'pilot/integration');
   commit({ 'docs/agents/issue-run.md': PILOT_SECTION + '- Stage worktree\n', 'docs/agents/pilot-rules.md': '# pilot\n' }, 'newer adapter');
@@ -552,7 +556,7 @@ test('pilot/integration 的 adapter 比 main 新時印 ADAPTER_AHEAD <檔案>', 
   git('rm', '-q', 'docs/agents/pilot-rules.md');
   git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'drop pilot');
   git('switch', '-q', 'main');
-  assert.equal(probe().stdout, '');
+  assert.equal(rest(probe()), '');
 });
 
 test('沒有本機 main 時不比 adapter，其他檢查照跑', t => {
@@ -841,7 +845,7 @@ test('--status 沒有 coordinator 檔、gate 與 batch 時照樣寫出', t => {
   const { pilot, probe } = fixture(t);
   const result = probe({ args: ['--status'] });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, '');
+  assert.equal(rest(result), '');
   const status = readFileSync(join(pilot, 'status.md'), 'utf8');
   assert.match(status, /^# pilot status（[^，]+，coordinator \(none\)）\n/);
   assert.match(status, /^- 沒有開著的 batch$/m);
@@ -989,7 +993,7 @@ test('ready Issue 內文寫「依賴 #m」、#m 開著卻不在 blocked_by 時�
 test('補上 blocked_by 之後不印 DEPS_PROSE', t => {
   const after = issue(88, '依賴 #87（同一支腳本）。', { blockedBy: [87] });
   const { probe } = fixture(t, { issues: [after, issue(87, '')] });
-  assert.equal(probe().stdout, '');
+  assert.equal(rest(probe()), '');
 });
 
 test('依賴的 Issue 已關閉、別的 repo 的同號單、不是 ready-for-agent 的 Issue 都不印', t => {
@@ -1090,6 +1094,31 @@ test('gh 失敗時印 DEPS_PROSE_FAILED，其他檢查照跑', t => {
   const result = probe();
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(lines(result), ['HOLD', 'DEPS_PROSE_FAILED gh repo view 失敗：HTTP 502: Bad Gateway']);
+  assert.ok(result.stdout.split('\n').includes('POOL_FAILED gh repo view 失敗：HTTP 502: Bad Gateway'), result.stdout);
+});
+
+// #240：閒置輪原本另跑 issue-pool.mjs 才知道池子是空的；分桶與排序共用 issue-pool 的 pool()。
+const poolOutput = result => result.stdout.split('\n').filter(line => /^POOL_/.test(line));
+
+test('池子沒有 ready 單時印 POOL_EMPTY', t => {
+  const { probe } = fixture(t, { issues: [issue(5, '', { labels: ['needs-triage'] }), issue(6, '', { labels: ['ready-for-human'] })] });
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(poolOutput(result), ['POOL_EMPTY']);
+});
+
+test('有 ready 單時印 POOL_READY <n>...：照 issue-pool 的排序，略過開著的 batch checkpoint 裡的 Issue', t => {
+  const { probe, batch } = fixture(t, { screens: { term_7: { status: 'running', tail: ['❯'] } }, issues: [
+    issue(7, ''), issue(8, ''), issue(9, '', { labels: ['ready-for-agent', 'priority'] }), issue(10, ''), issue(11, '', { blockedBy: [{ number: 8, state: 'OPEN', createdAt: created(8), repository: { nameWithOwner: 'acme/app' } }] }),
+    { ...issue(12, ''), assignees: { nodes: [{ login: 'someone' }] }, comments: { nodes: [{ createdAt: new Date().toISOString() }] } },
+  ] });
+  batch('7', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 7 }]);
+  batch('10', 'closed 2026-10-30T18:00:00+08:00', [{ n: 10, state: 'done', candidate: SHA }]);
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(poolOutput(result), ['POOL_READY 9 8 10']);
+  batch('8-9-10', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 8, state: 'stop' }, { n: 9, state: 'parked after #8' }, { n: 10 }]);
+  assert.deepEqual(poolOutput(probe()), ['POOL_EMPTY']);
 });
 
 // #164：母單的 parent label 與重開原本是 Probe 條目尾端要 coordinator 手動做的散文，好幾輪都沒做。
@@ -1136,8 +1165,8 @@ test('--apply 補上 parent label、移除 triage label、重開母單，輸出�
     ['issue', 'edit', '10', '--add-label', 'parent', '--remove-label', 'ready-for-agent'],
     ['issue', 'reopen', '40'],
   ]);
-  assert.equal(probe({ args: ['--apply'] }).stdout, '');
-  assert.equal(probe().stdout, '');
+  assert.equal(rest(probe({ args: ['--apply'] })), '');
+  assert.equal(rest(probe()), '');
 });
 
 test('--apply 經同目錄的 gh-tracker.mjs 正本寫入：參數改寫成 --長名=值，寫到 adapter Tracker 段的專案', t => {
@@ -1154,7 +1183,7 @@ test('--apply 經同目錄的 gh-tracker.mjs 正本寫入：參數改寫成 --�
     ['issue', 'edit', '10', '--add-label=parent', '--remove-label=ready-for-agent', '--repo', 'github.com/acme/app'],
     ['issue', 'reopen', '40', '--repo', 'github.com/acme/app'],
   ]);
-  assert.equal(probe().stdout, '');
+  assert.equal(rest(probe()), '');
 });
 
 test('不帶 --apply 時不寫 tracker', t => {
@@ -1199,7 +1228,7 @@ test('已關閉的母單同時缺 parent label 時一起印 PARENT_LABEL，一�
     ['issue', 'edit', '40', '--add-label', 'parent', '--remove-label', 'ready-for-agent'],
     ['issue', 'reopen', '40'],
   ]);
-  assert.equal(probe().stdout, '');
+  assert.equal(rest(probe()), '');
 });
 
 // #194：worktree-overlap 以 `to` 為 null 比對工作樹：已 commit、暫存、未暫存的改動與未追蹤的新檔都算，ignore 的檔不算。
