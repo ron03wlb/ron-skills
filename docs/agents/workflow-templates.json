@@ -42,7 +42,7 @@
     },
     "scripts/lib/pilot-store.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/pilot-store.mjs",
-      "commit": "76eb90190bc130315ec18c68075bc3dc7f3e415c",
+      "commit": "125e658a0a8ca19b873589f5356815acb51978d1",
       "sha256": "41ec403267648a888f7d7d4d96d32a2a8c9b583592f92e2ab818aaa47c28117c"
     },
     "scripts/orca-session-send.mjs": {
@@ -65,6 +65,11 @@
       "commit": "9dba2117986d3b2858b8c220b984893bb0ec4e38",
       "sha256": "15e632d233901137904d0ab264b556ad30c821abee04aa6361291398c121a3d5"
     },
+    "scripts/pilot-capacity.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/pilot-capacity.mjs",
+      "commit": "b938a99c7338f1d396b9c897f7e5b5c99cc37bae",
+      "sha256": "65036fceef34db56ee90cb2f58120cc7e21681bee9ef7c5e6978617a8429877b"
+    },
     "scripts/pilot-counterpart.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-counterpart.mjs",
       "commit": "9c102eb2809708c28510dd8d64a39f0fb9d125ed",
@@ -77,8 +82,8 @@
     },
     "scripts/pilot-dispatch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-dispatch.mjs",
-      "commit": "242f934e492520462ce6590ee45045379017c762",
-      "sha256": "340f6b93d25d256e8b27322981e86ba3a1ac61363e82bc473f535468a8228d2a"
+      "commit": "b938a99c7338f1d396b9c897f7e5b5c99cc37bae",
+      "sha256": "bb9c03a4bf70993bd74cb95dbad8c609cb85634b6746ed3964b78dba0d22347d"
     },
     "scripts/pilot-gate.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-gate.mjs",
@@ -102,8 +107,8 @@
     },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",
-      "commit": "f11bf928d9229e4220457894ba87b324d01a068c",
-      "sha256": "a6194320044c9448c4cb328e7ee057ce6c3aa1c8c6635629e07dd89d46b300a3"
+      "commit": "b938a99c7338f1d396b9c897f7e5b5c99cc37bae",
+      "sha256": "3c6e93887e688d3aaceb9b001f09996c94a9221a07a64f87d9d4960d0c00936e"
     },
     "scripts/pilot-register.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-register.mjs",
