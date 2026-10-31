@@ -13,7 +13,7 @@ The pilot's own refinement (its Pool and Probe steps relabelling and reopening o
 
 1. **Pool.** Run `node scripts/issue-pool.mjs` and keep its output: one `<bucket> #<n> <title>` line per open Issue, then any `NO_CATEGORY <n>` lines. Done when the command exited 0; on any other exit, report its stderr and stop.
 
-2. **Limit line.** The report's first line is `進行中 <N>／上限 <M>`. `<N>` is the number of step 1 lines starting with `claimed ` (count them with `grep -c '^claimed '`, not by eye; a `stale` claim is listed in its bucket, not counted). `<M>` is the adapter's worker cap, the concurrent-worker limit in its Pilot section's defaults; when the adapter names no cap, or says the count is unlimited, `<M>` is `不限`. Done when the line holds both values.
+2. **Limit line.** The report's first line is `進行中 <N>／上限 <M>`. `<N>` is the number of step 1 lines starting with `claimed ` (count them with `grep -c '^claimed '`, not by eye; a `stale` claim and an assigned `ready-for-human` Issue, which the script puts in `stale` and `human`, are listed in their buckets, not counted). `<M>` is the adapter's worker cap, the concurrent-worker limit in its Pilot section's defaults; when the adapter names no cap, or says the count is unlimited, `<M>` is `不限`. Done when the line holds both values.
 
 3. **Buckets.** Under the limit line, list every bucket that has Issues, in the order `issue-pool.mjs` printed them, each Issue as `#<n> <title>`; keep the `ready` order as printed, since it is the pick order. List the `NO_CATEGORY` Issues after the buckets as Issues missing a category label. Done when every line of step 1 appears once.
 
