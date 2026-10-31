@@ -194,6 +194,17 @@ test('照 Close 依序做完每一步，母單子單全部結束就留言關閉�
   assert.equal(f.issues()[35].comments.length, 1);
 });
 
+// coordinator 的 retro：LANDED 之後不用先手改成 `pushed`，`current: merged` 的 batch 跑完 Close 一樣是 `closed`。
+test('current 還是 merged 時 Close 照樣做完並寫成 closed', t => {
+  const f = fixture(t, { pushed: true });
+  const file = join(f.repo, '.scratch/pilot/batch-76.md');
+  writeFileSync(file, f.checkpoint().replace(/^current: .*$/m, `current: merged ${f.mergeSha}`));
+  const result = f.close();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(lines(result).at(-1), 'CLOSED 76');
+  assert.match(f.checkpoint(), /^current: closed$/m);
+});
+
 // .claude/settings.json 只放行 gh-tracker.mjs（#96）：本 repo 的留言、關單都要經過它，跨 repo 的對應單照 #79 用裸 gh。
 test('本 repo 的留言與關單（成員和母單）都經 gh-tracker.mjs；對應單留言照舊直接用 gh', t => {
   const f = fixture(t, { body: '## 背景\napp 對應單：acme/app#7\n' });
