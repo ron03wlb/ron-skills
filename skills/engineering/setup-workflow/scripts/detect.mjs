@@ -10,9 +10,15 @@
 // 每個停點一行 `STOP <name> <原因>` 加一行 `FIX <name> <修正指令>`，最後一行 `ENV ok`（exit 0）或 `ENV stop <n>`（exit 1）。
 // --copy 是這次要複製的正本，含 `.py` 時才檢查 Python。測試以 DETECT_PLATFORM、DETECT_PROC_VERSION（檔案路徑）、DETECT_NODE_VERSION
 // 取代 process.platform、/proc/version 與 process.versions.node。
+//
+// Host 站：node detect.mjs [<repo>] --host [--json]，只讀 repo 的 docs/agents/issue-tracker.md 與 origin，不寫檔。
+// `HOST tracker <github|gitlab|local> <主機|->`、`HOST code <github|gitlab|local> <主機|->` 各一行（判定規則見 ../templates/lib/hosts.mjs），
+// 每個要用到的 CLI 一行 `CLI <gh|glab> met|missing|unauthenticated <主機|->`（local 不需要 CLI，交付端略過），
+// 停點同環境站印 `STOP`／`FIX`，最後一行 `HOST ok`（exit 0）或 `HOST stop <n>`（exit 1）。DETECT_PLATFORM 同環境站，決定安裝提示。
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
+import { CLI, codeHost, trackerKind } from '../templates/lib/hosts.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
@@ -22,6 +28,7 @@ const copy = copyAt < 0 ? [] : args.slice(copyAt + 1, copyEnd < 0 ? undefined : 
 const root = resolve(args.find((arg, i) => !arg.startsWith('--') && !(copyAt >= 0 && i > copyAt && (copyEnd < 0 || i < copyEnd))) ?? '.');
 
 if (args.includes('--env')) process.exit(environment());
+if (args.includes('--host')) process.exit(hostStation());
 
 /** PATH 上（或絕對路徑）可執行的檔案；沒有時 null。 */
 function which(name) {
@@ -121,6 +128,63 @@ function environment() {
     for (const [tool, s] of Object.entries(optional)) console.log(`OPTIONAL ${tool} ${s.met ? 'met' : 'missing'} ${s.value ?? '-'}  # ${s.evidence.join('; ')}${s.met ? '' : `；${s.unlocks} 不可選`}`);
     for (const stop of stops) console.log(`STOP ${stop.name} ${stop.reason}\nFIX ${stop.name} ${stop.fix}`);
     console.log(stops.length ? `ENV stop ${stops.length}` : 'ENV ok');
+  }
+  return stops.length ? 1 : 0;
+}
+
+// Host 站：tracker host 與程式碼 host 分開判定，可以不同；非 local 的 host 要有對應 CLI 並已登入該主機。
+function hostStation() {
+  const run = (command, rest) => spawnSync(command, rest, { encoding: 'utf8', timeout: 20_000 });
+  const origin = run('git', ['-C', root, 'remote', 'get-url', 'origin']);
+  const originUrl = origin.status === 0 ? origin.stdout.trim() : null;
+  const code = { ...codeHost(originUrl), evidence: [originUrl ? `origin ${originUrl}` : '沒有 origin remote'] };
+  const trackerDoc = 'docs/agents/issue-tracker.md';
+  const docPath = join(root, trackerDoc);
+  const doc = existsSync(docPath) ? readFileSync(docPath, 'utf8') : null;
+  const kind = trackerKind(doc);
+  // 還沒有 tracker 文件時依 origin 推定（setup 之後才寫這份文件）。
+  const tracker = kind === 'none'
+    ? { value: code.value, host: code.host, evidence: [`${trackerDoc} 不存在，依 origin 推定`] }
+    : { value: kind, host: kind === code.value ? code.host : kind === 'github' ? 'github.com' : null,
+        evidence: [`${trackerDoc} 寫 ${{ github: 'gh', gitlab: 'glab', local: '本機 Markdown（沒有 gh、glab）' }[kind]}`] };
+  if (tracker.value === 'gitlab' && !tracker.host) {
+    // 程式碼 host 不是 GitLab 時，從文件裡的網址找 GitLab 主機；找不到就不帶 --hostname，查 glab 的預設主機。
+    tracker.host = [...doc.matchAll(/https?:\/\/([^/\s`'")]+)/g)].map(match => match[1].replace(/:\d+$/, '').toLowerCase()).find(host => !/github/.test(host)) ?? null;
+  }
+
+  const macos = (process.env.DETECT_PLATFORM ?? process.platform) === 'darwin';
+  const installHint = { gh: macos ? 'brew install gh' : '照 https://github.com/cli/cli/blob/trunk/docs/install_linux.md 加入 apt 來源後 sudo apt install gh', glab: 'brew install glab' };
+  const needs = new Map();
+  for (const side of [tracker, code]) {
+    if (side.value === 'local') continue;
+    const cli = CLI[side.value];
+    needs.set(cli, [...new Set([...(needs.get(cli) ?? []), side.host])]);
+  }
+  const cli = {};
+  const stops = [];
+  for (const [name, hosts] of needs) {
+    const path = which(name);
+    if (!path) {
+      cli[name] = { met: false, state: 'missing', path: null, hosts, evidence: [`PATH 上沒有 ${name}`] };
+      stops.push({ name, reason: `找不到 ${name}`, fix: installHint[name] });
+      continue;
+    }
+    const checks = hosts.map(host => ({ host, loggedIn: run(path, ['auth', 'status', ...(host ? ['--hostname', host] : [])]).status === 0 }));
+    const missing = checks.filter(check => !check.loggedIn);
+    cli[name] = { met: missing.length === 0, state: missing.length ? 'unauthenticated' : 'met', path, hosts,
+      evidence: checks.map(check => `${name} auth status${check.host ? ` --hostname ${check.host}` : ''} ${check.loggedIn ? 'exit 0' : '失敗'}`) };
+    for (const { host } of missing) stops.push({ name, reason: `${name} 沒有登入 ${host ?? '預設主機'}`, fix: `${name} auth login${host ? ` --hostname ${host}` : ''}` });
+  }
+  const result = { root, tracker, code, cli, stops, ok: stops.length === 0 };
+
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    for (const [side, s] of Object.entries({ tracker, code })) console.log(`HOST ${side} ${s.value} ${s.host ?? '-'}  # ${s.evidence.join('; ')}`);
+    for (const [name, s] of Object.entries(cli)) console.log(`CLI ${name} ${s.state} ${s.hosts.map(host => host ?? '-').join(',')}  # ${s.evidence.join('; ')}`);
+    if (!Object.keys(cli).length) console.log('CLI none -  # tracker 與程式碼 host 都是 local，交付端略過');
+    for (const stop of stops) console.log(`STOP ${stop.name} ${stop.reason}\nFIX ${stop.name} ${stop.fix}`);
+    console.log(stops.length ? `HOST stop ${stops.length}` : 'HOST ok');
   }
   return stops.length ? 1 : 0;
 }
@@ -236,23 +300,14 @@ const recommend = { L0: 'L1', L1: 'L2', L2: 'L3', L3: null }[level];
 
 // 擴充：每項附偵測訊號（evidence）、要填的 adapter 段落與要帶入的正本。
 const matching = pattern => files.filter(file => pattern.test(file));
-const extension = (evidence, adapterSection, templates, value) => ({ detected: evidence.length > 0, value: value ?? (evidence.length > 0), evidence, section: adapterSection, templates });
-
-function tracker() {
-  const doc = read(trackerDoc);
-  const value = doc === null ? 'none' : /\bglab\b/.test(doc) ? 'gitlab' : /\bgh\b/.test(doc) ? 'github' : 'local';
-  const remote = git('remote', 'get-url', 'origin');
-  const evidence = doc === null ? [] : [trackerDoc];
-  if (doc === null && remote) evidence.push(`origin ${/gitlab/.test(remote) ? 'GitLab' : /github\.com/.test(remote) ? 'GitHub' : remote}（尚未設定 tracker）`);
-  return { ...extension(evidence, 'Tracker', [], value), detected: doc !== null };
-}
+const extension = (evidence, adapterSection, templates) => ({ detected: evidence.length > 0, value: evidence.length > 0, evidence, section: adapterSection, templates });
 
 const manifests = matching(/(^|\/)(package\.json|pom\.xml|build\.gradle(\.kts)?|pyproject\.toml|go\.mod|Cargo\.toml)$/).filter(file => !file.includes('node_modules/'));
 const manifestDirs = new Set(manifests.map(file => file.replace(/\/?[^/]+$/, '')));
 const testcontainers = manifests.filter(file => /testcontainers/i.test(read(file) ?? ''));
 
+// tracker 與程式碼 host 不在這裡：由 Host 站（--host）判定。
 const extensions = {
-  tracker: tracker(),
   gated: extension([
     ...(section(adapter, 'Gated tickets') !== null ? [`${adapterPath} ## Gated tickets`] : []),
     ...matching(/\.sql$|(^|\/)(migrations?|migrate|changelog)\//i).slice(0, 5),
