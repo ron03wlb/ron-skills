@@ -9,9 +9,9 @@
 // 重疊（#174）：認領檢查之後、動手之前，成員分支（本機已有時；--fresh 是要另存成 prior 的那個）和 `.scratch/pilot/` 開著的 batch 裡其他 running、done 成員
 // 照 pilot-probe.mjs 的 OVERLAP 同一套比法（同一個檔，或 `.md` 的同一個 `- **<名稱>.**` 條目）比對，有重疊就印 `STOP <n> overlap <m> <檔案>[:<條目>]…`
 // （多個成員時以 `, <m> …` 接著列），什麼都不動、成員列也不改寫；`--allow-overlap` 才照派。還沒派過、本機沒有分支的成員沒有東西可比。
-// 比對本身失敗（git）時印 `STOP <n> overlap-check <錯誤>`，成員記 stop。
+// 比對本身失敗（git）時印 `STOP <n> overlap-check <錯誤>`：一般派工的成員記 stop，--fresh 什麼都不動。
 // worktree 已存在（重跑）時，開新分頁前先關掉 worktree 裡每個 terminal，同 --fresh；那一列還是 running、它的分頁也還開著時
-// 印 `STOP <n> running <handle>`，不關分頁、不改寫成員列。
+// 印 `STOP <n> running <handle>`，不關分頁、不改寫成員列（只看這次 key 的 checkpoint）；列不出分頁時 `STOP <n> terminal-close …`，成員列也不動。
 // worktree 有沒有建好只看目錄存在、`git worktree list` 裡有這個分支，不信 create 回傳的 ok（曾經建好卻回 "ok": false）。
 // 所有子行程的 stdin 都接 /dev/null：Orca CLI 會吃掉 stdin，`while read` 迴圈因此只派到第一個成員。
 // 總時間有上限（比照 pilot-handoff.mjs）：Bash 工具最多等 600 秒，被殺就來不及寫 checkpoint，所以預算到了（timeout）或收到 SIGTERM、SIGINT（signal <名稱>）
@@ -190,13 +190,14 @@ async function dispatchMember(cli, main, checkpoint, integration, { n, branch },
     try {
       open = await openTerminals(ctx, existed);
     } catch (error) {
-      return { worktree: existed, stop: signal.aborted ? signal.reason : `terminal-close ${error.message}` };
+      // 還沒動任何東西：成員列照舊，running 的 worker 下次重跑仍擋得住。
+      return { stop: signal.aborted ? signal.reason : `terminal-close ${error.message}`, keep: true };
     }
     const row = rowOf(checkpoint, n);
     if (row?.[7] === 'running' && open.includes(row[4])) return { stop: `running ${row[4]}`, keep: true };
   }
   const overlap = !allowOverlap && overlapStop(main, n, branch, integration);
-  if (overlap) return { stop: overlap, keep: !overlap.startsWith('overlap-check ') };
+  if (overlap) return { worktree: existed, stop: overlap, keep: !overlap.startsWith('overlap-check ') };
   if (!existed) {
     try {
       created = await spawnText('node', [WORKTREE_CREATE, '--name', `issue-${n}`, '--base-branch', integration, '--branch', branch, '--issue', n],
