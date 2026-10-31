@@ -4,16 +4,18 @@
 // 步驟：等 TUI 閒置（兩輪）→ 送出並讀畫面確認 prompt 開頭或 `esc to interrupt` 出現，沒出現就延後重送。
 // 送出前先讀 composer：先前裸 `terminal send` 留下未提交的同一段 prompt 時只補 Enter，不再黏成兩份。
 // session 仍在忙時 tui-idle 不成立，兩輪逾時即 STOP tui-timeout，不把 prompt 排進忙碌中的 turn。
+// `--queue` 給忙碌中的 session 補送（例如 Dispatch 之後補範圍，#133）：不等 tui-idle，直接送出排到下一輪；
+// 忙碌畫面本來就有 `esc to interrupt`，所以只認畫面上的 prompt 開頭，且輸入框已清空。
 //
-// 用法：node scripts/orca-session-send.mjs --terminal <handle> --prompt <text>
-// stdout 最後一行：SENT <handle>，或 STOP <原因>（tui-timeout <handle>、send <handle>、orca <錯誤碼>）。
+// 用法：node scripts/orca-session-send.mjs --terminal <handle> --prompt <text> [--queue]
+// stdout 最後一行：SENT <handle>、QUEUED <handle>（--queue），或 STOP <原因>（tui-timeout <handle>、send <handle>、orca <錯誤碼>）。
 // stderr：第一次送出因 composer 已有該 prompt 而只補 Enter 時印 `DRAFT_SUBMIT <handle>`（不含 prompt 文字）。
 // exit：0 已送達；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
-const USAGE = '用法：node scripts/orca-session-send.mjs --terminal <handle> --prompt <text>（需要 ORCA_CLI_COMMAND）';
+const USAGE = '用法：node scripts/orca-session-send.mjs --terminal <handle> --prompt <text> [--queue]（需要 ORCA_CLI_COMMAND）';
 
 /** 每輪等 TUI 就緒的上限；共等兩輪（實測第一次常逾時、第二次在 30 秒內就緒）。 */
 const TUI_WAIT_MS = Number(process.env.SESSION_TUI_WAIT_MS || 120000);
@@ -54,9 +56,10 @@ export async function waitTuiReady(ctx, handle) {
  * 送出 prompt 並確認進了 Claude：TUI 剛就緒時 Orca 會回 accepted 卻吞掉輸入。
  * 畫面出現 prompt 開頭或 `esc to interrupt` 才算送達；否則依 SEND_DELAYS 重送。送不出或三次都沒送達傳回 false。
  * 第一次送出前先讀一次 composer 的 `draft`（缺省視為空），已有同一段文字時只補 Enter，並在 stderr 印 `DRAFT_SUBMIT <handle>`。
+ * `queue` 時 session 本來就在忙，`esc to interrupt` 不算送達，只認 prompt 開頭。
  */
-export async function sendPrompt(ctx, handle, text) {
-  const landed = tail => tail.some(line => line.includes(text.slice(0, 24)) || line.includes('esc to interrupt'));
+export async function sendPrompt(ctx, handle, text, { queue = false } = {}) {
+  const landed = tail => tail.some(line => line.includes(text.slice(0, 24)) || (!queue && line.includes('esc to interrupt')));
   let draft = (await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal?.draft ?? '';
   if (resendInput(draft, text)[1] === '') console.error(`DRAFT_SUBMIT ${handle}`);
   for (const delay of SEND_DELAYS) {
@@ -79,13 +82,13 @@ export function resendInput(draft, text) {
 }
 
 /**
- * 等既有 terminal 閒置後送出 prompt 並確認送達。`ctx` 是 `{ cli, signal? }`；中止也回 `orca` STOP，由呼叫者看 `signal.reason` 改判。
+ * 等既有 terminal 閒置後送出 prompt 並確認送達；`queue` 時不等閒置，送出排到下一輪。`ctx` 是 `{ cli, signal? }`；中止也回 `orca` STOP，由呼叫者看 `signal.reason` 改判。
  * @returns {{handle: string} | {stop: string}} 成功回 handle；失敗回 STOP 原因（不含 `STOP ` 前綴）。
  */
-export async function sendToSession(ctx, handle, prompt) {
+export async function sendToSession(ctx, handle, prompt, { queue = false } = {}) {
   try {
-    if (!await waitTuiReady(ctx, handle)) return { stop: `tui-timeout ${handle}` };
-    if (!await sendPrompt(ctx, handle, prompt)) return { stop: `send ${handle}` };
+    if (!queue && !await waitTuiReady(ctx, handle)) return { stop: `tui-timeout ${handle}` };
+    if (!await sendPrompt(ctx, handle, prompt, { queue })) return { stop: `send ${handle}` };
   } catch (error) {
     return { stop: `orca ${error.message}` };
   }
@@ -97,14 +100,15 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const value = flag => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
   const handle = value('--terminal');
   const prompt = value('--prompt');
+  const queue = args.includes('--queue');
   const cli = process.env.ORCA_CLI_COMMAND;
-  if (!handle || !prompt || !cli || args.length !== 4) {
+  if (!handle || !prompt || !cli || args.length !== (queue ? 5 : 4)) {
     console.error(USAGE);
     process.exit(2);
   }
   try {
-    const sent = await sendToSession({ cli }, handle, prompt);
-    console.log(sent.stop ? `STOP ${sent.stop}` : `SENT ${sent.handle}`);
+    const sent = await sendToSession({ cli }, handle, prompt, { queue });
+    console.log(sent.stop ? `STOP ${sent.stop}` : `${queue ? 'QUEUED' : 'SENT'} ${sent.handle}`);
     process.exit(sent.stop ? 4 : 0);
   } catch (error) {
     console.error(error.message);
