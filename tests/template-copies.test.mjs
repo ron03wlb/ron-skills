@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { pilotFiles } from '../scripts/pilot-probe.mjs';
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url));
 const { copies } = JSON.parse(read('docs/agents/workflow-templates.json'));
@@ -36,4 +37,22 @@ test('清單涵蓋寫 pilot 存檔的 5 個副本與它們的共用 lib', () => 
   for (const name of ['pilot-register', 'pilot-decision', 'pilot-request', 'pilot-hold', 'pilot-sources', 'lib/pilot-store']) {
     assert.ok(copies[`scripts/${name}.mjs`], `清單沒有 scripts/${name}.mjs`);
   }
+});
+
+// Probe 與 Dispatch 改用正本（#58）：adapter 的呼叫方式不變；正本不寫死本 repo 的路徑與名稱，
+// ADAPTER_AHEAD 要比的 pilot.md 由 adapter 的 Pilot 段連結推出。
+test('pilot-probe、pilot-dispatch 登記為副本，正本與測試 grep 不到本 repo 專屬的路徑或名稱', () => {
+  for (const name of ['pilot-probe', 'pilot-dispatch']) {
+    assert.ok(copies[`scripts/${name}.mjs`], `清單沒有 scripts/${name}.mjs`);
+    for (const file of [`${name}.mjs`, `${name}.test.mjs`]) {
+      const text = read(`skills/engineering/setup-workflow/templates/${file}`).toString();
+      for (const word of ['ron-skills', 'ron03wlb', 'spay2', 'docs/agents/pilot.md', '/Users/', '/home/', '/root/']) {
+        assert.ok(!text.includes(word), `${file} 含有 ${word}`);
+      }
+    }
+  }
+});
+
+test('本 repo adapter 的 Pilot 段連到 pilot.md，Probe 會把它當 adapter 比對', () => {
+  assert.deepEqual(pilotFiles(read('docs/agents/issue-run.md').toString()), ['docs/agents/pilot.md']);
 });

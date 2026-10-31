@@ -60,3 +60,24 @@ test('路徑不是 git checkout 時以非 0 結束，不當成「不是 bare」'
   const result = spawnSync(unbare, [dir, 'probe'], { encoding: 'utf8', env });
   assert.notEqual(result.status, 0);
 });
+
+// pilot-probe、pilot-dispatch 是 setup-workflow 正本的副本，只在同目錄有 pilot-unbare.sh 時跑 Bare guard（#58）：
+// 本 repo 的副本旁邊要有它，Probe 才會照舊在 bare 時還原、印 UNBARE 並記一列。
+test('scripts/pilot-probe.mjs 跑本 repo 的 pilot-unbare.sh：bare 時還原、印 UNBARE、記一列（時機 probe）', t => {
+  const { repo, git } = checkout(t);
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'base');
+  git('branch', '-q', '-M', 'main');
+  git('config', 'core.bare', 'true');
+
+  const probe = new URL('../scripts/pilot-probe.mjs', import.meta.url).pathname;
+  const result = spawnSync('node', [probe, repo], { encoding: 'utf8', env: Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'ORCA_CLI_COMMAND')) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [`UNBARE ${repo}`, 'DIRTY ?? .scratch/']);
+  assert.equal(git('rev-parse', '--is-bare-repository').stdout.trim(), 'false');
+  assert.match(readFileSync(join(repo, '.scratch/pilot/decisions.md'), 'utf8'), /被設成 true（probe）/);
+});
+
+test('scripts/pilot-dispatch.mjs 旁邊有可執行的 pilot-unbare.sh', () => {
+  const dispatch = new URL('../scripts/pilot-dispatch.mjs', import.meta.url).pathname;
+  assert.equal(spawnSync('test', ['-x', join(dispatch, '..', 'pilot-unbare.sh')]).status, 0);
+});
