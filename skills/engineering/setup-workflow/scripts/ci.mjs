@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // /setup-workflow 升到 L2 時寫遠端 CI 最小設定（#139）：依程式碼 host（判定同 Host 站，../templates/lib/hosts.mjs）
 // GitHub 寫 .github/workflows/checks.yml、GitLab 寫 .gitlab-ci.yml，local 不寫（只有本機 CI 執行端）。
-// 內容只有 push 與 PR／MR 跑單一檢查入口（detect.mjs 的 check 訊號），node 鎖本機版本：同 ron-skills scripts/check-node-version.mjs，
+// 內容只有 push 與 PR／MR 跑單一檢查入口（detect.mjs 的 check 訊號），node 鎖本機版本：同 ../templates/check-node-version.mjs，
 // CI 的版本要等於跑 bin/check 的主版本。已有 CI 檔就不動，只回報它有沒有呼叫檢查入口。
 // 用法：node ci.mjs <repo> [--dry-run]（測試以 DETECT_NODE_VERSION 取代 process.versions.node）
 // stdout：既有 CI 檔每個一行 `CI_EXISTS <檔> calls|missing <入口>`；最後一行 `CI_WRITTEN <檔>`、`CI_PLANNED <檔>`（--dry-run，前面印內容）、

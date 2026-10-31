@@ -79,7 +79,7 @@ function environment() {
   const install = { git: { macos: 'xcode-select --install', other: 'sudo apt install git' }, python: { macos: 'brew install python', other: 'sudo apt install python3' } };
   const installHint = tool => install[tool][platform.value === 'macos' ? 'macos' : 'other'];
 
-  // node：以 CI 鎖定的版本為準，同 ron-skills scripts/check-node-version.mjs 的規則（各 workflow 一致、主版本等於本機），
+  // node：以 CI 鎖定的版本為準，同 ../templates/check-node-version.mjs 的規則（各 workflow 一致、主版本等於本機），
   // 另讀 setup-node 的 node-version-file（.nvmrc 等）。和它不同的是 CI 沒有鎖版本時不擋：目標 repo 不一定有 CI。
   function nodeRuntime() {
     const local = process.env.DETECT_NODE_VERSION ?? process.versions.node;

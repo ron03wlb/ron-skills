@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { realTmpdir } from './helpers/real-tmpdir.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
-const script = new URL('../scripts/check-conflict-markers.mjs', import.meta.url).pathname;
+const script = new URL('./check-conflict-markers.mjs', import.meta.url).pathname;
 
 // 暫存 git repo，把 files 加進 index 後跑檢查。
 function fixture(t, files) {
