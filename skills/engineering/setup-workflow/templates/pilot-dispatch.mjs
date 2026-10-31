@@ -30,10 +30,11 @@
 //   prior 已在、分支又有了 commit 就是第二次重派：印 `STOP refresh-twice <n>`，由 coordinator 開 gate；gate 選了再重派時帶 --again，另存成 `-prior2`（依序編號）。
 //   認領不在這裡做：coordinator 照 Dispatch 先跑 claim；這裡只在動手前同樣檢查認領，不是這個 session 的就 `STOP <n> not-claimed`，什麼都不動。
 //   沒帶 --note（#227）時只寫 `<主 checkout>/.scratch/pilot/fresh-<n>.md` 草稿、印 `NOTE_DRAFT <path>`，不派工：唯讀（只有 gh 讀 Issue 標題），
-//   不檢查認領與 --capacity、不需要 ORCA_CLI_COMMAND，不改名分支、不開關分頁、不留言；草稿已在時覆寫。內容：原 Issue 號碼與標題；
+//   不檢查認領、不需要 ORCA_CLI_COMMAND，不改名分支、不開關分頁、不留言；帶派工才用的 --again、--allow-overlap、--capacity、--stuck-after 是用法錯誤（exit 2）。
+//   草稿已在時覆寫，但它的「怎麼整併」已經有內容（coordinator 補過、漏帶 --note 重跑）時印 `STOP <n> draft-filled <path>`，不動它。內容：原 Issue 號碼與標題；
 //   prior 分支與 SHA（batch-<key>.md 那列的 candidate，空的取分支 tip）與 `git merge-base <分支> <整合分支>`；成員（prior SHA）與整合分支
-//   自 merge-base 以來共同改過的檔，各附兩邊的 `git diff --stat` 那一行，`.md` 再附兩邊改到的 `- **<名稱>.**` 條目（pilot-probe 的 changedUnits），不印完整 diff；
-//   worker checkpoint（`<worktree>/.scratch/issue-run-<n>/state.md`）從 `final review-only round` 那行到結果行（`DONE|STOP <n>`）的原文，
+//   自 merge-base 以來共同改過的檔，各附兩邊的 `git diff --stat` 那一行，`.md` 再附兩邊改到的 `- **<名稱>.**` 條目（pilot-probe 的 changedUnits；有條目外的改動時另註明），不印完整 diff；
+//   worker checkpoint（`<worktree>/.scratch/issue-run-<n>/state.md`）最後一個 `final review-only round` 那行到結果行（`DONE|STOP <n>`）的原文，
 //   沒有這段時寫明要補 worker 分頁尾段；最後一段空白的「怎麼整併」給 coordinator 補，補完再帶 --note 重跑。
 //
 // 全機上限（#178）：帶 --capacity 時，動手前先以同目錄 pilot-capacity.mjs 的 check 合計全機帳本、加上這次要派的人數（--fresh 是 1）：
@@ -47,8 +48,8 @@
 // stdout：每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
 //   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop；running、overlap 的 STOP 不改寫那一列），STOP 原因只在 stdout。
-//   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> title …`（exit 4）；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
-// exit：0 全部派出；4 有成員 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
+//   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
+// exit：0 全部派出（草稿：寫好）；4 有成員 STOP；2 用法錯誤（含草稿帶了派工旗標）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -350,19 +351,32 @@ function freshDraft(main, key, integration, { n, branch }) {
   } catch (error) {
     return { stop: `${n} git ${error.message}` };
   }
-  const stat = (ref, path) => git('diff', '--stat=200', base, ref, '--', path).stdout.split('\n')[0].trim();
-  const side = (label, ref, unit, path) => `- ${label}：\`${stat(ref, path)}\``
-    + (unit.whole || !unit.entries.size ? '' : `；條目：${[...unit.entries].sort().join('、')}`);
-  const common = [...member.keys()].filter(path => other.has(path)).sort()
-    .map(path => [`### ${path}`, '', side('成員', prior, member.get(path), path), side('整合分支', integration, other.get(path), path)].join('\n'));
+  const stat = (ref, path) => {
+    const result = git('diff', '--stat=200', base, ref, '--', path);
+    if (result.status !== 0) throw new Error(`diff --stat ${result.stderr.trim()}`);
+    return result.stdout.split('\n')[0].trim();
+  };
+  // `.md` 的 whole 只表示有條目外的改動，條目照樣列出（coordinator 只讀列出的條目）。
+  const entries = (path, unit) => !path.endsWith('.md') ? ''
+    : (unit.entries.size ? `；條目：${[...unit.entries].sort().join('、')}` : '') + (unit.whole ? '；另有條目外的改動' : '');
+  const side = (label, ref, unit, path) => `- ${label}：\`${stat(ref, path)}\`${entries(path, unit)}`;
+  let common;
+  try {
+    common = [...member.keys()].filter(path => other.has(path)).sort()
+      .map(path => [`### ${path}`, '', side('成員', prior, member.get(path), path), side('整合分支', integration, other.get(path), path)].join('\n'));
+  } catch (error) {
+    return { stop: `${n} git ${error.message}` };
+  }
   const worktree = worktreeOf(main, branch);
   const state = worktree && join(worktree, `.scratch/issue-run-${n}/state.md`);
   const lines = state && existsSync(state) ? readFileSync(state, 'utf8').split('\n') : [];
-  const from = lines.findIndex(line => /final review-only round/i.test(line));
+  const from = lines.findLastIndex(line => /final review-only round/i.test(line));
   const to = from < 0 ? -1 : lines.findIndex((line, i) => i > from && new RegExp(`\\b(DONE|STOP) ${n}\\b`).test(line));
   const review = from < 0 ? 'checkpoint 沒有 review-only 段，補 worker 分頁尾段。'
     : lines.slice(from, to < 0 ? undefined : to + 1).join('\n').trim();
   const path = join(main, `.scratch/pilot/fresh-${n}.md`);
+  const merge = existsSync(path) ? readFileSync(path, 'utf8').split(/^## 怎麼整併$/m)[1] : undefined;
+  if (merge?.trim()) return { stop: `${n} draft-filled ${path}` };
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, [
     `# fresh-${n}：#${n} ${title}`,

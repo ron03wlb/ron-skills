@@ -639,6 +639,7 @@ function drafted(t, { review = true } = {}) {
   const edit = (dir, file, from, to) => writeFileSync(join(dir, file), readFileSync(join(dir, file), 'utf8').replace(from, to));
   edit(tree, 'docs/pilot.md', '舊的 Probe。', '成員改的 Probe。');
   edit(tree, 'docs/pilot.md', '舊的 Stage。', '成員改的 Stage。');
+  edit(tree, 'docs/pilot.md', '# Pilot', '# Pilot（成員改的標題）');
   edit(tree, 'src.mjs', 'a = 1', 'a = 46');
   writeFileSync(join(tree, 'member-only.txt'), 'member\n');
   git(tree, 'add', '.');
@@ -648,8 +649,9 @@ function drafted(t, { review = true } = {}) {
   git(tree, 'add', '.');
   git(tree, 'commit', '-qm', 'after candidate');
   mkdirSync(join(tree, '.scratch/issue-run-46'), { recursive: true });
-  const section = '## final review-only round\n- P2 src.mjs:1 a 應該是 47。\n- rulings：保留 Stage 的改法。\n\nSTOP 46 findings after two review cycles\n';
-  writeFileSync(join(tree, '.scratch/issue-run-46/state.md'), `# issue-run 46\n\n## review cycle 2\n- P2 舊的 finding。\n\n${review ? section : ''}\n## after\n不該抄進來。\n`);
+  const section = '## final review-only round（第二次）\n- P2 src.mjs:1 a 應該是 47。\n- rulings：保留 Stage 的改法。\n\nSTOP 46 findings after two review cycles\n';
+  const earlier = '## final review-only round（第一次）\n- P2 review cycle 2 的舊 finding。\nSTOP 46 findings after two review cycles\n';
+  writeFileSync(join(tree, '.scratch/issue-run-46/state.md'), `# issue-run 46\n\n${review ? `${earlier}\n${section}` : '## review cycle 2\n'}\n## after\n不該抄進來。\n`);
   edit(fx.repo, 'docs/pilot.md', '舊的 Probe。', '整合分支改的 Probe。');
   edit(fx.repo, 'docs/pilot.md', '舊的 Close。', '整合分支改的 Close。');
   edit(fx.repo, 'src.mjs', 'b = 2', 'b = 99');
@@ -677,14 +679,16 @@ test('--fresh 不帶 --note：印 NOTE_DRAFT，草稿有原 Issue、prior、merg
   // 共同檔只有兩邊都改的 docs/pilot.md 與 src.mjs，各附兩邊的 --stat；.md 附兩邊改到的條目。
   const common = draft.slice(draft.indexOf('## 共同改過的檔'), draft.indexOf('## 最後一輪 review-only'));
   assert.deepEqual([...common.matchAll(/^### (.+)$/gm)].map(m => m[1]), ['docs/pilot.md', 'src.mjs']);
-  assert.match(common, /^- 成員：.*docs\/pilot\.md \| +4 \+\+--.*條目：Probe、Stage$/m);
-  assert.match(common, /^- 整合分支：.*docs\/pilot\.md \| +4 \+\+--.*條目：Close、Probe$/m);
+  // 成員另改了檔頭（條目外）：條目照列，另註明。
+  assert.match(common, /^- 成員：.*docs\/pilot\.md \| +6 \+\+\+---`；條目：Probe、Stage；另有條目外的改動$/m);
+  assert.match(common, /^- 整合分支：.*docs\/pilot\.md \| +4 \+\+--`；條目：Close、Probe$/m);
   assert.match(common, /^- 成員：.*src\.mjs \| +2 \+-`$/m);
   assert.doesNotMatch(draft, /member-only|integration-only|later\.txt/);
   // 不印完整 diff。
   assert.doesNotMatch(draft, /^@@|^[-+]- \*\*|成員改的|整合分支改的|a = 46|b = 99/m);
   assert.ok(draft.includes(fx.section.trim()), draft);
-  assert.doesNotMatch(draft, /review cycle 2|不該抄進來/);
+  // 抄最後一輪 review-only，不是第一次出現的那段。
+  assert.doesNotMatch(draft, /第一次|review cycle 2|不該抄進來/);
   assert.match(draft, /## 怎麼整併\n+$/);
   // 沒改名分支、沒開或關分頁、沒留言，checkpoint 不動。
   assert.equal(fx.calls(), fx.before.calls);
@@ -715,4 +719,26 @@ test('--fresh 不帶 --note：成員沒有分支時 STOP，不寫草稿', t => {
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.match(result.stdout, /^STOP 99 git 沒有分支 issue\/99-nothing$/m);
   assert.equal(existsSync(join(fx.repo, '.scratch/pilot/fresh-99.md')), false);
+});
+
+test('--fresh 不帶 --note：草稿的「怎麼整併」已經補過時 STOP draft-filled、不覆寫；空白的草稿照常重寫', t => {
+  const fx = drafted(t);
+  const path = join(fx.repo, '.scratch/pilot/fresh-46.md');
+  assert.equal(fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch']).status, 0);
+  assert.equal(fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch']).status, 0);
+  writeFileSync(path, `${readFileSync(path, 'utf8')}照整合分支的 Probe 改寫。\n`);
+  const filled = readFileSync(path, 'utf8');
+  const result = fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), [`STOP 46 draft-filled ${path}`]);
+  assert.equal(readFileSync(path, 'utf8'), filled);
+});
+
+test('--fresh 不帶 --note 又帶派工才用的旗標時 exit 2，不寫草稿', t => {
+  const fx = drafted(t);
+  for (const extra of [['--allow-overlap'], ['--capacity'], ['--stuck-after', '30m']]) {
+    const result = fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch', ...extra]);
+    assert.equal(result.status, 2, `${extra.join(' ')}：${result.stdout}${result.stderr}`);
+  }
+  assert.equal(existsSync(join(fx.repo, '.scratch/pilot/fresh-46.md')), false);
 });
