@@ -77,7 +77,7 @@ Matt 的 `triage` skill 定義五個分級角色；本流程再加兩個交付�
 幾張相關的 Issue 一起交付時：
 
 - **手動（L1／L2）**：`/issue-run <n> <m> …`。controller 依 tracker 的依賴建 task graph，照 `implement-spec` 每張一個 worktree、各自做到綠燈後合進本次的整合分支，最後在整合分支 tip 跑一次 acceptance。
-- **池子（L1／L2）**：`/loop /issue-run --pool [<N>]`。同一個 session 照 `scripts/issue-pool.mjs` 的 `ready` 順序先認領再開工，一次一張，每張照 `/issue-run <n>` 跑完；最多跑 `<N>` 張，預設跑到池子空。每次醒來先接續自己認領、還沒做完的單，再撿新單；一張停下時在那張單留言寫明停在哪一步，依賴它的單跳過，其他照跑，醒來的最後一次回報。池子空了就拉長間隔，不結束 loop。repo 沒有 `scripts/issue-pool.mjs` 時停下，提示跑 `/setup-workflow`。
+- **池子（L1／L2）**：`/loop /issue-run --pool [<N>]`。同一個 session 照 `scripts/issue-pool.mjs` 的 `ready` 順序先認領再開工，一次一張，每張照 `/issue-run <n>` 跑完；最多跑 `<N>` 張，預設跑到池子空。每次醒來先接續自己認領、還沒做完的單，再撿新單；一張停下時在那張單留言寫明停在哪一步，依賴它的單跳過，其他照跑，醒來的最後一次回報。池子空了或還有停下的單在等人時就拉長間隔，不結束 loop。repo 沒有 `scripts/issue-pool.mjs` 時停下，提示跑 `/setup-workflow`。
 - **常駐（L3）**：coordinator 每批挑幾張，每張派一個 worker；全部 `DONE` 或 `STOP` 之後，在批次分支依號碼合入、在 staged SHA 跑一次回歸、過了才合進整合分支（見 [05 L3 導入](05-level3.md)）。
 
 一張 Issue 被另一張 STOP 的單擋住時，只有它停；其他獨立的單照常前進。
