@@ -15,6 +15,10 @@
 //                            （接上 hunk 前後各一行）、換上的行和插入的行相同（非空行或同名條目）、碰到檔尾沒換行的行照樣 abort（#175）。
 //               additions、entries、rows 與 adjacent 只解三個版本都是 UTF-8 文字的檔案，其他的照樣 abort。
 //               staged SHA 與 stage 時的 integration tip 寫成 checkpoint 的 `current: staged <sha> onto <tip>`。
+//   load 關卡   要重新 stage（不是 RESUME）時，建 stage worktree 與 stage 之前先讀 1 分鐘 load（os.loadavg）；超過門檻就印
+//               `STOP load <load> <門檻>`（load 取到小數兩位），stage 分支、stage worktree、checkpoint 與 pilot/integration 都不動，
+//               下一輪重跑同一行就接著做（#178：同時跑 8 個 worker 時 load 約 90，bin/check 從 95–130 秒拉長到 240 秒，計時測試失敗）。
+//               門檻依序取 --load-max <n>、$PILOT_LOAD_MAX，都沒有時 3 × os.availableParallelism()；$PILOT_LOAD_NOW 取代實測值（測試用）。
 //   Regression  在 staged SHA 跑 <stage worktree>/bin/check --upstream，完整輸出寫到 <主 checkout>/.scratch/pilot/reg-<key>.log，
 //               checkpoint 追加 `regression: <sha> exit <code>`（通過時附 bin/check 最後一行 CHECK_PASS）。
 //   hold        <主 checkout>/.scratch/pilot/hold 存在就停。
@@ -27,24 +31,25 @@
 //   唯一的成員列 Issue 欄是 `-`、state `done`、candidate 是分支 tip；已存在時成員要是同一個分支，否則 STOP checkpoint。之後與一般 batch 相同。
 //   分支不存在印 `STOP branch <分支> …`，不開 checkpoint。成員列是 `-` 時，STOP、RESOLVED 行裡的 <n> 是分支名稱。
 //
-// 用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>]（在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）
+// 用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--load-max <n>]（在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）
 // stdout：最後一行是 `MERGED <key> <sha>`，或 `STOP regression <exit>`、`STOP hold`、`STOP drift`（tip 變了，下一輪重新 stage）、
 //   `STOP conflict <n> <檔>=<來源>:<種類> …`（已 abort，stage worktree 乾淨；每個衝突檔一項，#192）：來源是 `member <m>`（本次 stage
 //     依號碼先合入、自己的分支改過這個檔的成員）、`integration`（成員開分支之後整合分支改過），或以 + 相連的多個來源（`member 79+integration`、`member 1+member 3`），
 //     都看不出來（不該發生）時是 `unknown`；種類是 `entry <名稱>`（Markdown 檔解不了的 hunk 裡兩邊都改的 `- **<名稱>.**` 條目，
 //     一邊增刪了條目、條目對不齊時是 hunk 碰到的每個條目，多個以、相連）、`code`（程式檔）或 `other`。
 //     例：`STOP conflict 108 scripts/lib/hosts.mjs=member 79:code docs/agents/pilot.md=integration:entry Pool`。以及 `STOP checkpoint …`、`STOP member <n> <state>`、`STOP dirty <worktree>`、
-//   `STOP no-stage-worktree`、`STOP create …`、`STOP merge <n> …`、`STOP git …`。之前的行：`STAGED <key> <sha> onto <tip>`、
+//   `STOP no-stage-worktree`、`STOP create …`、`STOP merge <n> …`、`STOP git …`、`STOP load <load> <門檻>`。之前的行：`STAGED <key> <sha> onto <tip>`、
 //   `RESUME <key> <sha>`、`RESOLVED <n> <解法> <檔案…>`，Bare guard 還原主 checkout 時的 `UNBARE <主 checkout>`。
 // exit：0 MERGED；4 STOP；2 用法錯誤；1 其他失敗（程式錯誤，不印 STOP）。
 import { spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { availableParallelism, loadavg, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { STAMP_FILES, restamp } from './restamp.mjs';
 
-const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>]（--branch 時 key 是 req-<n>；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
+const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--load-max <n>]（--branch 時 key 是 req-<n>；門檻預設 $PILOT_LOAD_MAX，再來 3 × 核心數；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
+const LOAD = /^\d+(\.\d+)?$/;
 const INTEGRATION = 'pilot/integration';
 const MARKER = 32;
 const MARKER_LINE = new RegExp(`^([<|=>])\\1{${MARKER - 1}}`, 'm');
@@ -127,7 +132,7 @@ function readCheckpoint(file) {
 }
 
 /** 請求分支的 batch：checkpoint 不在就開出來（成員列 Issue 欄 `-`），在的話成員要是同一個分支。 */
-function openRequest(key, branch) {
+function openRequest(key, branch, loadMax) {
   const main = mainCheckout();
   const file = join(main, `.scratch/pilot/batch-${key}.md`);
   if (existsSync(file)) {
@@ -135,6 +140,8 @@ function openRequest(key, branch) {
     if (others.length !== 1 || others[0] !== branch) throw new Stop(`checkpoint ${file} 的成員是 ${others.join(' ') || '（沒有）'}，不是 ${branch}`);
     return;
   }
+  // 新開的請求 batch 一定要 stage，load 關卡排在寫 checkpoint 之前（#178：STOP load 時 checkpoint 也不動）。
+  loadGate(loadMax);
   const candidate = gitIn(main, 'rev-parse', '-q', '--verify', `refs/heads/${branch}^{commit}`).stdout.trim();
   if (!candidate) throw new Stop(`branch ${branch} 不存在`);
   const worktree = must(main, 'worktree', 'list', '--porcelain').split(/\n\n+/)
@@ -534,6 +541,13 @@ function stage(tree, key, members, tip) {
   return must(tree, 'rev-parse', 'HEAD');
 }
 
+/** load 關卡：1 分鐘 load 超過門檻就 STOP load，什麼都還沒動。 */
+function loadGate(max) {
+  const now = process.env.PILOT_LOAD_NOW;
+  const load = Math.round((LOAD.test(now ?? '') ? Number(now) : loadavg()[0]) * 100) / 100;
+  if (load > max) throw new Stop(`load ${load} ${max}`);
+}
+
 /** Regression：在 stage worktree 跑 bin/check --upstream，輸出寫到 reg-<key>.log，checkpoint 追加 regression 行；傳回 exit code。 */
 function regression(main, tree, key, sha, file) {
   const log = join(main, `.scratch/pilot/reg-${key}.log`);
@@ -557,7 +571,7 @@ function sameMembers(main, members, staged, tip) {
 }
 
 /** 整個流程；傳回 MERGED 的 SHA，其他結果丟 Stop。 */
-function land(key) {
+function land(key, loadMax) {
   const main = mainCheckout();
   const file = join(main, `.scratch/pilot/batch-${key}.md`);
   const checkpoint = readCheckpoint(file);
@@ -570,14 +584,16 @@ function land(key) {
   const members = checkpoint.members.filter(m => m.state === 'done');
   if (!members.length) throw new Stop(`checkpoint ${file} 沒有 done 成員`);
 
-  const tree = stageWorktree(main) ?? createStageWorktree(main, key);
-  if (must(tree, 'status', '--porcelain')) throw new Stop(`dirty ${tree}`);
   const tip = must(main, 'rev-parse', INTEGRATION);
   const [, staged, onto] = checkpoint.current.match(/^staged ([0-9a-f]{40}) onto ([0-9a-f]{40})\b/) ?? [];
-  let sha;
-  if (staged && onto === tip && checkpoint.regression?.startsWith(`${staged} exit 0`)
+  const resume = staged && onto === tip && checkpoint.regression?.startsWith(`${staged} exit 0`)
     && gitIn(main, 'rev-parse', '-q', '--verify', `refs/heads/${branch}`).stdout.trim() === staged
-    && sameMembers(main, checkpoint.members, staged, tip)) {
+    && sameMembers(main, checkpoint.members, staged, tip);
+  if (!resume) loadGate(loadMax);
+  const tree = stageWorktree(main) ?? createStageWorktree(main, key);
+  if (must(tree, 'status', '--porcelain')) throw new Stop(`dirty ${tree}`);
+  let sha;
+  if (resume) {
     sha = staged;
     console.log(`RESUME ${key} ${sha}`);
   } else {
@@ -599,15 +615,23 @@ function land(key) {
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [key, ...rest] = process.argv.slice(2);
-  const request = rest[0] === '--branch' ? rest[1] : undefined;
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(key ?? '')
-    || (rest.length && !(rest.length === 2 && /^req-\d+$/.test(key) && /^retro\/[a-z0-9][a-z0-9-]*$/.test(request ?? '')))) {
+  const options = {};
+  let bad = false;
+  for (let i = 0; i < rest.length; i += 2) {
+    const name = { '--branch': 'request', '--load-max': 'loadMax' }[rest[i]];
+    if (!name || name in options || rest[i + 1] === undefined) bad = true;
+    else options[name] = rest[i + 1];
+  }
+  const { request } = options;
+  const loadMax = options.loadMax ?? (process.env.PILOT_LOAD_MAX || String(3 * availableParallelism()));
+  if (bad || !/^[a-z0-9][a-z0-9-]*$/.test(key ?? '') || !LOAD.test(loadMax)
+    || (request !== undefined && !(/^req-\d+$/.test(key) && /^retro\/[a-z0-9][a-z0-9-]*$/.test(request)))) {
     console.error(USAGE);
     process.exit(2);
   }
   try {
-    if (request) openRequest(key, request);
-    console.log(`MERGED ${key} ${land(key)}`);
+    if (request) openRequest(key, request, Number(loadMax));
+    console.log(`MERGED ${key} ${land(key, Number(loadMax))}`);
   } catch (error) {
     if (!(error instanceof Stop)) throw error;
     console.log(`STOP ${error.message}`);
