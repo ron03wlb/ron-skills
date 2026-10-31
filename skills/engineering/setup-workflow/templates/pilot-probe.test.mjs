@@ -139,19 +139,21 @@ test('呼叫 orca 時不把 stdin 交給它，每個成員都讀得到', t => {
   assert.match(readFileSync(log, 'utf8'), /^terminal read --terminal term_46 --screen --json$/m);
 });
 
-// 這一輪剛讀到 DONE／STOP 的成員與 checkpoint 已記成 done／stop 的成員都算結束；
+// 這一輪剛讀到 DONE 的成員與 checkpoint 已記成 done 的成員都算 done；stop 的成員要先移走（#163：照跑 pilot-land 只得到 STOP member）；
 // 已經 staged、merged、closed 的 batch 不再印（它們的成員也都是 done）。
-test('dispatched 的 batch 每個成員都 done 或 stop 時印 STAGEABLE <key>', t => {
+test('dispatched 的 batch 每個成員都 done 時才印 STAGEABLE <key>；有 done 也有 stop 時印 MOVE <key> <stop 成員>', t => {
   const { batch, probe } = fixture(t, { screens: {
     term_23: { status: 'running', tail: [`DONE 23 ${SHA}`] },
     term_30: { status: 'running', tail: ['❯'] },
   } });
-  batch('22-23', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 22, state: 'stop', candidate: 'abc1234' }, { n: 23 }]);
+  batch('22-23', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 22, state: 'done', candidate: 'abc1234' }, { n: 23 }]);
+  batch('24-25', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 24, state: 'stop' }, { n: 25, state: 'done', candidate: 'abc1234' }]);
   batch('30-31', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 30 }, { n: 31, state: 'done', candidate: 'abc1234' }]);
   batch('8', 'closed 2026-10-30T13:38:21+08:00', [{ n: 8, state: 'done', candidate: 'abc1234' }]);
   const out = lines(probe());
   assert.ok(out.includes('STAGEABLE 22-23'), out.join('\n'));
-  assert.ok(!out.some(line => /^STAGEABLE (30-31|8)$/.test(line)), out.join('\n'));
+  assert.ok(!out.some(line => /^STAGEABLE (24-25|30-31|8)$/.test(line)), out.join('\n'));
+  assert.ok(out.includes('MOVE 24-25 24'), out.join('\n'));
 });
 
 // 舊格式 `pushed` 的 batch 在 checkpoint 只剩 `regression: <sha>` 指出合入的內容（Integrate 是 ff-only，staged SHA 就是 pilot/integration 的 tip）；
@@ -407,6 +409,29 @@ test('moved batch-<n> 的成員同樣不擋 STAGEABLE', t => {
   batch('126-128', 'dispatched 2026-10-31T09:07:00+08:00', [{ n: 126, state: 'moved batch-126' }, { n: 128, state: 'done', candidate: SHA }]);
   const out = lines(probe());
   assert.ok(out.includes('STAGEABLE 126-128'), out.join('\n'));
+});
+
+// #163：batch-131 只剩一個 stop 成員，舊判斷印 STAGEABLE 131，照跑 pilot-land 只得到 `STOP member 131 stop`。
+test('只有 stop 成員的 batch 不印 STAGEABLE，改印 PARKED <key> <n…>', t => {
+  const { batch, probe } = fixture(t);
+  batch('131', 'dispatched 2026-10-31T13:49:54+08:00', [{ n: 131, state: 'stop' }]);
+  const out = lines(probe());
+  assert.ok(!out.includes('STAGEABLE 131'), out.join('\n'));
+  assert.ok(out.includes('PARKED 131 131'), out.join('\n'));
+});
+
+// #163：#94 與 #123 改同一列，#94 暫緩到 #123 合入；#123 所在的 batch closed 之後才印 UNPARK，#123 被移走的舊 batch 關了不算。
+test('parked after #m 的成員在 #m 所在的 batch closed 後印 UNPARK <n>', t => {
+  const { batch, probe } = fixture(t);
+  batch('94', 'dispatched 2026-10-31T13:57:05+08:00', [{ n: 94, state: 'parked after #123', candidate: SHA }]);
+  batch('88', 'dispatched 2026-10-31T13:57:05+08:00', [{ n: 88, state: 'parked after #124', candidate: SHA }]);
+  batch('123-131', 'closed moved', [{ n: 123, state: 'moved batch-123' }, { n: 131, state: 'moved batch-131' }]);
+  batch('123', 'closed', [{ n: 123, state: 'done', candidate: SHA }]);
+  batch('124', 'dispatched 2026-10-31T13:57:05+08:00', [{ n: 124, state: 'done', candidate: SHA }]);
+  const out = lines(probe());
+  assert.ok(out.includes('PARKED 94 94'), out.join('\n'));
+  assert.ok(out.includes('UNPARK 94'), out.join('\n'));
+  assert.ok(!out.includes('UNPARK 88'), out.join('\n'));
 });
 
 // 整合分支與主分支是專案的值：由參數傳入，預設 pilot/integration 與 main。

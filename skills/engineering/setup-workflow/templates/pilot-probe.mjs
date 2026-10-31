@@ -21,7 +21,10 @@
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
 //                 WORKER <n> STUCK exited|stuck-after <分鐘>|orca <錯誤碼>|no-orca|checkpoint <欄位> <值>
 //                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）
-//   batch：STAGEABLE <key>（dispatched 且每個成員都 done 或 stop；moved（含 `moved batch-<n>`）的成員已移到別的 batch，不算）；
+//   batch：dispatched 的 batch 沒有 running 成員時（這一輪剛讀到 DONE／STOP 的照結果算；moved（含 `moved batch-<n>`）的成員已移到別的 batch，不算）：
+//          每個成員都 done 印 STAGEABLE <key>；有 done 也有 stop、parked 印 MOVE <key> <不是 done 的成員…>（先用 pilot-batch 移走）；
+//          沒有 done 印 PARKED <key> <n…>（#163：只剩 stop 的 batch 照跑 pilot-land 只得到 STOP member）；
+//          沒關的 batch 裡 `parked after #<m>` 的成員，在 #m（沒 moved 的那一列）所在的 batch `closed` 之後印 UNPARK <n>；
 //          current 是 merged／pushed 的 batch 在 git fetch 後比 origin/<主分支>，印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
 //          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA），
 //          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
@@ -282,6 +285,31 @@ export function applyResults(file, key, results) {
   return misses;
 }
 
+/**
+ * dispatched batch 的 stage 判斷（#163）。`active` 是沒有 moved 的成員，`results` 是這一輪剛讀到的 DONE／STOP（還記成 running 的列以它為準）。
+ * 還有 running 時不印；每個成員都 done 印 STAGEABLE；有 done 也有其他狀態（stop、parked）印 MOVE <key> <其他成員…>，先移走它們才 stage；
+ * 沒有 done 印 PARKED <key> <n…>（pilot-land 對它只會 STOP member）。
+ */
+export function stageLines(key, active, results) {
+  const states = active.map(m => ({ n: m.n, state: (m.state === 'running' && results.find(r => r.n === m.n)?.state) || m.state }));
+  if (!states.length || states.some(m => m.state === 'running')) return [];
+  const others = states.filter(m => m.state !== 'done').map(m => m.n);
+  if (!others.length) return [`STAGEABLE ${key}`];
+  return others.length < states.length ? [`MOVE ${key} ${others.join(' ')}`] : [`PARKED ${key} ${others.join(' ')}`];
+}
+
+/**
+ * 沒關的 batch 裡 `parked after #<m>` 的成員：#m 沒有 moved 的那一列所在的 batch 已經 `closed`（合入並收尾）時印 UNPARK <n>（#163）。
+ * #m 被移走的舊 batch（`closed moved`）裡那一列是 moved，不算。
+ */
+export function unparkLines(batches) {
+  const closedMembers = new Set(batches.filter(b => /^closed\b/.test(b.current))
+    .flatMap(b => b.members.filter(m => !/^moved\b/.test(m.state)).map(m => m.n)));
+  return batches.filter(b => !/^closed\b/.test(b.current)).flatMap(b => b.members)
+    .filter(m => closedMembers.has(m.state.match(/^parked after #(\d+)\b/)?.[1]))
+    .map(m => `UNPARK ${m.n}`);
+}
+
 /** `--apply`：已進 origin/<主分支> 的 `merged` batch 改成 `pushed`，SHA 與附註照留（Push gate 印 LANDED 之後沒人寫，coordinator 的 retro）。 */
 function applyPushed(file, key) {
   writeFileSync(file, readFileSync(file, 'utf8').replace(/^(current:[ \t]*)merged\b/m, '$1pushed'));
@@ -437,9 +465,8 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   for (const file of batchFiles(pilot)) {
     const key = file.slice('batch-'.length, -'.md'.length);
     const { current, members, regression, sha } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
-    batches.push({ current, members });
+    batches.push({ key, current, members });
     const active = members.filter(m => !/^moved\b/.test(m.state));
-    const finished = active.filter(m => m.state === 'done' || m.state === 'stop').length;
     const results = [];
     for (const member of members.filter(m => m.state === 'running')) {
       const state = await workerState(ctx, member);
@@ -448,9 +475,10 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
       out.push(`WORKER ${member.n} ${state}`);
     }
     if (apply && results.length) out.push(...applyResults(join(pilot, file), key, results));
-    if (/^dispatched\b/.test(current) && active.length && finished + results.length === active.length) out.push(`STAGEABLE ${key}`);
+    if (/^dispatched\b/.test(current)) out.push(...stageLines(key, active, results));
     if (/^(merged|pushed)\b/.test(current)) landing.push({ key, sha, regression, merged: /^merged\b/.test(current) });
   }
+  out.push(...unparkLines(batches));
   out.push(...overlapLines(checkout, batches, { integration, main }));
   if (landing.length) {
     const fetch = git(checkout, 'fetch', '-q', 'origin');
