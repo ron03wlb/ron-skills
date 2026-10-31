@@ -30,7 +30,7 @@ const CHECK_POLL = /^gh pr view \S+ --json headRefOid,statusCheckRollup/gm;
  * 假 gh 的 `pr merge` 真的在 remote 上做 --no-ff 合併；假 Orca 的 `worktree rm` 照真實行為把主 checkout 設成 bare、一起刪掉本機分支。
  * branchSelectorMissing：照 `orca-ide worktree create --branch` 開的 worktree，`branch:` 選擇器回 selector_not_found，只認 `path:`（#49）。
  */
-function fixture(t, { checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false } = {}) {
+function fixture(t, { checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false, localCheckExit = 0 } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'land-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const sh = (cwd, ...args) => {
@@ -52,6 +52,17 @@ function fixture(t, { checks = [PASS], orcaFails = false, selfHosted = false, br
     for (const name of ['land.mjs', 'orca-session-send.mjs', 'pilot-unbare.sh']) cpSync(new URL(`../scripts/${name}`, import.meta.url).pathname, join(main, 'scripts', name));
     sh(main, 'add', 'scripts');
   }
+  // 假 bin/check：記下參數、所在 SHA 與工作樹是否乾淨，印 CHECK_PASS 行後以 localCheckExit 結束（--local-checks 用）。
+  const log = join(temp, 'calls.log');
+  mkdirSync(join(main, 'bin'));
+  writeFileSync(join(main, 'bin/check'), `#!/usr/bin/env bash
+echo "check $* $(git rev-parse HEAD) dirty=[$(git status --porcelain)]" >> ${JSON.stringify(log)}
+echo 'ℹ tests 7'
+[ ${localCheckExit} = 0 ] && echo 'CHECK_PASS tests 7+2+1'
+exit ${localCheckExit}
+`);
+  chmodSync(join(main, 'bin/check'), 0o755);
+  sh(main, 'add', 'bin');
   sh(main, 'commit', '-q', '-m', 'init');
   sh(main, 'push', '-q', 'origin', 'main');
   sh(temp, 'clone', '-q', origin, merger);
@@ -63,8 +74,7 @@ function fixture(t, { checks = [PASS], orcaFails = false, selfHosted = false, br
   const bin = join(temp, 'bin');
   mkdirSync(bin);
   const state = join(temp, 'gh-state.json');
-  writeFileSync(state, JSON.stringify({ prs: [], checks }));
-  const log = join(temp, 'calls.log');
+  writeFileSync(state, JSON.stringify({ prs: [], checks, comments: [] }));
   writeFileSync(log, '');
   writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
 const fs = require('fs'); const { execFileSync } = require('child_process');
@@ -92,6 +102,8 @@ else if (sub === 'view' && arg('--json').includes('statusCheckRollup')) {
   console.log(JSON.stringify(mergeSample(SAMPLES['pr-view-checks'], { headRefOid: head, statusCheckRollup: checks }, 'pr')));
 }
 else if (sub === 'view') console.log(JSON.stringify(out(find(args[2]))));
+// 真實 gh pr comment 只印新留言的網址（純文字，land.mjs 不解析）。
+else if (sub === 'comment') { s.comments.push({ number: Number(args[2]), body: arg('--body') }); save(); console.log(find(args[2]).url + '#issuecomment-1'); }
 else if (sub === 'merge') {
   const pr = find(args[2]);
   git('fetch', '-q', 'origin'); git('checkout', '-q', '-B', 'main', 'origin/main');
@@ -128,9 +140,10 @@ console.log(JSON.stringify({ ok: true, result: {} }));
   });
   const calls = () => readFileSync(log, 'utf8');
   const prs = () => JSON.parse(readFileSync(state, 'utf8')).prs;
+  const comments = () => JSON.parse(readFileSync(state, 'utf8')).comments;
   const remoteHas = branch => spawnSync('git', ['-C', origin, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0;
   const last = result => result.stdout.trim().split('\n').pop();
-  return { temp, main, wt, origin, body, sh, land, calls, prs, remoteHas, last };
+  return { temp, main, wt, origin, body, sh, land, calls, prs, comments, remoteHas, last };
 }
 
 test('手動分支：push、開 PR、等 CI 登記並通過、合併、收尾、main 跟上', t => {
@@ -146,6 +159,56 @@ test('手動分支：push、開 PR、等 CI 登記並通過、合併、收尾、
   assert.equal(sh(main, 'branch', '--list', 'feature'), '');
   assert.equal(remoteHas('feature'), false);
   assert.equal(sh(main, 'rev-parse', 'HEAD'), pr.mergeCommit.oid);
+});
+
+// #137（G4）：Actions 帳務停擺時 CI 不會啟動，改以本機 bin/check --upstream 當 CI。
+test('--local-checks：tip 等於 SHA、本機 bin/check 通過時不讀 checks，留言註明取代 CI 後合併', t => {
+  const { wt, body, sh, land, calls, prs, comments, last } = fixture(t, { checks: [FAIL] });
+  const tip = sh(wt, 'rev-parse', 'HEAD');
+
+  const result = land(['feature', '--body-file', body, '--local-checks', tip]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(calls(), CHECK_POLL);
+  assert.doesNotMatch(calls(), /^gh pr checks /m);
+  assert.match(calls(), new RegExp(`^check --upstream ${tip} dirty=\\[\\]$`, 'm'));
+  const [pr] = prs();
+  assert.equal(last(result), `LANDED ${pr.number} ${pr.mergeCommit.oid}`);
+  assert.equal(comments().length, 1);
+  assert.equal(comments()[0].number, pr.number);
+  assert.match(comments()[0].body, new RegExp(tip));
+  assert.match(comments()[0].body, /bin\/check --upstream/);
+  assert.match(comments()[0].body, /CHECK_PASS tests 7\+2\+1/);
+});
+
+test('--local-checks：分支 tip 不是指定的 SHA 時 STOP local-checks-sha，不跑 bin/check、不 push、不合併', t => {
+  const { wt, body, sh, land, calls, prs, remoteHas, last } = fixture(t);
+  const stale = sh(wt, 'rev-parse', 'HEAD~1');
+
+  const result = land(['feature', '--body-file', body, '--local-checks', stale]);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(last(result), new RegExp(`^STOP local-checks-sha feature .* ${stale}$`));
+  // 傳 ref 而不是 SHA：ref 一定等於 tip，比對沒有作用，同樣 STOP。
+  const byRef = land(['feature', '--body-file', body, '--local-checks', 'feature']);
+  assert.equal(byRef.status, 4, byRef.stdout + byRef.stderr);
+  assert.match(last(byRef), /^STOP local-checks-sha feature 不是 SHA/);
+  assert.doesNotMatch(calls(), /^check /m);
+  assert.equal(remoteHas('feature'), false);
+  assert.equal(prs().length, 0);
+  assert.doesNotMatch(calls(), /^gh pr merge /m);
+});
+
+test('--local-checks：本機 bin/check 失敗時 STOP local-checks-failed，不 push、不合併，暫時 worktree 不留下', t => {
+  const { main, wt, body, sh, land, calls, prs, remoteHas, last } = fixture(t, { localCheckExit: 1 });
+  const tip = sh(wt, 'rev-parse', 'HEAD');
+
+  const result = land(['feature', '--body-file', body, '--local-checks', tip]);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(last(result), new RegExp(`^STOP local-checks-failed ${tip} exit 1 `));
+  assert.match(calls(), /^check --upstream /m);
+  assert.equal(remoteHas('feature'), false);
+  assert.equal(prs().length, 0);
+  assert.doesNotMatch(calls(), /^gh pr merge /m);
+  assert.equal(sh(main, 'worktree', 'list').split('\n').length, 2);
 });
 
 // 真實發生過的錯：Orca 從 WSL 移除 worktree 後主 checkout 變成 bare，之後的 git 全部失敗（memory、#20、retro 2026-10-30）。
