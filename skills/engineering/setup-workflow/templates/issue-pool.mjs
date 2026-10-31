@@ -14,9 +14,13 @@
 // - 已被指派時，最近一則認領留言必須是這個 session、作者還在指派名單裡，才再認領一次（重派；新留言順便更新 stale 的時間），否則不改 Issue。
 // - 還沒人指派、但最近一則認領是別的 session 在 5 分鐘內留的：對方正在認領，不改 Issue。
 // - 寫入後重讀：這次讀到之後新增的認領留言裡，最早一則不是自己就是別台搶先了，收回自己的留言（指派到這裡一定是同一個帳號，不動）。
+// - 擋下的認領者是這台機器、而且 session 出現在主 checkout 的 `.scratch/pilot/sessions.md`（handoff 之前的前任 coordinator）時，
+//   改以那個 session 認領，成功印 `CLAIMED <n> takeover <session>`（#135）。
 // 被擋時印 `STOP <n> claimed <機器>／<session>`（沒有認領留言、或最近一則認領的作者已不在指派名單時，是指派者登入名），exit 4。
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const USAGE = '用法：node scripts/issue-pool.mjs [--repo <owner>/<name>] [--stale-hours <h>] | claim <n> [--repo <owner>/<name>] [--session <id>]';
@@ -97,21 +101,38 @@ const IN_FLIGHT_MS = 5 * 60_000;
 /** 整則留言只有「認領：<機器>／<session>」一行時回傳認領者；引用或夾在其他文字裡的不算。 */
 const claimerOf = ({ body }) => body.trim().match(/^認領：([^\n]+)$/)?.[1];
 
+/** 擋下認領的是本機的前任 coordinator（session 記在主 checkout 的 sessions.md：start 行、舊格式 start 行或 handoff 行）時傳回它的 session。 */
+function previousCoordinator(claimer) {
+  const [host, session] = claimer.split('／');
+  if (host !== hostname() || !session) return undefined;
+  const common = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  if (common.status !== 0) return undefined;
+  try {
+    return readFileSync(join(dirname(common.stdout.trim()), '.scratch/pilot/sessions.md'), 'utf8').split(/\s+/).includes(session) ? session : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function claim(n, repo, session) {
   const target = [n, ...(repo ? ['--repo', repo] : [])];
   const read = () => JSON.parse(gh('issue', 'view', ...target, '--json', 'assignees,comments'));
   const stop = claimer => { console.log(`STOP ${n} claimed ${claimer}`); return 4; };
-  const mine = `${hostname()}／${session}`;
+  let mine = `${hostname()}／${session}`;
   const before = read();
   const last = before.comments.filter(claimerOf).at(-1);
+  let blocker;
   if (before.assignees.length) {
     const logins = before.assignees.map(({ login }) => login);
     if (!last || !logins.includes(last.author.login)) return stop(logins.join(','));
-    if (claimerOf(last) !== mine) return stop(claimerOf(last));
+    if (claimerOf(last) !== mine) blocker = claimerOf(last);
   } else if (last && claimerOf(last) !== mine && Date.now() - Date.parse(last.createdAt) < IN_FLIGHT_MS) {
     // 別的 session 剛留言、還沒指派：當成進行中的認領，不然兩邊都會在對方指派前寫入、各自以為贏了。
-    return stop(claimerOf(last));
+    blocker = claimerOf(last);
   }
+  const takeover = blocker && previousCoordinator(blocker);
+  if (blocker && !takeover) return stop(blocker);
+  if (takeover) mine = blocker;
   // 先留言再指派：指派成功、留言失敗時，重跑會被自己沒有留言的指派擋住。
   gh('issue', 'comment', ...target, '--body', `認領：${mine}`);
   gh('issue', 'edit', ...target, '--add-assignee', '@me');
@@ -121,7 +142,7 @@ function claim(n, repo, session) {
     gh('issue', 'comment', ...target, '--delete-last', '--yes');
     return stop(claimerOf(first));
   }
-  console.log(`CLAIMED ${n}`);
+  console.log(takeover ? `CLAIMED ${n} takeover ${takeover}` : `CLAIMED ${n}`);
   return 0;
 }
 

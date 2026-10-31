@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeSample } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
+import { git } from './test/repo-fixture.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./issue-pool.mjs', import.meta.url));
 // 真實 gh 回應的樣本（ron03wlb/ron-skills 2026-10-31）：issues.json 是列表用的 `gh api graphql`，issue-view.json 是 claim 讀的
@@ -41,9 +42,16 @@ const view = ({ assignees = [], comments = [] } = {}) => mergeSample(VIEW, {
 }, 'view');
 
 /** PATH 上的假 gh：`api graphql` 回 issues 頁面；`issue view` 依序回 views 的第 i 個（用完就一直回最後一個），其餘只記錄 argv；
- * 每次呼叫一行 JSON 寫進 calls.log。 */
-function fakeGh({ issues = [], views = [view()] } = {}) {
+ * 每次呼叫一行 JSON 寫進 calls.log。script 在暫存的 git repo 裡跑，sessions 給了就寫成它的 `.scratch/pilot/sessions.md`。 */
+function fakeGh({ issues = [], views = [view()], sessions } = {}) {
   const dir = mkdtempSync(join(realTmpdir(), 'issue-pool-'));
+  const repo = join(dir, 'repo');
+  mkdirSync(repo);
+  git(repo, 'init', '-q', '--initial-branch=main');
+  if (sessions !== undefined) {
+    mkdirSync(join(repo, '.scratch/pilot'), { recursive: true });
+    writeFileSync(join(repo, '.scratch/pilot/sessions.md'), sessions);
+  }
   const page = mergeSample(SAMPLE, { data: { repository: { issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: issues } } } }, 'page');
   writeFileSync(join(dir, 'page.json'), JSON.stringify(page));
   writeFileSync(join(dir, 'views.json'), JSON.stringify(views));
@@ -62,9 +70,13 @@ else if (args[0] === 'issue' && args[1] === 'view') {
 }
 `);
   chmodSync(join(dir, 'gh'), 0o755);
-  const run = (...args) => spawnSync('node', [SCRIPT, '--repo', 'acme/app', ...args], { encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+  // 最後一個引數可以是 `{ cwd }`，改在別的目錄跑（例如 repo 的 worktree）。
+  const run = (...args) => {
+    const { cwd = repo } = typeof args.at(-1) === 'object' ? args.pop() : {};
+    return spawnSync('node', [SCRIPT, '--repo', 'acme/app', ...args], { cwd, encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+  };
   const calls = () => { try { return readFileSync(join(dir, 'calls.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line)); } catch { return []; } };
-  return { run, calls };
+  return { run, calls, repo };
 }
 
 test('標 ready-for-agent、沒被 block、不是母單、沒被認領的 Issue 歸到 ready', () => {
@@ -231,4 +243,49 @@ test('claim：最近一則認領是同一個 session 時照常再認領一次', 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'CLAIMED 7\n');
   assert.equal(writes(calls()).length, 2);
+});
+
+// #135：handoff 之後重派，認領者是這台機器上的前任 coordinator；它記在主 checkout 的 sessions.md，就直接以它的 session 接手。
+const SESSIONS = '2026-10-31T09:00:00+08:00   session old-coord   pid 4242   ron-skills-15\n'
+  + '2026-10-31T10:00:00+08:00   handoff from-session old-coord → terminal term_1   reason 合入 2 批\n';
+
+test('claim：認領者是本機前任 coordinator（sessions.md 有它）時以它的 session 接手', () => {
+  const theirs = `認領：${HOST}／old-coord`;
+  const { run, calls } = fakeGh({ sessions: SESSIONS, views: [
+    view({ assignees: ['ron'], comments: [['ron', theirs]] }),
+    view({ assignees: ['ron'], comments: [['ron', theirs], ['ron', theirs]] }),
+  ] });
+  const result = run('claim', '7', '--session', 'sess-1');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'CLAIMED 7 takeover old-coord\n');
+  assert.deepEqual(writes(calls()), [
+    ['issue', 'comment', '7', '--repo', 'acme/app', '--body', theirs],
+    ['issue', 'edit', '7', '--repo', 'acme/app', '--add-assignee', '@me'],
+  ]);
+});
+
+test('claim：別台機器的認領者即使 session 在 sessions.md 也停下，不改 Issue', () => {
+  const { run, calls } = fakeGh({ sessions: SESSIONS, views: [view({ assignees: ['ron'], comments: [['ron', '認領：other-box／old-coord']] })] });
+  const result = run('claim', '7', '--session', 'sess-1');
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, 'STOP 7 claimed other-box／old-coord\n');
+  assert.deepEqual(writes(calls()), []);
+});
+
+test('claim：sessions.md 不存在時本機別的 session 照舊停下，不改 Issue', () => {
+  const { run, calls } = fakeGh({ views: [view({ assignees: ['ron'], comments: [['ron', `認領：${HOST}／old-coord`]] })] });
+  const result = run('claim', '7', '--session', 'sess-1');
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, `STOP 7 claimed ${HOST}／old-coord\n`);
+  assert.deepEqual(writes(calls()), []);
+});
+
+test('claim：從 worktree 跑時讀主 checkout 的 sessions.md', () => {
+  const theirs = `認領：${HOST}／old-coord`;
+  const { run, repo } = fakeGh({ sessions: SESSIONS, views: [view({ assignees: ['ron'], comments: [['ron', theirs]] }), view({ assignees: ['ron'], comments: [['ron', theirs], ['ron', theirs]] })] });
+  git(repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'base');
+  git(repo, 'worktree', 'add', '-q', '-b', 'issue/7', join(repo, '..', 'wt'));
+  const result = run('claim', '7', '--session', 'sess-1', { cwd: join(repo, '..', 'wt') });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'CLAIMED 7 takeover old-coord\n');
 });
