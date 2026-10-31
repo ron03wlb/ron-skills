@@ -51,3 +51,21 @@ _Avoid_: queue、backlog、待辦
 **認領**:
 session 開始處理一張 Issue 前，在 tracker 上把它指派給自己，讓其他機器或 session 不會撿到同一張；同一個帳號分不出 session，所以先留一則「認領：<機器>／<session>」留言再指派。
 _Avoid_: lock、claim、佔單
+
+## 分頁狀態
+
+**分頁狀態**:
+Orca 分頁標題最前面的前綴，表示這個 session 走到生命週期的哪一步，分成處理中、待 Retro、待關閉三種。
+_Avoid_: tab status、標籤
+
+**處理中**:
+session 還在處理這件事，包含停下來等使用者回答或核准。
+_Avoid_: 進行中、WIP
+
+**待 Retro**:
+session 的工作已經做完，等使用者在這個分頁跑 `/retro`。
+_Avoid_: 完成、done
+
+**待關閉**:
+session 的 `/retro` 已經結束，分頁可以關。
+_Avoid_: 可關閉、closed

@@ -56,3 +56,12 @@ test('pilot-probe、pilot-dispatch 登記為副本，正本與測試 grep 不到
 test('本 repo adapter 的 Pilot 段連到 pilot.md，Probe 會把它當 adapter 比對', () => {
   assert.deepEqual(pilotFiles(read('docs/agents/issue-run.md').toString()), ['docs/agents/pilot.md']);
 });
+
+// 分頁狀態（#126）：LANDED、HANDED_OFF 在 Bash 輸出，worker 的 DONE 與前綴檢查在 Stop。
+test('.claude/settings.json 以 PostToolUse（Bash）與 Stop 接上分頁狀態 hook', () => {
+  for (const path of ['scripts/tab-state.mjs', 'scripts/claude-hook-tab-state.mjs']) assert.ok(copies[path], `清單沒有 ${path}`);
+  const { hooks } = JSON.parse(read('.claude/settings.json'));
+  const calls = list => list.some(({ command }) => command.includes('scripts/claude-hook-tab-state.mjs'));
+  assert.ok(hooks.PostToolUse.some(({ matcher, hooks: list }) => /\bBash\b|^\*$/.test(matcher) && calls(list)), 'PostToolUse 沒有對 Bash 呼叫 scripts/claude-hook-tab-state.mjs');
+  assert.ok(hooks.Stop.some(({ hooks: list }) => calls(list)), 'Stop 沒有呼叫 scripts/claude-hook-tab-state.mjs');
+});
