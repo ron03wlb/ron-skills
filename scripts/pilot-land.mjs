@@ -193,8 +193,8 @@ function resolveHunk(base, ours, theirs, kinds) {
 
 /** Markdown 表格列的第一格：開頭的 `|` 之後到下一個沒跳脫的 `|`，去掉前後空白。 */
 const firstCell = line => line.match(/^\|((?:\\.|[^|\\])*)/)[1].trim();
-/** 表格列裡沒跳脫的 `|` 數：欄數不同（一邊加了欄）時不逐列合併。 */
-const pipes = line => line.match(/\\.|\|/g).filter(token => token === '|').length;
+/** 表格列的欄數：沒跳脫的 `|` 數，收尾那個不算（GFM 可以省略）。欄數不同（一邊加了欄）時不逐列合併。 */
+const pipes = line => (line.replace(/(?<!\\)\|\s*$/, '').match(/\\.|\|/g) ?? []).filter(token => token === '|').length;
 
 /**
  * rows：hunk 的 base、ours、theirs 每一行都是 Markdown 表格列（`|` 開頭）時，以第一格為鍵逐列合併（#162）。

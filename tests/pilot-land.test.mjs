@@ -390,6 +390,20 @@ test('表格兩邊新增同一個第一格的列：STOP conflict', t => {
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
 });
 
+test('表格新增的列沒有收尾的 `|`：欄數相同，照樣 RESOLVED rows', t => {
+  const f = fixture(t, {
+    base: { 'table.md': TABLE },
+    members: [
+      { n: 1, slug: 'a', files: { 'table.md': TABLE.replace('a v1', 'a v2') } },
+      { n: 2, slug: 'b', files: { 'table.md': TABLE.replace('b v1 |', 'b v2\n| `b2.mjs` | from 2') } },
+    ],
+  });
+  const result = f.land();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.lines.includes('RESOLVED 2 rows table.md'), result.stdout);
+  assert.equal(git(f.repo, 'show', `${f.tip()}:table.md`) + '\n', TABLE.replace('a v1', 'a v2').replace('b v1 |', 'b v2\n| `b2.mjs` | from 2'));
+});
+
 // review：一邊加欄、另一邊加列，逐列合併會留下欄數不對的列。
 test('表格一邊改了欄數：不逐列合併，STOP conflict', t => {
   const f = fixture(t, {
