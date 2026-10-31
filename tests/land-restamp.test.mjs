@@ -15,7 +15,13 @@ const SCRIPTS = ['land.mjs', 'orca-session-send.mjs', 'restamp.mjs', 'check-work
 const SYNC_SOURCES = Object.keys(JSON.parse(readFileSync(join(repoRoot, 'scripts/workflow-doc-sync.json'), 'utf8')).sources);
 const STAMPS = 'scripts/workflow-doc-sync.json';
 // 不用 Orca（收尾走 git worktree remove），也不讓外層的 GIT_* 寫進本 repo。
-const landEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith('ORCA_')));
+// user.useConfigOnly 讓 git 不從帳號資料猜 identity，本機也像沒有全域 identity 的 CI runner 一樣；
+// land.mjs 內部的 git merge 從 GIT_AUTHOR_*、GIT_COMMITTER_* 拿 identity（#197）。
+const landEnv = {
+  ...Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith('ORCA_'))),
+  GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'user.useConfigOnly', GIT_CONFIG_VALUE_0: 'true',
+  GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t',
+};
 
 /**
  * bare remote、主 checkout、feature worktree 與 PATH 上的假 gh（輸出從真實樣本長出來；`pr merge` 在 remote 上真的合併，
