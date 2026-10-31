@@ -345,8 +345,8 @@ test('README 等級表的進入條件與 detect.mjs 的是非題同一版', () =
   const readme = readFileSync(new URL('../docs/workflow/README.md', import.meta.url), 'utf8');
   const cells = Object.fromEntries(readme.split('\n').map(line => line.match(/^\| \*\*(L[1-3]) [^*]+\*\* \| [^|]+ \| ([^|]+) \|/)).filter(Boolean).map(([, level, cell]) => [level, cell.trim()]));
   assert.deepEqual(cells, {
-    L1: '有 tracker、能裝 skills、repo 有（或願意做）一條能跑完所有檢查的指令',
-    L2: 'L1 已交付過幾張；開始同時開好幾個 session，或已經發生過「繞過檢查」「合錯分支」「狀態對不上」',
-    L3: 'L2 的入口都有固定 exit code；裝了 Orca；願意讓 agent 在無人值守時跑 git',
+    L1: '用 Issue tracker（GitHub、GitLab 或本機 Markdown）交付工作；這台機器能裝 ron-skills 的 skills；repo 有（或願意先做）一條能跑完所有檢查的指令',
+    L2: '已用 L1 的 `/issue-run` 交付過幾張 Issue；而且同時開兩個以上 session，或已經發生過繞過檢查、合錯分支、狀態對不上（兩者擇一）',
+    L3: 'L2 的入口（檢查、合入、push 前 hook）都有固定的 exit code；裝了 Orca；願意讓 agent 在無人值守時跑 git',
   });
 });

@@ -8,7 +8,7 @@
 
 | skill | 做什麼 | 等級 | 來源 |
 | --- | --- | --- | --- |
-| `/setup-workflow` | 導入入口：偵測等級（L0–L3）與擴充，下一級的進入條件都符合才建議往上一級（否則維持）；經人確認後寫 tracker、label、domain docs 與 adapter，並把 script 正本複製到 `scripts/`、記錄在 `docs/agents/workflow-templates.json`；`/setup-workflow health` 體檢已導入的專案（等級標示錯誤、分歧、隱性跨 repo 依賴），只回報不寫檔 | L1（人輸入） | ron-skills |
+| `/setup-workflow` | 導入入口：環境、Host、等級三站依序呈現證據、各自等人確認（都不寫檔；下一級的進入條件都符合才建議往上一級，否則維持），再確認擴充與寫檔清單；經人確認後寫 tracker、label、domain docs 與 adapter，並把 script 正本複製到 `scripts/`、記錄在 `docs/agents/workflow-templates.json`；`/setup-workflow health` 體檢已導入的專案（等級標示錯誤、分歧、隱性跨 repo 依賴），只回報不寫檔 | L1（人輸入） | ron-skills |
 | `/setup-matt-pocock-skills` | 產生 `docs/agents/` 的 tracker、triage label、domain docs 設定 | L1（人輸入；`/setup-workflow` 會照它的步驟做，手動時才單獨用） | Matt |
 | `wizard` | 產生互動式 bash 精靈，帶人走完只有人能做的設定（建專案、token、CI secret） | 輔助 | Matt |
 | `writing-for-agents` | 寫 skill、`CLAUDE.md`、adapter 這類給 agent 讀的文件 | 輔助 | Matt |
