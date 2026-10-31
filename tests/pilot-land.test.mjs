@@ -1170,7 +1170,9 @@ test('sync-main：merged batch 寫不進去時整合分支不動；修好後重�
   const file = join(f.repo, '.scratch/pilot/batch-5.md');
   chmodSync(file, 0o444);
   const failed = f.sync();
-  assert.notEqual(failed.status, 0, failed.stdout + failed.stderr);
+  // 檔頭與 pilot.md Push gate 第 3 步承諾寫不進去時印 STOP checkpoint（exit 4），不是程式錯誤（exit 1）。
+  assert.equal(failed.status, 4, failed.stdout + failed.stderr);
+  assert.match(failed.last, /^STOP checkpoint .*batch-5\.md/);
   assert.equal(f.tip(), before, '整合分支不動');
   chmodSync(file, 0o644);
   const again = f.sync();

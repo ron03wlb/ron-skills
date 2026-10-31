@@ -680,7 +680,13 @@ function recordSync(main, sha, value) {
     const file = join(dir, name);
     const merged = readFileSync(file, 'utf8').match(/^current:[ \t]*merged ([0-9a-f]{7,40})\b/m)?.[1];
     if (!merged || gitIn(main, 'merge-base', '--is-ancestor', merged, sha).status !== 0) continue;
-    appendRegression(file, value);
+    // 寫入本身失敗（唯讀、磁碟滿）也是 STOP checkpoint，不是程式錯誤：檔頭與 pilot.md 都這樣承諾，整合分支這時還沒動。
+    try {
+      appendRegression(file, value);
+    } catch (error) {
+      if (error instanceof Stop || !error?.code) throw error;
+      throw new Stop(`checkpoint ${file} 寫不進去：${error.code}`);
+    }
     console.log(`RECORDED ${name.slice('batch-'.length, -'.md'.length)}`);
   }
 }
@@ -702,11 +708,8 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     process.exit(2);
   }
   try {
+    // `sync-main --branch …` 已被上面 req-<n> 的檢查擋成用法錯誤。
     if (key === 'sync-main') {
-      if (request !== undefined) {
-        console.error(USAGE);
-        process.exit(2);
-      }
       console.log(`SYNCED ${syncMain(Number(loadMax))}`);
       process.exit(0);
     }
