@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
-// bin/check 最後一行把兩組測試的 `ℹ tests <n>` 加總成 `CHECK_PASS tests <a>+<b>`，pilot 的 Regression 照抄進 regression: 行。
+// bin/check 最後一行把各組測試的 `ℹ tests <n>` 用 + 串成 `CHECK_PASS tests <a>+<b>+…`，pilot 的 Regression 照抄進 regression: 行。
 // macOS 的 BSD paste 沒有檔案參數時不讀 stdin，只印 usage；錯誤藏在 $(…) 裡，bin/check 照樣 exit 0，最後一行卻少了數字（#98）。
 const line = readFileSync(new URL('../bin/check', import.meta.url), 'utf8').split('\n').find(text => text.startsWith('echo "CHECK_PASS'));
 const realPaste = spawnSync('bash', ['-c', 'command -v paste'], { encoding: 'utf8' }).stdout.trim();
