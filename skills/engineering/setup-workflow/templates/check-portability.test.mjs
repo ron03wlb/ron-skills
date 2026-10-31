@@ -83,6 +83,9 @@ const SHELL = [
     `echo "CHECK_PASS tests $(sed -n 's/^ℹ tests \\([0-9]*\\)$/\\1/p' "$tmp/tests.log" | paste -sd+ -)"`],
   ['paste-s', 'seq 3 | paste -s -d ,', 'paste -s -d , list.txt'],
   ['paste-s', "seq 3 | paste -sd ' '", "seq 3 | paste -sd ' ' -"],
+  ['paste-s', 'paste -sd, < f', 'seq 3 | paste -s -d "," f.txt'],
+  ['paste-s', 'seq 3 | paste -s > out', 'seq 3 | paste -s -d"," -'],
+  ['sed-i', 'echo a; sed -i s/a/b/ f', 'x="$(seq 3 | paste -s -d "," -)"; echo a;# sed -i x'],
 ];
 for (const [rule, bad, good] of SHELL) {
   test(`${rule}：${bad}`, t => {
