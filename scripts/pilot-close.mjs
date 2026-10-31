@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// /issue-pilot coordinator 的 Close：batch 的 merge 進到 origin/main 之後，照 docs/agents/pilot.md 的 Close 收掉每個 done 成員。
+// /issue-pilot coordinator 的 Close：batch 的 merge 進到 origin/main 之後，照 docs/agents/pilot-after-merge.md 的 Close 收掉每個 done 成員。
 // 先跑 Bare guard（上一輪可能中斷在 Orca 設成 bare 之後），確認 merge SHA 已在 origin/main、主 checkout 的 main 跟上 origin/main（落後就 --ff-only），再對每個成員依序做
 // evidence（證據留言）→ counterpart（對應單交接）→ close（關 Issue）→ terminal → worktree（rm 後跑 Bare guard）→ branch（`branch -d`）
 // → remote（刪遠端分支）→ parent（子單全部結束就留言關母單）。每一步先看做過沒有，做過就 SKIP，所以中斷後可以重跑。

@@ -52,11 +52,11 @@ test('repo 自己的 .claude/settings.json 通過', () => {
   assert.deepEqual(missingAllows(settings), []);
 });
 
-test('pilot.md 的 Permissions 條目列出 allow 的每條規則，且只列這些', () => {
+test('pilot-exceptions.md 的 Permissions 條目列出 allow 的每條規則，且只列這些', () => {
   const settings = JSON.parse(readFileSync(new URL('../.claude/settings.json', import.meta.url), 'utf8'));
-  const pilot = readFileSync(new URL('../docs/agents/pilot.md', import.meta.url), 'utf8');
+  const pilot = readFileSync(new URL('../docs/agents/pilot-exceptions.md', import.meta.url), 'utf8');
   const entry = pilot.split('\n').find(line => line.startsWith('- **Permissions.**'));
-  assert.ok(entry, 'pilot.md 沒有 Permissions 條目');
+  assert.ok(entry, 'pilot-exceptions.md 沒有 Permissions 條目（#166 從 pilot.md 移過去）');
   const listed = [...entry.matchAll(/`(Bash\([^`]*\))`/g)].map(m => m[1]).sort();
   assert.deepEqual(listed, [...settings.permissions.allow].sort());
 });

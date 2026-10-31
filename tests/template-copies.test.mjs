@@ -53,8 +53,9 @@ test('pilot-probe、pilot-dispatch 登記為副本，正本與測試 grep 不到
   }
 });
 
-test('本 repo adapter 的 Pilot 段連到 pilot.md，Probe 會把它當 adapter 比對', () => {
-  assert.deepEqual(pilotFiles(read('docs/agents/issue-run.md').toString()), ['docs/agents/pilot.md']);
+test('本 repo adapter 的 Pilot 段連到 pilot.md 與拆出去的檔，Probe 會把它們都當 adapter 比對', () => {
+  assert.deepEqual(pilotFiles(read('docs/agents/issue-run.md').toString()),
+    ['pilot.md', 'pilot-after-merge.md', 'pilot-conflict.md', 'pilot-exceptions.md', 'pilot-retro-collect.md'].map(name => `docs/agents/${name}`));
 });
 
 // 分頁狀態（#126）：LANDED、HANDED_OFF 在 Bash 輸出，worker 的 DONE 與前綴檢查在 Stop。
