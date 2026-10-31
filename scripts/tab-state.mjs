@@ -5,9 +5,11 @@
 // 記在本機 TAB_STATE_DIR（預設 ~/.local/state/orca-tab-titles）的 `<handle>` 檔：本腳本改名後寫入，hook 從 Bash 的
 // `orca terminal rename` 指令擷取寫入；沒有記錄時以 Orca 的自動標題為目前標題（從沒改過名的分頁顯示的就是它）。
 //
-// 用法：node scripts/tab-state.mjs <處理中|待 Retro|待關閉>
+// 用法：node scripts/tab-state.mjs <處理中|待 Retro|待關閉> [--topic <主題>]
+// --topic 把標題整個設成 `<狀態>｜<主題>`，不讀目前標題：session 開頭用它，記錄裡可能還是同一個 handle 上一個 session 的主題（#141）；
+// 之後的狀態切換不帶 --topic。
 // stdout：改名成功時印 `TAB_STATE <新標題>`。
-// exit：0 已改名，或沒有 ORCA_TERMINAL_HANDLE、Orca 呼叫失敗（都不輸出）；2 狀態不合法。
+// exit：0 已改名，或沒有 ORCA_TERMINAL_HANDLE、Orca 呼叫失敗（都不輸出）；2 狀態不合法、--topic 沒有值。
 // ORCA_CLI_COMMAND 沒設時用 PATH 上的 `orca`。
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -64,24 +66,27 @@ export async function currentTitle(ctx, handle) {
   return terminals.find(terminal => terminal.handle === handle)?.title ?? '';
 }
 
-/** 把分頁標題換成 `state` 的前綴並記下；傳回新標題。 */
-export async function setState(ctx, handle, state) {
-  const title = withState(await currentTitle(ctx, handle), state);
+/** 把分頁標題換成 `state` 的前綴並記下；有 `topic` 時標題是 `<state>｜<topic>`，不讀目前標題。傳回新標題。 */
+export async function setState(ctx, handle, state, topic) {
+  const title = withState(topic ?? await currentTitle(ctx, handle), state);
   await orca(ctx, 'terminal', 'rename', '--terminal', handle, '--title', title);
   recordTitle(handle, title);
   return title;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const state = process.argv.slice(2).join(' ');
-  if (!STATES.includes(state)) {
-    console.error(`用法：node scripts/tab-state.mjs <${STATES.join('|')}>`);
+  const args = process.argv.slice(2);
+  const at = args.indexOf('--topic');
+  const state = (at < 0 ? args : args.slice(0, at)).join(' ');
+  const topic = at < 0 ? undefined : args.slice(at + 1).join(' ').trim();
+  if (!STATES.includes(state) || topic === '') {
+    console.error(`用法：node scripts/tab-state.mjs <${STATES.join('|')}> [--topic <主題>]`);
     process.exit(2);
   }
   const handle = process.env.ORCA_TERMINAL_HANDLE;
   if (!handle) process.exit(0);
   try {
-    const title = await setState(orcaContext(), handle, state);
+    const title = await setState(orcaContext(), handle, state, topic);
     console.log(`TAB_STATE ${title}`);
   } catch {
     process.exit(0);

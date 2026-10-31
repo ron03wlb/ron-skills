@@ -8,7 +8,7 @@ import { realTmpdir } from './helpers/real-tmpdir.mjs';
 // scripts/gh-tracker.mjs 是 auto mode 唯一放行的 tracker 寫入（#96）：只寫 ron03wlb/ron-skills，其他 repo 照 #79 交給人。
 const script = new URL('../scripts/gh-tracker.mjs', import.meta.url).pathname;
 
-/** PATH 上放假 gh：每次呼叫記一行 JSON argv；`api --hostname github.com repos/.../issues/<n> --jq .id` 回 9000+n（Issue 的 database id）。 */
+/** PATH 上放假 gh：每次呼叫記一行 JSON argv；`api --hostname github.com repos/.../issues/<n> --jq .id` 回 9000+n（Issue 的 database id），`api … --method …` 回一大段 issue JSON（同真的 REST 回應，#140）。 */
 function run(...args) {
   const temp = mkdtempSync(join(realTmpdir(), 'gh-tracker-'));
   const log = join(temp, 'calls.jsonl');
@@ -18,6 +18,7 @@ require('fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n
 if (process.env.GH_HOST) require('fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(['GH_HOST', process.env.GH_HOST]) + '\\n');
 const id = args.join(' ').match(/^api --hostname github\\.com repos\\/[^ ]+\\/issues\\/(\\d+) --jq \\.id$/);
 if (id) console.log(9000 + Number(id[1]));
+if (args.includes('--method')) console.log(JSON.stringify({ number: 1, user: { login: 'x' }, body: 'x'.repeat(40000) }));
 `);
   chmodSync(join(temp, 'gh'), 0o755);
   const result = spawnSync('node', [script, ...args], { encoding: 'utf8', env: { ...process.env, PATH: `${temp}:${process.env.PATH}`, GH_REPO: 'other/repo', GH_HOST: 'other.example' } });
@@ -85,6 +86,20 @@ test('sub-issue、blocked-by：先查 database id，再呼叫本 repo 的 sub_is
     [lookup(79), ['api', '--hostname', 'github.com', '--method', 'POST', 'repos/ron03wlb/ron-skills/issues/96/dependencies/blocked_by', '-F', 'issue_id=9079']]);
   assert.deepEqual(run('blocked-by', 'remove', '96', '79').calls,
     [lookup(79), ['api', '--hostname', 'github.com', '--method', 'DELETE', 'repos/ron03wlb/ron-skills/issues/96/dependencies/blocked_by/9079']]);
+});
+
+// 真的 API 回整份 issue JSON（#140 一次 43.6KB），stdout 只留一行結果，失敗時照 gh 的 exit code。
+test('sub-issue、blocked-by：stdout 只印一行結果，不印 API 回應', () => {
+  for (const [args, line] of [
+    [['sub-issue', 'add', '82', '139'], 'SUB_ISSUE add 82 139'],
+    [['sub-issue', 'remove', '82', '139'], 'SUB_ISSUE remove 82 139'],
+    [['blocked-by', 'add', '139', '137'], 'BLOCKED_BY add 139 137'],
+    [['blocked-by', 'remove', '139', '137'], 'BLOCKED_BY remove 139 137'],
+  ]) {
+    const result = run(...args);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `${line}\n`);
+  }
 });
 
 test('sub-issue、blocked-by 只收 add|remove 加兩個數字號碼', () => {

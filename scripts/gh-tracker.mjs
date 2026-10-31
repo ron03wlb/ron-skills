@@ -7,6 +7,7 @@
 //       node scripts/gh-tracker.mjs create --title|-t <title> (--body|-b | --body-file|-F) [--label|-l、--assignee|-a <值>]...
 //       node scripts/gh-tracker.mjs sub-issue add|remove <parent> <child>
 //       node scripts/gh-tracker.mjs blocked-by add|remove <n> <blocker>
+// sub-issue、blocked-by 成功時 stdout 只印一行 `SUB_ISSUE <add|remove> <parent> <child>` 或 `BLOCKED_BY <add|remove> <n> <blocker>`，不印 API 回應（整份 issue JSON，#140）。
 // 在 repo 根目錄執行：allow 規則比對的是 `node scripts/gh-tracker.mjs` 這個相對路徑。
 // 不合規則時 exit 2、不呼叫 gh；gh 無法執行、或查到的 database id 不是數字時也 exit 2；其餘照 gh 的 exit code。主機也要寫死：不帶主機的 --repo 與 gh api 會用 gh config 的預設主機，不一定是 github.com。
 // gh 收到的環境也沒有 GH_HOST、GH_REPO。
@@ -73,4 +74,6 @@ const lookup = spawnGh(['api', '--hostname', HOST, `repos/${REPO}/issues/${other
 if (lookup.status !== 0) process.exit(lookup.status ?? 1);
 const id = lookup.stdout.trim();
 if (!isNumber(id)) fail(`#${other} 的 database id 不是數字：${id}`);
-gh(['api', '--hostname', HOST, ...RELATION_COMMANDS[command][action](n, id)]);
+const relation = spawnGh(['api', '--hostname', HOST, ...RELATION_COMMANDS[command][action](n, id)], ['ignore', 'ignore', 'inherit']);
+if (relation.status !== 0) process.exit(relation.status ?? 1);
+console.log(`${command.replace('-', '_').toUpperCase()} ${action} ${n} ${other}`);

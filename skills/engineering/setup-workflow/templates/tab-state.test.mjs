@@ -55,6 +55,25 @@ test('沒有前綴就補上：沒有記錄時以 Orca 的自動標題為目前�
   assert.equal(recorded(), '處理中｜Issue-run 126 batch 126-128');
 });
 
+// #141：/clear 後的新 session 跑 `tab-state 處理中`，帶出同一個 handle 上一個 session 的主題。
+test('--topic：一次設定前綴與主題，不沿用記錄裡上一個 session 的主題', t => {
+  const { record, recorded, run, calls } = fixture(t);
+  record('處理中｜[維運] 整理 worktree');
+  const result = run(['處理中', '--topic', '[維運] retro 收集']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'TAB_STATE 處理中｜[維運] retro 收集');
+  assert.equal(calls(), 'terminal rename --terminal term_self --title 處理中｜[維運] retro 收集 --json\n');
+  assert.equal(recorded(), '處理中｜[維運] retro 收集');
+});
+
+test('--topic 沒有值或是空字串：exit 2，不呼叫 Orca', t => {
+  const { run, calls } = fixture(t);
+  for (const args of [['處理中', '--topic'], ['處理中', '--topic', ''], ['處理中', '--topic', ' ']]) {
+    assert.equal(run(args).status, 2, args.join(' '));
+  }
+  assert.equal(calls(), '');
+});
+
 test('沒有 ORCA_TERMINAL_HANDLE、Orca 呼叫失敗：exit 0 不輸出、不改記錄', t => {
   for (const [options, extra] of [[{}, { ORCA_TERMINAL_HANDLE: '' }], [{ failing: true }, {}]]) {
     const { recorded, run } = fixture(t, options);
