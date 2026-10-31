@@ -14,6 +14,10 @@ When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the 
 
 Edit the "Label in our tracker" column to match whatever vocabulary you actually use.
 
+## `ready-for-agent` 的輸入條件
+
+標 `ready-for-agent` 之前，先照 [issue-run.md](issue-run.md#readiness) 的 **Readiness** 檢查驗收與做法用到的輸入取得到；取不到的維持 `needs-info`。
+
 ## `parent` label
 
 帶 `parent` label 的 issue 是母單（見 [issue-tracker.md](issue-tracker.md#母單)）：`/triage` 不把它放進 Unlabeled 桶，也不給它掛上表中任何 triage label。母單的 label 由 pilot 的 Reconcile 整理（[issue-run.md](issue-run.md) 的 **Probe**）。
