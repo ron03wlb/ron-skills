@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { repoFixture, source, run, git } from './test/repo-fixture.mjs';
 
@@ -97,3 +97,13 @@ for (const [rule, bad, good] of SHELL) {
     passes(scan(repoFixture(t), { 'bin/run': `#!/usr/bin/env bash\nset -eu\n${good}\n` }));
   });
 }
+
+// #92：給了路徑參數時只掃那些路徑（目錄含底下的檔案）；範圍外讀不到的檔案不讓它失敗。
+test('路徑參數：只掃列出的檔案與目錄，範圍外的違規與讀不到的檔案不管', { skip: process.getuid?.() === 0 && 'root 讀得到 000 的檔案' }, t => {
+  const f = repoFixture(t);
+  const files = { 'bin/run': '#!/bin/sh\nsed -i s/a/b/ f\n', 'scripts/a.sh': '#!/bin/sh\nxargs -r echo\n', 'lib/x.sh': '#!/bin/sh\nreadlink -f x\n', 'notes.txt': 'x\n' };
+  scan(f, files);
+  chmodSync(join(f.repo, 'notes.txt'), 0o000);
+  const result = run(f.repo, [process.execPath, join(source, 'check-portability.mjs'), 'bin', 'scripts/a.sh']);
+  assert.deepEqual(violations(result), ['bin/run:2: sed-i', 'scripts/a.sh:2: xargs-r']);
+});
