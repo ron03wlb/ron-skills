@@ -7,10 +7,13 @@
 // `--queue` 給忙碌中的 session 補送（例如 Dispatch 之後補範圍，#133）：不等 tui-idle，直接送出排到下一輪；
 // 忙碌畫面本來就有 `esc to interrupt`，也可能留著開頭相同的上一則提醒（還會捲出畫面），所以不看畫面，只看 composer：
 // 先只打字、等 `draft` 出現 prompt，再只補 Enter、等 `draft` 清空；整段文字最多送一次，只有 Enter 會重送。
+// 送出前 composer 不是空的（例如上一次 STOP 留下的舊提醒）就 STOP draft-not-empty，不把舊草稿當成這一則送出；
+// 任何一次讀不到 `draft` 欄位（`orca terminal read --help`：may be absent）都無從確認，STOP draft-unavailable，不重送。
+// 尚未驗證：手上沒有忙碌中 session 的真實 `terminal read` 樣本，「忙碌時 draft 可靠」只是假設。
 //
 // 用法：node scripts/orca-session-send.mjs --terminal <handle> --prompt <text> [--queue]
-// stdout 最後一行：SENT <handle>、QUEUED <handle>（--queue），或 STOP <原因>（tui-timeout <handle>、send <handle>、orca <錯誤碼>）。
-// stderr：第一次送出因 composer 已有該 prompt 而只補 Enter 時印 `DRAFT_SUBMIT <handle>`（不含 prompt 文字）。
+// stdout 最後一行：SENT <handle>、QUEUED <handle>（--queue），或 STOP <原因>（tui-timeout <handle>、send <handle>、draft-not-empty <handle>、draft-unavailable <handle>（後兩者只在 --queue）、orca <錯誤碼>）。
+// stderr：不帶 --queue 時，第一次送出因 composer 已有該 prompt 而只補 Enter 時印 `DRAFT_SUBMIT <handle>`（不含 prompt 文字）。
 // exit：0 已送達；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -59,7 +62,7 @@ export async function waitTuiReady(ctx, handle) {
  * 第一次送出前先讀一次 composer 的 `draft`（缺省視為空），已有同一段文字時只補 Enter，並在 stderr 印 `DRAFT_SUBMIT <handle>`。
  */
 export async function sendPrompt(ctx, handle, text) {
-  const landed = tail => tail.some(line => line.includes(text.slice(0, 24)) || line.includes('esc to interrupt'));
+  const landed = tail => tail.some(line => line.includes(promptHead(text)) || line.includes('esc to interrupt'));
   let draft = (await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal?.draft ?? '';
   if (resendInput(draft, text)[1] === '') console.error(`DRAFT_SUBMIT ${handle}`);
   for (const delay of SEND_DELAYS) {
@@ -77,31 +80,44 @@ export async function sendPrompt(ctx, handle, text) {
 }
 
 /**
- * 把 prompt 排進忙碌中 session 的下一輪：只打字（composer 已有同一段時略過並印 `DRAFT_SUBMIT`），讀到 `draft` 含 prompt 開頭才補 Enter，
- * `draft` 不再含它才算排進佇列；Enter 依 SEND_DELAYS 重送。文字沒進 `draft` 或三次 Enter 都沒清空傳回 false。
+ * 把 prompt 排進忙碌中 session 的下一輪：`draft` 是空的才只打字，讀到 `draft` 含 prompt 開頭才補 Enter，`draft` 清空才算排進佇列；
+ * Enter 依 SEND_DELAYS 重送，整段文字只送一次。
+ * @returns {Promise<string | null>} 排進佇列回 null，否則回 STOP 原因：`draft-not-empty`、`draft-unavailable` 或 `send`。
  */
 export async function queuePrompt(ctx, handle, text) {
-  const inDraft = async () => ((await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal?.draft ?? '').includes(text.slice(0, 24));
-  const poll = async want => {
+  const readDraft = async () => (await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal?.draft;
+  const poll = async done => {
     for (let i = 0; i < CONFIRM_POLLS; i++) {
       await sleep(CONFIRM_MS, undefined, { signal: ctx.signal });
-      if (await inDraft() === want) return true;
+      const draft = await readDraft();
+      if (draft === undefined) return 'draft-unavailable';
+      if (done(draft)) return null;
     }
-    return false;
+    return 'send';
   };
-  if (await inDraft()) console.error(`DRAFT_SUBMIT ${handle}`);
-  else if (!(await orca(ctx, 'terminal', 'send', '--terminal', handle, '--text', text)).send?.accepted || !await poll(true)) return false;
+  const draft = await readDraft();
+  if (draft === undefined) return 'draft-unavailable';
+  if (draft.trim()) return 'draft-not-empty';
+  if (!(await orca(ctx, 'terminal', 'send', '--terminal', handle, '--text', text)).send?.accepted) return 'send';
+  const typed = await poll(draft => draft.includes(promptHead(text)));
+  if (typed) return typed;
   for (const delay of SEND_DELAYS) {
     if (delay) await sleep(delay, undefined, { signal: ctx.signal });
-    if (!(await orca(ctx, 'terminal', 'send', '--terminal', handle, '--text', '', '--enter')).send?.accepted) return false;
-    if (await poll(false)) return true;
+    if (!(await orca(ctx, 'terminal', 'send', '--terminal', handle, '--text', '', '--enter')).send?.accepted) return 'send';
+    const queued = await poll(draft => !draft.trim());
+    if (queued !== 'send') return queued;
   }
-  return false;
+  return 'send';
+}
+
+/** 判斷文字是否已在畫面或輸入框時比對的 prompt 開頭。 */
+export function promptHead(text) {
+  return text.slice(0, 24);
 }
 
 /** 重送的輸入：文字已留在輸入框（`draft` 含 prompt 開頭）時只補 Enter，否則送文字加 Enter；避免黏成兩份。 */
 export function resendInput(draft, text) {
-  return draft.includes(text.slice(0, 24)) ? ['--text', '', '--enter'] : ['--text', text, '--enter'];
+  return draft.includes(promptHead(text)) ? ['--text', '', '--enter'] : ['--text', text, '--enter'];
 }
 
 /**
@@ -110,7 +126,10 @@ export function resendInput(draft, text) {
  */
 export async function sendToSession(ctx, handle, prompt, { queue = false } = {}) {
   try {
-    if (queue) return await queuePrompt(ctx, handle, prompt) ? { handle } : { stop: `send ${handle}` };
+    if (queue) {
+      const stop = await queuePrompt(ctx, handle, prompt);
+      return stop ? { stop: `${stop} ${handle}` } : { handle };
+    }
     if (!await waitTuiReady(ctx, handle)) return { stop: `tui-timeout ${handle}` };
     if (!await sendPrompt(ctx, handle, prompt)) return { stop: `send ${handle}` };
   } catch (error) {

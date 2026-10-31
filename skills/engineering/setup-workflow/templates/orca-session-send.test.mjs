@@ -13,17 +13,27 @@ const script = new URL('./orca-session-send.mjs', import.meta.url).pathname;
 // 送出 Enter 後連同送出的文字一起出現在畫面上。
 // `stuck` 次送出的文字進了輸入框卻沒提交：畫面最後一行是輸入框裡的 prompt，draft 也還是它。
 // `working` 模擬一直在跑的 worker：每次 read 的畫面都帶 `esc to interrupt`（要搭配夠大的 `busy`）。
-function fixture(t, { busy = 0, sendRejected = false, swallow = 0, stale = false, draft, stuck = 0, working = false } = {}) {
+// 寫出假 Orca CLI（`body(temp, log)` 回傳腳本本體，接在記錄呼叫之後），回傳呼叫紀錄、執行腳本與列出送出指令的函式。
+function fakeOrca(t, body) {
   const temp = mkdtempSync(join(realTmpdir(), 'orca-session-send-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const log = join(temp, 'orca.log');
   writeFileSync(log, '');
   const cli = join(temp, 'orca');
   writeFileSync(cli, `#!/usr/bin/env node
-const fs = require('fs'); const [, b] = process.argv.slice(2); const arg = k => process.argv[process.argv.indexOf(k) + 1];
-const sentFile = ${JSON.stringify(log)} + '.sent'; const sent = () => fs.existsSync(sentFile) ? fs.readFileSync(sentFile, 'utf8').split('\\n').slice(0, -1) : [];
+const fs = require('fs'); const [, b] = process.argv.slice(2); const has = k => process.argv.includes(k); const arg = k => process.argv[process.argv.indexOf(k) + 1];
 fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 ${orcaReplySource()}
+${body(temp, log)}`);
+  chmodSync(cli, 0o755);
+  const send = args => spawnSync('node', [script, ...args], { cwd: temp, encoding: 'utf8', env: { ...process.env, ORCA_CLI_COMMAND: cli, ...FAST } });
+  const sends = () => readFileSync(log, 'utf8').split('\n').filter(line => line.startsWith('terminal send '));
+  return { log, send, sends };
+}
+
+function fixture(t, { busy = 0, sendRejected = false, swallow = 0, stale = false, draft, stuck = 0, working = false } = {}) {
+  return fakeOrca(t, (temp, log) => `
+const sentFile = ${JSON.stringify(log)} + '.sent'; const sent = () => fs.existsSync(sentFile) ? fs.readFileSync(sentFile, 'utf8').split('\\n').slice(0, -1) : [];
 const spinner = ${working} ? ['✻ Working… (esc to interrupt)'] : [];
 if (${stale}) { fail('terminal_handle_stale'); process.exit(1); }
 if (b === 'wait') reply('wait', { wait: { satisfied: (fs.readFileSync(${JSON.stringify(log)}, 'utf8').match(/terminal wait/g) || []).length > ${busy} } });
@@ -40,9 +50,6 @@ else if (b === 'read') {
   } else reply('read', { terminal: ${draft === undefined} ? terminal : { ...terminal, draft: sent().length ? '' : draft } });
 }
 `);
-  chmodSync(cli, 0o755);
-  const send = args => spawnSync('node', [script, ...args], { cwd: temp, encoding: 'utf8', env: { ...process.env, ORCA_CLI_COMMAND: cli, ...FAST } });
-  return { log, send };
 }
 
 const PROMPT = '/issue-run 22 --worker /repo/.scratch/batch-20-22.md';
@@ -111,19 +118,12 @@ test('文字進了輸入框卻沒提交：不算送達，只補 Enter 一次後�
 
 // 忙碌中的 session 的假 Orca：wait 永遠不成立，畫面一直有 `esc to interrupt` 和開頭相同的上一則提醒（也會捲出畫面），
 // 所以排隊只能看 composer：不帶 `--enter` 的文字進 `draft`（前 `lostText` 次被吞），Enter 把 `draft` 清空排進佇列（前 `lostEnter` 次被吞）。
-// `draft` 是第一次 read 前 composer 已有的文字。
-function busySession(t, { lostText = 0, lostEnter = 0, draft = '' } = {}) {
-  const temp = mkdtempSync(join(realTmpdir(), 'orca-session-send-'));
-  t.after(() => rmSync(temp, { recursive: true, force: true }));
-  const log = join(temp, 'orca.log');
-  const state = join(temp, 'state.json');
-  writeFileSync(log, '');
-  writeFileSync(state, JSON.stringify({ draft, texts: 0, enters: 0, reads: 0 }));
-  const cli = join(temp, 'orca');
-  writeFileSync(cli, `#!/usr/bin/env node
-const fs = require('fs'); const [, b] = process.argv.slice(2); const has = k => process.argv.includes(k); const arg = k => process.argv[process.argv.indexOf(k) + 1];
-fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
-${orcaReplySource()}
+// `draft` 是第一次 read 前 composer 已有的文字；`noDraft` 為 'always' 時 read 一律不帶 `draft` 欄位，'enter' 時第一次 Enter 之後才不帶。
+function busySession(t, { lostText = 0, lostEnter = 0, draft = '', noDraft } = {}) {
+  return fakeOrca(t, temp => {
+    const state = join(temp, 'state.json');
+    writeFileSync(state, JSON.stringify({ draft, texts: 0, enters: 0, reads: 0 }));
+    return `
 const s = JSON.parse(fs.readFileSync(${JSON.stringify(state)}, 'utf8'));
 if (b === 'wait') reply('wait', { wait: { satisfied: false } });
 else if (b === 'send') {
@@ -133,18 +133,20 @@ else if (b === 'send') {
 } else if (b === 'read') {
   s.reads++;
   const old = s.reads % 2 ? ['> ' + ${JSON.stringify(PROMPT)} + '（上一則）'] : [];
-  reply('read', { terminal: { tail: [...old, '✻ Working… (esc to interrupt)', '> ' + s.draft], draft: s.draft } });
+  const terminal = { tail: [...old, '✻ Working… (esc to interrupt)', '> ' + s.draft], draft: s.draft };
+  if (${JSON.stringify(noDraft)} === 'always' || (${JSON.stringify(noDraft)} === 'enter' && s.enters)) {
+    const result = mergeSample(ORCA_SAMPLES.read, { terminal }, 'read');
+    delete result.terminal.draft;
+    console.log(JSON.stringify({ ok: true, result }));
+  } else reply('read', { terminal });
 }
 fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
-`);
-  chmodSync(cli, 0o755);
-  const send = args => spawnSync('node', [script, ...args], { cwd: temp, encoding: 'utf8', env: { ...process.env, ORCA_CLI_COMMAND: cli, ...FAST } });
-  const sends = () => readFileSync(log, 'utf8').split('\n').filter(line => line.startsWith('terminal send '));
-  return { log, send, sends };
+`;
+  });
 }
 
-const TYPE = `terminal send --terminal term_w --text ${PROMPT} --json`;
-const ENTER = 'terminal send --terminal term_w --text  --enter --json';
+const QUEUE_TYPE = `terminal send --terminal term_w --text ${PROMPT} --json`;
+const QUEUE_ENTER = 'terminal send --terminal term_w --text  --enter --json';
 
 // 真實發生過的錯：coordinator 補範圍時 worker 一直在跑，兩次都卡在等 tui-idle 逾時，訊息沒進輸入框（#133）。
 test('忙碌中的 session：沒有 --queue 照舊逾時 STOP；有 --queue 不等 tui-idle，先打字、看到 draft 再補 Enter，draft 清空印 QUEUED <handle>', t => {
@@ -156,7 +158,7 @@ test('忙碌中的 session：沒有 --queue 照舊逾時 STOP；有 --queue 不�
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), 'QUEUED term_w');
   assert.doesNotMatch(readFileSync(log, 'utf8'), /terminal wait/);
-  assert.deepEqual(sends(), [TYPE, ENTER]);
+  assert.deepEqual(sends(), [QUEUE_TYPE, QUEUE_ENTER]);
 });
 
 // 畫面上開頭相同的上一則提醒（還在或捲出去）不能當成這一則；整段文字最多送一次，worker 才不會收到好幾份。
@@ -165,25 +167,43 @@ test('--queue：文字沒進 draft 時不補 Enter、不重送整段，STOP send
   const result = send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']);
   assert.equal(result.status, 4);
   assert.equal(result.stdout.trim(), 'STOP send term_w');
-  assert.deepEqual(sends(), [TYPE]);
+  assert.deepEqual(sends(), [QUEUE_TYPE]);
 });
 
 test('--queue：Enter 被吞時只重送 Enter；三次都被吞 STOP send', t => {
   const late = busySession(t, { lostEnter: 1 });
   assert.equal(late.send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']).stdout.trim(), 'QUEUED term_w');
-  assert.deepEqual(late.sends(), [TYPE, ENTER, ENTER]);
+  assert.deepEqual(late.sends(), [QUEUE_TYPE, QUEUE_ENTER, QUEUE_ENTER]);
   const lost = busySession(t, { lostEnter: 9 });
   const result = lost.send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']);
   assert.equal(result.stdout.trim(), 'STOP send term_w');
-  assert.deepEqual(lost.sends(), [TYPE, ENTER, ENTER, ENTER]);
+  assert.deepEqual(lost.sends(), [QUEUE_TYPE, QUEUE_ENTER, QUEUE_ENTER, QUEUE_ENTER]);
 });
 
-test('--queue：composer 已有同一段 prompt 時不再打字，只補 Enter；stderr 印 DRAFT_SUBMIT <handle>', t => {
-  const { send, sends } = busySession(t, { draft: PROMPT });
-  const result = send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']);
-  assert.equal(result.stdout.trim(), 'QUEUED term_w');
-  assert.match(result.stderr, /^DRAFT_SUBMIT term_w$/m);
-  assert.deepEqual(sends(), [ENTER]);
+// composer 裡的舊草稿（例如上一次 STOP 留下、開頭與這次相同的提醒）不能當成這一則送出：不送、不打字，交給人。
+test('--queue：送出前 draft 不是空的（不論是否與 prompt 同開頭）就 STOP draft-not-empty，不打字也不按 Enter', t => {
+  for (const draft of [PROMPT, `${PROMPT.slice(0, 30)}（舊提醒）`, '別的草稿']) {
+    const { send, sends } = busySession(t, { draft });
+    const result = send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']);
+    assert.equal(result.status, 4);
+    assert.equal(result.stdout.trim(), 'STOP draft-not-empty term_w');
+    assert.deepEqual(sends(), []);
+    assert.doesNotMatch(result.stderr, /DRAFT_SUBMIT/);
+  }
+});
+
+// `orca terminal read --help` 寫明 draft「may be absent」：讀不到就無從確認，一律不算排隊成功，也不重送整段。
+test('--queue：讀不到 draft 欄位時 STOP draft-unavailable；打字前就讀不到則什麼都不送', t => {
+  const never = busySession(t, { noDraft: 'always' });
+  const before = never.send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']);
+  assert.equal(before.status, 4);
+  assert.equal(before.stdout.trim(), 'STOP draft-unavailable term_w');
+  assert.deepEqual(never.sends(), []);
+  const gone = busySession(t, { noDraft: 'enter', lostEnter: 9 });
+  const after = gone.send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']);
+  assert.equal(after.status, 4);
+  assert.equal(after.stdout.trim(), 'STOP draft-unavailable term_w');
+  assert.deepEqual(gone.sends(), [QUEUE_TYPE, QUEUE_ENTER]);
 });
 
 test('send 被拒：STOP send；handle 失效：STOP orca <錯誤碼>', t => {
