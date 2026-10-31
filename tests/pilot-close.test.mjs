@@ -307,6 +307,18 @@ test('母單還有開著的子單就不關母單', t => {
   assert.equal(f.issues()[35].state, 'OPEN');
 });
 
+test('沒有母單：SKIP parent，gh 的 404 不轉印到 stderr（#172）', t => {
+  const f = fixture(t);
+  const ghState = join(f.temp, 'gh.json');
+  const state = JSON.parse(readFileSync(ghState, 'utf8'));
+  delete state.issues[76].parent;
+  writeFileSync(ghState, JSON.stringify(state));
+  const result = f.close();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(lines(result).includes('SKIP 76 parent'));
+  assert.doesNotMatch(result.stderr, /No parent issue found|HTTP 404/);
+});
+
 test('任何失敗都印 STOP：checkpoint 不在、gh 回的不是 JSON', t => {
   const f = fixture(t);
   const missing = f.close(['76-85', '100', f.mergeSha]);
