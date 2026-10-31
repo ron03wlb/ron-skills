@@ -49,10 +49,10 @@ test('--list 依連結的真實位置標出來源，並列出目前目錄的專�
     'model\talpha\tmatt',
     'model\tdelta\tother',
     'model\tgamma\toverlay',
+    'model\tissue-run\tron-skills',
     'model\tlocal\tother',
     'model\tproj-only\tproject',
     'user\tbeta\tpstack',
-    'user\tissue-run\tron-skills',
     '',
   ].join('\n'));
 });

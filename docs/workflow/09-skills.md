@@ -34,7 +34,7 @@
 
 | skill | 做什麼 | 等級 | 來源 |
 | --- | --- | --- | --- |
-| `/issue-run` | 把 ready 的 Issue 不中斷地跑到本機 candidate commit；`--worker` 模式由 coordinator 派出 | L1（人輸入） | ron-skills |
+| `/issue-run` | 把 ready 的 Issue 不中斷地跑到本機 candidate commit；`--worker` 模式由 coordinator 派出；`--pool` 在同一個 session 依池子順序逐張認領、逐張跑，可由 `/loop /issue-run --pool` 驅動 | L1 | ron-skills |
 | `implement` | 單張 ticket 的實作程序（`/issue-run` 照它做） | L1（由 `/issue-run` 引用） | Matt |
 | `implement-spec` | 多張 ticket：task graph、每張一個 implementer subagent 與 worktree | L1（由 `/issue-run` 引用） | Matt |
 | `tdd` | 紅、綠、重構；第一個產品改動前先有會紅的測試 | L1 | Matt |
@@ -57,7 +57,7 @@
 | `poteto-mode` | pstack 的 Autopilot、Orchestrate playbook；`/issue-pilot` 的協調方法來源 | L3（由 `/issue-pilot` 引用） | pstack（ron-skills overlay） |
 | `principle-*` | pstack 的決策原則，每條寫明何時套用 | L3（由 `poteto-mode` 引用） | pstack |
 | `arena` | 幾個 agent 各自實作同一題、交叉評審後挑一個；只用在昂貴、難逆轉、有多種合理做法的設計決策 | 輔助 | pstack（ron-skills overlay） |
-| `loop` | 讓一個 skill 依固定間隔或自行排程重複執行 | L3 | Claude Code 內建 |
+| `loop` | 讓一個 skill 依固定間隔或自行排程重複執行 | L1（`/issue-run --pool`）、L3 | Claude Code 內建 |
 
 ## 回顧與沉澱
 
