@@ -47,8 +47,8 @@ test('skill、adapter 範本、本 repo adapter 與流程文件都連到契約�
   }
 });
 
-// 寫存檔的 5 支正本（#56）：契約列出每支的指令與結果行；正本不能帶任何專案的路徑或名稱，專案值一律由參數傳入。
-const PILOT_SCRIPTS = ['pilot-register', 'pilot-decision', 'pilot-request', 'pilot-hold', 'pilot-sources'];
+// 寫存檔的 6 支正本（#56；pilot-gate，#134）：契約列出每支的指令與結果行；正本不能帶任何專案的路徑或名稱，專案值一律由參數傳入。
+const PILOT_SCRIPTS = ['pilot-register', 'pilot-decision', 'pilot-request', 'pilot-hold', 'pilot-sources', 'pilot-gate'];
 test('契約的 Canonical scripts 列出每支寫存檔的正本，正本不含專案字樣', () => {
   const section = contract.slice(contract.indexOf('## Canonical scripts'));
   assert.ok(section.startsWith('## Canonical scripts'), '缺少 Canonical scripts 一節');

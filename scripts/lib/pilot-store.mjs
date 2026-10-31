@@ -1,4 +1,4 @@
-// pilot 存檔（issue-pilot 的 PILOT-STORE.md）正本 script 共用的小工具：存檔目錄、時間格式、用法錯誤。
+// pilot 存檔（issue-pilot 的 PILOT-STORE.md）正本 script 共用的小工具：存檔目錄、時間格式、用法錯誤，以及 requests.md、gates.md 的解析（probe 與 pilot-request、pilot-gate 共用）。
 // 存檔一律在 coordinator checkout 的 `.scratch/pilot/`；checkout 由呼叫者傳入，不寫死任何專案路徑。
 import { join, resolve } from 'node:path';
 
@@ -26,3 +26,40 @@ export const isField = value => typeof value === 'string' && value.trim() !== ''
  */
 export const isOpenRequest = line => Boolean(line.trim()) && !line.startsWith('#')
   && !/\s(?:applied|declined)\s+\S/.test(line.split(/\ssource\s/).slice(1).at(-1) ?? '');
+
+/** Markdown 表格一列的各欄（去掉首尾的 `|` 與空白）；不是表格列時回空陣列。 */
+export const tableCells = line => line.split('|').slice(1, -1).map(cell => cell.trim());
+/** gates.md 的每個 `## G<n>` 段落：id、標題行（不含 `## `）、內文、段落在檔案中的起訖位置（訖點是下一個 `## ` 或檔尾）。 */
+export const gateSections = text => [...text.matchAll(/^## (G\d+\b.*)\n([\s\S]*?)(?=^## |(?![\s\S]))/gm)]
+  .map(match => ({ id: match[1].match(/^G\d+/)[0], title: match[1].trim(), body: match[2], start: match.index, end: match.index + match[0].length }));
+/** 表格形式的 gate 列（第一欄是 `G<n>`）的各欄；不是時回 undefined。 */
+export const gateRow = line => (/^G\d+$/.test(tableCells(line)[0] ?? '') ? tableCells(line) : undefined);
+/** 表格 gate 列的 status 欄（最後一欄）以 `resolved` 開頭。 */
+export const isResolvedRow = cells => /^resolved\b/.test(cells.at(-1));
+/** `## G<n>` 段落內文有 `- resolved …` 那一行（寫進別的欄位的 resolved 不算）。 */
+export const isResolvedSection = body => /^- (?:G\d+ )?resolved\b/m.test(body);
+
+/**
+ * gates.md 還開著的 gate：表格 status 欄不以 `resolved` 開頭的列，或 `## G<n>` 段落裡沒有 `resolved` 那一行的 gate。
+ * 每個 `{ line, id, issue, title, opened, malformed }`：`line` 是 GATE 行去掉前綴的內容；表格列的 title 是 question 欄，段落的是標題去掉 id。
+ */
+export function openGates(text) {
+  const gates = [];
+  for (const cells of text.split('\n').map(gateRow)) {
+    if (cells && !isResolvedRow(cells)) {
+      gates.push({ line: `${cells[0]} ${cells[1]} ${cells[2]}`, id: cells[0], issue: cells[1], title: cells[2], opened: cells[6] ?? '' });
+    }
+  }
+  for (const { id, title, body } of gateSections(text)) {
+    if (isResolvedSection(body)) continue;
+    // resolved 寫進別的欄位（`- status：resolved …`）不算解除；指出那一行（retro a6）。
+    const malformed = body.match(/^- [^：:\n]+[：:]\s*resolved\s+\d{4}-\d\d-\d\dT.*$/m)?.[0].trim();
+    const field = name => body.match(new RegExp(`^- ${name}[：:]\\s*(.*)$`, 'm'))?.[1].trim() ?? '';
+    gates.push({ line: title, id, issue: field('Issue').match(/#\d+/)?.[0] ?? '', title: title.slice(id.length).trim(), opened: field('opened'), malformed });
+  }
+  return gates;
+}
+
+/** pilot-probe 與 pilot-gate list 印的 gate 行：每個開著的 gate 一行 `GATE <line>`，resolved 寫錯欄位的再加 `GATE_MALFORMED <id> <那一行>`。 */
+export const gateLines = text => openGates(text)
+  .flatMap(gate => [`GATE ${gate.line}`, ...(gate.malformed ? [`GATE_MALFORMED ${gate.id} ${gate.malformed}`] : [])]);
