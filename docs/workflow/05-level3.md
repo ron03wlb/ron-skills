@@ -72,7 +72,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Stage | 開批次分支、依序合入 `DONE` 的成員；哪些衝突 coordinator 可以自己解，哪些改成重派 fresh worker（例如兩邊改了同一條目），重派後又衝突才開 gate |
 | Regression | 在 staged SHA 跑什麼、怎樣算過 |
 | Integrate | 合進整合分支的條件與指令 |
-| Push gate | 整合分支 tip 等於最後通過回歸的 SHA 時要跑的 push 指令：交給人，或 adapter 允許時由 coordinator 依序 push、開 PR／MR、合併，再讓整合分支跟上主線；PR body 有 setup-workflow 正本時用 `pilot-pr-body` 從 merged 的 batch checkpoint 產生 |
+| Push gate | 整合分支 tip 等於最後通過回歸的 SHA 時要跑的 push 指令：交給人，或 adapter 允許時由 coordinator 依序 push、開 PR／MR、合併，再讓整合分支跟上主線（允不允許是 `/setup-workflow` 升 L3 時問的一題，預設交給人；答是才在 `.claude/settings.json` 放行 `land.mjs`、`pilot-close.mjs`，`check-coordinator-permissions.mjs --push` 檢查兩者一致）；PR body 有 setup-workflow 正本時用 `pilot-pr-body` 從 merged 的 batch checkpoint 產生 |
 | Close | 進到主線之後的證據留言、關單、關掉成員 terminal、移除 worktree 與分支（遠端沒有該分支時略過） |
 | Handoff | 交棒的指令 |
 | Project tick hooks | 每輪要跑的專案檢查 |

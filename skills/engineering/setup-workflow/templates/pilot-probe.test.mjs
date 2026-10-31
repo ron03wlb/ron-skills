@@ -21,7 +21,7 @@ const SHA = 'a'.repeat(40);
 // PATH 上的假 gh：`repo view` 回 acme/app，`api graphql` 回一頁 `issues`（GraphQL 的 issue 節點），`issues` 是 null 時 gh 失敗；每次呼叫記進 gh.log。
 // `world` 是 tracker 上的 Issue（{ number, state, labels, parent, body }）：給了它時假 gh 從它算出 GraphQL 節點（parent、subIssuesSummary），
 // 並把 `issue edit <n> --add-label/--remove-label`、`issue reopen <n>` 寫回同一份檔，所以 --apply 之後再跑會看到改過的狀態。
-function fixture(t, { screens = {}, guard, issues = [], world } = {}) {
+function fixture(t, { screens = {}, guard, issues = [], world, tracker } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-probe-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const origin = join(temp, 'origin.git');
@@ -104,13 +104,22 @@ integration: pilot/integration @ 1234567
 |---|---|---|---|---|---|---|---|
 ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? `term_${m.n}`} | ${m.started ?? ago(5)} | ${m.stuckAfter ?? '90m'} | ${m.state ?? 'running'} | ${m.candidate ?? ''} |`).join('\n')}
 `);
+  // guard、world、tracker 都在暫存的 scripts/ 跑副本：templates/ 裡同目錄就有 gh-tracker.mjs 正本，--apply 會經它寫入（#244）。
+  // tracker 是 adapter 內文：給了才連 gh-tracker.mjs 一起複製、寫 docs/agents/issue-run.md，否則 --apply 直接跑 gh issue。
   let probeScript = script;
-  if (guard !== undefined) {
+  if (guard !== undefined || world !== undefined || tracker !== undefined) {
     const scripts = join(temp, 'scripts');
     mkdirSync(join(scripts, 'lib'), { recursive: true });
-    for (const name of ['pilot-probe.mjs', 'pilot-capacity.mjs', 'orca-session-send.mjs', 'lib/pilot-store.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
-    writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
-    chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
+    const names = ['pilot-probe.mjs', 'pilot-capacity.mjs', 'orca-session-send.mjs', 'lib/pilot-store.mjs', ...(tracker === undefined ? [] : ['gh-tracker.mjs', 'lib/hosts.mjs'])];
+    for (const name of names) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+    if (guard !== undefined) {
+      writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
+      chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
+    }
+    if (tracker !== undefined) {
+      mkdirSync(join(temp, 'docs', 'agents'), { recursive: true });
+      writeFileSync(join(temp, 'docs', 'agents', 'issue-run.md'), tracker);
+    }
     probeScript = join(scripts, 'pilot-probe.mjs');
   }
   const probe = ({ input = 'stdin 不該被 orca 讀到\n', args = [], extraEnv = {} } = {}) =>
@@ -1128,6 +1137,23 @@ test('--apply 補上 parent label、移除 triage label、重開母單，輸出�
     ['issue', 'reopen', '40'],
   ]);
   assert.equal(probe({ args: ['--apply'] }).stdout, '');
+  assert.equal(probe().stdout, '');
+});
+
+test('--apply 經同目錄的 gh-tracker.mjs 正本寫入：參數改寫成 --長名=值，寫到 adapter Tracker 段的專案', t => {
+  const { probe, ghLog } = fixture(t, { tracker: '# adapter\n\n## Tracker\n\nhttps://github.com/acme/app\n', world: [
+    { number: 10, state: 'OPEN', labels: ['ready-for-agent'] },
+    { number: 11, state: 'OPEN', labels: [], parent: 10 },
+    { number: 40, state: 'CLOSED', labels: ['parent'] },
+    { number: 41, state: 'OPEN', labels: [], parent: 40 },
+  ] });
+  const result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), ['PARENT_LABEL 10', 'PARENT_REOPEN 40']);
+  assert.deepEqual(ghWrites(ghLog), [
+    ['issue', 'edit', '10', '--add-label=parent', '--remove-label=ready-for-agent', '--repo', 'github.com/acme/app'],
+    ['issue', 'reopen', '40', '--repo', 'github.com/acme/app'],
+  ]);
   assert.equal(probe().stdout, '');
 });
 

@@ -9,7 +9,7 @@
 //            state `stop`），只改那一列的這兩欄；`merged` 的 batch 印 IN_MAIN 時把 `current: merged` 改成 `pushed`（SHA 與附註不動）。
 //            對不到唯一一列 running 的成員列時不寫檔，印 APPLY_MISS <key> <n> rows <列數>；寫回後再讀一次沒對上時印 APPLY_MISS <key> <n|current> verify
 //            （檔案已經寫了，不還原）；有 APPLY_MISS 就 exit 1。
-//            母單：PARENT_LABEL 補上 `parent` label、移除它掛著的 triage label，PARENT_REOPEN 重開母單；同目錄有專案自備的 gh-tracker.mjs
+//            母單：PARENT_LABEL 補上 `parent` label、移除它掛著的 triage label，PARENT_REOPEN 重開母單；同目錄有 setup-workflow 的 gh-tracker.mjs 副本
 //            （`edit <n> --add-label …`、`reopen <n>`，參數同 `gh issue`）時經它寫，沒有就直接跑 `gh issue`，都在主 checkout 跑。
 //            寫入失敗印 PARENT_APPLY_FAILED <n> <錯誤>，其他母單照修，exit 1。
 //   --status：最後從 checkpoint、gates.md、requests.md、coordinator 與 git 重寫 `.scratch/pilot/status.md`（格式見 PILOT-STORE.md），不印任何行；
@@ -287,7 +287,7 @@ function gh(checkout, ...args) {
 }
 
 /**
- * `--apply` 的 tracker 寫入：同目錄有專案自備的 gh-tracker.mjs（auto mode 只放行它的 tracker 寫入）就經它，沒有就直接 `gh issue`；
+ * `--apply` 的 tracker 寫入：同目錄有 gh-tracker.mjs（setup-workflow 正本的副本，auto mode 只放行它的 tracker 寫入）就經它，沒有就直接 `gh issue`；
  * 兩者參數形式相同（`edit <n> --add-label …`、`reopen <n>`），都在主 checkout 跑。失敗時傳回錯誤訊息的第一行。
  */
 function trackerWrite(checkout, args) {
