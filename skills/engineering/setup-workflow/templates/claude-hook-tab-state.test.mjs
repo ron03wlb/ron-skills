@@ -168,3 +168,16 @@ test('PostToolUse：標題在引號裡含 & ; | 時照樣記下完整標題', t 
     assert.equal(recorded(), title);
   }
 });
+
+// 本 repo 的 commit 訊息常提到 rename：引號裡的 `terminal rename` 不是改名。
+test('PostToolUse：只認作為指令開頭的 terminal rename，引號裡提到的不記', t => {
+  const { record, recorded, hook } = fixture(t);
+  record('處理中｜#126 分頁狀態｜實作｜hook');
+  for (const command of [
+    'git commit -m "fix: terminal rename --title 處理中｜x"',
+    "echo 'orca terminal rename --terminal \"$ORCA_TERMINAL_HANDLE\" --title 處理中｜y'",
+  ]) {
+    hook(bash(command, ''));
+    assert.equal(recorded(), '處理中｜#126 分頁狀態｜實作｜hook', command);
+  }
+});
