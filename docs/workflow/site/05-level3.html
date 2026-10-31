@@ -60,7 +60,7 @@
 <ul>
 <li><strong>高風險 Issue 的獨立情境驗證</strong>：adapter 列的高風險類別（權限、金流寫入、跨模組路徑之類）在 candidate 產生後，由沒寫程式的全新 Codex 在 candidate SHA 用 adapter 的 driver 跑至少一個情境，記下 SHA、指令、觀察結果。這筆紀錄是合入證據，diff review 不能取代。</li>
 <li><strong>跨模型挑戰</strong>：兩輪 review 後仍有爭議的 finding，或高風險 Issue 上的 finding，同一個問題分別問 Claude 與 Codex，報告兩邊同意與分歧之處再決定。</li>
-<li><strong>worker 的最後一輪</strong>：兩輪修正後，在最終 candidate 上用 adapter 的 review 指令（有 Codex runner 時就是它）跑一輪只審不修；P2 以上只要有一項不是兩輪修正時已經在 Issue 留言的產品取捨，就 <code>STOP</code>，原因寫 <code>findings after two review cycles</code>，coordinator 重派一個 worker；否則只要兩輪修正時留言過產品取捨，就算這一輪沒再列出，也 <code>STOP</code>，原因寫 <code>decision &lt;摘要&gt;</code>，coordinator 開 gate。兩者都沒有時，只剩 P3 記進 rulings 後照常 <code>DONE</code>。</li>
+<li><strong>worker 的最後一輪</strong>：兩輪修正後，在最終 candidate 上用 adapter 的 review 指令（有 Codex runner 時就是它）跑一輪只審不修；P2 以上只要有一項不是兩輪修正時已經在 Issue 留言的產品取捨，就 <code>STOP</code>，原因寫 <code>findings after two review cycles</code>，coordinator 重派一個 worker（ron-skills 先以不帶 <code>--note</code> 的 <code>pilot-dispatch.mjs --fresh</code> 產生整併範圍草稿：prior SHA、共同改過的檔與條目、最後一輪 review-only 原文，coordinator 只補「怎麼整併」）；否則只要兩輪修正時留言過產品取捨，就算這一輪沒再列出，也 <code>STOP</code>，原因寫 <code>decision &lt;摘要&gt;</code>，coordinator 開 gate。兩者都沒有時，只剩 P3 記進 rulings 後照常 <code>DONE</code>。</li>
 </ul>
 <p>Codex 呼叫失敗時改用 <code>code-review</code> skill，並在報告註明 Codex 不可用。</p>
 <h2 id="retro-collect"><code>/retro-collect</code></h2>
