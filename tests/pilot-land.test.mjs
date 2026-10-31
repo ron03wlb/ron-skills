@@ -25,6 +25,9 @@ code=\${FAKE_CHECK_EXIT:-0}
 exit "$code"
 `;
 
+// 本機 ~/.zshrc 設的 PILOT_LOAD_MAX 不能帶進來，否則 fallback 案例測的不是 3 × 核心數。
+const landEnv = Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'PILOT_LOAD_MAX'));
+
 const ROW = (n, slug, state, temp) => `| ${n} | issue/${n}-${slug} | ${temp}/issue-${n} | term_${n} | 2026-10-31T07:00:00+08:00 | 90m | ${state} | ${state === 'done' ? 'abc1234' : ''} |`;
 
 /**
@@ -65,7 +68,7 @@ function fixture(t, { members, base = {}, checkpoint = text => text, stage = tru
   const log = join(temp, 'check.log');
   writeFileSync(log, '');
   const land = (extra = {}, args = [key]) => {
-    const result = spawnSync('node', [script, ...args], { cwd: repo, encoding: 'utf8', env: { ...env, FAKE_CHECK_LOG: log, PILOT_LOAD_NOW: '0', ...extra } });
+    const result = spawnSync('node', [script, ...args], { cwd: repo, encoding: 'utf8', env: { ...landEnv, FAKE_CHECK_LOG: log, PILOT_LOAD_NOW: '0', ...extra } });
     const lines = result.stdout.trim().split('\n');
     return { ...result, lines, last: lines.at(-1) };
   };
@@ -901,6 +904,10 @@ test('請求分支：--branch retro/<x> 開 batch-req-<n>.md（成員列 Issue �
   git(tree, 'commit', '-qm', 'request 10');
   const candidate = git(tree, 'rev-parse', 'HEAD');
   const before = f.tip();
+  // load 超過門檻時連請求的 checkpoint 都還沒開（#178）。
+  const loaded = f.land({ PILOT_LOAD_NOW: '50', PILOT_LOAD_MAX: '30' }, ['req-10', '--branch', 'retro/hook-c-var']);
+  assert.deepEqual(loaded.lines, ['STOP load 50 30']);
+  assert.equal(existsSync(join(f.repo, '.scratch/pilot/batch-req-10.md')), false);
   const result = f.land({}, ['req-10', '--branch', 'retro/hook-c-var']);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const sha = f.tip();

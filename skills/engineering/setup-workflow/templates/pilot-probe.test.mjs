@@ -176,6 +176,8 @@ test('--capacity <repo> 把在跑的成員數寫進帳本，合計超過上限�
   out = lines(probe({ args: ['--capacity', 'acme'], extraEnv }));
   assert.equal(out.at(-1), 'OVER_CAP 4 3', out.join('\n'));
   assert.equal(probe({ args: ['--capacity'], extraEnv }).status, 2);
+  assert.equal(probe({ args: ['--capacity', 'a\tb'], extraEnv }).status, 2);
+  assert.equal(probe({ args: ['--capacity', 'acme'], extraEnv: { ...extraEnv, PILOT_MACHINE_WORKER_CAP: 'x' } }).status, 2);
 });
 
 // 真實 Orca CLI 會吃掉 stdin；呼叫時 stdin 一律接 /dev/null，假 Orca 讀光 stdin 也只會讀到空的。

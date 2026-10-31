@@ -16,6 +16,7 @@
 //   --capacity <repo>（#178）：把這一輪還在跑的成員數（各 batch 的 running 列，扣掉這一輪讀到 DONE、STOP 的）以 <repo> 寫進全機帳本
 //            （同目錄 pilot-capacity.mjs 的 report：$PILOT_WORKERS_LEDGER，預設 ~/.local/state/pilot-workers.tsv）；所有 repo 的合計超過
 //            $PILOT_MACHINE_WORKER_CAP（預設 4）時最後印 OVER_CAP <合計> <上限>。只回報，不改派工；沒帶時不碰帳本。
+//            <repo> 空白或帶 tab、換行，或上限不是正整數時是用法錯誤（exit 2）。
 //   --apply、--status 都不改其他輸出行，stdout 與不帶旗標時相同（APPLY_MISS、PARENT_APPLY_FAILED 除外）。
 //   Bare guard：同目錄有 pilot-unbare.sh（專案自備，`<checkout> <時機>`，還原時印 UNBARE）時先跑它（時機 probe），沒有就略過。
 // stdout 每行一項，沒事的項目不印（全部正常且沒有 batch 時不輸出）：
@@ -51,7 +52,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gateLines, isOpenRequest, now, openGates, tableCells } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
-import { ledgerPath, report } from './pilot-capacity.mjs';
+import { ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 
 const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{number body labels(first:50){nodes{name}} blockedBy(first:50){nodes{number repository{nameWithOwner}}} subIssuesSummary{total} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
 const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>]';
@@ -696,7 +697,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     else options[name] = value;
   }
   const [checkout] = positional;
-  if (bad || positional.length !== 1) {
+  if (bad || positional.length !== 1 || ('capacity' in options && (!validRepo(options.capacity) || machineCap() === undefined))) {
     console.error(USAGE);
     process.exit(2);
   }

@@ -132,7 +132,7 @@ function readCheckpoint(file) {
 }
 
 /** 請求分支的 batch：checkpoint 不在就開出來（成員列 Issue 欄 `-`），在的話成員要是同一個分支。 */
-function openRequest(key, branch) {
+function openRequest(key, branch, loadMax) {
   const main = mainCheckout();
   const file = join(main, `.scratch/pilot/batch-${key}.md`);
   if (existsSync(file)) {
@@ -140,6 +140,8 @@ function openRequest(key, branch) {
     if (others.length !== 1 || others[0] !== branch) throw new Stop(`checkpoint ${file} 的成員是 ${others.join(' ') || '（沒有）'}，不是 ${branch}`);
     return;
   }
+  // 新開的請求 batch 一定要 stage，load 關卡排在寫 checkpoint 之前（#178：STOP load 時 checkpoint 也不動）。
+  loadGate(loadMax);
   const candidate = gitIn(main, 'rev-parse', '-q', '--verify', `refs/heads/${branch}^{commit}`).stdout.trim();
   if (!candidate) throw new Stop(`branch ${branch} 不存在`);
   const worktree = must(main, 'worktree', 'list', '--porcelain').split(/\n\n+/)
@@ -628,7 +630,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     process.exit(2);
   }
   try {
-    if (request) openRequest(key, request);
+    if (request) openRequest(key, request, Number(loadMax));
     console.log(`MERGED ${key} ${land(key, Number(loadMax))}`);
   } catch (error) {
     if (!(error instanceof Stop)) throw error;
