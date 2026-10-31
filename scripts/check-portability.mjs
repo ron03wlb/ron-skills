@@ -28,9 +28,10 @@ const RULES = [
   { id: 'date-d', kinds: ['shell'], pattern: option('date', '-[uR]*d\\S*', '--date\\S*'), hint: 'BSD date 用 -j -f／-v，兩邊不通用，日期運算改寫成 node' },
   { id: 'stat-c', kinds: ['shell'], pattern: option('stat', '-L?c\\S*', '--format\\S*|--printf\\S*'), hint: 'BSD stat 用 -f，改用 wc -c、ls 或 node 的 statSync' },
   { id: 'xargs-r', kinds: ['shell'], pattern: option('xargs', '-[0ptx]*r[0ptx]*', '--no-run-if-empty'), hint: 'BSD xargs 沒有 -r，先確認輸入非空再呼叫' },
-  // 只有選項、沒有 `-` 或檔案參數：BSD paste 不讀 stdin，只印 usage（#98）。-d 的值可以分開寫。
+  // 只有選項、沒有 `-` 或檔案參數：BSD paste 不讀 stdin，只印 usage（#98），用 < 導入也一樣。-d 的值可以分開寫。
+  // 雙引號在比對前已清成 ""，所以結尾不收 "：-d "," 的值不能被當成指令結束。
   { id: 'paste-s', kinds: ['shell'],
-    pattern: new RegExp(`${cmd('paste')}(?=${OPTS}\\s+-[A-Za-z]*s)(?:\\s+(?:-[A-Za-z]*d\\s+[^\\s|;&)]+|-[^\\s\\-|;&)][^\\s|;&)]*))+\\s*(?:$|[|;&)\`"])`),
+    pattern: new RegExp(`${cmd('paste')}(?=${OPTS}\\s+-[A-Za-z]*s)(?:\\s+(?:-[A-Za-z]*d\\s+[^\\s|;&)]+|-[^\\s\\-|;&)<>][^\\s|;&)<>]*))+\\s*(?:$|[|;&)\`<>])`),
     hint: 'paste -s 要帶 - 或檔案參數，BSD paste 才會讀 stdin' },
 ];
 
@@ -74,7 +75,7 @@ function shellCode(line) {
     }
     if (c === "'") { const close = line.indexOf("'", i + 1); out += "''"; i = close < 0 ? line.length : close; continue; }
     if (c === '"') { stack.push({ dq: true }); out += c; continue; }
-    if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) break;
+    if (c === '#' && (i === 0 || /[\s;&|(]/.test(line[i - 1]))) break;
     if (c === '(') top.depth++;
     if (c === ')' && stack.length > 1 && top.depth === 0) { stack.pop(); out += c; continue; }
     if (c === ')') top.depth--;
