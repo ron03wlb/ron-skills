@@ -27,8 +27,8 @@
     },
     "scripts/claude-hook-tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-tab-state.mjs",
-      "commit": "29065acca08058992a98e2b8febc1e5e0a5a9dd9",
-      "sha256": "6229de428d798acbfb3ef577883d44460541caf7e6c361e3b28507b51f3cf1f9"
+      "commit": "90b7ca2436ce1b04a293b775ebbc2a0f9e7f8adc",
+      "sha256": "27fc85c54d445d247e1676e309ef7e8beed54fac431bd002e1584b07a97aa4ec"
     },
     "scripts/gh-tracker.mjs": {
       "template": "skills/engineering/setup-workflow/templates/gh-tracker.mjs",
@@ -137,8 +137,8 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "3132e756a9358dcd00f37157e0646db2f507826c",
-      "sha256": "c0055d1a545be8a747f2d112eacdd7a189d0a7ac0f3702561297e0abd25d8ffc"
+      "commit": "90b7ca2436ce1b04a293b775ebbc2a0f9e7f8adc",
+      "sha256": "748b3e8fe6341b90dfbc979665a285e1104ac33cc90ba3a45b057505965387e8"
     }
   },
   "source": "ron03wlb/ron-skills"
