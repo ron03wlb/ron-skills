@@ -59,7 +59,7 @@ pilot 底下的 worker 不落地：push、開 PR、合併與關單都由 coordin
 
 ## 分頁狀態
 
-[分頁狀態](../../GLOSSARY.md#分頁狀態)與整個標題的格式、何時改名、` ⏸`、worktree 顯示名稱照 [ADAPTER.md](../../skills/engineering/issue-run/ADAPTER.md) 的 Tab state 段預設值，本 repo 標題用繁體中文（[CLAUDE.md](../../CLAUDE.md) 的 Language）；這裡寫本 repo 什麼時候轉換。切換一律用 `node scripts/tab-state.mjs <狀態>`：它只換目前分頁標題的狀態前綴，其他文字不動，沒有 `ORCA_TERMINAL_HANDLE` 或 Orca 失敗時 exit 0 不輸出。session 開頭改用 `node scripts/tab-state.mjs 處理中 --topic "<主題>"` 一次設定前綴與主題（`<主題>` 是標題格式裡狀態前綴之後的部分）：本機記錄的可能還是同一個 handle 上一個 session 的標題，只換前綴會帶出舊主題（#141）。`.claude/settings.json` 掛的 `scripts/claude-hook-tab-state.mjs` 自動做能用程式偵測的轉換，`Stop` 時標題沒有合法前綴就 exit 2 要求改名（只檢查格式）。
+[分頁狀態](../../GLOSSARY.md#分頁狀態)與整個標題的格式、何時改名、` ⏸`、worktree 顯示名稱照 [ADAPTER.md](../../skills/engineering/issue-run/ADAPTER.md) 的 Tab state 段預設值，本 repo 標題用繁體中文（[CLAUDE.md](../../CLAUDE.md) 的 Language），段裡的 `orca` 寫成 `"$ORCA_CLI_COMMAND"`；這裡寫本 repo 什麼時候轉換。切換一律用 `node scripts/tab-state.mjs <狀態>`：它只換目前分頁標題的狀態前綴，其他文字不動，沒有 `ORCA_TERMINAL_HANDLE` 或 Orca 失敗時 exit 0 不輸出。session 開頭改用 `node scripts/tab-state.mjs 處理中 --topic "<主題>"` 一次設定前綴與主題（`<主題>` 是標題格式裡狀態前綴之後的部分）：本機記錄的可能還是同一個 handle 上一個 session 的標題，只換前綴會帶出舊主題（#141）。`.claude/settings.json` 掛的 `scripts/claude-hook-tab-state.mjs` 自動做能用程式偵測的轉換，`Stop` 時標題沒有合法前綴就 exit 2 要求改名（只檢查格式）。
 
 - **待 Retro.** 單獨跑的 `/issue-run` 在 `land.mjs` 印 `LANDED` 之後（hook 自動切；coordinator 以 `--keep-branch` 落地整合分支時它還在運作，不切）；pilot worker 寫出 `DONE <n> <sha>` 結果行時（hook 在 `Stop` 自動切，早於 coordinator 合入：worker 的交付到此為止）；coordinator 在 `pilot-handoff.mjs` 印 `HANDED_OFF`、交接退役之後（hook 自動切）；其他類別在使用者確認主題結束之後，自己跑 `tab-state 待 Retro`。只開 PR 不算。
 - **待關閉.** `/retro` 採用的項目已合入或開成 Issue，或候選已交給收集流程之後，由 `/retro` 最後一步在該分頁自己跑 `tab-state 待關閉`（`overlays/retro.patch`）。每個分頁都先經過待 Retro；待關閉的分頁由使用者手動關。

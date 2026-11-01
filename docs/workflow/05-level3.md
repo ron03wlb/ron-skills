@@ -92,7 +92,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | 監看 | `orca terminal read --terminal <handle>`：畫面最後一行是 `DONE <n> <sha>` 或 `STOP <n> <原因>` 就是做完；terminal 已結束但沒有這行就是卡住 |
 | 結案 | `orca worktree rm` 移除 worktree，Orca 不會留下孤兒紀錄；rm 之後確認主 checkout 沒有被設成 bare（見 [08 常見坑](08-pitfalls.md)） |
 | 每個 tick | coordinator 每次被叫醒先確認主 checkout 沒有被設成 bare：Orca 的 worktree 操作可能稍後才改動 `core.bare`（見 [08 常見坑](08-pitfalls.md)） |
-| 分頁狀態 | 每個分頁標題以 `處理中｜`、`待 Retro｜` 或 `待關閉｜` 開頭（[分頁狀態](../../GLOSSARY.md#分頁狀態)）：派工與交接開出的分頁先是處理中；單獨跑的 `/issue-run` 合入（`LANDED`；coordinator 以 `--keep-branch` 落地不算）、worker 寫出 `DONE`（早於 coordinator 合入）、coordinator 交接完成（`HANDED_OFF`）時 hook 自動換成待 Retro；`/retro` 結束時自己換成待關閉，分頁由人關。前綴之後，Issue 工作是 `<issue> <主題>｜<階段>｜<具體動作>`（階段只在處理中出現），其他工作是 `[<類別>] <主題>`，等使用者核准某個動作時加 ` ⏸`；session 開始、換階段或狀態、換 Issue、進出核准等待時改名。切換用 `scripts/tab-state.mjs`，格式、改名時機與轉換條件寫在 adapter 的分頁狀態（Tab state）段 |
+| 分頁狀態 | 每個分頁標題以 `處理中｜`、`待 Retro｜` 或 `待關閉｜` 開頭（[分頁狀態](../../GLOSSARY.md#分頁狀態)）：派工與交接開出的分頁先是處理中；單獨跑的 `/issue-run` 合入（`LANDED`；coordinator 以 `--keep-branch` 落地不算）、worker 寫出 `DONE`（早於 coordinator 合入）、coordinator 交接完成（`HANDED_OFF`）時 hook 自動換成待 Retro；`/retro` 結束時自己換成待關閉，分頁由人關。切換用 `scripts/tab-state.mjs`，格式、改名時機與轉換條件寫在 adapter 的分頁狀態（Tab state）段 |
 
 確切的子命令與旗標以專案 adapter 的 Dispatch、Watch、Close 行為準（ron-skills 一律寫成 `"$ORCA_CLI_COMMAND"`，每台機器把它設成自己的 Orca CLI）。從 WSL 呼叫 Orca 時，`worktree create` 常先回 `runtime_unavailable` 或 `runtime_timeout` 但其實已經建好：只呼叫一次，用 `git worktree list` 確認，不要重試（見 [08 常見坑](08-pitfalls.md)）。
 
