@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs';
 // #275：原本的解法是 adapter 一律寫 `node <stage worktree>/scripts/…`，每任 coordinator 都得手算路徑。改成主 checkout 的入口自己轉到 stage worktree 的版本
 // （行為測試在 setup-workflow 正本的 pilot-pr-body.test.mjs），所以 adapter 要寫主 checkout 的入口，不再要人算路徑。
 const FILES = ['docs/agents/pilot.md', 'docs/agents/pilot-after-merge.md', 'docs/agents/pilot-exceptions.md', 'docs/agents/pilot-conflict.md', 'skills/engineering/issue-run/PILOT-TEMPLATE.md'];
-const COMMAND = /node (\S*)(pilot-pr-body\.mjs|pilot-land\.mjs sync-main)/g;
+// `<stage worktree>` 中間有空格，`\S*` 比對不到，要另外列。
+const COMMAND = /node (<stage worktree>\/\S*|\S*)(pilot-pr-body\.mjs|pilot-land\.mjs sync-main)/g;
 
 /** 要 coordinator 自己算路徑的 Push gate 腳本指令。 */
 export function handComputedCommands(text) {

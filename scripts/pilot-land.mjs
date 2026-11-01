@@ -28,7 +28,7 @@
 // 請求分支（沒有 Issue 的 `retro/<x>`）：`req-<n> --branch retro/<x>`（<n> 是 requests.md 的行號）在 batch-req-<n>.md 不存在時開出它，
 //   唯一的成員列 Issue 欄是 `-`、state `done`、candidate 是分支 tip；已存在時成員要是同一個分支，否則 STOP checkpoint。之後與一般 batch 相同。
 //   分支不存在印 `STOP branch <分支> …`，不開 checkpoint。成員列是 `-` 時，STOP、RESOLVED 行裡的 <n> 是分支名稱。
-// sync-main（Push gate 的 STOP behind-main）：讓整合分支包含 origin/<主分支>，同樣在 stage worktree 做（要乾淨）。先 `git fetch origin`；
+// sync-main（Push gate 的 STOP behind-main）：從主 checkout 的副本跑時先交給 stage worktree 的同名腳本（lib/pilot-store.mjs 的 runInStageWorktree，#239、#275）；讓整合分支包含 origin/<主分支>，同樣在 stage worktree 做（要乾淨）。先 `git fetch origin`；
 //   已包含印 `SYNCED <tip> current`；整合分支是 origin/<主分支> 的祖先時 `merge --ff-only`，印 `SYNCED <sha> ff`（不跑 Regression）；
 //   分叉時先過 load 關卡（同 batch：超過門檻印 `STOP load <load> <門檻>`，stage worktree 與分支都不動），
 //   再 `switch -C pilot/stage-sync-main <tip>`、`merge --no-ff origin/<主分支>`，衝突照 Stage 的解法（`RESOLVED sync-main <解法> <檔案…>`），
@@ -60,6 +60,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { availableParallelism, loadavg } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { runInStageWorktree } from './lib/pilot-store.mjs';
 
 const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--check-command <指令>] [--integration <分支>] [--main <分支>] [--resolver <模組>] [--load-max <n>] | sync-main [同上選項，不含 --branch]（--branch 時 key 是 req-<n>；門檻預設 $PILOT_LOAD_MAX，再來 3 × 核心數；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
 const LOAD = /^\d+(\.\d+)?$/;
@@ -468,6 +469,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     else options[name] = rest[i + 1];
   }
   const { request, check = config.check, integration = config.integration, main = config.main, resolver } = options;
+  if (key === 'sync-main' && !bad) runInStageWorktree(import.meta.url, process.argv.slice(2), { integration });
   // 本檔所在 checkout 的根：副本在 <root>/scripts/，正本在 <root>/skills/engineering/setup-workflow/templates/，都以 scripts/ 的上一層為準。
   const resolverPath = resolver === undefined ? undefined : resolve(here, '..', resolver);
   const branchName = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;

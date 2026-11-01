@@ -89,7 +89,7 @@ if (fs.existsSync(worldFile)) {
 }
 if (issues === null) { process.stderr.write('HTTP 502: Bad Gateway\\n'); process.exit(1); }
 // issue-pool 的分桶（POOL_*）要的欄位，fixture 沒寫的補成沒指派、沒有 blocking、沒有子單。
-const node = issue => ({ title: '', assignees: { nodes: [] }, blocking: { nodes: [] }, comments: { nodes: [] }, timelineItems: { nodes: [] }, subIssuesSummary: { total: 0 }, ...issue });
+const node = issue => ({ title: '', assignees: { nodes: [] }, blocking: { nodes: [] }, comments: { nodes: [] }, timelineItems: { nodes: [] }, closedByPullRequestsReferences: { nodes: [] }, subIssuesSummary: { total: 0 }, ...issue });
 if (args[0] === 'repo' && args[1] === 'view') process.stdout.write('acme/app\\n');
 else if (args[0] === 'api' && args[1] === 'graphql') process.stdout.write(JSON.stringify({ data: { repository: { issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: issues.map(node) } } } }));
 else process.exit(1);

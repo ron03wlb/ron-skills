@@ -10,6 +10,7 @@
 //   累積後判斷寫入時機，再決定改等更久、改用 hook 輸入，或只靠 Stop。
 // - Stop（或未帶 hook_event_name）：檢查最後一個使用者輪的所有文字段；PostToolUse 尚未掛上時仍有覆蓋，
 //   PostToolUse 提示過卻未改正的段落會再提一次（可接受）。
+// 同一條規則也擋簡體字：CJK 比例分不出繁簡，session f236b357 有三段以「这」開頭（jsonl 第 293、610、646 行）都放行（#284）。
 // harness 合成的訊息（用量上限「You've hit your weekly limit · resets 3am」、API Error 等）不是模型輸出：transcript 中這類 assistant 項目
 // 帶 isApiErrorMessage／apiError 或 model `<synthetic>`，整筆略過；結構欄位缺漏時再以固定句型比對文字。
 // Stop 只看最後一次語言檢查提示（Stop hook feedback 或 PostToolUse 的 hook_blocking_error）之後的文字：提示過的段落不再重提，
@@ -46,6 +47,21 @@ export function isMostlyEnglish(text) {
   const words = (plain.match(WORD) || []).length;
   const cjk = (plain.match(CJK) || []).length;
   return words >= 6 ? cjk * 4 < words : words >= 3 && cjk === 0;
+}
+
+// 只有簡體才有的常用字；繁簡同形的（后、里、面、发音的髮等）不列。門檻依 2026-11-01 對 ~/.claude/projects 每個專案最近 40 個 transcript、6281 段文字抽樣：
+// 命中 3 段，正好是 #284 那三段；引號「…」裡的字通常是在引用別人的話（討論這個 hook 本身時），不算。
+const SIMPLIFIED = /[这们个为说时会对发过还来国关开进实现应该样让给从问题经检认单动态产务处档码项写读运执两吗]/gu;
+const QUOTED = /「[^」\n]*」/g;
+
+/**
+ * 一段文字裡只有簡體才有的字（不重複、依出現順序）；程式碼、路徑與「…」引用不算。
+ * @param {string} text assistant text block
+ * @returns {string[]}
+ */
+export function simplifiedChars(text) {
+  const plain = [...STRIP, QUOTED].reduce((s, re) => s.replace(re, ' '), text);
+  return [...new Set(plain.match(SIMPLIFIED) ?? [])];
 }
 
 // harness 固定句型（只比對短訊息開頭，避免略過模型自己提到這些字的段落）
@@ -195,6 +211,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     }
   } else texts = lastTurnTexts(jsonl);
   const english = texts.filter(isMostlyEnglish);
+  const simplified = texts.filter(text => simplifiedChars(text).length);
+  if (simplified.length && !english.length) {
+    const chars = [...new Set(simplified.flatMap(simplifiedChars))].join('、');
+    process.stderr.write(`語言檢查：${postTool ? '這次工具呼叫前' : '本輪'}有 ${simplified.length} 段使用者可見文字用了簡體字（${chars}）。使用者可見訊息一律以繁體中文撰寫；請改用繁體中文重新說明這些內容。\n`);
+    process.exit(2);
+  }
   if (english.length) {
     const sample = english[0].replace(/\s+/g, ' ').slice(0, 120);
     const where = postTool ? '這次工具呼叫前' : '本輪';
