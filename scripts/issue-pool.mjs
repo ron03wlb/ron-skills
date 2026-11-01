@@ -2,6 +2,7 @@
 // 把開著的 Issue 逐張分桶，pilot 的 Pool 從 ready 桶依序挑；tracker 支援 GitHub（gh）與 GitLab（glab，含自架），本機 Markdown tracker 不支援。
 // 用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...]
 //       node scripts/issue-pool.mjs claim <n> [--repo <專案>] [--session <id>] [--take-stale]
+//       node scripts/issue-pool.mjs children <母單> [--repo <owner>/<repo>] [--ask-prefix <前綴>]...
 // tracker 讀 repo 根的 docs/agents/issue-tracker.md（寫 glab 是 GitLab、寫 gh 是 GitHub、沒有這份文件時依 origin，同 HOSTS.md；判定在 lib/hosts.mjs），與程式碼 host（origin）分開：
 // 兩者同種時 CLI 從 checkout 推得主機與專案；不同種時取文件裡第一個該種主機的專案網址（GitLab 寫到 `/-/` 之前）。<專案> 是 GitHub 的 <owner>/<name>
 // 或 GitLab 的 group/…/project，覆寫推得的專案。GitLab 的子項目（Issue 底下是 Task）算 sub-issue，所以掛了 Task 的單歸 parent 桶，`is_blocked_by`／`blocks` 連結算相依，系統紀錄裡的「assigned to」算指派
@@ -26,6 +27,10 @@
 //   STOP 之前先印 `STALE_CLAIM <n> <機器>／<session> <最後寫入的 ISO 時間>`；帶 `--take-stale` 時改以這個 session 認領，成功印 `CLAIMED <n> stale <session>`。
 //   transcript 沒寫入不代表 session 結束（可能在等人回覆），所以只有不等人的流程（/retro-collect）才帶 --take-stale（#212：#201 的認領者認領一分鐘後被中斷）。
 // 被擋時印 `STOP <n> claimed <機器>／<session>`（沒有認領留言、或最近一則認領的作者已不在指派名單時，是指派者登入名），exit 4。
+// children 是母單（Map）視圖，只支援 GitHub（tracker 是 GitLab 時 exit 2）：一次 `gh api graphql` 取回母單的 subIssues（GitHub 每張母單最多 100 張子單），
+// 依 GitHub 的子單順序每張印一行 `<ask|child> #<n> <open|closed> labels:<a,b|-> blocked-by:<#m|<owner>/<repo>#m,...|-> <標題>`，blocked-by 只列開著的。
+// 開著的子單最後一則留言的本文（略過開頭的引言行與空行，即 AI 聲明）以任一個 --ask-prefix 開頭時印 `ask`（agent 提問、還沒人回），否則 `child`；
+// 沒給 --ask-prefix 時全是 `child`。提問前綴由各 repo 的 adapter 宣告。exit 0；母單沒有子單時印 `STOP <母單> no-children`、exit 4；查不到母單時同 gh 失敗，exit 1。
 import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
@@ -33,10 +38,11 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { codeHost, projectInDoc, trackerKind } from './lib/hosts.mjs';
 
-const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] | claim <n> [--repo <專案>] [--session <id>] [--take-stale]';
+const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] | claim <n> [--repo <專案>] [--session <id>] [--take-stale] | children <母單> [--repo <owner>/<repo>] [--ask-prefix <前綴>]...';
 /** pool() 分桶與排序要的 GitHub Issue 欄位；pilot-probe 的查詢也引用這一段，bucketOf 多要欄位時只改這裡（#240）。 */
 export const POOL_FIELDS = 'number title labels(first:50){nodes{name}} assignees(first:20){nodes{login}} subIssuesSummary{total} blockedBy(first:50){nodes{number state repository{nameWithOwner}}} blocking(first:50){nodes{number state repository{nameWithOwner}}} comments(last:1){nodes{createdAt}} timelineItems(last:1,itemTypes:[ASSIGNED_EVENT]){nodes{... on AssignedEvent{createdAt}}}';
 const QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS}}}}}`;
+const CHILDREN_QUERY = 'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number subIssues(first:100){nodes{number title state labels(first:50){nodes{name}} blockedBy(first:50){nodes{number state repository{nameWithOwner}}} comments(last:1){nodes{body}}}}}}}';
 // GitLab 的 Issue 是 work item：label、指派、子項目、相依與留言都在 widgets 裡；notes 分成留言（comments）與系統紀錄（activity，指派紀錄在這裡）。
 const GITLAB_QUERY = `query($fullPath:ID!,$cursor:String){project(fullPath:$fullPath){workItems(types:[ISSUE],state:opened,first:50,after:$cursor){pageInfo{hasNextPage endCursor} nodes{iid title widgets{__typename ... on WorkItemWidgetLabels{labels(first:50){nodes{title}}} ... on WorkItemWidgetAssignees{assignees(first:20){nodes{username}}} ... on WorkItemWidgetHierarchy{hasChildren} ... on WorkItemWidgetLinkedItems{linkedItems(first:50){nodes{linkType workItem{iid state namespace{fullPath}}}}} ... on WorkItemWidgetNotes{comments:notes(filter:ONLY_COMMENTS,last:1){nodes{createdAt}} activity:notes(filter:ONLY_ACTIVITY,last:100){nodes{createdAt body}}}}}}}}`;
 
@@ -86,6 +92,10 @@ function github({ repo, host }) {
         ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
       }
       return issues;
+    },
+    children(fullName, n) {
+      const [owner, name] = fullName.split('/');
+      return JSON.parse(gh('api', 'graphql', '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `number=${n}`, '-f', `query=${CHILDREN_QUERY}`)).data.repository.issue.subIssues.nodes;
     },
     view: n => JSON.parse(gh('issue', 'view', ...target(n), '--json', 'assignees,comments')),
     comment: (n, body) => gh('issue', 'comment', ...target(n), '--body', body),
@@ -306,8 +316,36 @@ function claim(n, tracker, session, takeStale) {
   return 0;
 }
 
+/** 留言本文去掉開頭的引言行與空行（AI 聲明）之後，以任一個前綴開頭時為真。 */
+export function isAsking(body, prefixes) {
+  const lines = body.split('\n');
+  const start = lines.findIndex(line => line.trim() && !line.startsWith('>'));
+  const text = start < 0 ? '' : lines.slice(start).join('\n').trimStart();
+  return prefixes.some(prefix => text.startsWith(prefix));
+}
+
+/** 母單視圖的一行（格式見檔頭）；repo 是 `<owner>/<name>`，同 repo 的 blocker 只寫 `#<n>`。 */
+export function childLine(issue, { repo, askPrefixes = [] }) {
+  const open = issue.state === 'OPEN';
+  const body = issue.comments.nodes.at(-1)?.body;
+  const mark = open && body !== undefined && isAsking(body, askPrefixes) ? 'ask' : 'child';
+  const labels = issue.labels.nodes.map(({ name }) => name).join(',') || '-';
+  const blockers = openNodes(issue.blockedBy).map(({ number, repository: { nameWithOwner } }) => nameWithOwner === repo ? `#${number}` : `${nameWithOwner}#${number}`).join(',') || '-';
+  return `${mark} #${issue.number} ${open ? 'open' : 'closed'} labels:${labels} blocked-by:${blockers} ${issue.title}`;
+}
+
+function children(n, tracker, askPrefixes) {
+  if (!tracker.children) throw new UsageError('children 只支援 GitHub tracker（GitHub 的 subIssues）');
+  const repo = tracker.repo();
+  const nodes = tracker.children(repo, n);
+  if (!nodes.length) { console.log(`STOP ${n} no-children`); return 4; }
+  for (const issue of nodes) console.log(childLine(issue, { repo, askPrefixes }));
+  return 0;
+}
+
 function main(argv) {
   let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, session = defaultSession(), takeStale = false;
+  const askPrefixes = [];
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--repo' && argv[i + 1]) repo = argv[++i];
@@ -315,14 +353,16 @@ function main(argv) {
     else if (argv[i] === '--categories' && argv[i + 1]) categories = argv[++i].split(',').filter(Boolean);
     else if (argv[i] === '--session' && argv[i + 1]) session = argv[++i];
     else if (argv[i] === '--take-stale') takeStale = true;
+    else if (argv[i] === '--ask-prefix' && argv[i + 1]) askPrefixes.push(argv[++i]);
     else if (!argv[i].startsWith('-')) positional.push(argv[i]);
     else { console.error(USAGE); return 2; }
   }
   const [command, n] = positional;
-  if (command !== undefined && !(command === 'claim' && /^\d+$/.test(n ?? '') && positional.length === 2)) { console.error(USAGE); return 2; }
+  if (command !== undefined && !(['claim', 'children'].includes(command) && /^\d+$/.test(n ?? '') && positional.length === 2)) { console.error(USAGE); return 2; }
   try {
     const tracker = trackerOf(repo);
     if (command === 'claim') return claim(n, tracker, session, takeStale);
+    if (command === 'children') return children(n, tracker, askPrefixes);
     repo = tracker.repo();
     const issues = tracker.issues(repo);
     for (const { issue, bucket } of pool(issues, { repo, staleHours })) console.log(`${bucket} #${issue.number} ${issue.title}`);
