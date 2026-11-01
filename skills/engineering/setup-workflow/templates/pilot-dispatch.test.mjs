@@ -752,3 +752,70 @@ test('--fresh 不帶 --note：checkpoint 用別的寫法記 review-only、沒有
   assert.ok(draft.includes('- review-only verifier round @ abc：P2 src.mjs:1 仍在。\n- P3 命名。\n\n## 怎麼整併'), draft);
   assert.doesNotMatch(draft, /review 1|不該抄進來|沒有 review-only 段/);
 });
+
+// #261：checkpoint 沒有 review-only 段時，草稿照 pilot.md 的 Watch 讀法（`terminal read --screen --json` 的 `.result.terminal.tail`）
+// 讀 batch 成員行的 handle，抄最後一個以「Review」開頭的行到結果行；讀不到才留原來的提示句。
+// `tail` 是假 Orca 的回覆：陣列時回 ok:true 的 tail，'fail' 時回 ok:false、exit 1。每次呼叫記進 read.log。
+function tailCli(fx, tail) {
+  const cli = join(fx.temp, 'orca-tail');
+  const log = join(fx.temp, 'read.log');
+  writeFileSync(cli, `#!/usr/bin/env node
+require('fs').appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
+const tail = ${JSON.stringify(tail)};
+if (tail === 'fail') { console.log(JSON.stringify({ ok: false, error: { code: 'terminal_not_found' } })); process.exit(1); }
+console.log(JSON.stringify({ ok: true, result: { terminal: { tail } } }));
+`);
+  chmodSync(cli, 0o755);
+  return { cli, reads: () => (existsSync(log) ? readFileSync(log, 'utf8') : '') };
+}
+
+const SHA = '13c1347e0137c0c1320c01eb1b33cf7874a218de';
+const TAIL = [
+  '  Review 舊的一輪（不該抄）',
+  '  ⎿ 中間的工具輸出',
+  '  Review 結果（兩軸分開）',
+  '  - Standards：第 1 輪一個 P2，已修正。',
+  '  - Spec：第 2 輪 re-review 沒有 P1 或 P2。',
+  '  證據留言：https://example.test/46#c1',
+  `  DONE 46 ${SHA}`,
+  '✻ Cooked for 21m 14s',
+  '❯',
+];
+
+test('--fresh 不帶 --note：checkpoint 沒有 review-only 段時讀成員行 handle 的分頁尾段，抄最後一個 Review 行到結果行', t => {
+  const fx = drafted(t, { review: false });
+  const orca = tailCli(fx, TAIL);
+  const result = fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch'], { ORCA_CLI_COMMAND: orca.cli });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(orca.reads(), /^terminal read --terminal term_46 --screen --json$/m);
+  const draft = readFileSync(join(fx.repo, '.scratch/pilot/fresh-46.md'), 'utf8');
+  const review = draft.slice(draft.indexOf('## 最後一輪 review-only'), draft.indexOf('## 怎麼整併'));
+  assert.match(review, /來源：worker 分頁尾段（term_46）/);
+  assert.ok(review.includes(`Review 結果（兩軸分開）\n- Standards：第 1 輪一個 P2，已修正。\n- Spec：第 2 輪 re-review 沒有 P1 或 P2。\n證據留言：https://example.test/46#c1\nDONE 46 ${SHA}\n`), review);
+  assert.doesNotMatch(review, /舊的一輪|中間的工具輸出|Cooked|❯|沒有 review-only 段/);
+});
+
+test('--fresh 不帶 --note：分頁尾段讀不到（Orca 失敗、找不到起訖行、沒有 handle、沒有 ORCA_CLI_COMMAND）時仍是原提示句', t => {
+  for (const [label, tail, setup, { noCli = false } = {}] of [
+    ['Orca 失敗', 'fail'],
+    ['沒有結果行', TAIL.slice(0, 6)],
+    ['結果行是別的 Issue', [...TAIL.slice(0, 6), `  DONE 47 ${SHA}`]],
+    ['結果行是號碼相近的 Issue', [...TAIL.slice(0, 6), `  DONE 246 ${SHA}`, `  STOP 460 findings`]],
+    ['沒有 Review 行', TAIL.slice(3)],
+    ['沒有 handle', TAIL, fx => {
+      const file = join(fx.repo, '.scratch/pilot/batch-23-46.md');
+      writeFileSync(file, readFileSync(file, 'utf8').replace('| term_46 |', '|  |'));
+    }],
+    ['沒有 ORCA_CLI_COMMAND', TAIL, null, { noCli: true }],
+  ]) {
+    const fx = drafted(t, { review: false });
+    setup?.(fx);
+    const orca = tailCli(fx, tail);
+    const result = fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch'], { ORCA_CLI_COMMAND: noCli ? '' : orca.cli });
+    assert.equal(result.status, 0, `${label}：${result.stdout}${result.stderr}`);
+    const draft = readFileSync(join(fx.repo, '.scratch/pilot/fresh-46.md'), 'utf8');
+    assert.match(draft, /checkpoint 沒有 review-only 段，補 worker 分頁尾段/, label);
+    assert.doesNotMatch(draft, /Review 結果|分頁尾段（/, label);
+    if (noCli || setup) assert.equal(orca.reads(), '', label);
+  }
+});
