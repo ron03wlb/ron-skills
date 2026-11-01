@@ -21,8 +21,14 @@
 <p>L1 的目標：在一個還沒有 adapter 的 repo 裡，把第一張 Issue 用 <code>/issue-run</code> 跑到本機 candidate commit，之後用 <code>/issue-queue</code> 看池子、用 <code>/loop /issue-run --pool</code> 一張接一張跑。照下面的 checklist 由上往下做，每一步都有「做完的樣子」，對不上就停在那一步。</p>
 <p>實例：ron-skills 的 adapter <a href="../../agents/issue-run.md"><code>docs/agents/issue-run.md</code></a> 只看 Tracker、Readiness、Checks、Candidate and acceptance、Evidence and closing 五段，就是一份 L1 adapter；其餘段落屬於 L3。唯一檢查入口是 <code>bin/check</code>。</p>
 <h2 id="checklist">Checklist</h2>
-<p>第 1～3 步是 <code>/setup-workflow</code> 開頭的三站：環境 → Host → 等級。每一站都只讀不寫，先列出證據、問這一站的問題，然後停下來等你確認，確認了才進下一站；三站都確認之後它才列出要寫的檔案（第 4 步），你再確認一次才寫入。哪一站停在「不寫檔、只給修正指令」，修好之後重跑 <code>/setup-workflow</code>，從第一站重新開始。</p>
-<h3 id="1-環境站">1. 環境站</h3>
+<p>第 1～5 步由 <code>/setup-workflow</code> 一次做完：它自己偵測作業系統、tracker 與程式碼放在哪裡，再依這台機器有的工具裝到能裝的最完整流程，不問等級，也不要你確認寫入清單。所有改動都寫在另開 worktree 的 <code>setup-workflow</code> 分支上，最後開一個 PR（GitLab 是 MR）。你合併那個 PR，就是唯一的確認。它全程用你的語言說明，只在三種情況問你：偵測不出來（沒有 remote）、tracker 和程式碼不在同一個 host，或要覆蓋你改過的檔案。</p>
+<p>裝到哪裡由偵測結果決定：</p>
+<ul>
+<li><strong>有 Orca，而且 Issue 在 GitHub</strong>：agent 常駐在這個 repo，自己從 Issue 池挑單、開 worktree 派工、驗證後合進 integration 分支；你只做產品決策，push 和合併到預設分支也由你來。</li>
+<li><strong>其他情況</strong>（沒有 Orca，或 Issue 在 GitLab、本機 Markdown）：每張 Issue 一個 worktree，先合進 integration 分支，push 前自動跑檢查，遠端 CI 也會設好；派工由你在各 session 下指令。</li>
+</ul>
+<p>下面每一步寫它做什麼、做完的樣子，以及不用 <code>/setup-workflow</code> 時的手動備用。哪一步停在「不寫檔、只給修正指令」，修好之後重跑 <code>/setup-workflow</code> 即可。</p>
+<h3 id="1-環境">1. 環境</h3>
 <p>先在這台機器裝 skills（每台機器一次）：</p>
 <pre><code class="language-bash">git clone https://github.com/ron03wlb/ron-skills ~/code/ron-skills   # private：先取得讀取權限
 git clone https://github.com/ron03wlb/skills ~/code/skills           # Matt skills 的 fork
@@ -30,51 +36,47 @@ git clone https://github.com/backnotprop/pstack ~/code/pstack
 ~/code/ron-skills/bin/sync-skills --check   # overlay 能套用、沒有 OVERLAY_FAILED
 ~/code/ron-skills/bin/sync-skills           # 連結到 ~/.claude/skills/</code></pre>
 <p>新開的 Claude Code session 打 <code>/</code> 要看得到 <code>issue-run</code>、<code>triage</code>、<code>setup-workflow</code>、<code>setup-matt-pocock-skills</code>。Matt 或 pstack 放在別的路徑時，用 <code>MATT_SKILLS</code>、<code>PSTACK_SKILLS</code> 環境變數指定。</p>
-<p>然後在目標 repo 開 Claude Code，輸入 <code>/setup-workflow</code>。環境站列出這台機器的平台（macOS、WSL2、Linux，見<a href="01-tooling.html#支援平台">支援平台</a>）、必要工具（符合 repo CI 鎖定版本的 Node、git 2.31 以上；要複製 <code>.py</code> 正本時還有 <code>python3</code>）與選用工具（Orca、Codex），再問團隊還有誰用哪些平台，確認的清單之後寫進 adapter 的 <code>## Platforms</code>。</p>
+<p>然後在目標 repo 開 Claude Code，輸入 <code>/setup-workflow</code>。它先偵測這台機器的平台（macOS、WSL2、Linux，見<a href="01-tooling.html#支援平台">支援平台</a>）、必要工具（符合 repo CI 鎖定版本的 Node、git 2.31 以上；要複製 <code>.py</code> 正本時還有 <code>python3</code>）與選用工具（Orca、Codex）。偵測到的平台直接寫進 adapter 的 <code>## Platforms</code>；團隊有人用別的平台，就由他在自己的機器上重跑一次 <code>/setup-workflow</code>，把平台補上去。</p>
 <ul>
 <li>必要工具缺漏或版本不符：停下、不寫檔，只給修正指令；setup 不安裝、也不切換 runtime。</li>
 <li>原生 Windows：停下，提示改用 WSL2。</li>
-<li>選用工具缺漏：只記錄，不停；但它解鎖的東西不能選（沒有 Orca 不能選 L3，沒有 Codex 不能選 <code>codex</code> 擴充）。要用的話先裝好再重跑這一站。</li>
+<li>選用工具缺漏：只記錄，不停。沒有 Orca 就不會裝常駐 pilot，沒有 Codex 就不會裝 <code>codex</code> 擴充；報告會說明裝了之後多什麼。</li>
 </ul>
-<p>做完的樣子：環境站印出 <code>ENV ok</code>，你確認了證據和團隊的平台清單。</p>
-<h3 id="2-host-站">2. Host 站</h3>
-<p>Host 站分別判斷 tracker host（看 <code>docs/agents/issue-tracker.md</code>）與程式碼 host（看 <code>origin</code>），各是 GitHub、GitLab 或 <code>local</code>，並檢查對應的 <code>gh</code>／<code>glab</code> 已安裝、已登入。指令對照見 <a href="../../../skills/engineering/setup-workflow/HOSTS.md">HOSTS.md</a>。</p>
+<p>做完的樣子：印出 <code>ENV ok</code>。</p>
+<h3 id="2-host">2. Host</h3>
+<p>分別判斷 tracker host（看 <code>docs/agents/issue-tracker.md</code>，還沒有這份文件時看 <code>origin</code>）與程式碼 host（看 <code>origin</code>），各是 GitHub、GitLab 或 <code>local</code>，並檢查對應的 <code>gh</code>／<code>glab</code> 已安裝、已登入。指令對照見 <a href="../../../skills/engineering/setup-workflow/HOSTS.md">HOSTS.md</a>。偵測得出來就直接用，不問你。</p>
 <ul>
-<li>兩個 host 不同（例如 tracker 在 GitHub、程式碼在 GitLab）：它會兩個都列出來讓你確認，adapter 的 Tracker 段與 Delivery 段各用各的 CLI。</li>
-<li>任一個是 <code>local</code>（沒有 remote，或 tracker 是本機 Markdown）：程式碼 host 是 <code>local</code> 時沒有 Delivery 段，也就沒有 PR／MR 與遠端 CI。之後還會加 remote 的話，先加好再重跑這一站。</li>
-<li>自架 GitLab（http、IP）算 GitLab；GitHub、GitLab 以外的主機不支援。</li>
-<li>缺 <code>gh</code>／<code>glab</code> 或沒登入：和環境站一樣停下、不寫檔，只給修正指令。</li>
+<li>兩個 host 不同（例如 tracker 在 GitHub、程式碼在 GitLab）：兩個都列出來問你一次，adapter 的 Tracker 段與 Delivery 段各用各的 CLI。</li>
+<li>任一個是 <code>local</code>（沒有 remote，或 tracker 是本機 Markdown）：程式碼 host 是 <code>local</code> 時沒有 Delivery 段，也就沒有 PR／MR 與遠端 CI。它會問你之後會不會加 remote；會的話先加好再重跑。</li>
+<li>自架 GitLab（http、IP）算 GitLab；GitHub、GitLab 以外的主機不支援，會直接告訴你並停下。</li>
+<li>缺 <code>gh</code>／<code>glab</code> 或沒登入：和第 1 步一樣停下、不寫檔，只給修正指令。</li>
 </ul>
-<p>做完的樣子：Host 站印出 <code>HOST ok</code>，你確認了 tracker host 與程式碼 host。</p>
-<h3 id="3-等級站">3. 等級站</h3>
-<p>等級站需要一條單一檢查入口：一條指令跑完這個 repo 所有該跑的檢查（lint、型別、測試、文件守門），全過才 exit 0。pre-commit、CI 和 adapter 都只呼叫它，檢查清單只寫在這一個地方。等級站會找 <code>bin/check</code>、<code>npm run check</code>、<code>make check</code>，或 adapter 已寫的 Checks；找不到就停下、不寫任何檔、也不問是非題，先做好它再重跑（回答「願意做」也一樣要先做好）。</p>
+<p>做完的樣子：印出 <code>HOST ok</code>。</p>
+<h3 id="3-安裝目標與檢查入口">3. 安裝目標與檢查入口</h3>
+<p><code>detect.mjs</code> 偵測現況（每個訊號的證據與量測數字），最後兩行是 <code>TARGET</code>（這次要裝到哪裡與依據）和目前狀態。它不問是非題，也不限一次只升一級：已經是常駐 pilot 的維持；有 Orca 而且 tracker 在 GitHub 就裝常駐 pilot；其他裝到 integration 分支加 push 前檢查。</p>
+<p>所有檢查都要經過同一條單一檢查入口：一條指令跑完這個 repo 所有該跑的檢查（lint、型別、測試、文件守門），全過才 exit 0。pre-push、CI 和 adapter 都只呼叫它，檢查清單只寫在這一個地方。</p>
 <ul>
-<li>已經有的就沿用：<code>npm test</code>、<code>make check</code>、<code>./gradlew check</code>、<code>pytest</code>。</li>
-<li>沒有的就建一個 <code>bin/check</code>，把現有的指令依序串起來，開頭 <code>set -euo pipefail</code>。在乾淨的 <code>main</code> 上跑它是 exit 0；故意弄壞一個測試再跑是非 0。這兩個 exit code 記下來，第 6 步要用。</li>
+<li>已經有的就沿用：<code>bin/check</code>、<code>npm run check</code>、<code>make check</code>，或 adapter 已寫的 Checks。</li>
+<li>沒有的話，<code>/setup-workflow</code> 自己建一個 <code>bin/check</code>：開頭 <code>set -euo pipefail</code>，把 repo 現有的 lint、型別、測試、建置指令依序串起來，再加上它複製進來的檢查。報告會列出串了哪些指令。</li>
+<li>手動備用：自己建 <code>bin/check</code>，在乾淨的預設分支上跑是 exit 0，故意弄壞一個測試再跑是非 0。</li>
 </ul>
-<p>有了檢查入口，等級站偵測現況（目前的等級與每個訊號的證據），列出量測證據（近 90 天貢獻者數、同時存在的 Issue 分支與 worktree、開放 Issue 數、有沒有 CI、有沒有 gated 工作，不設門檻數字），再問下一級進入條件的是非題（題目對應 <a href="index.html#導入等級">README 等級表</a>的進入條件）。都符合才建議升一級，否則建議維持目前等級，維持也是合理的建議。</p>
-<ul>
-<li>一次最多升一級。要跳級得你明說，它會列出跳過的每一級與目標等級還沒滿足的訊號與條件，你看過再確認。</li>
-<li>環境站標為不可選的等級（沒有 Orca 的 L3）不會是建議目標。</li>
-</ul>
-<p>做完的樣子：你確認了目標等級。</p>
-<h3 id="4-設定-tracker-與-label每個-repo-一次">4. 設定 tracker 與 label（每個 repo 一次）</h3>
-<p>三站都確認之後，<code>/setup-workflow</code> 確認這個 repo 的擴充（卡關單、外部測試環境等），然後在一則訊息裡列出要寫或要改的每個檔案（tracker、label、domain docs、adapter 各段、<code>scripts/</code> 的正本副本、<code>.claude/settings.json</code> 的 hook、遠端 CI 檔），你確認後才寫入。tracker、triage label、domain docs 三段會在同一個流程裡照 <code>setup-matt-pocock-skills</code> 的步驟問完，不必另外執行。第 5 步的 adapter 也在同一次流程裡完成。</p>
-<p>手動備用：不用 <code>/setup-workflow</code> 時，輸入 <code>/setup-matt-pocock-skills</code>，依序回答 tracker、triage label、domain docs 三段。兩種做法都會寫出：</p>
+<p>做完的樣子：<code>TARGET</code> 行印出目標與依據。</p>
+<h3 id="4-trackerlabel-與語言">4. tracker、label 與語言</h3>
+<p><code>/setup-workflow</code> 在 worktree 裡照 <code>setup-matt-pocock-skills</code> 的步驟寫出下面的檔案，問題都用偵測結果和預設值回答：tracker 用第 2 步偵測到的 host，label 用五個預設名稱，domain docs 用單一 context（偵測到 monorepo 才分多個）。repo 沒有 <code>CLAUDE.md</code> 也沒有 <code>AGENTS.md</code> 時建 <code>CLAUDE.md</code>。你的語言不是英文時，它在同一個檔案加上 <code>### Language</code> 段，規定使用者看得到的訊息都用你的語言；繁體中文還會帶上語言檢查 hook。</p>
 <ul>
 <li><code>docs/agents/issue-tracker.md</code>：讀單、開單、留言、改 label、依賴關係的指令</li>
 <li><code>docs/agents/triage-labels.md</code>：五個角色對應的 label 字串</li>
 <li><code>docs/agents/domain.md</code>，以及 <code>CLAUDE.md</code>（或 <code>AGENTS.md</code>）的 <code>## Agent skills</code> 段</li>
 </ul>
-<p>手動時再在 tracker 上建出 label（<code>/setup-workflow</code> 會自己建；已存在的會報錯，略過即可）：</p>
+<p>手動備用：輸入 <code>/setup-matt-pocock-skills</code> 依序回答三段，再在 tracker 上建出 label（已存在的會報錯，略過即可）：</p>
 <pre><code class="language-bash"># GitHub
 for l in needs-triage needs-info ready-for-agent ready-for-human wontfix; do gh label create &quot;$l&quot;; done
 # GitLab
 for l in needs-triage needs-info ready-for-agent ready-for-human wontfix; do glab label create --name &quot;$l&quot;; done</code></pre>
 <p>做完的樣子：<code>gh label list</code>（或 <code>glab label list</code>）列得出五個 label；<code>docs/agents/issue-tracker.md</code> 的讀單指令在 agent 的 Bash 工具裡跑得出內容（GitHub 用 <code>--json</code>，見 <a href="02-lifecycle.html#tracker-指令對照">02</a>）。</p>
-<h3 id="5-adapter">5. adapter</h3>
-<p>用 <code>/setup-workflow</code> 時，它在第 4 步的同一次流程裡以 <a href="../../../skills/engineering/issue-run/ADAPTER.md"><code>ADAPTER.md</code></a> 為骨架寫出 <code>docs/agents/issue-run.md</code>，填入第 1 步確認的平台（<code>## Platforms</code>）、第 2 步確認的 host（Tracker 段；程式碼 host 不是 <code>local</code> 時還有 Delivery 段）與第 3 步的檢查入口，並把該等級用得到的 script 正本複製到 <code>scripts/</code>、記錄在 <code>docs/agents/workflow-templates.json</code>。寫完照下面的「做完的樣子」核對。</p>
-<p>手動備用：把 <a href="../../../skills/engineering/issue-run/ADAPTER.md"><code>ADAPTER.md</code></a> 複製成目標 repo 的 <code>docs/agents/issue-run.md</code>，每段填這個 repo 真的有的指令；沒寫的段落採範本裡的 Default。L1 至少填下面五段。adapter 是給 agent 讀的，用英文寫：</p>
+<h3 id="5-adapter檢查與-pr">5. adapter、檢查與 PR</h3>
+<p><code>/setup-workflow</code> 以 <a href="../../../skills/engineering/issue-run/ADAPTER.md"><code>ADAPTER.md</code></a> 為骨架寫出 <code>docs/agents/issue-run.md</code>，填入第 1 步的平台、第 2 步的 host 與第 3 步的檢查入口，以及目標用得到的其他段落。接著把要用的 script 正本複製到 <code>scripts/</code>，記錄在 <code>docs/agents/workflow-templates.json</code>；目標包含 integration 分支時，也一起建 integration 分支、push 前的 hook 和遠端 CI。最後 commit、push 分支、開 PR，PR 說明用你的語言寫清楚合併之後 agent 能做什麼、哪些仍由你做。</p>
+<p>手動備用：把 <a href="../../../skills/engineering/issue-run/ADAPTER.md"><code>ADAPTER.md</code></a> 複製成目標 repo 的 <code>docs/agents/issue-run.md</code>，每段填這個 repo 真的有的指令；沒寫的段落採範本裡的 Default。最少要填下面五段。adapter 是給 agent 讀的，用英文寫：</p>
 <pre><code class="language-markdown"># issue-run adapter: &lt;repo&gt;
 
 Sections not written here take the defaults in ADAPTER.md.
@@ -98,7 +100,7 @@ The candidate is the branch tip. Acceptance is `bin/check` at the candidate SHA 
 ## Evidence and closing
 
 Post evidence as an Issue comment (candidate SHA, commands with exit codes, findings). The human pushes and merges the PR; close the Issue only after the candidate is on `origin/main`.</code></pre>
-<p>做完的樣子：每一段提到的指令都能在 repo 根目錄照抄執行。</p>
+<p>做完的樣子：PR 已開，PR 上的檢查入口 exit 0；adapter 每一段提到的指令都能在 repo 根目錄照抄執行。你合併 PR、重開 Claude Code 讓新的 hook 生效後，就可以開始第 6 步。</p>
 <h3 id="6-第一張-issue">6. 第一張 Issue</h3>
 <p>開一張小而確定的單，本文寫清楚「要做的事」與可檢查的「驗收」，驗收裡的檢查只引用第 3 步的那條指令。然後分級：</p>
 <pre><code class="language-text">/triage &lt;n&gt;</code></pre>

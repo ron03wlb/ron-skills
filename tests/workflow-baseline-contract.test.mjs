@@ -44,13 +44,15 @@ test('docs/workflow README 寫明三條底線是正本唯一的契約，其餘�
   for (const knob of ['git 流程', '整合分支', '母單提示', '桶名', '認領時限', 'worker cap']) assert.ok(contract.includes(knob), `預設值清單缺 ${knob}`);
 });
 
-test('/research 的結論先開 Issue 進 queue；升級等級重跑 /setup-workflow，一次一級', () => {
+// #278：/setup-workflow 不再一次只升一級，重跑時依工具補上缺的部分。
+test('/research 的結論先開 Issue 進 queue；要動到流程的交付後重跑 /setup-workflow，不再限一次一級', () => {
   const readme = read('docs/workflow/README.md');
   const paragraph = readme.split('\n\n').find(block => block.includes('/research')) ?? '';
   assert.match(paragraph, /Issue/);
   assert.match(paragraph, /\/issue-queue/);
   assert.match(paragraph, /\/setup-workflow/);
-  assert.match(paragraph, /一次(只|最多)升一級/);
+  assert.doesNotMatch(readme, /預設一次只升一級|一次最多升一級/);
+  assert.match(readme, /不限一次只升一級/);
 });
 
 test('03 L1 checklist 有 /issue-queue 與 /issue-run --pool 兩步', () => {

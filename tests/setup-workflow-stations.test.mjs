@@ -1,5 +1,5 @@
-// /setup-workflow 的分段確認流程（#91，#82 R1-Q3）：環境 → Host → 等級三站各自呈現證據、確認後才往下、都不寫檔，
-// 接著 extensions、寫檔清單確認，最後才寫檔。導讀站 docs/workflow/ 同步轉述這個順序與支援平台。
+// /setup-workflow 一次完成（#278，取代 #91 的分段確認）：環境 → Host → 安裝目標都自動偵測、正常情況不問人，
+// 寫入全在另開 worktree 的分支上，最後開 PR，人合併 PR 就是確認；全程用人的語言、不講等級代號。導讀站 docs/workflow/ 同步轉述。
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
@@ -12,24 +12,43 @@ function steps(skill) {
     .map(([, number, name, text]) => ({ number: Number(number), name, text }));
 }
 
-test('SKILL.md 的步驟依序是三站、extensions、寫檔清單確認，之後才寫檔', () => {
-  const names = steps(read('skills/engineering/setup-workflow/SKILL.md')).map(step => step.name);
-  assert.deepEqual(names.slice(0, 5), ['Environment', 'Host', 'Level', 'Extensions', 'Confirm']);
-  assert.ok(names.indexOf('Tracker, labels, domain docs') > names.indexOf('Confirm'));
+const SKILL = 'skills/engineering/setup-workflow/SKILL.md';
+
+test('SKILL.md 的步驟：偵測（環境、Host、目標、擴充）→ 開分支 → 寫入 → PR → 報告', () => {
+  const names = steps(read(SKILL)).map(step => step.name);
+  assert.deepEqual(names, ['Environment', 'Host', 'Target', 'Extensions', 'Branch', 'Tracker, labels, domain docs, language',
+    'Adapter', 'Copy templates and gates', 'Remote CI', 'PR', 'Report']);
 });
 
-test('三站各自停下等人確認，都不寫檔，並寫明自己的邊界情況', () => {
-  const [environment, host, level] = steps(read('skills/engineering/setup-workflow/SKILL.md'));
-  for (const station of [environment, host, level]) {
-    assert.match(station.text, /write nothing/, `${station.name} 沒寫明不寫檔`);
-    assert.match(station.text, /Stop and wait for the human/, `${station.name} 沒寫明停下等人確認`);
-    assert.match(station.text, /Done when [^.]*the human confirmed/, `${station.name} 的完成條件不是人確認`);
-  }
+test('正常情況不問人：平台、目標、擴充都不問；Host 只在邊界情況問；沒有寫入清單確認', () => {
+  const [environment, host, target, extensions] = steps(read(SKILL));
+  assert.match(environment.text, /Do not ask about platforms/);
   assert.match(environment.text, /ENV stop/);
-  assert.match(environment.text, /optional tool/);
+  assert.match(host.text, /ask the human only in these cases/);
   assert.match(host.text, /differ/);
   assert.match(host.text, /`local`/);
-  assert.match(level.text, /jump/);
+  assert.match(target.text, /TARGET/);
+  assert.match(target.text, /never asked and never limited to one level per run/);
+  assert.match(extensions.text, /Do not ask the human/);
+  assert.doesNotMatch(read(SKILL), /--answer|RECOMMEND|Stop and wait for the human/);
+});
+
+test('寫入在 worktree 的分支上，最後開 PR；人合併 PR 是唯一確認', () => {
+  const all = steps(read(SKILL));
+  const branch = all.find(step => step.name === 'Branch');
+  const pr = all.find(step => step.name === 'PR');
+  assert.match(branch.text, /git -C <repo> worktree add -b setup-workflow/);
+  assert.match(pr.text, /open a PR \(MR on GitLab\)/);
+  assert.match(read(SKILL), /The PR is the confirmation/);
+});
+
+test('全程用人的語言，不對人講等級代號；非英文時寫語言規則，繁中帶語言 hook', () => {
+  const skill = read(SKILL);
+  assert.match(skill, /\*\*Talk to the human in their language\.\*\*/);
+  assert.match(skill, /Never name the levels \(L0–L3\)/);
+  const language = steps(skill).find(step => step.name.endsWith('language'));
+  assert.match(language.text, /### Language/);
+  assert.match(language.text, /claude-hook-language\.mjs/);
 });
 
 test('01-tooling 有支援平台表：WSL2、macOS、一般 Linux，原生 Windows 不支援', () => {
@@ -45,8 +64,8 @@ test('08-pitfalls 的工具與環境依 WSL、macOS、通用分組，WSL 項目�
   assert.match(wsl, /其他平台無害/);
 });
 
-test('03-level1 的 checklist 開頭是三站', () => {
+test('03-level1 的 checklist 開頭是一次完成的三步', () => {
   const checklist = read('docs/workflow/03-level1.md').split('\n## Checklist\n')[1];
   const headings = [...checklist.matchAll(/^### \d+\. (.+)$/gm)].map(match => match[1]);
-  assert.deepEqual(headings.slice(0, 3), ['環境站', 'Host 站', '等級站']);
+  assert.deepEqual(headings.slice(0, 3), ['環境', 'Host', '安裝目標與檢查入口']);
 });

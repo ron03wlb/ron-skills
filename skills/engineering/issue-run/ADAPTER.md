@@ -4,18 +4,18 @@ Copy into a repo as `docs/agents/issue-run.md` and fill each section with comman
 
 ## Platforms
 
-The platforms the team runs this repo's workflow on, as `/setup-workflow`'s environment station confirmed them: any of `macOS`, `WSL2`, `Linux` (for example `macOS, WSL2`). Native Windows is not supported; use WSL2. Every command this adapter names must run on each listed platform, and a workaround for one platform says which.
+The platforms the team runs this repo's workflow on, as `/setup-workflow` detected them (each teammate's platform is added when they run it): any of `macOS`, `WSL2`, `Linux` (for example `macOS, WSL2`). Native Windows is not supported; use WSL2. Every command this adapter names must run on each listed platform, and a workaround for one platform says which.
 Default: the platform `/setup-workflow` ran on.
 
 ## Tracker
 
-How to read an Issue with comments and its blocking relations, and the write rules for bodies and comments. Name the tracker host `/setup-workflow`'s Host station confirmed (`github`, `gitlab` or `local`, with its hostname) and take each command from the `gh`/`glab` table in [HOSTS.md](../setup-workflow/HOSTS.md); `glab` flags differ (`glab issue note` takes only `-m`, no `--body-file`).
+How to read an Issue with comments and its blocking relations, and the write rules for bodies and comments. Name the tracker host `/setup-workflow`'s Host step detected (`github`, `gitlab` or `local`, with its hostname) and take each command from the `gh`/`glab` table in [HOSTS.md](../setup-workflow/HOSTS.md); `glab` flags differ (`glab issue note` takes only `-m`, no `--body-file`).
 Default: `docs/agents/issue-tracker.md` from `/setup-matt-pocock-skills`.
 On a GitHub tracker at L3, also write the tracker project's URL (`https://<host>/<owner>/<repo>`) here as the section's only GitHub project URL: the setup-workflow `gh-tracker.mjs` copy reads its write target from it, and exits 2 without one.
 
 ## Delivery
 
-How a candidate reaches the shared branch on the code host: the code host the Host station confirmed (`github` or `gitlab`, with its hostname; it may differ from the tracker host), its CLI, the PR or MR create, read, wait-for-CI and merge commands from [HOSTS.md](../setup-workflow/HOSTS.md), and where CI is configured (`.github/workflows/` or `.gitlab-ci.yml`).
+How a candidate reaches the shared branch on the code host: the code host the Host step detected (`github` or `gitlab`, with its hostname; it may differ from the tracker host), its CLI, the PR or MR create, read, wait-for-CI and merge commands from [HOSTS.md](../setup-workflow/HOSTS.md), and where CI is configured (`.github/workflows/` or `.gitlab-ci.yml`).
 Name both **CI runners** (CI 執行端) and when to switch. Remote (GitHub Actions, GitLab pipeline) is the default. Local applies only when the remote did not start (billing, no runner: `land.mjs` prints `STOP ci-not-started`): run the `## Checks` entry on the tip SHA to merge, with a clean tree, and comment the SHA and its result line on the PR; on GitHub that is `node scripts/land.mjs <branch> --local-checks <sha> --check-command '<check entry>'`. A remote run that started and failed never falls back to local. With the setup-workflow `land.mjs` (GitHub only), the delivery command is `node scripts/land.mjs <branch> --body-file <file>`.
 Default: none when the code host is `local` (no remote): there is no PR, MR or remote CI, the local runner is the only one, and the human merges locally.
 
