@@ -40,6 +40,11 @@
       "commit": "90b7ca2436ce1b04a293b775ebbc2a0f9e7f8adc",
       "sha256": "27fc85c54d445d247e1676e309ef7e8beed54fac431bd002e1584b07a97aa4ec"
     },
+    "scripts/claude-hook-unbare.sh": {
+      "template": "skills/engineering/setup-workflow/templates/claude-hook-unbare.sh",
+      "commit": "3ba9acc35f2e6e6e8d94ff80d3641c4b36e7214f",
+      "sha256": "c8aa3ce581fa27a079b2144ec9c38876824b35323be703111912f18682e44444"
+    },
     "scripts/claude-hook-zsh-equals.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-zsh-equals.mjs",
       "commit": "bac148bc559a0c7cc957111d8fd92757e5acf8fe",
@@ -112,8 +117,8 @@
     },
     "scripts/pilot-dispatch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-dispatch.mjs",
-      "commit": "b600ba7229c27edb686ccc88cdd17dda3b2476a5",
-      "sha256": "8b267bc76e4441ae7e644f3973910c0f815b5e27a6873d4e026c92e510c4e9d8"
+      "commit": "492ad5aee430d5932369e9ad4d5399ecebb82007",
+      "sha256": "da5356ff348c61affc99a294b5a4ae53d8366ee9db3a5467c978e7746c382560"
     },
     "scripts/pilot-gate.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-gate.mjs",
@@ -142,8 +147,8 @@
     },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",
-      "commit": "e565ae1f021dde1195a5d34abd19789dd71f709f",
-      "sha256": "94ad9371c4dd41062b3b5680d850e8397c433e9b04a669c95d89e41ebb7c9c0e"
+      "commit": "492ad5aee430d5932369e9ad4d5399ecebb82007",
+      "sha256": "9ed536412a4bf4ffb0682fea395d1eb6ed9347f282639aa4f880f76105a7e102"
     },
     "scripts/pilot-register.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-register.mjs",
@@ -159,6 +164,11 @@
       "template": "skills/engineering/setup-workflow/templates/pilot-sources.mjs",
       "commit": "6dd5f16478e8c443ade1f407e0bc355a278bd815",
       "sha256": "b5f196510e2413e609a26607d1e6902e292aaf58cb4c4a631c091afae6d7cdf0"
+    },
+    "scripts/pilot-unbare.sh": {
+      "template": "skills/engineering/setup-workflow/templates/pilot-unbare.sh",
+      "commit": "3ba9acc35f2e6e6e8d94ff80d3641c4b36e7214f",
+      "sha256": "93c37ad070828d1f3ea76888b30a48e3f7520024b55149fd4e339e55f32353a1"
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
