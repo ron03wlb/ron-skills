@@ -395,7 +395,8 @@ for (const [why, claimer, transcripts] of LIVE_CASES) {
   });
 }
 
-// children（#251）：母單視圖。樣本 sub-issues.json 錄自 `gh api graphql`（ron03wlb/ron-skills #102 的子單，2026-11-01）。
+// children（#251）：母單視圖。樣本 sub-issues.json 錄自 `gh api graphql`（ron03wlb/ron-skills #102 的子單，2026-11-01），子單全是已關閉、
+// 最後留言是合入通知；提問與非提問的子單是以錄下的節點為殼、用 mergeSample 改欄位合成的，形狀不超出真實回應。
 const SUB_SAMPLE = fixture('sub-issues');
 const SUB_NODE = SUB_SAMPLE.data.repository.issue.subIssues.nodes[0];
 
