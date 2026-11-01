@@ -84,8 +84,9 @@ test('Stage：允許的衝突解法（不同條目、只新增、表格的不同
   assert.match(line('Stage'), /解完的 staged SHA 一樣要跑 Regression.*`STOP conflict <n> <檔>=<來源>:<種類> …`.*Stage conflict/);
   const stage = line('Stage conflict');
   assert.match(stage, /不同的 `- \*\*<名稱>\.\*\*` 條目/);
-  // #173：戳記檔是 scripts/restamp.mjs 的 STAMP_FILES，兩個都列出來，restamp 在其他衝突檔解完之後。
-  assert.match(stage, /戳記檔（`scripts\/restamp\.mjs` 的 `STAMP_FILES`：`scripts\/workflow-doc-sync\.json`、`docs\/agents\/workflow-templates\.json`）.*其他衝突檔先用下列解法解完.*--restamp/);
+  // #173：兩個戳記檔都列出來，restamp 在其他衝突檔解完之後；#245：條目解法與流程站戳記由 Stage 指令的 --resolver 帶入。
+  assert.match(stage, /`--resolver scripts\/pilot-resolve\.mjs`/);
+  assert.match(stage, /戳記檔（`scripts\/workflow-doc-sync\.json`、`docs\/agents\/workflow-templates\.json`.*其他衝突檔先用下列解法解完.*--restamp/);
   assert.match(stage, /Markdown 表格列.*以第一格為鍵.*（`rows`，#162/);
   assert.match(stage, /一邊只改了 base 的某幾行、另一邊只在 base 行之間插入新行.*（`adjacent`，#175/);
   assert.match(stage, /（`adjacent`，#175.*純刪除不算改動.*兩邊動到同一個 `- \*\*<名稱>\.\*\*` 條目/);
