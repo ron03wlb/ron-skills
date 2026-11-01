@@ -44,7 +44,7 @@ const view = ({ assignees = [], comments = [] } = {}) => mergeSample(VIEW, {
 /** PATH 上的假 gh：`api graphql` 回 issues 頁面；`issue view` 依序回 views 的第 i 個（用完就一直回最後一個），其餘只記錄 argv；
  * 每次呼叫一行 JSON 寫進 calls.log。script 在暫存的 git repo 裡跑，sessions 給了就寫成它的 `.scratch/pilot/sessions.md`。
  * CLAUDE_CONFIG_DIR 指向暫存目錄，不讀使用者的 ~/.claude；transcripts 是 { <session>: [最後寫入幾小時前, 內容] }。 */
-function fakeGh({ issues = [], views = [view()], sessions, transcripts = {} } = {}) {
+function fakeGh({ issues = [], views = [view()], sessions, transcripts = {}, children } = {}) {
   const dir = mkdtempSync(join(realTmpdir(), 'issue-pool-'));
   const repo = join(dir, 'repo');
   mkdirSync(repo);
@@ -64,6 +64,7 @@ function fakeGh({ issues = [], views = [view()], sessions, transcripts = {} } = 
   const page = mergeSample(SAMPLE, { data: { repository: { issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: issues } } } }, 'page');
   writeFileSync(join(dir, 'page.json'), JSON.stringify(page));
   writeFileSync(join(dir, 'views.json'), JSON.stringify(views));
+  if (children) writeFileSync(join(dir, 'children.json'), JSON.stringify(children));
   writeFileSync(join(dir, 'gh'), `#!/usr/bin/env node
 const { appendFileSync, readFileSync } = require('node:fs');
 const args = process.argv.slice(2);
@@ -71,7 +72,8 @@ const log = ${JSON.stringify(join(dir, 'calls.log'))};
 let previous = [];
 try { previous = readFileSync(log, 'utf8').trim().split('\\n').map(line => JSON.parse(line)); } catch {}
 appendFileSync(log, JSON.stringify(args) + '\\n');
-if (args[0] === 'api' && args[1] === 'graphql') process.stdout.write(readFileSync(${JSON.stringify(join(dir, 'page.json'))}));
+if (args[0] === 'api' && args[1] === 'graphql' && args.some(arg => arg.includes('subIssues('))) process.stdout.write(readFileSync(${JSON.stringify(join(dir, 'children.json'))}));
+else if (args[0] === 'api' && args[1] === 'graphql') process.stdout.write(readFileSync(${JSON.stringify(join(dir, 'page.json'))}));
 else if (args[0] === 'issue' && args[1] === 'view') {
   const views = JSON.parse(readFileSync(${JSON.stringify(join(dir, 'views.json'))}, 'utf8'));
   const i = previous.filter(([cmd, sub]) => cmd === 'issue' && sub === 'view').length;
@@ -392,6 +394,89 @@ for (const [why, claimer, transcripts] of LIVE_CASES) {
     assert.deepEqual(writes(calls()), []);
   });
 }
+
+// children（#251）：母單視圖。樣本 sub-issues.json 錄自 `gh api graphql`（ron03wlb/ron-skills #102 的子單，2026-11-01）。
+const SUB_SAMPLE = fixture('sub-issues');
+const SUB_NODE = SUB_SAMPLE.data.repository.issue.subIssues.nodes[0];
+
+/** 一張子單：comment 是最後一則留言的全文（省略時沒有留言）；blockedBy 同 issue()，`<n>:CLOSED` 是已關閉的。 */
+function child(number, { state = 'OPEN', labels = [], blockedBy = [], comment } = {}) {
+  return mergeSample(SUB_NODE, {
+    number, title: `子單 ${number}`, state,
+    labels: { nodes: labels.map(name => ({ name })) },
+    blockedBy: { nodes: blockedBy.map(ref => {
+      const [, repo = 'acme/app', n, refState = 'OPEN'] = String(ref).match(/^(?:(.+)#)?(\d+)(?::(\w+))?$/);
+      return { number: Number(n), state: refState, repository: { nameWithOwner: repo } };
+    }) },
+    comments: { nodes: comment === undefined ? [] : [{ body: comment }] },
+  }, 'child');
+}
+const subIssues = (parent, nodes) => mergeSample(SUB_SAMPLE, { data: { repository: { issue: { number: parent, subIssues: { nodes } } } } }, 'children');
+
+const ASKING = '> 🤖 AI（issue-run worker，batch 9）\n\nOrchestrator：照規則要問你，A／B／C 選哪個？';
+const DECIDED = '> 🤖 AI（coordinator）\n\nOperator 決策：選 A。';
+const FAMILY = subIssues(9, [
+  child(10, { labels: ['enhancement', 'ready-for-agent'], comment: ASKING }),
+  child(11, { labels: ['bug', 'ready-for-agent'], blockedBy: [10, '3:CLOSED', 'other/repo#4'], comment: DECIDED }),
+  child(12, { state: 'CLOSED', comment: 'Orchestrator：已結案前的提問' }),
+]);
+
+test('children：每張子單一行；最後一則留言（略過開頭的 AI 聲明引言）以 --ask-prefix 開頭的開著子單標 ask', () => {
+  const { run, calls } = fakeGh({ children: FAMILY });
+  const result = run('children', '9', '--ask-prefix', 'Orchestrator：');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, [
+    'ask #10 open labels:enhancement,ready-for-agent blocked-by:- 子單 10',
+    'child #11 open labels:bug,ready-for-agent blocked-by:#10,other/repo#4 子單 11',
+    'child #12 closed labels:- blocked-by:- 子單 12',
+    '',
+  ].join('\n'));
+  assert.equal(calls().length, 1, '一次 GraphQL 取回全部子單');
+  assert.deepEqual(calls()[0].slice(0, 8), ['api', 'graphql', '-F', 'owner=acme', '-F', 'name=app', '-F', 'number=9']);
+});
+
+test('children：沒給 --ask-prefix 時沒有子單標 ask', () => {
+  const result = fakeGh({ children: FAMILY }).run('children', '9');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n').map(line => line.split(' ')[0]), ['child', 'child', 'child']);
+});
+
+test('children：--ask-prefix 可以重複，任一個符合就標 ask', () => {
+  const result = fakeGh({ children: FAMILY }).run('children', '9', '--ask-prefix', 'STOP：', '--ask-prefix', 'Operator 決策');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n').map(line => line.split(' ').slice(0, 2).join(' ')), ['child #10', 'ask #11', 'child #12']);
+});
+
+test('children：--repo 指向別的 repo 時 GraphQL 查那個 owner/name', () => {
+  // run 先帶 --repo acme/app，後面的 --repo 覆寫它。
+  const { run, calls } = fakeGh({ children: subIssues(126, [child(136, { comment: ASKING })]) });
+  const result = run('children', '126', '--repo', 'ron03wlb/investing', '--ask-prefix', 'Orchestrator：');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ask #136 open labels:- blocked-by:- 子單 136\n');
+  assert.deepEqual(calls()[0].slice(0, 8), ['api', 'graphql', '-F', 'owner=ron03wlb', '-F', 'name=investing', '-F', 'number=126']);
+});
+
+test('children：tracker 是 GitLab 時是用法錯誤（只支援 GitHub 的 subIssues），不呼叫 glab', () => {
+  const { run, calls } = fakeGlab();
+  const result = run('children', '9');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /children/);
+  assert.deepEqual(calls(), []);
+});
+
+test('children：母單沒有子單時印 STOP <n> no-children、exit 4', () => {
+  const result = fakeGh({ children: subIssues(9, []) }).run('children', '9');
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, 'STOP 9 no-children\n');
+});
+
+test('children：號碼不是數字、或多給參數時是用法錯誤', () => {
+  const { run, calls } = fakeGh({ children: FAMILY });
+  assert.equal(run('children').status, 2);
+  assert.equal(run('children', 'x').status, 2);
+  assert.equal(run('children', '9', '10').status, 2);
+  assert.deepEqual(calls(), []);
+});
 
 // GitLab tracker（#108）：docs/agents/issue-tracker.md 寫 glab 時改用 glab。樣本 test/fixtures/gitlab/ 不是實際回應：本機沒有 glab，
 // 欄位依 GitLab GraphQL reference（WorkItemWidgetLabels、Assignees、Hierarchy、LinkedItems、Notes）與 REST issues、notes 文件組成，
