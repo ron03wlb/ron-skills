@@ -1,0 +1,86 @@
+{
+  "data": {
+    "repository": {
+      "issue": {
+        "number": 102,
+        "subIssues": {
+          "nodes": [
+            {
+              "number": 104,
+              "title": "底線 ②：/issue-run --pool，可被 /loop 驅動",
+              "state": "CLOSED",
+              "labels": {
+                "nodes": [
+                  {
+                    "name": "enhancement"
+                  },
+                  {
+                    "name": "ready-for-agent"
+                  }
+                ]
+              },
+              "blockedBy": {
+                "nodes": [
+                  {
+                    "number": 103,
+                    "state": "CLOSED",
+                    "repository": {
+                      "nameWithOwner": "ron03wlb/ron-skills"
+                    }
+                  }
+                ]
+              },
+              "comments": {
+                "nodes": [
+                  {
+                    "body": "已隨 https://github.com/ron03wlb/ron-skills/pull/129 合入 `main`（merge 370114b84e4f747ab1461af318981b0ec950760e），batch 104-106。\n\nregression: f618da67d69ef4ae02209ea596b4dc4fd3809937 exit 0 CHECK_PASS tests 212+258+107"
+                  }
+                ]
+              }
+            },
+            {
+              "number": 105,
+              "title": "底線 ③：/issue-queue skill（分桶、細化、母單提示）",
+              "state": "CLOSED",
+              "labels": {
+                "nodes": [
+                  {
+                    "name": "enhancement"
+                  },
+                  {
+                    "name": "ready-for-agent"
+                  }
+                ]
+              },
+              "blockedBy": {
+                "nodes": [
+                  {
+                    "number": 94,
+                    "state": "CLOSED",
+                    "repository": {
+                      "nameWithOwner": "ron03wlb/ron-skills"
+                    }
+                  },
+                  {
+                    "number": 103,
+                    "state": "CLOSED",
+                    "repository": {
+                      "nameWithOwner": "ron03wlb/ron-skills"
+                    }
+                  }
+                ]
+              },
+              "comments": {
+                "nodes": [
+                  {
+                    "body": "已隨 https://github.com/ron03wlb/ron-skills/pull/211 合入 `main`（merge 5567fa8891edd741c0a710a915d59d539e8505ad），batch 105-192。\n\nregression: 0b9e8e6f4f00caca809cb4a9b8207ddd29c303e0 exit 0 CHECK_PASS tests 374+455+191"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
