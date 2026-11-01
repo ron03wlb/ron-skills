@@ -87,6 +87,8 @@ if (manifestText !== null) {
     else copies = manifest.copies ?? {};
   } catch (error) { finding('divergence', `invalid-manifest ${MANIFEST} 不是合法 JSON：${error.message}`, MANIFEST); }
 }
+// 清單記錄而且內容和記錄的 sha256 一致的副本：它的內容屬於正本，cross-repo 不掃（#281：範本測試檔裡的示範路徑）。
+const pristine = new Set();
 for (const [path, entry] of Object.entries(copies)) {
   if (typeof entry?.sha256 !== 'string' || typeof entry?.template !== 'string') { finding('divergence', `invalid-entry ${path} 清單項目缺 template 或 sha256`, MANIFEST); continue; }
   const copy = join(root, path);
@@ -100,6 +102,7 @@ for (const [path, entry] of Object.entries(copies)) {
   }
   const copyChanged = copySha !== entry.sha256;
   const canonicalChanged = canonicalSha !== entry.sha256;
+  if (!copyChanged) pristine.add(path);
   if (!copyChanged && !canonicalChanged) continue;
   const kind = copySha === canonicalSha ? 'stale-record' : copyChanged && canonicalChanged ? 'both-modified' : copyChanged ? 'local-modified' : 'canonical-newer';
   const diff = kind === 'both-modified' ? lines(spawnSync('git', ['diff', '--no-index', '--', copy, template], { encoding: 'utf8' }).stdout) : [];
@@ -154,7 +157,7 @@ const HOME_PATH = /(?:~(?!\\?")|\$\{?HOME\}?|\/home\/[\w.-]+|\/Users\/[\w.-]+)((
 const unquote = text => text.replace(/\\?"/g, '').replace(/\.+$/, '');
 const hooksPath = git('config', 'core.hooksPath');
 const scriptDirs = ['scripts/', 'bin/', '.githooks/', '.husky/', ...(hooksPath && !hooksPath.startsWith('/') ? [`${hooksPath.replace(/\/?$/, '/')}`] : [])];
-const scanned = files.filter(file => file === adapterPath || file === '.claude/settings.json' || scriptDirs.some(dir => file.startsWith(dir)));
+const scanned = files.filter(file => !pristine.has(file)).filter(file => file === adapterPath || file === '.claude/settings.json' || scriptDirs.some(dir => file.startsWith(dir)));
 const unreadable = new Set();
 for (const file of scanned) {
   const content = readOrWarn(file);

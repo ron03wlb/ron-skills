@@ -20,7 +20,8 @@
 // 回傳 false 表示解不了），commit，在新 tip 以 sh 跑 `--check-command`（預設 bin/check），通過才 push、印 RESTAMPED，再等 CI、合併（`--local-checks` 時留言改附這次檢查的結果行）。
 // 其他衝突（或 repo 沒有 restamp.mjs）照舊 merge --abort，STOP merge <pr> conflict <檔案…>，分支停在原來的 tip。
 //
-// 用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--check-command <command>] [--body-file <file>] [--title <title>]
+// 用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--check-command <command>] [--body-file <file>] [--title <title>] [--main <branch>]
+// 主分支（下文的 main）：`--main <branch>`；沒帶時讀 origin/HEAD（clone 時設定，`git remote set-head origin --auto` 可重設），都沒有才用 main（#281）。
 // stdout：每步一行進度（PUSHED、PR、CHECKS_PASSED、RESTAMPED <pr> <新 tip>（合入 main 沒有衝突時是 MAIN_MERGED），`--local-checks` 時是 LOCAL_CHECKS <pr> <sha> <結果行>，收尾的 UNBARE、
 //   WORKTREE_REMOVED、BRANCH_DELETED，最後 MAIN、SYNC_SKILLS）；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
 //   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、restamp-checks-failed、merge、not-merged、worktree-rm）。
@@ -34,7 +35,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { orca } from './orca-session-send.mjs';
 
-const USAGE = '用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--check-command <command>] [--body-file <file>] [--title <title>]';
+const USAGE = '用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--check-command <command>] [--body-file <file>] [--title <title>] [--main <branch>]';
 
 /** CI 輪詢：剛 push 時 PR 的 head 可能還沒更新、checks 可能還沒登記（空陣列），都照 pending 處理到逾時。 */
 const CHECKS_POLL_MS = Number(process.env.LAND_CHECKS_POLL_MS || 10000);
@@ -219,11 +220,23 @@ async function restampConflicts(tree, files) {
   return (await restamp(tree, files)) !== false;
 }
 
+/** 主分支名稱（#281）：land() 開頭由 --main 或 defaultBranch() 決定。 */
+let BASE = 'main';
+/**
+ * 遠端的預設分支：先看本機的 origin/HEAD；clone 時遠端還是空的就沒有這個 ref，改問遠端（ls-remote --symref）；都問不到才是 main。
+ */
+export function defaultBranch(cwd) {
+  const ref = run('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], cwd).stdout.trim();
+  if (ref.startsWith('origin/')) return ref.slice('origin/'.length);
+  const remote = run('git', ['ls-remote', '--symref', 'origin', 'HEAD'], cwd).stdout.match(/^ref: refs\/heads\/(\S+)\tHEAD$/m);
+  return remote?.[1] ?? 'main';
+}
+
 /**
  * tip 和 origin/main 合不起來時回 true：等 CI 之前先判斷，restamp 後只等一輪 CI（Bash 600 秒放不下兩輪加一次檢查）。
  * `git merge-tree --write-tree` 要 git 2.38 以上；更舊的 git（exit 不是 0 或 1）當作合得起來，交給合併被拒時的後備。
  */
-const conflictsWithMain = (main, tip) => run('git', ['merge-tree', '--write-tree', 'origin/main', tip], main).status === 1;
+const conflictsWithMain = (main, tip) => run('git', ['merge-tree', '--write-tree', `origin/${BASE}`, tip], main).status === 1;
 
 /** GitHub 因 PR 和 base 衝突拒絕合併時 gh 的訊息（retro 1031b、PR #168 實際印出的 `GraphQL: Pull Request has merge conflicts`）。 */
 const MERGE_CONFLICT = /Pull Request has merge conflicts/;
@@ -236,7 +249,7 @@ const gitIn = (cwd, ...args) => spawnSync('git', args, { cwd, encoding: 'utf8', 
  * 其他衝突（或 restamp、commit 途中失敗）merge --abort 後 Stop，分支不留合併中途狀態；檢查失敗時合併 commit 留在本機分支、不 push。
  */
 async function mergeMainAndRestamp(main, branch, tree, number, command) {
-  git(main, 'fetch', 'origin', 'main');
+  git(main, 'fetch', 'origin', BASE);
   const temp = tree ? null : mkdtempSync(join(tmpdir(), 'land-restamp-'));
   const path = tree?.path ?? join(temp, 'tree');
   try {
@@ -244,7 +257,7 @@ async function mergeMainAndRestamp(main, branch, tree, number, command) {
       const added = spawnSync('git', ['worktree', 'add', '-q', path, branch], { cwd: main, encoding: 'utf8', env: childEnv });
       if (added.status !== 0) throw new Error(`git worktree add 失敗：${added.stderr.trim()}`);
     }
-    const merge = gitIn(path, 'merge', '--no-edit', 'origin/main');
+    const merge = gitIn(path, 'merge', '--no-edit', `origin/${BASE}`);
     let restamped = [];
     if (merge.status !== 0) {
       const conflicted = gitIn(path, 'diff', '--name-only', '--diff-filter=U').stdout.split('\n').filter(Boolean);
@@ -282,16 +295,16 @@ async function mergeMainAndRestamp(main, branch, tree, number, command) {
 /** 主 checkout 在 main 而且乾淨才 --ff-only；否則回傳原因（WARN，不擋）。 */
 function syncMain(main) {
   const current = run('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], main).stdout.trim();
-  if (current !== 'main') return `主 checkout 在 ${current || 'detached HEAD'}`;
+  if (current !== BASE) return `主 checkout 在 ${current || 'detached HEAD'}`;
   if (git(main, 'status', '--porcelain')) return '主 checkout 有未提交的改動';
-  const result = run('git', ['merge', '--ff-only', 'origin/main'], main);
+  const result = run('git', ['merge', '--ff-only', `origin/${BASE}`], main);
   return result.status === 0 ? null : `ff 失敗：${result.stderr.trim()}`;
 }
 
 /** 分支以 --ff-only 跟上 origin/main 並 push；有 worktree 就在那裡 merge，否則用 fetch 更新 ref（同樣拒絕非 ff，upstream 不變）。 */
 function fastForwardBranch(main, branch, tree) {
-  if (tree) git(tree.path, 'merge', '--ff-only', 'origin/main');
-  else git(main, 'fetch', '.', `refs/remotes/origin/main:refs/heads/${branch}`);
+  if (tree) git(tree.path, 'merge', '--ff-only', `origin/${BASE}`);
+  else git(main, 'fetch', '.', `refs/remotes/origin/${BASE}:refs/heads/${branch}`);
   git(main, 'push', 'origin', branch);
 }
 
@@ -328,8 +341,9 @@ async function cleanup(main, branch, tree) {
   }
 }
 
-export async function land({ branch, keepBranch = false, localChecksSha, checkCommand = 'bin/check', bodyFile, title, cwd = process.cwd() }) {
+export async function land({ branch, keepBranch = false, localChecksSha, checkCommand = 'bin/check', bodyFile, title, base, cwd = process.cwd() }) {
   const main = worktrees(cwd)[0].path;
+  BASE = base ?? defaultBranch(main);
   // 主 checkout 也算：--keep-branch 時在那裡 ff；收尾時無法刪掉主 checkout 正在用的分支，開頭就停。
   const tree = worktrees(main).find(item => item.branch === branch);
   if (tree?.path === main && !keepBranch) throw new Stop(`checked-out-in-main ${branch}`);
@@ -343,12 +357,12 @@ export async function land({ branch, keepBranch = false, localChecksSha, checkCo
   if (tip) {
     pr = pickPr(prs, tip);
     if (pr?.state !== 'MERGED') {
-      git(main, 'fetch', 'origin', 'main');
+      git(main, 'fetch', 'origin', BASE);
       const contains = (ancestor, descendant) => run('git', ['merge-base', '--is-ancestor', ancestor, descendant], main).status === 0;
       // 分支在送出前被別的 session 切走，commit 落到別條分支，推出去的是沒有新 commit 的空分支（retro 2026-10-30 ron-skills-0d）。
-      if (!pr && contains(tip, 'origin/main')) throw new Stop(`no-commits ${branch} 沒有 origin/main 以外的 commit`);
+      if (!pr && contains(tip, `origin/${BASE}`)) throw new Stop(`no-commits ${branch} 沒有 origin/${BASE} 以外的 commit`);
       // push 事件的 CI 跑分支自己那份 workflow：沒合入 origin/main 的 CI 修正（#48 的 Node 版本）就會紅燈（PR #50）。
-      if (keepBranch && !contains('origin/main', tip)) throw new Stop(`behind-main ${branch} 沒有包含 origin/main：先合入 origin/main 並重跑 Regression`);
+      if (keepBranch && !contains(`origin/${BASE}`, tip)) throw new Stop(`behind-main ${branch} 沒有包含 origin/${BASE}：先合入 origin/${BASE} 並重跑 Regression`);
       if (localChecksSha) checkPass = runLocalChecks(main, branch, tip, localChecksSha, checkCommand);
     }
     const push = run('git', ['push', '-u', 'origin', branch], main);
@@ -362,7 +376,7 @@ export async function land({ branch, keepBranch = false, localChecksSha, checkCo
   if (!pr) {
     if (!bodyFile) throw new Stop('no-body 新開 PR 要 --body-file');
     const subject = title ?? git(main, 'log', '-1', '--format=%s', tip);
-    const created = run('gh', ['pr', 'create', '--base', 'main', '--head', branch, '--title', subject, '--body-file', bodyFile], main);
+    const created = run('gh', ['pr', 'create', '--base', BASE, '--head', branch, '--title', subject, '--body-file', bodyFile], main);
     if (created.status !== 0) throw new Stop(`pr-create ${created.stderr.trim().split('\n').pop()}`);
     pr = JSON.parse(gh(main, 'pr', 'view', created.stdout.trim().split('\n').pop(), '--json', 'number,state,url,headRefOid,mergeCommit'));
     console.log(`PR_CREATED ${pr.number} ${pr.url}`);
@@ -418,7 +432,7 @@ export async function land({ branch, keepBranch = false, localChecksSha, checkCo
 }
 
 /** 帶值的旗標與它在 land() 選項裡的名稱。 */
-const VALUE_FLAGS = { '--body-file': 'bodyFile', '--title': 'title', '--local-checks': 'localChecksSha', '--check-command': 'checkCommand' };
+const VALUE_FLAGS = { '--body-file': 'bodyFile', '--title': 'title', '--local-checks': 'localChecksSha', '--check-command': 'checkCommand', '--main': 'base' };
 
 function parseArgs(argv) {
   const options = { keepBranch: false };

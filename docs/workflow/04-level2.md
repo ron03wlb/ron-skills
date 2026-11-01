@@ -49,7 +49,7 @@ push 是最後一道本地關卡：hook 在**要 push 的那個 SHA** 上重跑�
 | exit code | `0` 全部通過才放行；非 0 擋下整次 push |
 | 拒絕 | 任何檢查失敗的 SHA；刪除 ref 不檢查 |
 
-範本（存成 `.githooks/pre-push`，`chmod +x`，再 `git config core.hooksPath .githooks` 啟用；hook 印給 agent 看的訊息用英文）：
+範本（存成 `.githooks/pre-push`，`chmod +x`，再 `git config core.hooksPath .githooks` 啟用；hook 印給 agent 看的訊息用英文）。跑檢查前一定要清掉 git 匯出給 hook 的 `GIT_DIR` 等變數，否則檢查裡的測試建暫存 repo 時會被帶到這個 repo（#25；mec-wiki 試跑第一次 push 因此有 4 個測試失敗，#281）：
 
 ```bash
 #!/usr/bin/env bash
@@ -60,7 +60,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   [[ $local_sha =~ ^0+$ ]] && continue   # deleting a ref: nothing to check
   tmp=$(mktemp -d)
   git worktree add --quiet --detach "$tmp" "$local_sha"
-  if ! (cd "$tmp" && $CHECK); then
+  # git exports GIT_DIR and friends to hooks; clear them so the check (and the temp repos its tests create) see only $tmp.
+  # shellcheck disable=SC2046
+  if ! (unset $(git rev-parse --local-env-vars); cd "$tmp" && $CHECK); then
     git worktree remove --force "$tmp"
     echo "pre-push: $CHECK failed at $local_sha ($local_ref). Fix the failure and push again; do not bypass with --no-verify." >&2
     exit 1
@@ -76,7 +78,7 @@ git hook 擋得住人，但 agent 可以加 `--no-verify` 跳過它；要連這�
 合併前跑單一檢查入口、把結果當作 CI 證據的地方有兩個：**遠端**（GitHub Actions、GitLab pipeline）是預設；**本機**只在遠端沒啟動時用（帳務停擺、沒有 runner，`land.mjs` 印 `STOP ci-not-started`）。遠端跑了而失敗，不能改用本機。程式碼 host 是 `local`（沒有 remote）時只有本機。
 
 - **遠端.** `/setup-workflow` 升到 L2 時以它的 `scripts/ci.mjs` 依程式碼 host 寫最小設定：GitHub 寫 `.github/workflows/checks.yml`、GitLab 寫 `.gitlab-ci.yml`，`push` 與 PR／MR 都跑單一檢查入口，Node 版本鎖成跑 setup 那台機器的版本。專案已經有 CI 檔就不動，只檢查有沒有呼叫單一檢查入口，沒有就回報缺口；`detect.mjs` 也把它印成 `GAP ci`，但不算等級訊號。
-- **本機.** 合入前在要合入的 tip SHA、工作樹乾淨時跑單一檢查入口，PR 留言附 SHA 與結果行。GitHub 上用 setup-workflow 的 `land.mjs`：`node scripts/land.mjs <branch> --local-checks <sha> --check-command '<單一檢查入口>'`，它在 tip 的暫時 detached worktree 跑檢查。不用 pre-push hook、`act` 或 `gitlab-runner exec` 代替。
+- **本機.** 合入前在要合入的 tip SHA、工作樹乾淨時跑單一檢查入口，PR 留言附 SHA 與結果行。GitHub 上用 setup-workflow 的 `land.mjs`：`node scripts/land.mjs <branch> --local-checks <sha> --check-command '<單一檢查入口>'`，它在 tip 的暫時 detached worktree 跑檢查。`land.mjs` 合進 repo 的預設分支（讀 `origin/HEAD`，或帶 `--main <branch>`），預設分支叫 `master` 也不必改名。不用 pre-push hook、`act` 或 `gitlab-runner exec` 代替。
 
 ## 兩段式結案
 

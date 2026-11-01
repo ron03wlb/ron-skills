@@ -32,7 +32,7 @@ const CHECK_POLL = /^gh pr view \S+ --json headRefOid,statusCheckRollup/gm;
  * 其他 job 照有 step 的樣本；annotations 是那個 check run 的 annotations
  * （預設是 run 41164091250 的真實樣本，`'error'` 是讀不到）；visibility 是 `gh repo view --json visibility` 的值。
  */
-function fixture(t, { seed = {}, mainMovesAtMerge = null, checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false, localCheckExit = 0, unstartedJobs = [], missingJobs = [], annotations = GH_SAMPLES['check-run-annotations'], visibility = 'PUBLIC' } = {}) {
+function fixture(t, { seed = {}, mainMovesAtMerge = null, checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false, localCheckExit = 0, unstartedJobs = [], missingJobs = [], annotations = GH_SAMPLES['check-run-annotations'], visibility = 'PUBLIC', base = 'main' } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'land-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const sh = (cwd, ...args) => {
@@ -44,7 +44,7 @@ function fixture(t, { seed = {}, mainMovesAtMerge = null, checks = [PASS], orcaF
   const main = join(temp, 'main');
   const merger = join(temp, 'merger');
   const wt = join(temp, 'wt');
-  sh(temp, 'init', '-q', '--bare', '-b', 'main', origin);
+  sh(temp, 'init', '-q', '--bare', '-b', base, origin);
   sh(temp, 'clone', '-q', origin, main);
   writeFileSync(join(main, '.gitignore'), '.scratch/\n');
   sh(main, 'add', '.gitignore');
@@ -72,7 +72,7 @@ exit ${localCheckExit}
   chmodSync(join(main, 'bin/check'), 0o755);
   sh(main, 'add', 'bin');
   sh(main, 'commit', '-q', '-m', 'init');
-  sh(main, 'push', '-q', 'origin', 'main');
+  sh(main, 'push', '-q', 'origin', base);
   sh(temp, 'clone', '-q', origin, merger);
   sh(main, 'worktree', 'add', '-q', wt, '-b', 'feature');
   writeFileSync(join(wt, 'a.txt'), 'a\n');
@@ -92,7 +92,7 @@ const args = process.argv.slice(2); const arg = k => args[args.indexOf(k) + 1];
 fs.appendFileSync(${JSON.stringify(log)}, 'gh ' + args.join(' ') + '\\n');
 const s = JSON.parse(fs.readFileSync(${JSON.stringify(state)}, 'utf8'));
 const save = () => fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
-const out = pr => { const { head, ...fields } = pr; return mergeSample(SAMPLES['pr-view'], fields, 'pr'); };
+const out = pr => { const { head, base, ...fields } = pr; return mergeSample(SAMPLES['pr-view'], fields, 'pr'); };
 const git = (...a) => execFileSync('git', ['-C', ${JSON.stringify(merger)}, ...a], { encoding: 'utf8' }).trim();
 // 開著的 PR，head 跟著 origin 上的分支走（push 新 commit 後 GitHub 會更新 headRefOid）。
 const find = ref => {
@@ -116,7 +116,7 @@ else if (cmd === 'repo' && sub === 'view') console.log(JSON.stringify(mergeSampl
 else if (sub === 'list') console.log(JSON.stringify(s.prs.filter(pr => pr.head === arg('--head')).map(out)));
 else if (sub === 'create') {
   const head = arg('--head'); git('fetch', '-q', 'origin');
-  const pr = { head, number: 40 + s.prs.length, state: 'OPEN', url: 'https://github.com/o/r/pull/' + (40 + s.prs.length), headRefOid: git('rev-parse', 'origin/' + head), mergeCommit: null };
+  const pr = { head, base: arg('--base'), number: 40 + s.prs.length, state: 'OPEN', url: 'https://github.com/o/r/pull/' + (40 + s.prs.length), headRefOid: git('rev-parse', 'origin/' + head), mergeCommit: null };
   s.prs.push(pr); save(); console.log(pr.url);
 }
 else if (sub === 'view' && arg('--json').includes('statusCheckRollup')) {
@@ -131,19 +131,19 @@ else if (sub === 'view') console.log(JSON.stringify(out(find(args[2]))));
 else if (sub === 'comment') { s.comments.push({ number: Number(args[2]), body: arg('--body') }); save(); console.log(find(args[2]).url + '#issuecomment-1'); }
 else if (sub === 'merge') {
   const pr = find(args[2]);
-  git('fetch', '-q', 'origin'); git('checkout', '-q', '-B', 'main', 'origin/main');
+  git('fetch', '-q', 'origin'); git('checkout', '-q', '-B', ${JSON.stringify(base)}, 'origin/' + ${JSON.stringify(base)});
   // mainMovesAtMerge：等 CI 的期間別的 PR 先合入 main（只發生一次）。
   const moves = ${JSON.stringify(mainMovesAtMerge)};
   if (moves && !s.moved) {
     for (const [path, content] of Object.entries(moves)) fs.writeFileSync(${JSON.stringify(merger)} + '/' + path, content);
     git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-am', 'main moves during CI');
-    git('push', '-q', 'origin', 'main');
+    git('push', '-q', 'origin', ${JSON.stringify(base)});
     s.moved = true; save();
   }
   // 和 main 衝突時 GitHub 拒絕合併（retro 1031b，PR #168 的真實訊息）。
   try { git('-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '-q', '--no-ff', '-m', 'Merge pull request #' + pr.number, 'origin/' + pr.head); }
   catch { git('merge', '--abort'); console.error('GraphQL: Pull Request has merge conflicts'); process.exit(1); }
-  git('push', '-q', 'origin', 'main');
+  git('push', '-q', 'origin', ${JSON.stringify(base)});
   Object.assign(pr, { state: 'MERGED', mergeCommit: { oid: git('rev-parse', 'HEAD') } }); save();
 }
 else { console.error('fake gh：未支援 ' + args.join(' ')); process.exit(1); }
@@ -181,14 +181,14 @@ console.log(JSON.stringify({ ok: true, result: {} }));
   /** 在 origin/main 上直接 commit 這些檔案（別的 PR 先合入了）。 */
   const pushMain = files => {
     sh(merger, 'fetch', '-q', 'origin');
-    sh(merger, 'checkout', '-q', '-B', 'main', 'origin/main');
+    sh(merger, 'checkout', '-q', '-B', base, `origin/${base}`);
     for (const [path, content] of Object.entries(files)) {
       mkdirSync(join(merger, path, '..'), { recursive: true });
       writeFileSync(join(merger, path), content);
       sh(merger, 'add', path);
     }
     sh(merger, 'commit', '-q', '-m', 'main moves on');
-    sh(merger, 'push', '-q', 'origin', 'main');
+    sh(merger, 'push', '-q', 'origin', base);
   };
   /** 在 feature worktree commit 這些檔案。 */
   const commitFeature = files => {
@@ -637,6 +637,26 @@ test('repo 沒有 scripts/restamp.mjs：衝突照舊 STOP merge，分支不留�
   assert.equal(last(result), `STOP merge ${prs()[0].number} conflict stamp.json`);
   assert.equal(sh(wt, 'rev-parse', 'HEAD'), tip);
   assert.equal(sh(wt, 'status', '--porcelain'), '');
+});
+
+// #281：mec-wiki 的預設分支是 master，land.mjs 寫死 main 逼得 setup 改名預設分支。
+test('預設分支是 master：讀 origin/HEAD，PR 開向 master、合併後主 checkout 的 master 跟上', t => {
+  const { main, body, sh, land, prs, last } = fixture(t, { base: 'master' });
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [pr] = prs();
+  assert.equal(pr.base, 'master');
+  assert.equal(last(result), `LANDED ${pr.number} ${pr.mergeCommit.oid}`);
+  assert.equal(sh(main, 'symbolic-ref', '--short', 'HEAD'), 'master');
+  assert.equal(sh(main, 'rev-parse', 'HEAD'), pr.mergeCommit.oid);
+});
+
+test('--main <branch> 優先於 origin/HEAD', t => {
+  const { body, sh, land, prs, main } = fixture(t, { base: 'master' });
+  sh(main, 'remote', 'set-head', 'origin', '--delete');
+  const result = land(['feature', '--body-file', body, '--main', 'master']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(prs()[0].base, 'master');
 });
 
 test('pickPr：開著的優先；已合入只在 head 等於 tip 時沿用', () => {

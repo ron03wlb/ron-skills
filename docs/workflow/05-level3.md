@@ -50,7 +50,7 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 
 ## adapter 的 Pilot 段
 
-L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目。範本與每條的 Default 見 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 的 Pilot 段；實例見 ron-skills 的 [`docs/agents/pilot.md`](../agents/pilot.md)：Pilot 段只留一行指向它，條目之間空一行，讓改不同條目的修改落在不同的 hunk。只在某些情況用到的條目（合入之後、衝突與重派、少見的 Probe 行、Retro collect）拆到同目錄的其他檔，Pilot 段一起連到；pilot.md 的同名條目只留一行 pointer，寫明什麼情況才讀，coordinator 每輪只讀 pilot.md。整合分支上的 adapter 與 coordinator checkout 的不同時（例如主線好幾個小時沒 push），coordinator 改讀整合分支上的 Pilot 段（以及它指向的檔案），因為下一批就在那個分支上 stage。
+L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目。範本與每條的 Default 見 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 的 Pilot 段；可以直接套用的骨架是 [`PILOT-TEMPLATE.md`](../../skills/engineering/issue-run/PILOT-TEMPLATE.md)（`/setup-workflow` 複製它、填入 repo、主分支、檢查入口等值，寫成 `docs/agents/pilot.md`）；實例見 ron-skills 的 [`docs/agents/pilot.md`](../agents/pilot.md)：Pilot 段只留一行指向它，條目之間空一行，讓改不同條目的修改落在不同的 hunk。只在某些情況用到的條目（合入之後、衝突與重派、少見的 Probe 行、Retro collect）拆到同目錄的其他檔，Pilot 段一起連到；pilot.md 的同名條目只留一行 pointer，寫明什麼情況才讀，coordinator 每輪只讀 pilot.md。整合分支上的 adapter 與 coordinator checkout 的不同時（例如主線好幾個小時沒 push），coordinator 改讀整合分支上的 Pilot 段（以及它指向的檔案），因為下一批就在那個分支上 stage。
 
 | 條目 | 寫什麼 |
 | --- | --- |

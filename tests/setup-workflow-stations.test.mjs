@@ -69,3 +69,29 @@ test('03-level1 的 checklist 開頭是一次完成的三步', () => {
   const headings = [...checklist.matchAll(/^### \d+\. (.+)$/gm)].map(match => match[1]);
   assert.deepEqual(headings.slice(0, 3), ['環境', 'Host', '安裝目標與檢查入口']);
 });
+
+test('#281：04 章的 pre-push 範本在跑檢查前清掉 git 匯出給 hook 的環境變數', () => {
+  const template = read('docs/workflow/04-level2.md').split('\n```bash\n').find(block => block.startsWith('#!/usr/bin/env bash\n# pre-push:')) ?? '';
+  assert.match(template, /unset \$\(git rev-parse --local-env-vars\); cd "\$tmp" && \$CHECK/);
+});
+
+test('#281：adr-next.mjs 只帶給用 README 記下一個編號的 repo，用檔名編號的不帶', () => {
+  const row = read(SKILL).split('\n').find(line => line.startsWith('| `adr-next.mjs` |')) ?? '';
+  assert.match(row, /docs\/adr\/README\.md/);
+  assert.match(row, /does not bring it/);
+});
+
+test('#281：L3 的 pilot.md 從 PILOT-TEMPLATE.md 複製填值，範本的每個 {{placeholder}} 都在開頭註解裡說明', () => {
+  const adapter = steps(read(SKILL)).find(step => step.name === 'Adapter');
+  assert.match(adapter.text, /PILOT-TEMPLATE\.md/);
+  assert.match(adapter.text, /pilot-sources\.txt/);
+  const template = read('skills/engineering/issue-run/PILOT-TEMPLATE.md');
+  const [comment, body] = template.split('-->');
+  const used = new Set([...body.matchAll(/\{\{([^}]+)\}\}/g)].map(match => match[1]));
+  assert.ok(used.size > 0);
+  for (const name of used) assert.ok(comment.includes(`{{${name}}}`), `開頭註解沒說明 {{${name}}}`);
+  for (const entry of ['Sessions', 'Probe', 'Dispatch', 'Stage, regression, integrate', 'Push gate', 'Close', 'Handoff']) {
+    assert.match(body, new RegExp(`^- \\*\\*${entry}\\.\\*\\*`, 'm'), `範本缺 ${entry}`);
+  }
+  assert.match(read('skills/engineering/issue-run/ADAPTER.md'), /\[PILOT-TEMPLATE\.md\]\(PILOT-TEMPLATE\.md\)/);
+});

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// copy-templates: requires pilot-counterpart.mjs pilot-unbare.sh
 // setup-workflow 正本：/issue-pilot coordinator 的 Close（adapter Pilot 段的 Close；結果行見 skills/engineering/issue-pilot/PILOT-STORE.md 的 Canonical scripts）：
 // batch 的 merge 進到 origin/<主分支> 之後收掉每個 done 成員。專案值都從參數來：
 //   --repo [<host>/]<owner>/<repo>  tracker 的 GitHub 專案（同 adapter ## Tracker 段；沒寫主機是 github.com）：讀 Issue、母單與證據留言的 PR 網址都用它；
