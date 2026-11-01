@@ -47,12 +47,27 @@ const sourceRoot = git('rev-parse', '--show-toplevel').stdout.trim();
 
 const isDir = path => existsSync(join(TEMPLATES, path)) && statSync(join(TEMPLATES, path)).isDirectory();
 
-/** 檔案引用的同目錄相對檔（import、new URL；shell 是 "$(dirname "$0")/<檔名>"），以及以 'fixtures/<名稱>' 讀取的整個 fixtures 目錄。 */
+/**
+ * 檔案引用的同目錄相對檔，以及它讀取的整個 fixtures 目錄。
+ * - shell：`"$(dirname "$0")/<檔名>"`。
+ * - JS：行首的靜態 import／export（多行 import 的 `} from` 行也算）、動態 `import('./…')`、`new URL('./…')`。
+ *   import 只認行首，字串或註解裡的 import 不算（#277：check-portability.test.mjs 的 fixture 字串）。
+ * - fixtures：`'fixtures/<名稱>'`，以及 template literal 的 `` new URL(`./…/fixtures/<名稱>/${…}`) ``（#277：issue-pool.test.mjs）。
+ */
 function references(file) {
   const text = readFileSync(join(TEMPLATES, file), 'utf8');
   if (file.endsWith('.sh')) return [...text.matchAll(/"\$\(dirname "\$0"\)\/([\w.-]+)"/g)].map(m => join(dirname(file), m[1]));
-  const refs = [...text.matchAll(/(?:from\s+|import\s+|new URL\(\s*)'(\.\/[^']+)'/g)].map(m => join(dirname(file), m[1]));
-  for (const [, dir] of text.matchAll(/'(fixtures\/[^'/]+)'/g)) {
+  const patterns = [
+    /^\s*(?:(?:import|export)\b[^'"`;]*?\bfrom|\}\s*from|import)\s*'(\.\/[^']+)'/gm,
+    /\bimport\(\s*'(\.\/[^']+)'\s*\)/g,
+    /new URL\(\s*'(\.\/[^']+)'/g,
+  ];
+  const refs = patterns.flatMap(pattern => [...text.matchAll(pattern)].map(m => join(dirname(file), m[1])));
+  const dirs = [
+    ...[...text.matchAll(/'(fixtures\/[^'/]+)'/g)].map(m => m[1]),
+    ...[...text.matchAll(/new URL\(\s*`\.\/((?:[^`$/]+\/)*fixtures\/[^`$/]+)\//g)].map(m => m[1]),
+  ];
+  for (const dir of new Set(dirs)) {
     const base = join(dirname(file), dir);
     refs.push(...readdirSync(join(TEMPLATES, base), { recursive: true }).map(name => join(base, String(name))).filter(path => !isDir(path)));
   }

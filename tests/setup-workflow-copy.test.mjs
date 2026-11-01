@@ -183,3 +183,46 @@ test('shell 正本保留副檔名與執行權限，帶上 $(dirname "$0") 呼叫
   const copies = JSON.parse(readFileSync(join(target, MANIFEST), 'utf8')).copies;
   assert.deepEqual(Object.keys(copies).sort(), ['scripts/guard.sh', 'scripts/hook.sh', 'scripts/hook.test.mjs']);
 });
+
+test('#277：字串或註解裡的 import 不算相依；template literal 讀的 test/fixtures/<目錄> 整個帶上；多行與動態 import 也算', t => {
+  const { source, target, copier } = fixture(t);
+  const templates = join(source, 'skills/engineering/setup-workflow/templates');
+  write(templates, {
+    'c.mjs': "import {\n  b,\n} from './b.mjs';\n// import { x } from './gone-comment.mjs';\n",
+    'c.test.mjs': [
+      "const bad = \"import { realTmpdir } from './helpers/real-tmpdir.mjs';\";",
+      "const fx = name => new URL(`./test/fixtures/github/${name}.json`, import.meta.url);",
+      "const mod = await import('./lib/pre.mjs');",
+      '',
+    ].join('\n'),
+    'test/fixtures/github/issues.json': '[]\n',
+    'test/fixtures/github/nested/deep.json': '{}\n',
+  });
+  git(source, 'add', '.');
+  git(source, 'commit', '-qm', 'more templates');
+  const result = run(copier, target, '--dry-run', 'c');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    'COPY scripts/b.mjs',
+    'COPY scripts/c.mjs',
+    'COPY scripts/c.test.mjs',
+    'COPY scripts/lib/pre.mjs',
+    'COPY scripts/test/fixtures/github/issues.json',
+    'COPY scripts/test/fixtures/github/nested/deep.json',
+    'PLANNED 6',
+  ]);
+});
+
+test('#277：真正的範本 check-portability 與 issue-pool 可以 dry-run，issue-pool 帶上 github 與 gitlab 樣本', () => {
+  const temp = mkdtempSync(join(realTmpdir(), 'setup-workflow-copy-real-'));
+  try {
+    git(temp, 'init', '-q', '-b', 'main');
+    const result = run(script, temp, '--dry-run', 'check-portability.mjs', 'issue-pool.mjs');
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^COPY scripts\/test\/fixtures\/github\/issues\.json$/m);
+    assert.match(result.stdout, /^COPY scripts\/test\/fixtures\/gitlab\//m);
+    assert.doesNotMatch(result.stdout, /helpers\/real-tmpdir/);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
