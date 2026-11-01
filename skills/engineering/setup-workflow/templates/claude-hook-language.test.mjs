@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isHarnessText, isMostlyEnglish, isSyntheticEntry, lastTurnTexts, textsBeforeTool } from './claude-hook-language.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
@@ -174,17 +174,35 @@ test('hook Stop：只有用量上限訊息、或英文段落已提示過一次�
 
 // #250：session a0f6ae91 jsonl 第 598 行「All closed. Now handle the source tabs.」與第 599 行的 Bash tool_use，
 // 在 PostToolUse 觸發時都還沒寫入（前 597 行跑 hook exit 0），尾端文字段是空的。找不到 tool_use 時重讀一次就抓得到。
+// #262：不靠固定毫秒數排時序（原本 setTimeout 60ms 後才 append，macOS runner 子行程啟動慢時第一次讀取晚於 append）。
+// 子行程以 --import 載入 preload，hook 第一次讀完 transcript 就在同一個行程裡同步 append，所以 append 必定落在第一次讀取與重讀之間。
+// 代價：append 必定早於重讀前的 RETRY_MS 等待，這裡驗的是「找不到 tool_use 會重讀並以重讀結果判斷」，不驗 RETRY_MS 夠不夠等到真實寫入（那由 .scratch 量測累積判斷）。
 test('hook PostToolUse：觸發時文字段與 tool_use 都還沒寫入，稍後寫入時重讀抓到；有 .scratch 時記量測', async () => {
   const dir = mkdtempSync(join(realTmpdir(), 'hook-language-'));
   const transcript = join(dir, 't.jsonl');
   writeFileSync(transcript, [user('收 retro'), toolUse('t0'), toolResult()].join('\n') + '\n');
   mkdirSync(join(dir, '.scratch'));
-  const child = spawn('node', [script], { env: { ...process.env, CLAUDE_PROJECT_DIR: dir } });
+  const preload = join(dir, 'append-after-first-read.mjs');
+  writeFileSync(preload, [
+    "import fs from 'node:fs';",
+    "import { syncBuiltinESMExports } from 'node:module';",
+    'const read = fs.readFileSync;',
+    'let pending = true;',
+    'fs.readFileSync = function (path, ...rest) {',
+    '  const out = read.call(this, path, ...rest);',
+    '  if (pending && path === process.env.HOOK_TEST_TRANSCRIPT) { pending = false; fs.appendFileSync(path, process.env.HOOK_TEST_APPEND); }',
+    '  return out;',
+    '};',
+    'syncBuiltinESMExports();',
+  ].join('\n'));
+  const toolUseId = 'toolu_01SEaAZoqmGaWd9tGQMEwb67';
+  const lateLines = [assistant('All closed. Now handle the source tabs.'), toolUse(toolUseId)].join('\n') + '\n';
+  const child = spawn('node', ['--import', pathToFileURL(preload).href, script], {
+    env: { ...process.env, CLAUDE_PROJECT_DIR: dir, HOOK_TEST_TRANSCRIPT: transcript, HOOK_TEST_APPEND: lateLines },
+  });
   const stderr = [];
   child.stderr.on('data', chunk => stderr.push(chunk));
-  child.stdin.end(JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', transcript_path: transcript, tool_use_id: 'toolu_01SEaAZoqmGaWd9tGQMEwb67' }));
-  await new Promise(resolve => setTimeout(resolve, 60));
-  appendFileSync(transcript, [assistant('All closed. Now handle the source tabs.'), toolUse('toolu_01SEaAZoqmGaWd9tGQMEwb67')].join('\n') + '\n');
+  child.stdin.end(JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', transcript_path: transcript, tool_use_id: toolUseId }));
   const code = await new Promise(resolve => child.on('close', resolve));
   assert.equal(code, 2);
   assert.match(Buffer.concat(stderr).toString(), /All closed/);
