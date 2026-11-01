@@ -49,7 +49,7 @@ push 是最後一道本地關卡：hook 在**要 push 的那個 SHA** 上重跑�
 | exit code | `0` 全部通過才放行；非 0 擋下整次 push |
 | 拒絕 | 任何檢查失敗的 SHA；刪除 ref 不檢查 |
 
-範本（存成 `.githooks/pre-push`，`chmod +x`，再 `git config core.hooksPath .githooks` 啟用；hook 印給 agent 看的訊息用英文）：
+範本（存成 `.githooks/pre-push`，`chmod +x`，再 `git config core.hooksPath .githooks` 啟用；hook 印給 agent 看的訊息用英文）。跑檢查前一定要清掉 git 匯出給 hook 的 `GIT_DIR` 等變數，否則檢查裡的測試建暫存 repo 時會被帶到這個 repo（#25；mec-wiki 試跑第一次 push 因此有 4 個測試失敗，#281）：
 
 ```bash
 #!/usr/bin/env bash
@@ -60,7 +60,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   [[ $local_sha =~ ^0+$ ]] && continue   # deleting a ref: nothing to check
   tmp=$(mktemp -d)
   git worktree add --quiet --detach "$tmp" "$local_sha"
-  if ! (cd "$tmp" && $CHECK); then
+  # git exports GIT_DIR and friends to hooks; clear them so the check (and the temp repos its tests create) see only $tmp.
+  # shellcheck disable=SC2046
+  if ! (unset $(git rev-parse --local-env-vars); cd "$tmp" && $CHECK); then
     git worktree remove --force "$tmp"
     echo "pre-push: $CHECK failed at $local_sha ($local_ref). Fix the failure and push again; do not bypass with --no-verify." >&2
     exit 1

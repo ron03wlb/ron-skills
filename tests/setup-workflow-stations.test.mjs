@@ -69,3 +69,8 @@ test('03-level1 的 checklist 開頭是一次完成的三步', () => {
   const headings = [...checklist.matchAll(/^### \d+\. (.+)$/gm)].map(match => match[1]);
   assert.deepEqual(headings.slice(0, 3), ['環境', 'Host', '安裝目標與檢查入口']);
 });
+
+test('#281：04 章的 pre-push 範本在跑檢查前清掉 git 匯出給 hook 的環境變數', () => {
+  const template = read('docs/workflow/04-level2.md').split('\n```bash\n').find(block => block.startsWith('#!/usr/bin/env bash\n# pre-push:')) ?? '';
+  assert.match(template, /unset \$\(git rev-parse --local-env-vars\); cd "\$tmp" && \$CHECK/);
+});
