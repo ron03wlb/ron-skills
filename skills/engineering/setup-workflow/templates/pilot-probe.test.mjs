@@ -280,6 +280,23 @@ test('pushed 的 batch fetch 後印 IN_MAIN 或 NOT_IN_MAIN', t => {
   assert.ok(out.includes('NOT_IN_MAIN 10 no-sha'), out.join('\n'));
 });
 
+// #268：retro 直接合進 main 之後，整合分支落後 origin/main，Probe 沒報，coordinator 自己算 rev-list 才知道要 sync-main。
+test('整合分支沒有包含 origin/main 時印 BEHIND_MAIN <落後數> <SHA>，跟上之後不印', t => {
+  const { probe, git, origin, repo } = fixture(t);
+  git('branch', 'pilot/integration', 'main');
+  assert.ok(!lines(probe()).some(line => line.startsWith('BEHIND_MAIN')));
+  const other = join(origin, '..', 'other');
+  spawnSync('git', ['clone', '-q', origin, other], { env });
+  spawnSync('git', ['-C', other, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'retro'], { env });
+  spawnSync('git', ['-C', other, 'push', '-q', 'origin', 'HEAD:main'], { env });
+  git('fetch', '-q', 'origin');
+  const upstream = git('rev-parse', 'origin/main');
+  const out = lines(probe());
+  assert.ok(out.includes(`BEHIND_MAIN 1 ${upstream}`), out.join('\n'));
+  git('branch', '-f', 'pilot/integration', upstream);
+  assert.ok(!lines(probe()).some(line => line.startsWith('BEHIND_MAIN')), repo);
+});
+
 // #37：Integrate 設成 `merged <sha>` 之後、Push gate 做完之前中斷的 batch 沒人接手。
 // pilot/integration 的 tip 等於最後一次 Regression SHA 才符合 Push gate 的前提，印 RESUME_PUSH 讓 coordinator 從第 1 步接著做；
 // tip 不等於（Integrate 之後又有 commit）或沒有 regression 行時不能直接推，印 NOT_IN_MAIN 帶出原因交給人。
