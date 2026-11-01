@@ -8,7 +8,8 @@
 // 或 GitLab 的 group/…/project，覆寫推得的專案。GitLab 的子項目（Issue 底下是 Task）算 sub-issue，所以掛了 Task 的單歸 parent 桶，`is_blocked_by`／`blocks` 連結算相依，系統紀錄裡的「assigned to」算指派
 // （最近 100 則系統紀錄內）；`blocks` 連結是 GitLab Premium 以上才有，Free 版沒有 blocked 桶。
 // 一張只歸一個桶，依序取第一個符合的：parent（有 sub-issue；GitLab 是有子項目）、human（`ready-for-human`，指派給人不算認領）、
-// stale（已指派，超過 --stale-hours（預設 24）沒有新留言或新指派）、claimed（已指派）、retro-candidates（`retro-candidates` label：retro 的候選清單，等 `/retro-collect`）、blocked（有開著的 blocked_by）、
+// retro-candidates（`retro-candidates` label：retro 的候選清單，等 `/retro-collect`；被 `/retro-collect` 認領、指派之後也歸這裡，不混進 claimed、stale，#270）、
+// stale（已指派，超過 --stale-hours（預設 24）沒有新留言或新指派）、claimed（已指派）、blocked（有開著的 blocked_by）、
 // needs-info、needs-triage、ready（`ready-for-agent`）、unlabeled。所以 ready 桶就是池子。過期的認領只歸到 stale，不自動釋放。
 // 輸出順序：ready 桶先印，依 `retro` label 的先（retro 判定太複雜、交給 worker 的單）、`priority` label 的先、直接或間接 block 最多開著的單的先（關鍵路徑）、號碼小的先；
 // 其餘依上面的桶順序、桶內號碼小的先。
@@ -175,8 +176,8 @@ export function bucketOf(issue, { staleHours = 24, now = Date.now() } = {}) {
   const labels = labelsOf(issue);
   if (issue.subIssuesSummary.total > 0) return 'parent';
   if (labels.has('ready-for-human')) return 'human';
-  if (issue.assignees.nodes.length) return now - lastActivity(issue) > staleHours * 3600_000 ? 'stale' : 'claimed';
   if (labels.has('retro-candidates')) return 'retro-candidates';
+  if (issue.assignees.nodes.length) return now - lastActivity(issue) > staleHours * 3600_000 ? 'stale' : 'claimed';
   if (openNodes(issue.blockedBy).length) return 'blocked';
   if (labels.has('needs-info')) return 'needs-info';
   if (labels.has('needs-triage')) return 'needs-triage';
@@ -184,7 +185,7 @@ export function bucketOf(issue, { staleHours = 24, now = Date.now() } = {}) {
   return 'unlabeled';
 }
 
-const BUCKETS = ['ready', 'parent', 'human', 'stale', 'claimed', 'retro-candidates', 'blocked', 'needs-info', 'needs-triage', 'unlabeled'];
+const BUCKETS = ['ready', 'parent', 'human', 'retro-candidates', 'stale', 'claimed', 'blocked', 'needs-info', 'needs-triage', 'unlabeled'];
 
 /** 直接或間接被這張 block、而且還開著的 Issue 數；沿本 repo 列表裡的 blocking 邊走，別的 repo 或不在列表裡的開著的單只算一張。 */
 function blockingCount(issue, byNumber, repo) {
