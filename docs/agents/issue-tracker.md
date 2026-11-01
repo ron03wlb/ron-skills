@@ -56,6 +56,7 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
   - 可開工：`gh issue list --search 'is:open label:ready-for-agent -is:blocked'`
   - 母單：`gh issue list --search 'is:open label:parent'`
   - 某一組：`gh issue list --state all --search 'parent-issue:ron03wlb/ron-skills#<n>'`
+  - 某一組的子單狀態、label、開著的 blocked-by：`node scripts/issue-pool.mjs children <n>`（一次 GraphQL，每張子單一行，用法見腳本開頭）。本 repo 不帶 `--ask-prefix`：pilot 的提問留言沒有共同開頭，所以不標 `ask`，要知道哪張在等回答仍得讀留言；統一提問格式時再另開單宣告前綴（#251 決定 A）。
 - **關係總覽**：一次列出每張開著的 issue 的 parent、子單進度與相依：
 
   ```bash
