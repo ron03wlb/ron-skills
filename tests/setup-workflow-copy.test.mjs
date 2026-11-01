@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { env, git, write } from './helpers/git-fixture.mjs';
@@ -160,4 +160,26 @@ test('--verify：每一筆 hash 與實際檔案一致時 VERIFIED，有一筆不
   assert.equal(bad.status, 1);
   assert.match(bad.stdout, /^MISMATCH scripts\/b\.mjs$/m);
   assert.match(bad.stdout, /^MISSING scripts\/lib\/pre\.mjs$/m);
+});
+
+// #246：Bare guard 的正本是 shell（pilot-unbare.sh、claude-hook-unbare.sh），hook 以 "$(dirname "$0")/pilot-unbare.sh" 呼叫旁邊那支。
+test('shell 正本保留副檔名與執行權限，帶上 $(dirname "$0") 呼叫的同目錄腳本與 <名稱>.test.mjs', t => {
+  const { source, target, copier } = fixture(t);
+  const templates = join(source, 'skills/engineering/setup-workflow/templates');
+  write(templates, {
+    'hook.sh': '#!/usr/bin/env bash\nexec "$(dirname "$0")/guard.sh" "$PWD" hook\n',
+    'guard.sh': '#!/usr/bin/env bash\necho guard\n',
+    'hook.test.mjs': "const hook = new URL('./hook.sh', import.meta.url);\n",
+  });
+  chmodSync(join(templates, 'hook.sh'), 0o755);
+  chmodSync(join(templates, 'guard.sh'), 0o755);
+  git(source, 'add', '.');
+  git(source, 'commit', '-qm', 'shell templates');
+
+  const result = run(copier, target, 'hook.sh');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), ['COPY scripts/guard.sh', 'COPY scripts/hook.sh', 'COPY scripts/hook.test.mjs', 'COPIED 3']);
+  for (const file of ['scripts/guard.sh', 'scripts/hook.sh']) assert.equal(statSync(join(target, file)).mode & 0o111, 0o111, file);
+  const copies = JSON.parse(readFileSync(join(target, MANIFEST), 'utf8')).copies;
+  assert.deepEqual(Object.keys(copies).sort(), ['scripts/guard.sh', 'scripts/hook.sh', 'scripts/hook.test.mjs']);
 });

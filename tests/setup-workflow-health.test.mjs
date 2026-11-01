@@ -415,3 +415,20 @@ test('平台：Node 的執行期警告（NODE_OPTIONS 帶入）不算 check-port
   assert.match(lines[0], /^FINDING platform xargs-r .*# scripts\/probe\.sh:2$/);
   assert.equal(lines.at(-1), 'FINDINGS 1');
 });
+
+// #246：claude-hook-unbare.sh 等 hook 正本複製了卻沒掛進 .claude/settings.json 時不會生效，體檢要回報；掛了就不報。
+test('hook 副本沒掛在 .claude/settings.json 的任何 hook 指令時回報 unwired-hook；掛了不報，測試檔不算', t => {
+  const hook = '#!/usr/bin/env bash\ntrue\n';
+  const manifest = { source: 'ron03wlb/ron-skills', copies: {} };
+  const files = { 'docs/agents/workflow-templates.json': '' };
+  for (const name of ['claude-hook-unbare.sh', 'claude-hook-wired.mjs', 'claude-hook-wired.test.mjs']) {
+    files[`scripts/${name}`] = hook;
+    manifest.copies[`scripts/${name}`] = { template: 'x', commit: 'abc', sha256: sha256(hook) };
+  }
+  files['docs/agents/workflow-templates.json'] = JSON.stringify(manifest);
+  files['.claude/settings.json'] = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/scripts/claude-hook-wired.mjs"' }] }] } });
+  const { lines } = health(repo(t, files));
+  const unwired = lines.filter(line => line.startsWith('FINDING unwired-hook'));
+  assert.equal(unwired.length, 1, lines.join('\n'));
+  assert.match(unwired[0], /^FINDING unwired-hook scripts\/claude-hook-unbare\.sh .*# \.claude\/settings\.json$/);
+});

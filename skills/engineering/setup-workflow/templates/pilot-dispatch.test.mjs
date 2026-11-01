@@ -23,7 +23,7 @@ const git = (cwd, ...args) => {
 //   late    建好 worktree，卻回 ok:false（2026-10-30 實際發生：worktree 已建好、create 回 "ok": false）；
 //   fail    回 ok:false、不建 worktree；
 //   bare    同 ok，另把主 checkout 設成 bare（Orca 從 WSL 建 worktree 的副作用）。
-// `guard` 是專案自備 Bare guard（pilot-unbare.sh）的內容：有給時把 dispatch 與它的相依複製到暫存的 scripts/，guard 放在旁邊。
+// `guard` 是 Bare guard（pilot-unbare.sh）的內容：有給時把 dispatch 與它的相依複製到暫存的 scripts/，guard 放在旁邊。
 // 每次呼叫都把 stdin 讀光並記下讀到幾個位元組：Orca CLI 會吃掉 stdin，`while read` 迴圈因此只派到第一個成員。
 // `waitHangs` 為真時 `terminal wait` 永遠不回。
 // `claims[<n>]` 是那張 Issue 原有的留言（排在 comments.json 之前）；沒給時是一則這個 session（SESSION）的認領留言。

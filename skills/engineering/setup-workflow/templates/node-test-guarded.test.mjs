@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { lostFiles, parseRan, reportedTotal, untraced } from './node-test-guarded.mjs';
+import { lostFiles, parseRan, recordedPass, reportedTotal, untraced } from './node-test-guarded.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./node-test-guarded.mjs', import.meta.url));
@@ -65,24 +65,70 @@ test('測試失敗：原樣回傳 node --test 的 exit code，不另印 NODE_TES
   assert.doesNotMatch(result.stderr, /NODE_TEST_LOST/);
 });
 
-// 第二個測試起吞掉子行程送往父行程的結果，模擬長跑測試檔尾段靜默消失；FLAKY_ONCE 檔存在時只吞第一次，之後單獨重跑正常
+// 第二個測試起吞掉子行程送往父行程的結果，模擬長跑測試檔尾段靜默消失；CUT 檔存在時第三個測試中途 exit 0，子行程紀錄留下沒有結束的測試；
+// FLAKY_ONCE 檔存在時 MUTE、CUT 都只作用第一次，之後單獨重跑正常
 const LOSSY = "import { test } from 'node:test';\nimport { existsSync, rmSync } from 'node:fs';\ntest('a', () => {});\n"
   + "test('mute', () => { if (existsSync('MUTE')) { if (existsSync('FLAKY_ONCE')) rmSync('MUTE'); process.stdout.write = () => true; } });\n"
+  + "test('cut', () => { if (existsSync('CUT')) { if (existsSync('FLAKY_ONCE')) rmSync('CUT'); process.exit(0); } });\n"
   + "for (const n of [1, 2, 3]) test(`t${n}`, () => {});\n";
 
-test('子行程跑完的測試沒有回報到父行程且 exit 0：印 NODE_TEST_LOST，單獨重跑通過即 exit 0', { skip: NO_CHANNEL }, t => {
-  const run = fixture(t, { 'lossy.test.mjs': LOSSY, 'ok.test.mjs': "import { test } from 'node:test';\ntest('ok', () => {});\n", MUTE: '', FLAKY_ONCE: '' });
+test('子行程紀錄不完整、回報遺失且 exit 0：印 NODE_TEST_LOST，單獨重跑通過即 exit 0', { skip: NO_CHANNEL }, t => {
+  const run = fixture(t, { 'lossy.test.mjs': LOSSY, 'ok.test.mjs': "import { test } from 'node:test';\ntest('ok', () => {});\n", MUTE: '', CUT: '', FLAKY_ONCE: '' });
   const result = run('lossy.test.mjs', 'ok.test.mjs');
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /^NODE_TEST_LOST lossy\.test\.mjs ran=5 missing=[1-5]\nNODE_TEST_RERUN lossy\.test\.mjs PASS$/m);
+  assert.match(result.stderr, /^NODE_TEST_LOST lossy\.test\.mjs ran=2 missing=[12]\nNODE_TEST_RERUN lossy\.test\.mjs PASS$/m);
   assert.doesNotMatch(result.stderr, /ok\.test\.mjs/);
 });
 
-test('單獨重跑仍遺失：NODE_TEST_RERUN FAIL、exit 1', { skip: NO_CHANNEL }, t => {
+test('recordedPass：該檔每筆紀錄都跑完（started 等於結束數）、沒有失敗、exit 0 才算全過', () => {
+  const rec = fields => `${JSON.stringify({ file: '/a.test.mjs', names: ['x', 'y'], traced: true, started: 2, failed: 0, code: 0, ...fields })}\n`;
+  assert.equal(recordedPass(rec({}), '/a.test.mjs'), true);
+  assert.equal(recordedPass(rec({}) + rec({ names: ['z'], started: 1 }), '/a.test.mjs'), true);
+  assert.equal(recordedPass(rec({ failed: 1 }), '/a.test.mjs'), false, '有失敗');
+  assert.equal(recordedPass(rec({ code: 1 }), '/a.test.mjs'), false, '子行程 exit 非 0');
+  assert.equal(recordedPass(rec({ started: 3 }), '/a.test.mjs'), false, '有測試沒有結束紀錄');
+  assert.equal(recordedPass(rec({}) + rec({ started: 3 }), '/a.test.mjs'), false, '同檔另一筆紀錄不完整');
+  assert.equal(recordedPass(rec({ traced: false, names: [], started: 0 }), '/a.test.mjs'), false, '沒收到事件');
+  assert.equal(recordedPass('{"file":"/a.test.mjs","names":["x"],"traced":true}\n', '/a.test.mjs'), false, '舊格式沒有欄位');
+  assert.equal(recordedPass(rec({}), '/b.test.mjs'), false, '沒有該檔的紀錄');
+});
+
+test('回報遺失但子行程紀錄全過：印 NODE_TEST_LOST 與 NODE_TEST_RECORDED PASS，不單獨重跑、exit 0', { skip: NO_CHANNEL }, t => {
   const run = fixture(t, { 'lossy.test.mjs': LOSSY, MUTE: '' });
   const result = run('lossy.test.mjs');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stderr, /^NODE_TEST_LOST lossy\.test\.mjs ran=6 missing=[1-6]\nNODE_TEST_RECORDED lossy\.test\.mjs PASS/m);
+  assert.doesNotMatch(result.stderr, /NODE_TEST_RERUN/);
+});
+
+test('回報遺失且子行程紀錄有失敗：不判 PASS，單獨重跑仍以紀錄判定為 FAIL、exit 1', { skip: NO_CHANNEL }, t => {
+  // 子行程在 exit 時把 exit code 改成 0，父行程看不到失敗、只看到回報遺失，判定只能靠子行程紀錄（error 事件與 exit 前的 code）
+  const failing = "process.on('exit', () => { process.exitCode = 0; });\n"
+    + LOSSY.replace('test(`t${n}`, () => {})', 'test(`t${n}`, () => { if (n === 2) throw new Error(\'boom\'); })');
+  assert.notEqual(failing, "process.on('exit', () => { process.exitCode = 0; });\n" + LOSSY);
+  const run = fixture(t, { 'lossy.test.mjs': failing, MUTE: '' });
+  const result = run('lossy.test.mjs');
   assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(result.stderr, /^NODE_TEST_LOST lossy\.test\.mjs ran=5 missing=[1-5]\nNODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
+  assert.match(result.stderr, /^NODE_TEST_LOST lossy\.test\.mjs ran=6 missing=[1-6]\nNODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
+  assert.doesNotMatch(result.stderr, /NODE_TEST_RECORDED/);
+});
+
+test('回報遺失且根層級 after hook 拋錯（子行程 exit 0、只有 <root> 發 error）：不判 PASS、exit 1', { skip: NO_CHANNEL }, t => {
+  const hooked = LOSSY.replace("import { test } from 'node:test';", "import { test, after } from 'node:test';\nafter(() => { throw new Error('hook'); });");
+  assert.notEqual(hooked, LOSSY);
+  const run = fixture(t, { 'lossy.test.mjs': hooked, MUTE: '' });
+  const result = run('lossy.test.mjs');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /^NODE_TEST_LOST lossy\.test\.mjs ran=6 missing=[1-6]\nNODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
+  assert.doesNotMatch(result.stderr, /NODE_TEST_RECORDED/);
+});
+
+test('回報遺失且子行程紀錄不完整（有測試沒有結束紀錄）：不直接判 PASS，單獨重跑仍不完整即 FAIL、exit 1', { skip: NO_CHANNEL }, t => {
+  const run = fixture(t, { 'lossy.test.mjs': LOSSY, MUTE: '', CUT: '' });
+  const result = run('lossy.test.mjs');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /^NODE_TEST_LOST lossy\.test\.mjs ran=2 missing=[12]\nNODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
+  assert.doesNotMatch(result.stderr, /NODE_TEST_RECORDED/);
 });
 
 test('測試內再起的 node --test（fixture）不計入、不誤報', t => {
