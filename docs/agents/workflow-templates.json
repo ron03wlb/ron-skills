@@ -102,8 +102,8 @@
     },
     "scripts/pilot-close.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-close.mjs",
-      "commit": "e561d0dbe2f52d93506aa5df81e07d6e4b781d06",
-      "sha256": "f590327234279eca2914079f0fce58c8657a2f86d09a5f913a2c9489ec991803"
+      "commit": "3c9db5492ea14d26e4f25f8394efc3896e6bd888",
+      "sha256": "eedb908651e1f3e4048c824c5c437bce5d0c3c2d02211bcd8bc07403459950d9"
     },
     "scripts/pilot-counterpart.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-counterpart.mjs",

@@ -21,7 +21,7 @@ function git(cwd, ...args) {
  * origin（bare）＋ 主 checkout（`main` 分支已合入成員分支並 push）＋ 複製到 scripts/ 的正本（旁邊放什麼都不做的 pilot-unbare.sh）。
  * 成員 worktree 已經移除（terminal、worktree 步驟 SKIP），成員分支也 push 過。假 gh 以號碼記 Issue 狀態，每次呼叫記一行參數。
  */
-function fixture(t, { main = 'main', tracker = false } = {}) {
+function fixture(t, { main = 'main', tracker = false, protectedFile = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-close-template-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const origin = join(temp, 'origin.git');
@@ -30,6 +30,10 @@ function fixture(t, { main = 'main', tracker = false } = {}) {
   mkdirSync(repo);
   git(repo, 'init', '-q', `--initial-branch=${main}`);
   writeFileSync(join(repo, '.gitignore'), '.scratch/\nscripts/\n');
+  if (protectedFile) {
+    mkdirSync(join(repo, 'private'));
+    writeFileSync(join(repo, 'private/a.txt'), 'only copy\n');
+  }
   git(repo, 'add', '.');
   git(repo, 'commit', '-qm', 'base');
   git(repo, 'remote', 'add', 'origin', origin);
@@ -37,6 +41,7 @@ function fixture(t, { main = 'main', tracker = false } = {}) {
   git(repo, 'switch', '-q', '-c', 'issue/12-x');
   writeFileSync(join(repo, 'x.txt'), 'x\n');
   git(repo, 'add', 'x.txt');
+  if (protectedFile) git(repo, 'rm', '-q', 'private/a.txt');
   git(repo, 'commit', '-qm', 'member');
   git(repo, 'push', '-q', 'origin', 'issue/12-x');
   git(repo, 'switch', '-q', main);
@@ -127,6 +132,25 @@ test('旁邊有 gh-tracker.mjs：留言與關單經它寫，不直接呼叫 gh �
   assert.deepEqual(f.calls().filter(line => line.startsWith('tracker ')).map(line => line.split(' ').slice(0, 3).join(' ')),
     ['tracker comment 12', 'tracker close 12']);
   assert.equal(f.calls().filter(line => /^gh issue (comment|close) /.test(line)).length, 0);
+});
+
+test('--protect-path：快轉會刪掉被保護的路徑時 STOP，主分支與檔案不動、不關單', t => {
+  const f = fixture(t, { protectedFile: true });
+  const before = git(f.repo, 'rev-parse', 'main');
+  const result = f.close('--repo', 'acme/app', '--protect-path', 'private');
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(lines(result)[0], /^STOP 12 main .*private\/a\.txt/);
+  assert.equal(git(f.repo, 'rev-parse', 'main'), before);
+  assert.equal(readFileSync(join(f.repo, 'private/a.txt'), 'utf8'), 'only copy\n');
+  assert.equal(f.issue().state, 'OPEN');
+});
+
+test('--protect-path：可重複，沒有被保護的路徑會被刪時照常快轉', t => {
+  const f = fixture(t, { protectedFile: true });
+  const result = f.close('--repo', 'acme/app', '--protect-path', 'other', '--protect-path', 'more');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(git(f.repo, 'rev-parse', 'main'), f.sha);
+  assert.equal(f.issue().state, 'CLOSED');
 });
 
 test('沒有 --repo、--repo 格式不對或 --main 不是分支名稱：用法錯誤 exit 2，什麼都不動', t => {
