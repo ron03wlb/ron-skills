@@ -107,6 +107,9 @@ const BUCKET_CASES = [
   ['claimed', '已被指派、24 小時內有留言', issue(7, { labels: ['bug', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(30), commentAt: hoursAgo(2) })],
   ['stale', '已被指派、超過 24 小時沒有新留言', issue(7, { labels: ['bug', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(30), commentAt: hoursAgo(25) })],
   ['retro-candidates', '標 retro-candidates（retro 的候選清單，等 /retro-collect）', issue(7, { labels: ['retro-candidates', 'ready-for-agent'] })],
+  // #270：/retro-collect 認領候選清單後它被指派，不能混進 claimed、stale，和真的在跑的 worker 並列。
+  ['retro-candidates', '標 retro-candidates、已被 /retro-collect 認領（指派、最近有認領留言）', issue(7, { labels: ['retro-candidates'], assignees: ['ron'], assignedAt: hoursAgo(1), commentAt: hoursAgo(1) })],
+  ['retro-candidates', '標 retro-candidates、認領超過 24 小時沒有新留言', issue(7, { labels: ['retro-candidates'], assignees: ['ron'], assignedAt: hoursAgo(30), commentAt: hoursAgo(25) })],
   ['human', '標 ready-for-human、指派給人很久沒留言（不是 agent 的認領）', issue(7, { labels: ['enhancement', 'ready-for-human'], assignees: ['ron'], assignedAt: hoursAgo(72) })],
 ];
 for (const [bucket, why, fixture] of BUCKET_CASES) {
@@ -122,6 +125,12 @@ test('認領時限可以用 --stale-hours 覆寫，過期只歸到 stale、不�
   assert.equal(run().stdout, 'claimed #7 標題 7\n');
   assert.equal(run('--stale-hours', '2').stdout, 'stale #7 標題 7\n');
   assert.ok(calls().every(([cmd, sub]) => cmd === 'api' && sub === 'graphql'), '列出時只讀，不改 Issue');
+});
+
+test('已認領的 retro-candidates 超過 --stale-hours 仍歸 retro-candidates（#270）', () => {
+  const { run } = fakeGh({ issues: [issue(7, { labels: ['retro-candidates'], assignees: ['ron'], assignedAt: hoursAgo(3), commentAt: hoursAgo(3) })] });
+  assert.equal(run().stdout, 'retro-candidates #7 標題 7\n');
+  assert.equal(run('--stale-hours', '2').stdout, 'retro-candidates #7 標題 7\n');
 });
 
 const readyOrder = issues => fakeGh({ issues }).run().stdout.split('\n').filter(line => line.startsWith('ready ')).map(line => line.split(' ')[1]);
