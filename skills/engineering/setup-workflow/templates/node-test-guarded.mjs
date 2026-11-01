@@ -5,7 +5,7 @@
 // 父行程多掛 reporter（含寫檔）時幾乎每次發生，所以本 wrapper 不多掛 reporter，只轉印 spec 輸出。
 // 呼叫端沒給 `--test-reporter` 時明確指定單一的 spec：Node 22 在 stdout 不是 TTY（這裡是 pipe）時預設 tap，Node 23 起才一律 spec。
 // force-exit 是測試 guardrail 的規範，不拿掉，改成比對後單獨重跑遺失的檔：
-//   子行程端由 lib/node-test-count-preload.mjs 記每檔實際跑完的測試名稱；父行程的 `ℹ tests <n>` 等於總數即通過，
+//   子行程端由 lib/node-test-count-preload.mjs 記每檔實際跑完的測試名稱，以及開始數、error 事件數與 exit code；父行程的 `ℹ tests <n>` 等於總數即通過，
 //   不等時以 spec 輸出的測試名稱逐檔比對，找出有測試沒出現在輸出的檔。
 //   沒有 node.test tracing channel 的 Node（22）記不到名稱：所有記錄都沒收到事件時放行，只回傳 node --test 的 exit code。
 // 用法：node scripts/node-test-guarded.mjs <node --test 的選項（--name=value 形式）…> <測試檔…>
@@ -130,7 +130,7 @@ export async function main(args) {
       continue;
     }
     const solo = await runOnce(options, [path]);
-    const pass = solo.code === 0 && !solo.mismatch && solo.lost.every(lost => solo.passed(lost.file));
+    const pass = solo.code === 0 && !solo.mismatch && solo.lost.every(({ file: lostFile }) => solo.passed(lostFile));
     console.error(`NODE_TEST_RERUN ${path} ${pass ? 'PASS' : 'FAIL'}`);
     failed ||= !pass;
   }

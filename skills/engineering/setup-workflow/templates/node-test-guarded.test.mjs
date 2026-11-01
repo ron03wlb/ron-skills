@@ -105,7 +105,18 @@ test('回報遺失且子行程紀錄有失敗：不判 PASS，單獨重跑仍以
   // 子行程在 exit 時把 exit code 改成 0，父行程看不到失敗、只看到回報遺失，判定只能靠子行程紀錄（error 事件與 exit 前的 code）
   const failing = "process.on('exit', () => { process.exitCode = 0; });\n"
     + LOSSY.replace('test(`t${n}`, () => {})', 'test(`t${n}`, () => { if (n === 2) throw new Error(\'boom\'); })');
+  assert.notEqual(failing, "process.on('exit', () => { process.exitCode = 0; });\n" + LOSSY);
   const run = fixture(t, { 'lossy.test.mjs': failing, MUTE: '' });
+  const result = run('lossy.test.mjs');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /^NODE_TEST_LOST lossy\.test\.mjs ran=6 missing=[1-6]\nNODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
+  assert.doesNotMatch(result.stderr, /NODE_TEST_RECORDED/);
+});
+
+test('回報遺失且根層級 after hook 拋錯（子行程 exit 0、只有 <root> 發 error）：不判 PASS、exit 1', { skip: NO_CHANNEL }, t => {
+  const hooked = LOSSY.replace("import { test } from 'node:test';", "import { test, after } from 'node:test';\nafter(() => { throw new Error('hook'); });");
+  assert.notEqual(hooked, LOSSY);
+  const run = fixture(t, { 'lossy.test.mjs': hooked, MUTE: '' });
   const result = run('lossy.test.mjs');
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stderr, /^NODE_TEST_LOST lossy\.test\.mjs ran=6 missing=[1-6]\nNODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
