@@ -69,11 +69,11 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Agent rows | 每個派出的 agent 記在哪 |
 | Probe | 每輪對帳的指令或步驟 |
 | Hold flag | 哪個合入步驟在合入前檢查 `hold` |
-| Stage | 開批次分支、依序合入 `DONE` 的成員；哪些衝突 coordinator 可以自己解，哪些改成重派 fresh worker（例如兩邊改了同一條目），重派後又衝突才開 gate |
-| Regression | 在 staged SHA 跑什麼、怎樣算過 |
-| Integrate | 合進整合分支的條件與指令 |
+| Stage | 開批次分支、依序合入 `DONE` 的成員；哪些衝突 coordinator 可以自己解，哪些改成重派 fresh worker（例如兩邊改了同一條目），重派後又衝突才開 gate；有 setup-workflow 正本時 Stage、Regression、Integrate 是一條 `pilot-land` 指令，它只自己重算副本清單（`workflow-templates.json`），其他衝突解法由專案的 `--resolver` 模組提供，沒有就停下 |
+| Regression | 在 staged SHA 跑什麼、怎樣算過；`pilot-land` 跑 `--check-command` 給的指令（預設 `bin/check`） |
+| Integrate | 合進整合分支的條件與指令；`pilot-land` 在 Regression 通過、沒有 hold、整合分支沒前進時快轉 |
 | Push gate | 整合分支 tip 等於最後通過回歸的 SHA 時要跑的 push 指令：交給人，或 adapter 允許時由 coordinator 依序 push、開 PR／MR、合併，再讓整合分支跟上主線（允不允許是 `/setup-workflow` 升 L3 時問的一題，預設交給人；答是才在 `.claude/settings.json` 放行 `land.mjs`、`pilot-close.mjs`，`check-coordinator-permissions.mjs --push` 檢查兩者一致）；PR body 有 setup-workflow 正本時用 `pilot-pr-body` 從 merged 的 batch checkpoint 產生 |
-| Close | 進到主線之後的證據留言、關單、關掉成員 terminal、移除 worktree 與分支（遠端沒有該分支時略過） |
+| Close | 進到主線之後的證據留言、關單、關掉成員 terminal、移除 worktree 與分支（遠端沒有該分支時略過）；有 setup-workflow 正本時用 `pilot-close`（`--repo` 給 tracker 專案），每一步做過就略過，可以重跑 |
 | Handoff | 交棒的指令 |
 | Project tick hooks | 每輪要跑的專案檢查 |
 | Retro collect | `/retro-collect` 需要的事實：retro worktree、檢查、合入與 push |
