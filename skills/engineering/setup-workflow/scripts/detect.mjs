@@ -13,6 +13,7 @@
 // 環境站：node detect.mjs [<repo>] --env [--copy <template>...] [--json]，只看這台機器，repo 只讀它的 CI 設定，不必是 git repo。
 // 每項一行：`ENV platform <macos|wsl|linux|…>`、必要工具 `REQUIRED <name> met|missing|skipped <value>`、
 // 選用工具 `OPTIONAL <name> met|missing <value>`（缺了只記錄，它解鎖的等級或擴充列入 unavailable）；
+// 依平台加帶的正本 `TEMPLATES <name> yes|no <正本,...|->`（bareGuard：WSL 且有 Orca 時帶 pilot-unbare.sh、claude-hook-unbare.sh）；
 // 每個停點一行 `STOP <name> <原因>` 加一行 `FIX <name> <修正指令>`，最後一行 `ENV ok`（exit 0）或 `ENV stop <n>`（exit 1）。
 // --copy 是這次要複製的正本，含 `.py` 時才檢查 Python。測試以 DETECT_PLATFORM、DETECT_PROC_VERSION（檔案路徑）、DETECT_NODE_VERSION
 // 取代 process.platform、/proc/version 與 process.versions.node。
@@ -136,7 +137,13 @@ function environment() {
     ...Object.entries(required).filter(([, tool]) => tool.met === false).map(([tool, { reason, fix }]) => ({ name: tool, reason, fix })),
   ];
   const unavailable = Object.values(optional).filter(tool => !tool.met).map(tool => tool.unlocks);
-  const result = { root, platform, required, optional, unavailable, stops, ok: stops.length === 0 };
+  // Bare guard：Orca 從 WSL 做 worktree 操作時會把主 checkout 的 core.bare 設成 true（ron-skills #20），只有 WSL＋Orca 帶；其他平台不帶。
+  const bareGuard = platform.value === 'wsl' && optional.orca.met;
+  const templates = {
+    bareGuard: { bring: bareGuard, templates: bareGuard ? ['pilot-unbare.sh', 'claude-hook-unbare.sh'] : [],
+      evidence: [`platform ${platform.value}`, optional.orca.met ? 'Orca 可用' : '沒有 Orca'] },
+  };
+  const result = { root, platform, required, optional, unavailable, templates, stops, ok: stops.length === 0 };
 
   if (json) {
     console.log(JSON.stringify(result, null, 2));
@@ -147,6 +154,7 @@ function environment() {
       console.log(`REQUIRED ${tool} ${state} ${s.value ?? '-'}  # ${[...s.evidence, ...(s.required ? [`需要 ${s.required.split('.')[0]}.x`] : [])].join('; ')}`);
     }
     for (const [tool, s] of Object.entries(optional)) console.log(`OPTIONAL ${tool} ${s.met ? 'met' : 'missing'} ${s.value ?? '-'}  # ${s.evidence.join('; ')}${s.met ? '' : `；${s.unlocks} 不可選`}`);
+    for (const [name, e] of Object.entries(templates)) console.log(`TEMPLATES ${name} ${e.bring ? 'yes' : 'no'} ${e.templates.join(',') || '-'}  # ${e.evidence.join('; ')}`);
     for (const stop of stops) console.log(`STOP ${stop.name} ${stop.reason}\nFIX ${stop.name} ${stop.fix}`);
     console.log(stops.length ? `ENV stop ${stops.length}` : 'ENV ok');
   }

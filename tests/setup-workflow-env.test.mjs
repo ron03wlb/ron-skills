@@ -167,3 +167,19 @@ test('node-version 寫成 24.x 時取主版本比對；註解行與指向資料�
   assert.equal(dir.status, 0);
   assert.equal(dir.result.required.node.required, null);
 });
+
+// #246：Orca 從 WSL 做 worktree 操作時會把主 checkout 設成 bare（#20），只有 WSL＋Orca 要帶 Bare guard；macOS 不帶。
+test('WSL 且有 Orca 時帶 Bare guard 的兩支正本；macOS、沒有 Orca 的 WSL 不帶', t => {
+  const wsl = 'Linux version 6.6.87.2-microsoft-standard-WSL2 (root@x) #1 SMP\n';
+  const withOrca = station(t, { platform: 'linux', procVersion: wsl, orca: process.execPath });
+  assert.deepEqual(withOrca.result.templates.bareGuard.templates, ['pilot-unbare.sh', 'claude-hook-unbare.sh']);
+  assert.equal(withOrca.result.templates.bareGuard.bring, true);
+  assert.ok(withOrca.lines.some(line => /^TEMPLATES bareGuard yes pilot-unbare\.sh,claude-hook-unbare\.sh /.test(line)), withOrca.lines.join('\n'));
+  assert.equal(withOrca.lines.at(-1), 'ENV ok');
+
+  for (const options of [{ orca: process.execPath }, { platform: 'linux', procVersion: wsl }]) {
+    const { result, lines } = station(t, options);
+    assert.equal(result.templates.bareGuard.bring, false);
+    assert.ok(lines.some(line => /^TEMPLATES bareGuard no - /.test(line)), lines.join('\n'));
+  }
+});

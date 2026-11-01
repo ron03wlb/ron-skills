@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { realTmpdir } from './helpers/real-tmpdir.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
-const hook = new URL('../scripts/claude-hook-unbare.sh', import.meta.url).pathname;
+const hook = new URL('./claude-hook-unbare.sh', import.meta.url).pathname;
 // 同 pilot-unbare.test.mjs：清掉 pre-commit 匯出的 GIT_*，否則暫存 repo 的 config 會寫進本 repo。
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
 
