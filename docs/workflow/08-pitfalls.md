@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | Orca `worktree create` 回 `runtime_unavailable` 或 `runtime_timeout`，重試後多出一個 `<name>-2` | 從 WSL 呼叫時，回應早於實際完成 | 只呼叫一次，用 `git worktree list` 輪詢確認；絕不重試。其他平台無害 |
 | Orca `worktree create --repo path:<WSL 路徑>` 回 `repo_not_found`（帶 `--agent` 時變成 `agent_session_operation_unknown`） | WSL 下 Orca 以 Windows UNC 路徑記錄 repo | 不帶 `--repo`，在該 repo 的 checkout 執行，讓 Orca 從 cwd 推斷。其他平台無害 |
-| Orca 的 worktree 操作（create、rm）之後，主 checkout 在 `git worktree list` 顯示 `(bare)`，`git status` 回 `must be run in a work tree` | 從 WSL 建立或移除 worktree 時，Orca 把主 repo `.git/config` 的 `core.bare` 改成 `true`，不一定在指令當下發生 | 每個 tick 開頭與每次 `worktree create`、`worktree rm` 之後，在主 checkout 跑 `git rev-parse --is-bare-repository`，印出 `true` 就執行 `git config core.bare false`（setup-workflow 的 `pilot-unbare.sh` 正本；`claude-hook-unbare.sh` 掛 `PreToolUse` 在 session 中途也還原，Orca＋WSL 時帶入）。其他平台無害 |
+| Orca 的 worktree 操作（create、rm）之後，主 checkout 在 `git worktree list` 顯示 `(bare)`，`git status` 回 `must be run in a work tree` | 從 WSL 建立或移除 worktree 時，Orca 把主 repo `.git/config` 的 `core.bare` 改成 `true`，不一定在指令當下發生 | 每個 tick 開頭與每次 `worktree create`、`worktree rm` 之後，在主 checkout 跑 `git rev-parse --is-bare-repository`，印出 `true` 就執行 `git config core.bare false`（setup-workflow 的 `pilot-unbare.sh` 正本，在所有平台跟 `pilot-land.mjs`、`pilot-close.mjs` 帶；`claude-hook-unbare.sh` 掛 `PreToolUse` 在 session 中途也還原，只在 Orca＋WSL 時帶入）。其他平台無害 |
 | WSL 裡 headless Chromium 截圖的中文變方框 | WSL 預設沒有中文字型 | 把 Noto Sans TC 放進 `~/.local/share/fonts/`、在 fontconfig 加 fallback、`fc-cache -f`。其他平台無害 |
 
 ### macOS
