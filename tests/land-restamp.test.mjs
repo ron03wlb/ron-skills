@@ -11,7 +11,8 @@ import { mergeSample } from '../skills/engineering/setup-workflow/templates/test
 import { GH_SAMPLES } from '../skills/engineering/setup-workflow/templates/test/gh-samples.mjs';
 
 const repoRoot = new URL('..', import.meta.url).pathname;
-const SCRIPTS = ['land.mjs', 'orca-session-send.mjs', 'restamp.mjs', 'check-workflow-sync.mjs'];
+// restamp.mjs 的副本清單由 pilot-land.mjs（正本）重算、流程站戳記由 pilot-resolve.mjs 重算（#245），一起複製。
+const SCRIPTS = ['land.mjs', 'orca-session-send.mjs', 'restamp.mjs', 'pilot-land.mjs', 'pilot-resolve.mjs', 'check-workflow-sync.mjs'];
 const SYNC_SOURCES = Object.keys(JSON.parse(readFileSync(join(repoRoot, 'scripts/workflow-doc-sync.json'), 'utf8')).sources);
 const STAMPS = 'scripts/workflow-doc-sync.json';
 // 不用 Orca（收尾走 git worktree remove），也不讓外層的 GIT_* 寫進本 repo。
