@@ -39,4 +39,4 @@ Edit the "Label in our tracker" column to match whatever vocabulary you actually
 
 - **`retro`**：`/retro-collect` 判定太大、交給 worker 的 retro 候選，可以和上表的 label 同時掛，照一般 triage 進池子；`ready` 桶排在最前，勝過 `priority`。
 - **`priority`**：可以和上表的 label 同時掛；`ready` 桶排在 `retro` 之後，勝過 block 開著的單的數目和號碼。
-- **`retro-candidates`**：一個 session 的 `/retro` 在收集模式開的候選清單，等 `/retro-collect`；不掛任何 triage label，也不進池子。沒被指派、也不是母單或 `ready-for-human` 時，不論掛了什麼，都歸到 `retro-candidates` 桶（優先序寫在腳本檔頭）。`/triage` 比照 `parent`，不把它放進 Unlabeled 桶，也不給它掛 triage label。
+- **`retro-candidates`**：一個 session 的 `/retro` 在收集模式開的候選清單，等 `/retro-collect`；不掛任何 triage label，也不進池子。不是母單或 `ready-for-human` 時，不論掛了什麼、有沒有被 `/retro-collect` 認領指派，都歸到 `retro-candidates` 桶，不混進 `claimed`、`stale`（優先序寫在腳本檔頭，#270）。`/triage` 比照 `parent`，不把它放進 Unlabeled 桶，也不給它掛 triage label。

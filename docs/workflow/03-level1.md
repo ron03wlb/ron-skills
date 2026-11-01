@@ -148,7 +148,7 @@ git branch -d issue/<n>-<slug> && git push origin --delete issue/<n>-<slug>
 
 ### 9. `/issue-queue`
 
-第一張單跑順之後，用 `/issue-queue` 看所有開著的 Issue 怎麼分桶。它跑 `scripts/issue-pool.mjs`（`/setup-workflow` 在 L1 一定會複製這支；手動備用時自己跑 `copy-templates.mjs <repo> issue-pool`。tracker 要是 GitHub 或 GitLab，本機 Markdown tracker 沒有池子），第一行是 `進行中 <N>／上限 <M>`（L1 沒有 Pilot 段，上限顯示 `不限`），接著依 `ready`、`parent`、`human`、`stale`、`claimed`…的順序列出分桶，`ready` 桶的順序就是開工順序。`needs-triage`、`unlabeled` 的單，以及上次分級後有新留言的 `needs-info` 單，它照 `/triage` 的規則逐張細化，每一則改動都等你確認；過期的認領（`stale`）只列出來，放不放由你決定。
+第一張單跑順之後，用 `/issue-queue` 看所有開著的 Issue 怎麼分桶。它跑 `scripts/issue-pool.mjs`（`/setup-workflow` 在 L1 一定會複製這支；手動備用時自己跑 `copy-templates.mjs <repo> issue-pool`。tracker 要是 GitHub 或 GitLab，本機 Markdown tracker 沒有池子），第一行是 `進行中 <N>／上限 <M>`（L1 沒有 Pilot 段，上限顯示 `不限`），接著依 `ready`、`parent`、`human`、`retro-candidates`、`stale`、`claimed`…的順序列出分桶，`ready` 桶的順序就是開工順序。`needs-triage`、`unlabeled` 的單，以及上次分級後有新留言的 `needs-info` 單，它照 `/triage` 的規則逐張細化，每一則改動都等你確認；過期的認領（`stale`）只列出來，放不放由你決定。
 
 做完的樣子：`/issue-queue` 印出上限行與分桶，你要開工的單在 `ready` 桶。
 
