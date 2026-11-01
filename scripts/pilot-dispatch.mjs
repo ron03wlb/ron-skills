@@ -36,8 +36,8 @@
 //   自 merge-base 以來共同改過的檔，各附兩邊的 `git diff --stat` 那一行，`.md` 再附兩邊改到的 `- **<名稱>.**` 條目（pilot-probe 的 changedUnits；有條目外的改動時另註明），不印完整 diff；
 //   worker checkpoint（`<worktree>/.scratch/issue-run-<n>/state.md`）最後一個含 `review-only` 的行（如 `final review-only round`）到結果行（`DONE|STOP <n>`）的原文，
 //   沒有結果行時到下一個 `#`／`##` 標題（不含）或檔尾（worker 的 checkpoint 沒有固定寫法），
-//   沒有這段時改抄 worker 分頁尾段（#261）：batch-<key>.md 那列有 handle、設了 ORCA_CLI_COMMAND 時照 pilot.md 的 Watch 讀
-//   `terminal read --screen --json` 的 `.result.terminal.tail`，從最後一個以「Review」開頭的行到結果行，註明來源是分頁尾段；
+//   沒有這段時改抄 worker 分頁尾段（#261）：batch-<key>.md 那列有 handle、設了 ORCA_CLI_COMMAND 時讀 pilot.md 的 Watch 同一個來源
+//   `terminal read --screen --json` 的 `.result.terminal.tail`（整段，不只 Watch 看的最後 40 行），從最後一個以「Review」開頭的行到結果行，註明來源是分頁尾段；
 //   讀不到（沒有 handle、分頁已關、沒有 ORCA_CLI_COMMAND、找不到起訖行）時才寫明要補 worker 分頁尾段；
 //   最後一段空白的「怎麼整併」給 coordinator 補，補完再帶 --note 重跑。
 //
@@ -335,7 +335,7 @@ async function refresh(cli, main, key, integration, { n, branch }, note, again, 
 }
 
 /**
- * worker 分頁尾段（#261）：照 pilot.md 的 Watch 讀 `terminal read --screen --json` 的 `.result.terminal.tail`，
+ * worker 分頁尾段（#261）：讀 pilot.md 的 Watch 同一個來源 `terminal read --screen --json` 的 `.result.terminal.tail`（整段，不只 Watch 看的最後 40 行），
  * 取最後一個結果行（`DONE|STOP <n>`）與它之前最後一個以「Review」開頭的行（行首空白與 TUI 的 ⏺ 不算），去掉共同縮排。
  * 沒有 handle、沒有 ORCA_CLI_COMMAND、Orca 失敗（分頁已關）或找不到起訖行時傳回 undefined。
  */
@@ -367,7 +367,8 @@ function freshDraft(main, key, integration, { n, branch }) {
   let title;
   try { title = viewed.status === 0 && JSON.parse(viewed.stdout).title; } catch { title = undefined; }
   if (!title) return { stop: `${n} title ${(viewed.stderr ?? '').trim().replace(/\s*\n\s*/g, ' ') || 'gh issue view 讀不到標題'}` };
-  const candidate = rowOf(join(main, `.scratch/pilot/batch-${key}.md`), n)?.[8];
+  const row = rowOf(join(main, `.scratch/pilot/batch-${key}.md`), n);
+  const candidate = row?.[8];
   const prior = candidate || git('rev-parse', branch).stdout.trim();
   const merged = git('merge-base', branch, integration);
   if (merged.status !== 0) return { stop: `${n} git merge-base ${merged.stderr.trim()}` };
@@ -401,7 +402,7 @@ function freshDraft(main, key, integration, { n, branch }) {
   const result = lines.findIndex((line, i) => i > from && new RegExp(`\\b(DONE|STOP) ${n}\\b`).test(line));
   const heading = lines.findIndex((line, i) => i > from && /^#{1,2} /.test(line));
   const to = result >= 0 ? result + 1 : heading >= 0 ? heading : undefined;
-  const tail = from < 0 ? screenTail(n, rowOf(join(main, `.scratch/pilot/batch-${key}.md`), n)?.[4]) : undefined;
+  const tail = from < 0 ? screenTail(n, row?.[4]) : undefined;
   const review = from >= 0 ? lines.slice(from, to).join('\n').trim() : tail?.text ?? 'checkpoint 沒有 review-only 段，補 worker 分頁尾段。';
   const source = tail ? `worker 分頁尾段（${tail.handle}）` : state ?? `找不到 ${branch} 的 worktree`;
   mkdirSync(dirname(path), { recursive: true });
