@@ -20,7 +20,7 @@ function repo(t, files = {}) {
 }
 
 // 開放 Issue 數不呼叫本機真的 gh：預設以一定失敗的指令取代，需要時測試自己放假的 gh。
-const offline = { ...env, DETECT_GH: 'false' };
+const offline = { ...env, DETECT_GH: 'false', ORCA_CLI_COMMAND: '' };
 
 function detect(root, ...args) {
   const result = spawnSync('node', [script, root, '--json', ...args], { encoding: 'utf8', env: offline });
@@ -48,10 +48,9 @@ function l2(t, files = {}) {
   return root;
 }
 
-test('沒有 adapter 的 repo 是 L0，列出 L1 缺的條件；L1 的是非題沒答時建議維持 L0', t => {
+test('沒有 adapter 的 repo 是 L0，列出 L1 缺的條件', t => {
   const result = detect(repo(t));
   assert.equal(result.level, 'L0');
-  assert.equal(result.recommend, 'L0');
   assert.deepEqual(result.levels.L1.missing, ['tracker', 'adapter', 'check']);
 });
 
@@ -72,7 +71,6 @@ test('檢查指令中選項的值（--base origin/main）不當成 repo 內路�
 test('有 adapter 與單一檢查入口是 L1', t => {
   const result = detect(repo(t, L1_FILES));
   assert.equal(result.level, 'L1');
-  assert.equal(result.recommend, 'L1');
   assert.equal(result.signals.check.value, 'bin/check');
   assert.deepEqual(result.levels.L2.missing, ['integration', 'hook', 'worktrees']);
 });
@@ -116,7 +114,6 @@ test('adapter 寫的檢查入口不存在時不算 L1', t => {
 test('整合分支、跑檢查入口的 git hook、Issue 分支紀錄齊了是 L2；只有 pre-commit 時標明缺 pre-push', t => {
   const result = detect(l2(t));
   assert.equal(result.level, 'L2');
-  assert.equal(result.recommend, 'L2');
   assert.equal(result.signals.integration.value, 'pilot/integration');
   assert.equal(result.signals.hook.value, 'pre-commit');
   assert.match(result.signals.hook.note, /pre-push/);
@@ -130,14 +127,14 @@ test('pre-push 沒有呼叫檢查入口時不算 hook 訊號', t => {
   assert.equal(detect(root).signals.hook.met, false);
 });
 
-test('adapter 有 Pilot 段且近期有 pilot／stage commit 是 L3，建議維持 L3', t => {
+test('adapter 有 Pilot 段且近期有 pilot／stage commit 是 L3，安裝目標維持 L3', t => {
   const root = l2(t, { 'docs/agents/issue-run.md': `${L1_FILES['docs/agents/issue-run.md']}\n## Pilot\n\n- **Pool.** x\n` });
   assert.equal(detect(root).levels.L3.missing.join(), 'pilotCommits');
   git(root, 'switch', '-q', '-c', 'pilot/stage-3', 'pilot/integration');
   git(root, 'commit', '-q', '--no-verify', '--allow-empty', '-m', 'stage batch-3');
   const result = detect(root);
   assert.equal(result.level, 'L3');
-  assert.equal(result.recommend, 'L3');
+  assert.equal(result.target.value, 'L3');
 });
 
 test('擴充：卡關單、外部測試環境、多模組、自訂分級入口、Codex；tracker 不再是擴充（改由 Host 站判定）', t => {
@@ -205,19 +202,7 @@ test('程式碼 host 是 local（沒有 origin）時沒有遠端 CI，不印 ci 
   assert.match(result.gaps.ci.evidence.join(' '), /local/);
 });
 
-const L2_YES = ['--answer', 'delivered=yes', '--answer', 'sessions=yes'];
-
-test('RECOMMEND：下一級的進入條件都不符時等於目前等級，都符合時升一級', t => {
-  const root = repo(t, L1_FILES);
-  const none = detect(root, '--answer', 'delivered=no', '--answer', 'sessions=no', '--answer', 'incident=no');
-  assert.equal(none.recommend, 'L1');
-  assert.equal(none.entry.L2.met, false);
-  const yes = detect(root, ...L2_YES);
-  assert.equal(yes.recommend, 'L2');
-  assert.equal(yes.entry.L2.met, true);
-});
-
-test('等級站證據：近 90 天貢獻者數以作者 email 去重，90 天前的 commit 不算', t => {
+test('量測證據：近 90 天貢獻者數以作者 email 去重，90 天前的 commit 不算', t => {
   const root = repo(t);
   const commit = (email, date) => {
     const result = spawnSync('git', ['-C', root, '-c', 'user.name=x', '-c', `user.email=${email}`, 'commit', '-q', '--allow-empty', '-m', 'x'],
@@ -236,7 +221,7 @@ test('等級站證據：近 90 天貢獻者數以作者 email 去重，90 天前
   assert.equal(detect(root).evidence.contributors.value, 3);
 });
 
-test('等級站證據：同時存在的 Issue 分支與 linked worktree 數', t => {
+test('量測證據：同時存在的 Issue 分支與 linked worktree 數', t => {
   const root = repo(t);
   git(root, 'branch', 'issue/1-a');
   git(root, 'branch', 'issue/2-b');
@@ -248,7 +233,7 @@ test('等級站證據：同時存在的 Issue 分支與 linked worktree 數', t 
   assert.equal(evidence.worktrees.value, 1);
 });
 
-test('等級站證據：GitHub tracker 的開放 Issue 數取自 gh；其他 tracker 記 unknown', t => {
+test('量測證據：GitHub tracker 的開放 Issue 數取自 gh；其他 tracker 記 unknown', t => {
   const root = repo(t, { 'docs/agents/issue-tracker.md': 'Read an Issue: `gh issue view <n> --json body`\n' });
   const bin = join(root, '.fake-bin');
   write(root, { '.fake-bin/gh': '#!/bin/sh\n[ "$1 $2" = "issue list" ] && echo 7\n' });
@@ -260,7 +245,7 @@ test('等級站證據：GitHub tracker 的開放 Issue 數取自 gh；其他 tra
   assert.equal(detect(repo(t, { 'docs/agents/issue-tracker.md': 'Issues live under `.scratch/issues/`.\n' })).evidence.openIssues.value, 'unknown');
 });
 
-test('等級站證據：還沒有 issue-tracker.md 時照 Host 站依 origin 推定 tracker', t => {
+test('量測證據：還沒有 issue-tracker.md 時照 Host 站依 origin 推定 tracker', t => {
   const root = repo(t);
   git(root, 'remote', 'add', 'origin', 'git@github.com:o/r.git');
   write(root, { '.fake-bin/gh': '#!/bin/sh\n[ "$1 $2" = "issue list" ] && echo 4\n' });
@@ -272,7 +257,7 @@ test('等級站證據：還沒有 issue-tracker.md 時照 Host 站依 origin 推
   assert.match(detect(root).evidence.openIssues.evidence.join(), /tracker gitlab/);
 });
 
-test('等級站證據：CI 與 gated 有無', t => {
+test('量測證據：CI 與 gated 有無', t => {
   const none = detect(repo(t)).evidence;
   assert.equal(none.ci.value, 'no');
   assert.equal(none.gated.value, 'no');
@@ -283,70 +268,55 @@ test('等級站證據：CI 與 gated 有無', t => {
   assert.equal(detect(repo(t, { '.gitlab-ci.yml': 'stages: []\n' })).evidence.ci.value, 'yes');
 });
 
-test('L2 的「多個 session」與「發生過事故」擇一即可；L3 另需環境站的 Orca', t => {
-  const root = repo(t, L1_FILES);
-  assert.equal(detect(root, '--answer', 'delivered=yes', '--answer', 'incident=yes').recommend, 'L2');
-  assert.deepEqual(detect(root, '--answer', 'delivered=yes').entry.L2.unmet, ['sessions|incident']);
-  const l3 = l2(t);
-  const answers = ['--answer', 'exitCodes=yes', '--answer', 'unattended=yes'];
-  const noOrca = spawnSync('node', [script, l3, '--json', ...answers], { encoding: 'utf8', env: { ...offline, ORCA_CLI_COMMAND: '' } });
-  assert.deepEqual(JSON.parse(noOrca.stdout).entry.L3.unmet, ['orca']);
-  assert.equal(JSON.parse(noOrca.stdout).recommend, 'L2');
-  const orca = spawnSync('node', [script, l3, '--json', ...answers], { encoding: 'utf8', env: { ...offline, ORCA_CLI_COMMAND: process.execPath } });
-  assert.equal(JSON.parse(orca.stdout).recommend, 'L3');
-});
-
-test('文字輸出：目前等級以上每級的是非題與 ENTRY 行；不認得的 --answer exit 2', t => {
-  const root = repo(t, L1_FILES);
-  const result = spawnSync('node', [script, root, '--answer', 'delivered=yes'], { encoding: 'utf8', env: { ...offline, ORCA_CLI_COMMAND: '' } });
+// #278：安裝目標不問是非題、不限一次升一級，依量得到的工具決定。
+const withOrca = { ...offline, ORCA_CLI_COMMAND: process.execPath };
+function target(root, extraEnv = offline) {
+  const result = spawnSync('node', [script, root, '--json'], { encoding: 'utf8', env: extraEnv });
   assert.equal(result.status, 0, result.stderr);
-  const out = result.stdout.split('\n');
-  assert.ok(out.includes('QUESTION L2 delivered yes 是否已用 L1 的 /issue-run 交付過幾張 Issue？'), result.stdout);
-  assert.ok(out.some(line => /^QUESTION L2 sessions unanswered .*（與 incident 擇一）$/.test(line)), result.stdout);
-  assert.ok(out.includes('ENTRY L2 unmet sessions|incident'), result.stdout);
-  assert.ok(out.includes('ENTRY L3 unmet exitCodes,orca,unattended'), result.stdout);
-  assert.ok(!out.some(line => line.startsWith('QUESTION L1 ')), result.stdout);
-  assert.ok(out.some(line => line.startsWith('EVIDENCE contributors ')), result.stdout);
-  assert.equal(out.at(-3), 'RECOMMEND L1');
-  for (const bad of ['delivered=maybe', 'nope=yes']) {
-    assert.equal(spawnSync('node', [script, root, '--answer', bad], { encoding: 'utf8', env: offline }).status, 2, bad);
-  }
-});
+  return JSON.parse(result.stdout).target;
+}
 
-test('L1 的檢查入口量得到就符合，量不到時人回答願意做也算', t => {
+test('TARGET：有 Orca 而且 tracker 在 GitHub 時，空 repo 也直接裝到 L3', t => {
   const root = repo(t);
-  const answers = ['--answer', 'useTracker=yes', '--answer', 'skills=yes'];
-  assert.deepEqual(detect(root, ...answers).entry.L1.unmet, ['check|buildCheck']);
-  assert.equal(detect(root, ...answers, '--answer', 'buildCheck=yes').recommend, 'L1');
-  assert.equal(detect(repo(t, { 'bin/check': '#!/usr/bin/env bash\n' }), ...answers).recommend, 'L1');
+  git(root, 'remote', 'add', 'origin', 'git@github.com:o/r.git');
+  const result = target(root, withOrca);
+  assert.equal(result.value, 'L3');
+  assert.deepEqual(result.evidence, ['tracker github', 'Orca 可用']);
 });
 
-test('--answer=<id>=yes 的寫法與分開寫的效果相同', t => {
+test('TARGET：沒有 Orca，或 tracker 不在 GitHub 時裝到 L2，依據寫明原因', t => {
+  const github = repo(t);
+  git(github, 'remote', 'add', 'origin', 'git@github.com:o/r.git');
+  assert.deepEqual(target(github), { value: 'L2', evidence: ['tracker github', '沒有 Orca', '常駐 pilot 需要 Orca'] });
+  const gitlab = repo(t);
+  git(gitlab, 'remote', 'add', 'origin', 'http://192.168.200.202/g/r.git');
+  assert.deepEqual(target(gitlab, withOrca), { value: 'L2', evidence: ['tracker gitlab', 'Orca 可用', '常駐 pilot 需要 GitHub tracker'] });
+  assert.equal(target(repo(t), withOrca).value, 'L2', '沒有 origin：tracker local');
+});
+
+test('TARGET：已經是 L3 的維持 L3，即使沒有 Orca；--no-station 等於目前等級', t => {
+  const root = l2(t, { 'docs/agents/issue-run.md': `${L1_FILES['docs/agents/issue-run.md']}\n## Pilot\n\n- **Pool.** x\n` });
+  git(root, 'switch', '-q', '-c', 'pilot/stage-3', 'pilot/integration');
+  git(root, 'commit', '-q', '--no-verify', '--allow-empty', '-m', 'stage batch-3');
+  assert.deepEqual(target(root), { value: 'L3', evidence: ['已經是 L3'] });
+  assert.equal(detect(repo(t, L1_FILES), '--no-station').target.value, 'L1');
+});
+
+test('文字輸出：TARGET 在 LEVEL 前一行；不再印 QUESTION、ENTRY、RECOMMEND', t => {
   const root = repo(t, L1_FILES);
-  assert.equal(detect(root, '--answer=delivered=yes', '--answer=incident=yes').recommend, 'L2');
+  git(root, 'remote', 'add', 'origin', 'git@github.com:o/r.git');
+  const result = spawnSync('node', [script, root], { encoding: 'utf8', env: withOrca });
+  assert.equal(result.status, 0, result.stderr);
+  const out = result.stdout.trim().split('\n');
+  assert.equal(out.at(-2), 'TARGET L3  # tracker github; Orca 可用');
+  assert.equal(out.at(-1), 'LEVEL L1');
+  assert.ok(!out.some(line => /^(QUESTION|ENTRY|RECOMMEND) /.test(line)), result.stdout);
 });
 
-test('一個 --answer 後面接好幾個答案、或 --answer 沒有值時 exit 2，不靜默丟掉', t => {
+test('已移除的 --answer 與其他不認得的旗標 exit 2，多個 repo 參數也是', t => {
   const root = repo(t, L1_FILES);
-  const run = (...args) => spawnSync('node', [script, ...args], { encoding: 'utf8', env: offline }).status;
-  assert.equal(run(root, '--answer', 'delivered=yes', 'incident=yes'), 2);
-  assert.equal(run(root, '--answer'), 2);
-});
-
-test('L1 的 tracker 量到 issue-tracker.md 就符合，量不到才問', t => {
-  const answers = ['--answer', 'skills=yes', '--answer', 'buildCheck=yes'];
-  assert.equal(detect(repo(t, { 'docs/agents/issue-tracker.md': 'gh\n' }), ...answers).recommend, 'L1');
-  assert.deepEqual(detect(repo(t), ...answers).entry.L1.unmet, ['tracker|useTracker']);
-  assert.equal(detect(repo(t), ...answers, '--answer', 'useTracker=yes').recommend, 'L1');
-});
-
-// detect.mjs 的 ENTRY_CONDITIONS 照 README 導入等級表的「進入條件」欄手寫；這欄改了，這個測試失敗，提醒同步是非題再更新下面的文字。
-test('README 等級表的進入條件與 detect.mjs 的是非題同一版', () => {
-  const readme = readFileSync(new URL('../docs/workflow/README.md', import.meta.url), 'utf8');
-  const cells = Object.fromEntries(readme.split('\n').map(line => line.match(/^\| \*\*(L[1-3]) [^*]+\*\* \| [^|]+ \| ([^|]+) \|/)).filter(Boolean).map(([, level, cell]) => [level, cell.trim()]));
-  assert.deepEqual(cells, {
-    L1: '用 Issue tracker（GitHub、GitLab 或本機 Markdown）交付工作；這台機器能裝 ron-skills 的 skills；repo 有（或願意先做）一條能跑完所有檢查的指令',
-    L2: '已用 L1 的 `/issue-run` 交付過幾張 Issue；而且同時開兩個以上 session，或已經發生過繞過檢查、合錯分支、狀態對不上（兩者擇一）',
-    L3: 'L2 的入口（檢查、合入、push 前 hook）都有固定的 exit code；裝了 Orca；願意讓 agent 在無人值守時跑 git',
-  });
+  const run = (...args) => spawnSync('node', [script, ...args], { encoding: 'utf8', env: offline });
+  assert.equal(run(root, '--answer', 'delivered=yes').status, 2);
+  assert.match(run(root, '--answer=delivered=yes').stderr, /不認得 --answer=delivered=yes/);
+  assert.equal(run(root, root).status, 2);
 });
