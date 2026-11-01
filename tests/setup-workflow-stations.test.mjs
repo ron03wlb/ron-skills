@@ -74,3 +74,9 @@ test('#281：04 章的 pre-push 範本在跑檢查前清掉 git 匯出給 hook �
   const template = read('docs/workflow/04-level2.md').split('\n```bash\n').find(block => block.startsWith('#!/usr/bin/env bash\n# pre-push:')) ?? '';
   assert.match(template, /unset \$\(git rev-parse --local-env-vars\); cd "\$tmp" && \$CHECK/);
 });
+
+test('#281：adr-next.mjs 只帶給用 README 記下一個編號的 repo，用檔名編號的不帶', () => {
+  const row = read(SKILL).split('\n').find(line => line.startsWith('| `adr-next.mjs` |')) ?? '';
+  assert.match(row, /docs\/adr\/README\.md/);
+  assert.match(row, /does not bring it/);
+});
