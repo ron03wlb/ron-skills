@@ -37,8 +37,8 @@ test('PR #43 的情況：CI 主版本與本機不同，exit 1', t => {
 });
 
 test('兩個 workflow 版本不同：exit 1', t => {
+  if (local === `${major}.0.0`) return t.skip('本機剛好是 .0.0，兩個版本相同');
   const result = fixture(t, { [gh('a.yml')]: workflow(local), [gh('b.yml')]: workflow(`${major}.0.0`) });
-  if (local === `${major}.0.0`) return;
   assert.equal(result.status, 1);
   assert.match(result.stdout, /^NODE_VERSION \.github\/workflows\/b\.yml 是 /m);
 });
