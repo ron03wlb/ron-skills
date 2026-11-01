@@ -30,7 +30,7 @@ macOS, WSL2, Linux（母單 #82 決策 R1-Q1；原生 Windows 不支援）。本
 
 ## Checks
 
-只有一條：`bin/check`。開發中和寫 brief、驗收條件時都只引用這條，不要自己拼 `node --test …`。單一測試檔可以用 `node --test tests/<name>.test.mjs`。行為不變的重構，以同一條 `bin/check` 在 base 上為綠當作 baseline。
+只有一條：`bin/check`。開發中和寫 brief、驗收條件時都只引用這條，不要自己拼 `node --test …`。單一測試檔可以用 `node --test tests/<name>.test.mjs`。成功時最後一行是 `CHECK_PASS tests <a>+<b>+…`，失敗時是 `CHECK_FAIL <步驟> [<失敗的測試>｜…]`（步驟是 `template-copies`、`tests`、`template-tests`、`fake-orca-macos`，或測試之前失敗的那條指令）：只讀最後一行就知道哪裡壞，不要為了找測試名稱整條重跑存 log（#267）。行為不變的重構，以同一條 `bin/check` 在 base 上為綠當作 baseline。
 
 `docs/agents/workflow-templates.json` 列出的 `scripts/` 檔是 setup-workflow 正本（`skills/engineering/setup-workflow/templates/`）的副本，不直接改，也不手動 `cp` 或手算 sha256：改正本、commit 後跑 `node skills/engineering/setup-workflow/scripts/copy-templates.mjs . --no-tests <名稱>`，它複製副本並更新清單裡的 sha256，再 commit 一次（#201：兩次 retro 都先 `cp`，第一次 `bin/check` 才在 `tests/template-copies.test.mjs` 報 sha256 不符，各多跑一輪）。
 

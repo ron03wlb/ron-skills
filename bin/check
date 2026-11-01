@@ -8,6 +8,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+# 失敗時最後一行印 `CHECK_FAIL <步驟> [<失敗的測試>｜…]`，和成功時的 CHECK_PASS 對稱：失敗的測試名稱從各組的 log 抽 `✖` 行，
+# 只看尾段就知道是哪個測試，不必整條重跑存 log 再 grep（#267：`bin/check | tail -8` 只拿到 stack trace）。<步驟> 是 $step，沒設時是失敗的指令。
+step=
+check_fail() {
+  local failed=
+  failed=$(cat "$tmp"/*.log 2>/dev/null | sed -n 's/^[[:space:]]*✖ \(.*\) ([0-9.]*m\{0,1\}s)$/\1/p' | sort -u | paste -sd'｜' -) || true
+  echo "CHECK_FAIL ${step:-$1}${failed:+ $failed}"
+}
+trap 'check_fail "$BASH_COMMAND"' ERR
 if [[ ${1:-} == --upstream ]]; then
   up=$tmp
   git clone -q --depth 1 https://github.com/mattpocock/skills.git "$up/matt"
@@ -35,13 +44,20 @@ node scripts/check-workflow-secrets.mjs
 node scripts/check-workflow-sync.mjs
 # 本 repo 與 setup-workflow 的 templates/ 都要在 macOS 與 Linux 上跑（#86）；從 repo 根掃，templates/ 也在範圍內。
 node scripts/check-portability.mjs
+# 副本與正本、清單 sha256 的比對只要幾秒，在整條測試之前先跑：沒跑 copy-templates.mjs 時不必等一分鐘才報（#267：第四次踩到）。
+# 通過時不印（整組測試裡會再跑一次），失敗時印 node 的 failing tests 段，訊息寫著該跑的 copy-templates.mjs。
+step=template-copies
+"${isolated[@]}" node --test --test-reporter=spec tests/template-copies.test.mjs > "$tmp/copies.log" 2>&1 || { sed -n '/failing tests:/,$p' "$tmp/copies.log"; false; }
+step=tests
 # 每組測試各印一行 `ℹ tests <n>`，只看尾段會漏掉前面幾組（retro a6：PR #63、#64 只記到第二組的 120），所以最後彙總成一行。
 "${isolated[@]}" node --test --test-reporter=spec --test-force-exit tests/*.test.mjs | tee "$tmp/tests.log"
 # setup-workflow 的 script 正本與測試：先列出檔名（node --test 的輸出不帶檔名），再以正本的 node-test-guarded 跑，它會補跑靜默遺失的測試。
+step=template-tests
 templates=(skills/engineering/setup-workflow/templates/*.test.mjs)
 echo "TEMPLATE_TESTS ${#templates[@]}: ${templates[*]##*/}"
 "${isolated[@]}" node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-force-exit "${templates[@]}" | tee -a "$tmp/tests.log"
 # 用到假 Orca 的測試再以 macOS 樣本跑一次（樣本見 templates/test/fake-orca.mjs 檔頭，#101）。
+step=fake-orca-macos
 orca_tests=($(grep -l orcaReplySource tests/*.test.mjs "${templates[@]}"))
 echo "FAKE_ORCA_PLATFORM=macos ${#orca_tests[@]}: ${orca_tests[*]##*/}"
 "${isolated[@]}" FAKE_ORCA_PLATFORM=macos node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-force-exit "${orca_tests[@]}" | tee -a "$tmp/tests.log"
