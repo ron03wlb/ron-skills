@@ -69,7 +69,7 @@ test('scripts/pilot-probe.mjs 跑本 repo 的 pilot-unbare.sh：bare 時還原�
   git('branch', '-q', '-M', 'main');
   git('config', 'core.bare', 'true');
 
-  // Probe 也用 gh 讀開著的 Issue（DEPS_PROSE）；暫存 repo 沒有 remote，換成回空頁的假 gh。
+  // Probe 也用 gh 讀開著的 Issue（DEPS_PROSE、池子摘要；空頁時印 POOL_EMPTY）；暫存 repo 沒有 remote，換成回空頁的假 gh。
   const bin = join(repo, '.scratch/bin');
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, 'gh'), `#!/bin/sh
@@ -81,7 +81,7 @@ echo '{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCurso
   const probeEnv = Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'ORCA_CLI_COMMAND'));
   const result = spawnSync('node', [probe, repo], { encoding: 'utf8', env: { ...probeEnv, PATH: `${bin}:${probeEnv.PATH}` } });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(result.stdout.trim().split('\n'), [`UNBARE ${repo}`, 'DIRTY ?? .scratch/']);
+  assert.deepEqual(result.stdout.trim().split('\n'), [`UNBARE ${repo}`, 'DIRTY ?? .scratch/', 'POOL_EMPTY']);
   assert.equal(git('rev-parse', '--is-bare-repository').stdout.trim(), 'false');
   assert.match(readFileSync(join(repo, '.scratch/pilot/decisions.md'), 'utf8'), /被設成 true（probe）/);
 });

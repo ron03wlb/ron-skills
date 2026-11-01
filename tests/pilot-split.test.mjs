@@ -2,7 +2,7 @@
 // pilot.md 只留每輪都用的條目，其餘拆到 adapter Pilot 段連到的其他檔；移出的條目在 pilot.md 留一行 pointer，寫明什麼情況要讀。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { pilotDocs } from './helpers/pilot-docs.mjs';
 
 const PILOT = 'docs/agents/pilot.md';
@@ -34,7 +34,12 @@ test('拆出去的每個條目在 pilot.md 都有一行 pointer，連到它所�
   }
 });
 
-test('pilot.md 的 Sources 列出 Pilot 段連到的每個檔，來源檢查才涵蓋拆出去的檔', () => {
-  const sources = pilot.match(/^- \*\*Sources\.\*\*.*$/m)?.[0] ?? '';
-  for (const path of files) assert.ok(sources.includes(`\`${path}\``), `Sources 沒列 ${path}`);
+// #240：來源改列在清單檔，Sources 條目只指向它；Sessions 指令以 --sources-file 讀同一份。
+const SOURCES_FILE = 'docs/agents/pilot-sources.txt';
+test('Sources 清單檔列出 Pilot 段連到的每個檔，來源檢查才涵蓋拆出去的檔', () => {
+  const listed = readFileSync(new URL(`../${SOURCES_FILE}`, import.meta.url), 'utf8').split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#'));
+  for (const path of ['CLAUDE.md', ...files]) assert.ok(listed.includes(path), `${SOURCES_FILE} 沒列 ${path}`);
+  const entry = name => pilot.match(new RegExp(`^- \\*\\*${name}\\.\\*\\*.*$`, 'm'))?.[0] ?? '';
+  assert.ok(entry('Sources').includes(`\`${SOURCES_FILE}\``), `Sources 沒指向 ${SOURCES_FILE}`);
+  assert.ok(entry('Sessions').includes(`--sources-file ${SOURCES_FILE}`), `Sessions 指令沒帶 --sources-file ${SOURCES_FILE}`);
 });
