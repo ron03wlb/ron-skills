@@ -38,6 +38,7 @@ Default: `implement-spec`'s integration branch and per-ticket worktrees; checkpo
 
 The commands per kind of change, and how to attribute a failure.
 Default: typecheck and the touched test files while building; the full suite once on the run's branch; attribute by rerunning on the base.
+When the check entry can run past 90 seconds, say how to run it so it is not moved to the background (in Claude Code, Bash `timeout: 600000`); any duration written here is measured, not estimated.
 Also name the baseline suites a behavior-preserving refactor runs green before its first change, and the history command for reopened or regressed Issues (tracker, git, transcripts).
 
 ## Review

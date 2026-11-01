@@ -18,7 +18,7 @@ const VIEW = fixture('issue-view');
 const hoursAgo = hours => new Date(Date.now() - hours * 3600_000).toISOString();
 
 /** 一張開著的 Issue：沒指定的欄位是空的（沒 label、沒指派、沒相依、沒留言）。 */
-function issue(number, { labels = [], assignees = [], subIssues = 0, blockedBy = [], blocking = [], commentAt, assignedAt } = {}) {
+function issue(number, { labels = [], assignees = [], subIssues = 0, blockedBy = [], blocking = [], commentAt, assignedAt, prs = [] } = {}) {
   // 數字是本 repo 的開著的單；`<owner>/<repo>#<n>` 是別的 repo 的。
   const nodes = list => list.map(ref => {
     const [, repo = 'acme/app', n] = String(ref).match(/^(?:(.+)#)?(\d+)$/);
@@ -32,6 +32,7 @@ function issue(number, { labels = [], assignees = [], subIssues = 0, blockedBy =
     blockedBy: { nodes: nodes(blockedBy) }, blocking: { nodes: nodes(blocking) },
     comments: { nodes: commentAt ? [{ createdAt: commentAt }] : [] },
     timelineItems: { nodes: assignedAt ? [{ createdAt: assignedAt }] : [] },
+    closedByPullRequestsReferences: { nodes: prs.map(state => ({ state })) },
   }, 'issue');
 }
 
@@ -88,6 +89,18 @@ else if (args[0] === 'issue' && args[1] === 'view') {
   const calls = () => { try { return readFileSync(join(dir, 'calls.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line)); } catch { return []; } };
   return { run, runAt, runBare, calls, repo };
 }
+
+// #284：#278、#281 都有開著的 PR，卻沒有指派、沒有認領留言，Probe 印 POOL_READY，只靠 coordinator 剛好多看一眼才沒重複派工。
+test('有開著的 PR 指向它的 ready 單歸到 in-review，不進池子；PR 已合併或關閉的留在 ready', () => {
+  const { run } = fakeGh({ issues: [
+    issue(278, { labels: ['enhancement', 'ready-for-agent'], prs: ['OPEN'] }),
+    issue(281, { labels: ['enhancement', 'ready-for-agent'], prs: ['MERGED'] }),
+    issue(282, { labels: ['enhancement', 'ready-for-agent'], prs: ['CLOSED'] }),
+  ] });
+  const result = run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #281 標題 281\nready #282 標題 282\nin-review #278 標題 278\n');
+});
 
 test('標 ready-for-agent、沒被 block、不是母單、沒被認領的 Issue 歸到 ready', () => {
   const { run } = fakeGh({ issues: [issue(7, { labels: ['enhancement', 'ready-for-agent'] })] });

@@ -1,8 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { equalsWords, nomatchWords, usesPipestatus } from './claude-hook-zsh-equals.mjs';
+import { equalsWords, forGlobWords, nomatchWords, unmatchedForGlobs, usesPipestatus } from './claude-hook-zsh-equals.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const HOOK = fileURLToPath(new URL('./claude-hook-zsh-equals.mjs', import.meta.url));
 const run = input => spawnSync('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8' });
@@ -100,6 +103,49 @@ test('加引號的 ref pattern、不含萬用字元的 ref、路徑裡的 issue/
   ]) {
     assert.deepEqual(nomatchWords(command), [], command);
   }
+});
+
+// session f236b357 jsonl 第 207 行的原指令：zsh 印 exit 1、連 `echo done` 都沒跑，agent 回報「沒找到 mec-wiki」，其實 `~/Documents/Workspace/mec-wiki` 存在（#284）。
+const F236 = 'for d in ~/Documents/Workspace/mec-wiki ~/Documents/Workspace/*/mec-wiki ~/mec-wiki; do [ -d "$d" ] && { echo "$d"; git -C "$d" status --short | head; ls "$d/bin/check" 2>&1; }; done 2>/dev/null; echo done';
+
+function forFixture(t) {
+  const home = mkdtempSync(join(realTmpdir(), 'zsh-for-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  mkdirSync(join(home, 'Documents/Workspace/mec-wiki'), { recursive: true });
+  writeFileSync(join(home, 'a.test.mjs'), '');
+  writeFileSync(join(home, '.hidden.test.mjs'), '');
+  return home;
+}
+
+test('for 清單裡沒有相符檔案的 glob 被抓到，帶 (N) 或真的有相符檔案的放行', t => {
+  const home = forFixture(t);
+  const opts = { cwd: home, home };
+  assert.deepEqual(forGlobWords(F236), ['~/Documents/Workspace/*/mec-wiki']);
+  assert.deepEqual(unmatchedForGlobs(F236, opts), ['~/Documents/Workspace/*/mec-wiki']);
+  for (const command of [
+    F236.replace('*/mec-wiki', '*/mec-wiki(N)'),
+    'for f in *.test.mjs; do echo "$f"; done',
+    'for f in ~/Documents/*/mec-wiki; do echo "$f"; done',
+    "for f in 'no*such'; do echo \"$f\"; done",
+    'for f in $DIR/*.nope; do echo "$f"; done',
+    'for f in {a,b}*.nope; do echo "$f"; done',
+    'setopt null_glob; for f in *.nope; do echo "$f"; done',
+    'cd /elsewhere && for f in *.nope; do echo "$f"; done',
+    'echo for f in *.nope; do echo x; done',
+    'ls *.nope; echo do',
+    'for f in a b; do ls *.nope; done',
+  ]) assert.deepEqual(unmatchedForGlobs(command, opts), [], command);
+  // 換行分隔、cd 之後的絕對路徑一樣要擋；點開頭的檔案 zsh 預設不比對。
+  assert.deepEqual(unmatchedForGlobs('for f in *.nope\ndo echo x\ndone', opts), ['*.nope']);
+  assert.deepEqual(unmatchedForGlobs('cd /x; for f in /no/such/*; do echo x; done', opts), ['/no/such/*']);
+  assert.deepEqual(unmatchedForGlobs('for f in *.hidden.test.mjs; do echo x; done', opts), ['*.hidden.test.mjs']);
+});
+
+test('原指令經 hook 被擋（exit 2），訊息提示 (N) 與 find', () => {
+  const result = bash(F236.replaceAll('~/Documents/Workspace', '/no/such/dir'));
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /no\/such\/dir\/\*\/mec-wiki\(N\)/);
+  assert.match(result.stderr, /find/);
 });
 
 // session 8d8ec702 jsonl 第 183 行的原指令：zsh 裡 `${PIPESTATUS[0]}` 展開成空字串，印 `exit=`（#238）。

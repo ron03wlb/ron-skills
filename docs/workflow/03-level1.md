@@ -113,6 +113,11 @@ Post evidence as an Issue comment (candidate SHA, commands with exit codes, find
 
 做完的樣子：PR 已開，PR 上的檢查入口 exit 0；adapter 每一段提到的指令都能在 repo 根目錄照抄執行。你合併 PR、重開 Claude Code 讓新的 hook 生效後，就可以開始第 6 步。
 
+**跑完之後下一步**（`/setup-workflow` 的報告也會寫，第 6 步起是手動做或第一次試跑時對照）：
+
+- 裝了常駐 pilot：合併 PR、重開 Claude Code，先跑 `/issue-queue` 整理池子，再跑 `/loop /issue-pilot` 循環處理，細節見 [05 章](05-level3.md)。
+- 其他情況：合併 PR、重開 Claude Code，跑 `/triage <n>` 補齊一張 Issue，再跑 `/issue-run <n>`。
+
 ### 6. 第一張 Issue
 
 開一張小而確定的單，本文寫清楚「要做的事」與可檢查的「驗收」，驗收裡的檢查只引用第 3 步的那條指令。然後分級：

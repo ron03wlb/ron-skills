@@ -4,6 +4,8 @@
 // 文字輸出每個訊號一行 `SIGNAL <name> met|missing <value>`、每項擴充一行 `EXTENSION <name> <value> ...`，
 // 每個缺口一行 `GAP <name> <原因>`（不是等級訊號，不影響 LEVEL；目前只有 ci：程式碼 host 不是 local，卻沒有 CI 檔或 CI 檔沒呼叫檢查入口），
 // 量測證據每項一行 `EVIDENCE <name> <value>`（不設門檻數字，只寫進報告），
+// 有未合入 commit 或未提交改動的 linked worktree 每個一行 `IN_FLIGHT <分支> <路徑>  # <n> commits 未合入、有未提交改動`（setup 會改 docs/agents/、scripts/、.claude/settings.json，
+// 那些分支之後併回可能衝突，只寫進報告、不擋流程，#283；--no-station 不看，--json 在 inFlight），
 // 之後 `TARGET <等級>  # <依據>`：這次要裝到哪裡，不問人、不限一次升一級（#278，規則見檔尾 installTarget），
 // 最後一行 `LEVEL <等級>`；--json 印同樣內容的物件（缺口在 gaps、證據在 evidence、目標在 target）。exit 0；不是 git repo 或旗標不認得時 exit 2。
 // 開放 Issue 數經 gh 取得，測試以 DETECT_GH 取代 gh 指令。
@@ -401,7 +403,24 @@ function installTarget() {
 }
 const target = installTarget();
 
-const result = { root, level, target, levels, signals, extensions, gaps, evidence };
+/** 進行中的 linked worktree：比對預設分支（origin/HEAD，沒有時用主 checkout 目前的分支）。 */
+function inFlightWorktrees() {
+  if (!station) return [];
+  const blocks = git('worktree', 'list', '--porcelain').split(/\n\n+/).map(block => ({
+    path: block.match(/^worktree (.*)$/m)?.[1], branch: block.match(/^branch refs\/heads\/(.*)$/m)?.[1],
+  })).filter(({ path }) => path);
+  const base = git('symbolic-ref', '--short', 'refs/remotes/origin/HEAD') || blocks[0]?.branch;
+  return blocks.slice(1).filter(({ path }) => existsSync(path)).flatMap(({ path, branch }) => {
+    const ahead = branch && base ? Number(git('rev-list', '--count', `${base}..${branch}`) || 0) : 0;
+    const dirty = Boolean(spawnSync('git', ['-C', path, 'status', '--porcelain'], { encoding: 'utf8' }).stdout?.trim());
+    if (!ahead && !dirty) return [];
+    const why = [...(ahead ? [`${ahead} commits 未合入`] : []), ...(dirty ? ['有未提交改動'] : [])];
+    return [{ branch: branch ?? '(detached)', path, ahead, dirty, evidence: why }];
+  });
+}
+const inFlight = inFlightWorktrees();
+
+const result = { root, level, target, levels, signals, extensions, gaps, evidence, inFlight };
 if (json) {
   console.log(JSON.stringify(result, null, 2));
 } else {
@@ -410,6 +429,7 @@ if (json) {
   for (const [name, l] of Object.entries(levels)) if (!l.met) console.log(`MISSING ${name} ${l.missing.join(',')}`);
   for (const [name, g] of Object.entries(gaps)) if (!g.met) console.log(`GAP ${name} ${g.evidence.join('; ')}`);
   for (const [name, e] of Object.entries(evidence)) console.log(`EVIDENCE ${name} ${e.value}  # ${e.evidence.join('; ') || '-'}`);
+  for (const w of inFlight) console.log(`IN_FLIGHT ${w.branch} ${w.path}  # ${w.evidence.join('、')}`);
   console.log(`TARGET ${target.value}  # ${target.evidence.join('; ')}`);
   console.log(`LEVEL ${level}`);
 }

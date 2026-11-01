@@ -66,3 +66,12 @@ test('測試失敗：CHECK_FAIL 帶步驟與失敗的測試名稱，重複的 �
 test('測試之前的檢查失敗：沒有 log 時 CHECK_FAIL 帶失敗的指令', t => {
   assert.equal(checkFail(t, undefined).stdout, 'CHECK_FAIL node scripts/check-links.mjs\n');
 });
+
+// #274：這幾個只讀文件的測試排在整條測試裡，改 adapter 文字要等一分鐘才知道；pilot-exceptions.md 的 allow 清單那條本機根本沒跑到，開了 PR 才在 CI 失敗。
+test('只讀文件與清單的測試在整條測試之前跑，CHECK_FAIL 帶步驟名稱', () => {
+  const rules = source.match(/^docs_rules=\((.*)\)$/m)?.[1].split(' ') ?? [];
+  for (const file of ['tests/template-copies.test.mjs', 'tests/pilot-split.test.mjs', 'tests/gh-tracker.test.mjs', 'tests/check-coordinator-permissions.test.mjs']) {
+    assert.ok(rules.includes(file), `docs_rules 沒列 ${file}`);
+  }
+  assert.ok(source.indexOf('step=docs-rules') < source.indexOf('step=tests'), 'docs-rules 要排在 tests 之前');
+});

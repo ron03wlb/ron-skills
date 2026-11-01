@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { realTmpdir } from './test/real-tmpdir.mjs';
@@ -111,4 +111,62 @@ test('用法錯誤：exit 2', t => {
     const result = spawnSync('node', [SCRIPT, ...args], { encoding: 'utf8' });
     assert.equal(result.status, 2, args.join(' '));
   }
+});
+
+// #239：Push gate 在主 checkout 跑 main 上的舊版，它不認得 batch 193 的 regression 行，印 STOP regression 193。
+// #275：為了避開它，每任 coordinator 都手算 `<stage worktree>` 路徑。主 checkout 的入口要自己轉到 stage worktree 的版本。
+function entryRepo(t, branch) {
+  const main = mkdtempSync(join(realTmpdir(), 'pilot-entry-'));
+  const stage = `${main}-stage`;
+  t.after(() => { rmSync(main, { recursive: true, force: true }); rmSync(stage, { recursive: true, force: true }); });
+  const git = (cwd, ...args) => {
+    const result = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  const here = fileURLToPath(new URL('.', import.meta.url));
+  mkdirSync(join(main, 'scripts/lib'), { recursive: true });
+  for (const name of ['pilot-pr-body.mjs', 'pilot-land.mjs', 'lib/pilot-store.mjs']) copyFileSync(join(here, name), join(main, 'scripts', name));
+  git(main, 'init', '-q', '-b', 'main');
+  git(main, 'add', '.');
+  git(main, 'commit', '-qm', 'init');
+  if (branch) {
+    git(main, 'worktree', 'add', '-q', '-b', branch, stage, 'main');
+    // stage worktree 的版本：batch 改過的新版，只要跑到就看得出來。
+    for (const name of ['pilot-pr-body.mjs', 'pilot-land.mjs']) writeFileSync(join(stage, 'scripts', name), 'console.log(`STAGE_VERSION ${process.argv.slice(2).join(" ")}`); process.exit(4);\n');
+  }
+  return { main, stage };
+}
+const entry = (main, script, ...args) => spawnSync('node', [join(main, 'scripts', script), ...args], { cwd: main, encoding: 'utf8' });
+
+test('從主 checkout 跑 pilot-pr-body 與 pilot-land sync-main，改跑 stage worktree 的版本，參數與 exit code 都轉交', t => {
+  for (const branch of ['pilot/integration', 'pilot/stage-193']) {
+    const { main } = entryRepo(t, branch);
+    const body = entry(main, 'pilot-pr-body.mjs', main, '--out', 'x.md');
+    assert.equal(body.stdout, `STAGE_VERSION ${main} --out x.md\n`, branch);
+    assert.equal(body.status, 4);
+    const sync = entry(main, 'pilot-land.mjs', 'sync-main', '--check-command', 'true');
+    assert.equal(sync.stdout, 'STAGE_VERSION sync-main --check-command true\n', branch);
+    assert.equal(sync.status, 4);
+  }
+});
+
+test('沒有 stage worktree 時照常跑本檔；pilot-land 的 batch 不轉交', t => {
+  const bare = entryRepo(t);
+  mkdirSync(join(bare.main, '.scratch/pilot'), { recursive: true });
+  const body = entry(bare.main, 'pilot-pr-body.mjs', bare.main);
+  assert.equal(body.stdout, 'STOP no-merged-batch\n');
+  assert.equal(body.status, 4);
+  const { main } = entryRepo(t, 'pilot/integration');
+  assert.doesNotMatch(entry(main, 'pilot-land.mjs', 'nosuch').stdout, /STAGE_VERSION/);
+});
+
+test('stage worktree 的副本自己跑時不再轉交（不會無限遞迴）', t => {
+  const { main, stage } = entryRepo(t, 'pilot/integration');
+  mkdirSync(join(main, '.scratch/pilot'), { recursive: true });
+  copyFileSync(join(main, 'scripts/pilot-pr-body.mjs'), join(stage, 'scripts/pilot-pr-body.mjs'));
+  mkdirSync(join(stage, 'scripts/lib'), { recursive: true });
+  const result = spawnSync('node', [join(stage, 'scripts/pilot-pr-body.mjs'), main], { cwd: main, encoding: 'utf8' });
+  assert.equal(result.stdout, 'STOP no-merged-batch\n');
+  // 主 checkout 的入口轉過去，結果相同。
+  assert.equal(entry(main, 'pilot-pr-body.mjs', main).stdout, 'STOP no-merged-batch\n');
 });
