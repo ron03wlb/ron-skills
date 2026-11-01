@@ -29,7 +29,20 @@ test('tmpdir：測試檔直接呼叫 os 的 tmpdir 違規，realTmpdir 通過；
   const bad = "import { tmpdir } from 'node:os';\nconst dir = tmpdir( );\n"; // portability-ok: 違規 fixture
   const result = scan(repoFixture(t), { 'tests/a.test.mjs': bad, 'test/helper.mjs': bad, 'lib/b.test.js': bad, 'scripts/build.mjs': bad });
   assert.deepEqual(violations(result), ['lib/b.test.js:2: tmpdir', 'test/helper.mjs:2: tmpdir', 'tests/a.test.mjs:2: tmpdir']);
-  passes(scan(repoFixture(t), { 'tests/a.test.mjs': "import { realTmpdir } from './helpers/real-tmpdir.mjs';\nconst dir = realTmpdir();\n" }));
+  passes(scan(repoFixture(t), { 'tests/a.test.mjs': "import { realTmpdir } from './helpers/real-tmpdir.mjs';\nconst dir = mkdtempSync(join(realTmpdir(), 'a-'));\n" }));
+});
+
+test('realtmpdir-dir：測試把 realTmpdir() 整個當自己的暫存目錄違規，mkdtempSync、cwd 與 join 通過；非測試檔不管', t => {
+  // retro 1101c 的真實錯誤：claude-hook-language.test.mjs 往系統暫存目錄建 .scratch，第二次跑 EEXIST。
+  const bad = "  const dir = realTmpdir();\n  mkdirSync(join(dir, '.scratch'));\n"; // portability-ok: 違規 fixture
+  const result = scan(repoFixture(t), { 'tests/a.test.mjs': bad, 'scripts/build.mjs': bad });
+  assert.deepEqual(violations(result), ['tests/a.test.mjs:1: realtmpdir-dir']);
+  passes(scan(repoFixture(t), { 'tests/a.test.mjs': [
+    "const dir = mkdtempSync(join(realTmpdir(), 'hook-language-'));",
+    'run(cmd, { cwd: realTmpdir() });',
+    "const p = join(realTmpdir(), 'x');",
+    'export const realTmpdir = () => realpathSync(tmpdir()); // portability-ok: helper 本身',
+  ].join('\n') + '\n' }));
 });
 
 test('註解裡提到的寫法不算違規；引號裡的 # 與 // 不是註解', t => {
