@@ -4,7 +4,7 @@
 //   --check-command <指令>  Regression 指令，在 stage worktree 以 sh 執行（預設 bin/check）；
 //   --integration <分支>    整合分支（預設 pilot/integration）；stage 分支一律是 pilot/stage-<key>；
 //   --main <分支>           sync-main 要跟上的 origin/<分支>（預設 main）；
-//   --resolver <模組>       可選的專案衝突解法模組，相對本檔所在 checkout 的根（本檔上一層的上一層，即 repo 根），或絕對路徑；不存在就是用法錯誤。
+//   --resolver <模組>       可選的專案衝突解法模組，相對本檔所在目錄的上一層（副本在 scripts/，就是 repo 根），或絕對路徑；不存在就是用法錯誤。
 // 全部在 stage worktree 做（分支是整合分支或 pilot/stage-* 的那個 worktree；沒有就用 Orca 建 pilot-stage，再跑旁邊的 pilot-unbare.sh 當 Bare guard）：
 //   Stage       stage worktree 要乾淨；`switch -C pilot/stage-<key> <integration tip>`，依號碼 `merge --no-ff` 每個 done 成員。
 //               衝突時，衝突檔先交給 resolver 的 resolveFile 解（沒有 resolver 就解不了），最後重算戳記檔：

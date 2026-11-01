@@ -1,4 +1,4 @@
-// 合併中途只有戳記檔衝突時重算戳記（#173）：land.mjs（setup-workflow 正本）在 PR 和 main 衝突時用；pilot-land.mjs 的 Stage 經 scripts/pilot-resolve.mjs 用它重算流程站戳記（#245）。
+// 合併中途只有戳記檔衝突時重算戳記（#173）：land.mjs（setup-workflow 正本）在 PR 和 main 衝突時用；副本清單交給 pilot-land.mjs（正本）的 restampManifest、流程站戳記交給 scripts/pilot-resolve.mjs 的 restamp，和 pilot-land 的 Stage 用同一套重算（#245）。
 // land.mjs 的契約：repo 有 scripts/restamp.mjs 時，衝突檔全在 STAMP_FILES 裡就呼叫 restamp(tree, files)；它解完並 git add，回傳 true，
 // 解不了回傳 false（呼叫端 merge --abort）。只處理 files 裡的戳記檔，沒衝突的不動。
 //   scripts/workflow-doc-sync.json     交給 pilot-resolve.mjs 的 restamp：取目標分支（--theirs）版本，有 build-workflow-site.mjs 就重產 docs/workflow/site/，
