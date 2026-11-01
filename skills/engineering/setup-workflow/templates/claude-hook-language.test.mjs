@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { isHarnessText, isMostlyEnglish, isSyntheticEntry, lastTurnTexts, textsBeforeTool } from './claude-hook-language.mjs';
+import { isHarnessText, isMostlyEnglish, isSyntheticEntry, lastTurnTexts, simplifiedChars, textsBeforeTool } from './claude-hook-language.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-language.mjs', import.meta.url));
@@ -14,6 +14,29 @@ const user = content => JSON.stringify({ type: 'user', message: { role: 'user', 
 const toolResult = () => JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] } });
 const assistant = text => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } });
 const toolUse = id => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input: {} }] } });
+
+// session f236b357 jsonl 第 610 行的原句（#284）。
+const SIMPLIFIED_LINE = '这一輪也沒事：池子是空的，沒有 worker 在跑，也沒有開著的 gate。下次 18:45 醒來再看。';
+
+test('simplifiedChars：簡體字命中；繁體、繁簡同形、程式碼與「…」引用不算', () => {
+  assert.deepEqual(simplifiedChars(SIMPLIFIED_LINE), ['这']);
+  for (const text of [
+    '這一輪也沒事：池子是空的。',
+    '皇后住在公里之外，查一下後面的裡面。',
+    '三段文字用了簡體的「这」開頭。',
+    '`这` 在程式碼裡不算。',
+  ]) assert.deepEqual(simplifiedChars(text), [], text);
+});
+
+test('Stop：本輪有簡體字的文字段時 exit 2，要求改用繁體', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'language-simplified-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 't.jsonl');
+  writeFileSync(path, `${JSON.stringify({ type: 'user', message: { content: 'x' } })}\n${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: SIMPLIFIED_LINE }] } })}\n`);
+  const result = hook(JSON.stringify({ hook_event_name: 'Stop', transcript_path: path }));
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /語言檢查：本輪有 1 段使用者可見文字用了簡體字（这）/);
+});
 
 test('isMostlyEnglish：英文進度行命中', () => {
   // 2026-10-20 實例

@@ -9,7 +9,8 @@
 // （最近 100 則系統紀錄內）；`blocks` 連結是 GitLab Premium 以上才有，Free 版沒有 blocked 桶。
 // 一張只歸一個桶，依序取第一個符合的：parent（有 sub-issue；GitLab 是有子項目）、human（`ready-for-human`，指派給人不算認領）、
 // retro-candidates（`retro-candidates` label：retro 的候選清單，等 `/retro-collect`；被 `/retro-collect` 認領、指派之後也歸這裡，不混進 claimed、stale，#270）、
-// stale（已指派，超過 --stale-hours（預設 24）沒有新留言或新指派）、claimed（已指派）、blocked（有開著的 blocked_by）、
+// stale（已指派，超過 --stale-hours（預設 24）沒有新留言或新指派）、claimed（已指派）、
+// in-review（有開著的 PR 以 closing reference 指向這張單：單獨跑的 /issue-run 做完、沒留指派也沒留認領的單，不能再派一次，#284；只看 GitHub，GitLab 沒有這個桶）、blocked（有開著的 blocked_by）、
 // needs-info、needs-triage、ready（`ready-for-agent`）、unlabeled。所以 ready 桶就是池子。過期的認領只歸到 stale，不自動釋放。
 // 輸出順序：ready 桶先印，依 `retro` label 的先（retro 判定太複雜、交給 worker 的單）、`priority` label 的先、直接或間接 block 最多開著的單的先（關鍵路徑）、號碼小的先；
 // 其餘依上面的桶順序、桶內號碼小的先。
@@ -44,7 +45,7 @@ const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-h
 const LABEL_FIELDS = 'labels(first:50){nodes{name}}';
 const BLOCKED_BY_FIELDS = 'blockedBy(first:50){nodes{number state repository{nameWithOwner}}}';
 /** pool() 分桶與排序要的 GitHub Issue 欄位；pilot-probe 的查詢也引用這一段，bucketOf 多要欄位時只改這裡（#240）。 */
-export const POOL_FIELDS = `number title ${LABEL_FIELDS} assignees(first:20){nodes{login}} subIssuesSummary{total} ${BLOCKED_BY_FIELDS} blocking(first:50){nodes{number state repository{nameWithOwner}}} comments(last:1){nodes{createdAt}} timelineItems(last:1,itemTypes:[ASSIGNED_EVENT]){nodes{... on AssignedEvent{createdAt}}}`;
+export const POOL_FIELDS = `number title ${LABEL_FIELDS} assignees(first:20){nodes{login}} subIssuesSummary{total} ${BLOCKED_BY_FIELDS} blocking(first:50){nodes{number state repository{nameWithOwner}}} comments(last:1){nodes{createdAt}} timelineItems(last:1,itemTypes:[ASSIGNED_EVENT]){nodes{... on AssignedEvent{createdAt}}} closedByPullRequestsReferences(first:10,includeClosedPrs:false){nodes{state}}`;
 const QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS}}}}}`;
 const CHILDREN_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number subIssues(first:100){nodes{number title state ${LABEL_FIELDS} ${BLOCKED_BY_FIELDS} comments(last:1){nodes{body}}}}}}}`;
 // GitLab 的 Issue 是 work item：label、指派、子項目、相依與留言都在 widgets 裡；notes 分成留言（comments）與系統紀錄（activity，指派紀錄在這裡）。
@@ -78,6 +79,7 @@ export function fromWorkItem({ iid, title, widgets }) {
     blockedBy: { nodes: links('is_blocked_by') }, blocking: { nodes: links('blocks') },
     comments: { nodes: notes.comments?.nodes ?? [] },
     timelineItems: { nodes: (notes.activity?.nodes ?? []).filter(({ body }) => /^assigned to /.test(body)) },
+    closedByPullRequestsReferences: { nodes: [] },
   };
 }
 
@@ -178,6 +180,8 @@ export function bucketOf(issue, { staleHours = 24, now = Date.now() } = {}) {
   if (labels.has('ready-for-human')) return 'human';
   if (labels.has('retro-candidates')) return 'retro-candidates';
   if (issue.assignees.nodes.length) return now - lastActivity(issue) > staleHours * 3600_000 ? 'stale' : 'claimed';
+  // `includeClosedPrs:false` 仍會回已合併的 PR（#281 的 PR #282 回 MERGED），所以要看 state。
+  if (openNodes(issue.closedByPullRequestsReferences).length) return 'in-review';
   if (openNodes(issue.blockedBy).length) return 'blocked';
   if (labels.has('needs-info')) return 'needs-info';
   if (labels.has('needs-triage')) return 'needs-triage';
@@ -185,7 +189,7 @@ export function bucketOf(issue, { staleHours = 24, now = Date.now() } = {}) {
   return 'unlabeled';
 }
 
-const BUCKETS = ['ready', 'parent', 'human', 'retro-candidates', 'stale', 'claimed', 'blocked', 'needs-info', 'needs-triage', 'unlabeled'];
+const BUCKETS = ['ready', 'parent', 'human', 'retro-candidates', 'stale', 'claimed', 'in-review', 'blocked', 'needs-info', 'needs-triage', 'unlabeled'];
 
 /** 直接或間接被這張 block、而且還開著的 Issue 數；沿本 repo 列表裡的 blocking 邊走，別的 repo 或不在列表裡的開著的單只算一張。 */
 function blockingCount(issue, byNumber, repo) {

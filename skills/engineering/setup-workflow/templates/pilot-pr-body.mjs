@@ -10,14 +10,16 @@
 //   沒有 merged batch 印 `STOP no-merged-batch`；某個 batch 最後的 `regression:` 行（略過 sync-main 行）不是「它的 staged SHA 加 `exit 0`」、
 //   或有 sync-main 行不是 `exit 0`，印 `STOP regression <key>`（不寫檔）。
 // exit：0 成功；4 STOP；2 用法錯誤。
+// 從主 checkout 的副本跑時交給 stage worktree 的同名腳本（lib/pilot-store.mjs 的 runInStageWorktree，#239、#275）。
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { storeDir, tableCells, usage } from './lib/pilot-store.mjs';
+import { runInStageWorktree, storeDir, tableCells, usage } from './lib/pilot-store.mjs';
 
 const USAGE = '用法：node scripts/pilot-pr-body.mjs <checkout> [--out <file>]';
 const SIGNATURE = '🤖 Generated with [Claude Code](https://claude.com/claude-code)';
 
 const args = process.argv.slice(2);
+runInStageWorktree(import.meta.url, args);
 const [checkout] = args;
 const out = args[1] === '--out' ? args[2] : undefined;
 if (!checkout || checkout.startsWith('--') || !(args.length === 1 || (args.length === 3 && out && !out.startsWith('--')))) usage(USAGE);

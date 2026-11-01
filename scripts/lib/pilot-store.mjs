@@ -1,6 +1,30 @@
 // pilot 存檔（issue-pilot 的 PILOT-STORE.md）正本 script 共用的小工具：存檔目錄、時間格式、用法錯誤，以及 requests.md、gates.md 的解析（probe 與 pilot-request、pilot-gate 共用）。
 // 存檔一律在 coordinator checkout 的 `.scratch/pilot/`；checkout 由呼叫者傳入，不寫死任何專案路徑。
-import { join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { existsSync, realpathSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * Push gate 的入口轉交：從主 checkout 的 `scripts/<x>.mjs` 跑時，改跑 stage worktree（分支是整合分支或 pilot/stage-*）的同名腳本，以它的 exit code 結束。
+ * stage worktree 停在整合分支，就是要推的內容，推的 batch 改了這支腳本時 main 上的舊版會誤判（#239）；coordinator 不必自己從 porcelain 算路徑（#275：每任都手算，
+ * awk 只比 pilot/integration 時，停在 pilot/stage-* 會撈空）。不是主 checkout 的副本（已在 stage worktree、正本、測試）、沒有 stage worktree、或那邊沒有這支腳本時直接返回，照常跑本檔。
+ * @param {string} scriptUrl 呼叫端的 import.meta.url
+ * @param {string[]} args 原樣轉交的參數
+ * @param {{integration?: string}} [options] 整合分支名稱
+ */
+export function runInStageWorktree(scriptUrl, args, { integration = 'pilot/integration' } = {}) {
+  const list = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' });
+  if (list.status !== 0) return;
+  const trees = list.stdout.split(/\n\n+/).map(block => ({ path: block.match(/^worktree (.*)$/m)?.[1], branch: block.match(/^branch refs\/heads\/(.*)$/m)?.[1] })).filter(({ path }) => path);
+  const self = realpathSync(fileURLToPath(scriptUrl));
+  const main = trees[0]?.path;
+  if (!main || !existsSync(main) || self !== join(realpathSync(main), 'scripts', basename(self))) return;
+  const stage = trees.slice(1).find(({ path, branch }) => existsSync(path) && (branch === integration || branch?.startsWith('pilot/stage-')));
+  const target = stage && join(stage.path, 'scripts', basename(self));
+  if (!target || !existsSync(target)) return;
+  process.exit(spawnSync(process.execPath, [target, ...args], { stdio: 'inherit' }).status ?? 1);
+}
 
 export const storeDir = checkout => join(resolve(checkout), '.scratch/pilot');
 

@@ -320,3 +320,25 @@ test('已移除的 --answer 與其他不認得的旗標 exit 2，多個 repo 參
   assert.match(run(root, '--answer=delivered=yes').stderr, /不認得 --answer=delivered=yes/);
   assert.equal(run(root, root).status, 2);
 });
+
+// #283：對 investing 重跑 setup 時，batch-i114-130-161、issue-122 等進行中的 worktree 是手動跑 `git worktree list` 才看到的。
+test('有未合入 commit 或未提交改動的 linked worktree 印 IN_FLIGHT，乾淨且已合入的不印', t => {
+  const root = repo(t);
+  const tree = name => join(root, '..', `${root.split('/').pop()}-${name}`);
+  t.after(() => { for (const name of ['ahead', 'dirty', 'done']) rmSync(tree(name), { recursive: true, force: true }); });
+  for (const name of ['ahead', 'dirty', 'done']) git(root, 'worktree', 'add', '-q', '-b', `issue/${name}`, tree(name), 'main');
+  write(tree('ahead'), { 'a.md': 'a\n' });
+  git(tree('ahead'), 'add', '.');
+  git(tree('ahead'), 'commit', '-qm', 'a');
+  write(tree('dirty'), { 'b.md': 'b\n' });
+
+  const { inFlight } = detect(root);
+  assert.deepEqual(inFlight.map(({ branch, ahead, dirty }) => [branch, ahead, dirty]).sort(), [['issue/ahead', 1, false], ['issue/dirty', 0, true]]);
+
+  const text = spawnSync('node', [script, root], { encoding: 'utf8', env: offline });
+  assert.equal(text.status, 0, text.stderr);
+  assert.match(text.stdout, /^IN_FLIGHT issue\/ahead \S+-ahead {2}# 1 commits 未合入$/m);
+  assert.match(text.stdout, /^IN_FLIGHT issue\/dirty \S+-dirty {2}# 有未提交改動$/m);
+  assert.doesNotMatch(text.stdout, /IN_FLIGHT issue\/done/);
+  assert.deepEqual(detect(root, '--no-station').inFlight, []);
+});

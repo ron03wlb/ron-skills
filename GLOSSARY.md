@@ -57,7 +57,7 @@ _Avoid_: epic、map、總單
 _Avoid_: 關聯單、mirror issue
 
 **池子**:
-開著、可以直接派工的 Issue：標 `ready-for-agent`，而且不是母單、沒被 block、沒被認領。`orca-session-send.mjs --queue` 的 queue 是 Claude Code 排到下一輪的訊息，與池子無關。
+開著、可以直接派工的 Issue：標 `ready-for-agent`，而且不是母單、沒被 block、沒被認領、沒有開著的 PR 指向它。`orca-session-send.mjs --queue` 的 queue 是 Claude Code 排到下一輪的訊息，與池子無關。
 _Avoid_: queue、backlog、待辦
 
 **認領**:
