@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 // /setup-workflow 的複製：把 setup-workflow 正本連同執行期相依與測試複製到目標 repo 的 scripts/，
 // 並在 docs/agents/workflow-templates.json 記錄每個副本的正本路徑、ron-skills commit 與 sha256（體檢以此判斷分歧）。
-// 用法：node copy-templates.mjs <repo> [--dry-run] [--no-tests] [--yes] <template>...（template 為 templates/ 下的檔名，可省略 .mjs）
+// 用法：node copy-templates.mjs <repo> [--dry-run] [--no-tests] [--yes] <template>...（template 為 templates/ 下的檔名，可省略 .mjs；
+//       .sh 正本保留執行權限，並帶上它以 "$(dirname "$0")/<檔名>" 呼叫的同目錄腳本；<名稱>.test.mjs 是它的測試）
 //       node copy-templates.mjs <repo> --verify
 // 輸出每檔一行 `COPY|SAME|UPDATE|DIFF <副本路徑>`（UPDATE、DIFF 後接 unified diff；UPDATE 是 sha256 與清單記錄一致、沒手改過的舊副本，直接覆寫），最後一行：
 //   PLANNED <n>（--dry-run）、COPIED <n>、CONFIRM_OVERWRITE <路徑...>（exit 3：既有檔內容不同且與清單記錄不一致，人確認後加 --yes 重跑）、
 //   VERIFIED <n>（--verify 全部一致；有 MISMATCH／MISSING 或沒有清單時 exit 1）。參數或旗標錯誤、正本不存在或有未提交改動時 exit 2。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -46,9 +47,10 @@ const sourceRoot = git('rev-parse', '--show-toplevel').stdout.trim();
 
 const isDir = path => existsSync(join(TEMPLATES, path)) && statSync(join(TEMPLATES, path)).isDirectory();
 
-/** 檔案引用的同目錄相對檔（import、new URL），以及以 'fixtures/<名稱>' 讀取的整個 fixtures 目錄。 */
+/** 檔案引用的同目錄相對檔（import、new URL；shell 是 "$(dirname "$0")/<檔名>"），以及以 'fixtures/<名稱>' 讀取的整個 fixtures 目錄。 */
 function references(file) {
   const text = readFileSync(join(TEMPLATES, file), 'utf8');
+  if (file.endsWith('.sh')) return [...text.matchAll(/"\$\(dirname "\$0"\)\/([\w.-]+)"/g)].map(m => join(dirname(file), m[1]));
   const refs = [...text.matchAll(/(?:from\s+|import\s+|new URL\(\s*)'(\.\/[^']+)'/g)].map(m => join(dirname(file), m[1]));
   for (const [, dir] of text.matchAll(/'(fixtures\/[^'/]+)'/g)) {
     const base = join(dirname(file), dir);
@@ -62,12 +64,12 @@ const visit = file => {
   if (files.has(file)) return;
   if (!existsSync(join(TEMPLATES, file)) || isDir(file)) fail(`正本不存在：templates/${file}`);
   files.add(file);
-  if (file.endsWith('.mjs')) references(file).forEach(visit);
+  if (file.endsWith('.mjs') || file.endsWith('.sh')) references(file).forEach(visit);
 };
 for (const name of names) {
-  const file = name.endsWith('.mjs') ? name : `${name}.mjs`;
+  const file = /\.(mjs|sh)$/.test(name) ? name : `${name}.mjs`;
   visit(file);
-  const testFile = file.replace(/\.mjs$/, '.test.mjs');
+  const testFile = file.replace(/\.(mjs|sh)$/, '.test.mjs');
   if (!flags.has('--no-tests') && existsSync(join(TEMPLATES, testFile))) visit(testFile);
 }
 
@@ -95,6 +97,7 @@ if (diffs.length && !flags.has('--yes')) { console.log(`CONFIRM_OVERWRITE ${diff
 for (const { file, template, dest, target } of plan) {
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, readFileSync(join(TEMPLATES, file)));
+  chmodSync(target, statSync(join(TEMPLATES, file)).mode & 0o777);
   const commit = git('log', '-1', '--format=%H', '--', join(TEMPLATES, file)).stdout.trim();
   manifest.copies[dest] = { template, commit, sha256: sha256(target) };
 }

@@ -17,7 +17,7 @@ const SHA = 'a'.repeat(40);
 // 主 checkout（origin 是暫存的 bare repo，不碰網路）＋ `.scratch/pilot/` ＋ 假 Orca CLI。
 // `screens` 是 handle → `terminal read --screen` 的 `{ status, tail }`；不在表裡的 handle 回 terminal_handle_stale。
 // 假 Orca 會把 stdin 讀光並記錄讀到的內容：真實 Orca CLI 會吃掉 stdin，逐一讀成員時後面的成員就讀不到。
-// `guard` 是專案自備 Bare guard（pilot-unbare.sh）的內容：有給時把 probe 複製到暫存的 scripts/，guard 放在它旁邊。
+// `guard` 是 Bare guard（pilot-unbare.sh）的內容：有給時把 probe 複製到暫存的 scripts/，guard 放在它旁邊。
 // PATH 上的假 gh：`repo view` 回 acme/app，`api graphql` 回一頁 `issues`（GraphQL 的 issue 節點），`issues` 是 null 時 gh 失敗；每次呼叫記進 gh.log。
 // `world` 是 tracker 上的 Issue（{ number, state, labels, parent, body }）：給了它時假 gh 從它算出 GraphQL 節點（parent、subIssuesSummary），
 // 並把 `issue edit <n> --add-label/--remove-label`、`issue reopen <n>` 寫回同一份檔，所以 --apply 之後再跑會看到改過的狀態。

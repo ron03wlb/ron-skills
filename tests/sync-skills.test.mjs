@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
-import { hasSystemBash, systemBashPath } from './helpers/bash32.mjs';
+import { hasSystemBash, systemBashPath } from '../skills/engineering/setup-workflow/templates/test/bash32.mjs';
 
 const root = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const sync = join(root, 'bin/sync-skills');

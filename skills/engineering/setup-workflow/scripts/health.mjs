@@ -2,7 +2,7 @@
 // /setup-workflow 的體檢：比對已導入專案的 adapter、文件與實際使用，回報落差，不寫任何檔。
 // 用法：node health.mjs [<repo>]（repo 預設 cwd；不收任何旗標）
 // 每個落差一行 `FINDING <類別> <說明>  # <證據>`，類別為 level（等級標示錯誤）、divergence（副本與正本分歧，兩邊都改了時下接縮排的 diff）、cross-repo（隱性跨 repo 依賴）、
-// missing-section（adapter 缺 `## Platforms`，或程式碼 host 不是 local 卻缺 `## Delivery`）、platform（Platforms 列了 macOS 時，scripts/、bin/、git hook 違反可攜性規則）；
+// unwired-hook（清單裡的 claude-hook-* 副本沒掛在 .claude/settings.json 的 hook）、missing-section（adapter 缺 `## Platforms`，或程式碼 host 不是 local 卻缺 `## Delivery`）、platform（Platforms 列了 macOS 時，scripts/、bin/、git hook 違反可攜性規則）；
 // 最後一行 `HEALTHY`（exit 0）或 `FINDINGS <n>`（exit 1）。掃描時讀不到的檔案在 stderr 印 `health: 略過讀不到的 <path>：<code>` 後略過。
 // 帶旗標、不是 git repo、detect.mjs 或 check-portability.mjs 失敗時 exit 2，沒有最後一行。
 import { spawnSync } from 'node:child_process';
@@ -104,6 +104,19 @@ for (const [path, entry] of Object.entries(copies)) {
   const kind = copySha === canonicalSha ? 'stale-record' : copyChanged && canonicalChanged ? 'both-modified' : copyChanged ? 'local-modified' : 'canonical-newer';
   const diff = kind === 'both-modified' ? lines(spawnSync('git', ['diff', '--no-index', '--', copy, template], { encoding: 'utf8' }).stdout) : [];
   finding('divergence', `${kind} ${path} ${ADVICE[kind]}`, `${MANIFEST} commit ${typeof entry.commit === 'string' && entry.commit ? entry.commit : '(未記錄)'} sha256 ${entry.sha256.slice(0, 12)}、副本 ${copySha.slice(0, 12)}、正本 ${entry.template} ${canonicalSha.slice(0, 12)}`, diff);
+}
+
+// 沒掛上的 hook：清單裡的 claude-hook-* 副本（測試檔除外）要出現在 .claude/settings.json 某個 hook 的 command，否則複製了也不會生效（#246）。
+const settingsPath = '.claude/settings.json';
+let hookCommands = [];
+if (isFile(join(root, settingsPath))) {
+  try {
+    const hooks = JSON.parse(read(settingsPath))?.hooks ?? {};
+    hookCommands = Object.values(hooks).flat().flatMap(group => group?.hooks ?? []).map(hook => hook?.command).filter(command => typeof command === 'string');
+  } catch { /* 格式錯誤的 settings 由 check-claude-settings 把關，這裡當成沒有 hook */ }
+}
+for (const path of Object.keys(copies).filter(path => /^claude-hook-.*(?<!\.test\.mjs)$/.test(basename(path)))) {
+  if (!hookCommands.some(command => command.includes(path))) finding('unwired-hook', `${path} 沒有掛在任何 hook：照 setup-workflow Templates 那一列掛進 ${settingsPath}`, settingsPath);
 }
 
 // 缺段落：adapter 存在時，`## Platforms` 一律要有；程式碼 host 不是 local（origin 指向網路主機）時還要 `## Delivery`。
