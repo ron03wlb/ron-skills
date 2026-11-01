@@ -796,26 +796,26 @@ test('--fresh 不帶 --note：checkpoint 沒有 review-only 段時讀成員行 h
 });
 
 test('--fresh 不帶 --note：分頁尾段讀不到（Orca 失敗、找不到起訖行、沒有 handle、沒有 ORCA_CLI_COMMAND）時仍是原提示句', t => {
-  for (const [label, tail, setup] of [
+  for (const [label, tail, setup, { noCli = false } = {}] of [
     ['Orca 失敗', 'fail'],
     ['沒有結果行', TAIL.slice(0, 6)],
     ['結果行是別的 Issue', [...TAIL.slice(0, 6), `  DONE 47 ${SHA}`]],
+    ['結果行是號碼相近的 Issue', [...TAIL.slice(0, 6), `  DONE 246 ${SHA}`, `  STOP 460 findings`]],
     ['沒有 Review 行', TAIL.slice(3)],
     ['沒有 handle', TAIL, fx => {
       const file = join(fx.repo, '.scratch/pilot/batch-23-46.md');
       writeFileSync(file, readFileSync(file, 'utf8').replace('| term_46 |', '|  |'));
     }],
-    ['沒有 ORCA_CLI_COMMAND', TAIL],
+    ['沒有 ORCA_CLI_COMMAND', TAIL, null, { noCli: true }],
   ]) {
     const fx = drafted(t, { review: false });
     setup?.(fx);
     const orca = tailCli(fx, tail);
-    const cli = label === '沒有 ORCA_CLI_COMMAND' ? '' : orca.cli;
-    const result = fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch'], { ORCA_CLI_COMMAND: cli });
+    const result = fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch'], { ORCA_CLI_COMMAND: noCli ? '' : orca.cli });
     assert.equal(result.status, 0, `${label}：${result.stdout}${result.stderr}`);
     const draft = readFileSync(join(fx.repo, '.scratch/pilot/fresh-46.md'), 'utf8');
     assert.match(draft, /checkpoint 沒有 review-only 段，補 worker 分頁尾段/, label);
     assert.doesNotMatch(draft, /Review 結果|分頁尾段（/, label);
-    if (label === '沒有 handle' || label === '沒有 ORCA_CLI_COMMAND') assert.equal(orca.reads(), '', label);
+    if (noCli || setup) assert.equal(orca.reads(), '', label);
   }
 });
