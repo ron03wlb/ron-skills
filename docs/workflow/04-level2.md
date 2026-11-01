@@ -78,7 +78,7 @@ git hook 擋得住人，但 agent 可以加 `--no-verify` 跳過它；要連這�
 合併前跑單一檢查入口、把結果當作 CI 證據的地方有兩個：**遠端**（GitHub Actions、GitLab pipeline）是預設；**本機**只在遠端沒啟動時用（帳務停擺、沒有 runner，`land.mjs` 印 `STOP ci-not-started`）。遠端跑了而失敗，不能改用本機。程式碼 host 是 `local`（沒有 remote）時只有本機。
 
 - **遠端.** `/setup-workflow` 升到 L2 時以它的 `scripts/ci.mjs` 依程式碼 host 寫最小設定：GitHub 寫 `.github/workflows/checks.yml`、GitLab 寫 `.gitlab-ci.yml`，`push` 與 PR／MR 都跑單一檢查入口，Node 版本鎖成跑 setup 那台機器的版本。專案已經有 CI 檔就不動，只檢查有沒有呼叫單一檢查入口，沒有就回報缺口；`detect.mjs` 也把它印成 `GAP ci`，但不算等級訊號。
-- **本機.** 合入前在要合入的 tip SHA、工作樹乾淨時跑單一檢查入口，PR 留言附 SHA 與結果行。GitHub 上用 setup-workflow 的 `land.mjs`：`node scripts/land.mjs <branch> --local-checks <sha> --check-command '<單一檢查入口>'`，它在 tip 的暫時 detached worktree 跑檢查。不用 pre-push hook、`act` 或 `gitlab-runner exec` 代替。
+- **本機.** 合入前在要合入的 tip SHA、工作樹乾淨時跑單一檢查入口，PR 留言附 SHA 與結果行。GitHub 上用 setup-workflow 的 `land.mjs`：`node scripts/land.mjs <branch> --local-checks <sha> --check-command '<單一檢查入口>'`，它在 tip 的暫時 detached worktree 跑檢查。`land.mjs` 合進 repo 的預設分支（讀 `origin/HEAD`，或帶 `--main <branch>`），預設分支叫 `master` 也不必改名。不用 pre-push hook、`act` 或 `gitlab-runner exec` 代替。
 
 ## 兩段式結案
 
