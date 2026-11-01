@@ -166,7 +166,7 @@ else fail('unknown');
 `);
   chmodSync(gh, 0o755);
   chmodSync(cli, 0o755);
-  const close = (args = [key, '100', mergeSha]) => spawnSync('node', [script, ...args], {
+  const close = (args = [key, '100', mergeSha]) => spawnSync('node', [script, ...args, '--repo', REPO], {
     cwd: repo, encoding: 'utf8', input: 'leftover-line\n', timeout: 60000,
     env: { ...env, PATH: `${join(temp, 'bin')}:${env.PATH}`, ORCA_CLI_COMMAND: cli },
   });
