@@ -74,6 +74,51 @@ test('來源的條目改了：透傳 SOURCE_CHANGED 與縮排的條目行；重�
   assert.match(run(dir, [...ARGS, 'AGENTS.md', 'docs/agents/pilot.md']).stdout, /^REGISTERED [^\n]*\nRECORDED 2\n$/);
 });
 
+// #240：adapter 新增來源時，coordinator 逐個抄位置參數會漏掉新拆出的來源。
+test('--sources-file：清單檔的來源和位置參數合併記錄；記錄只有 6 個、清單列 10 個時印新加的 4 行 SOURCE_CHANGED', t => {
+  const dir = checkout(t);
+  const names = Array.from({ length: 10 }, (_, i) => `docs/s${i}.md`);
+  mkdirSync(join(dir, 'docs'), { recursive: true });
+  for (const name of names) writeFileSync(join(dir, name), `${name}\n`);
+  assert.equal(run(dir, [...ARGS, ...names.slice(0, 6)]).status, 0);
+  const list = join(dir, 'pilot-sources.txt');
+  writeFileSync(list, `# pilot 的來源\n\n${names.join('\n')}\n`);
+  const result = run(dir, [...ARGS, '--sources-file', list]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`^REGISTERED [^\\n]*\\n${names.slice(6).map(name => `SOURCE_CHANGED ${name}\\n`).join('')}RECORDED 10\\n$`));
+  assert.match(run(dir, [...ARGS, 'AGENTS.md', '--sources-file', list]).stdout, /\nSOURCE_CHANGED AGENTS\.md\nRECORDED 11\n$/);
+});
+
+test('--sources-file：相對路徑以 checkout 為準，~ 開頭展開成 $HOME', t => {
+  const dir = checkout(t);
+  const home = mkdtempSync(join(realTmpdir(), 'pilot-register-home-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  writeFileSync(join(home, 'skill.md'), 'skill\n');
+  mkdirSync(join(dir, 'docs'), { recursive: true });
+  writeFileSync(join(dir, 'docs/sources.txt'), 'AGENTS.md\n  # 縮排的註解也略過\n~/skill.md\n');
+  const result = run(dir, [...ARGS, '--sources-file', 'docs/sources.txt'], { HOME: home });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`\\nSOURCE_CHANGED AGENTS\\.md\\nSOURCE_CHANGED ${join(home, 'skill.md').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\nRECORDED 2\\n$`));
+});
+
+test('--sources-file 指的檔不存在：STOP sources-file <path>、exit 4、不寫 coordinator 與 sessions.md', t => {
+  const dir = checkout(t);
+  const result = run(dir, [...ARGS, 'AGENTS.md', '--sources-file', 'docs/missing.txt']);
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, 'STOP sources-file docs/missing.txt\n');
+  assert.ok(!existsSync(store(dir, 'coordinator')));
+  assert.ok(!existsSync(store(dir, 'sessions.md')));
+});
+
+test('已退役又缺清單檔：先判退役，只印 STOP retired', t => {
+  const dir = checkout(t);
+  mkdirSync(join(dir, '.scratch/pilot'), { recursive: true });
+  writeFileSync(store(dir, 'sessions.md'), `2026-10-30T20:43:41+08:00   handoff from-session ${SESSION} → terminal term_1   reason 合入 2 批\n`);
+  const result = run(dir, [...ARGS, '--sources-file', 'docs/missing.txt']);
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, 'STOP retired\n');
+});
+
 test('sessions.md 記著這個 session 交接出去：已退役，印 STOP retired、exit 4、不改 coordinator', t => {
   const dir = checkout(t);
   mkdirSync(join(dir, '.scratch/pilot'), { recursive: true });

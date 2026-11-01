@@ -20,7 +20,7 @@
 //            <repo> 空白或帶 tab、換行，或上限不是正整數時是用法錯誤（exit 2）。
 //   --apply、--status 都不改其他輸出行，stdout 與不帶旗標時相同（APPLY_MISS、PARENT_APPLY_FAILED 除外）。
 //   Bare guard：同目錄有 pilot-unbare.sh（專案自備，`<checkout> <時機>`，還原時印 UNBARE）時先跑它（時機 probe），沒有就略過。
-// stdout 每行一項，沒事的項目不印（全部正常且沒有 batch 時不輸出）：
+// stdout 每行一項，沒事的項目不印（全部正常且沒有 batch 時只印池子那一行）：
 //   主 checkout：UNBARE <checkout>（Bare guard 剛還原 core.bare）｜NOT_MAIN <分支>｜HOLD｜DIRTY <git status --short 的一行>
 //   adapter：ADAPTER_AHEAD <檔案> [<名稱>[,<名稱>…]]（整合分支上的 adapter 比主分支新：docs/agents/issue-run.md，以及它 `## Pilot` 段連到的同目錄 .md；
 //            `.md` 的改動都在 `- **<名稱>.**` 條目裡時附改動的條目名稱，依名稱排序、以 `,` 分隔，名稱本身可能有空格（不能有 `,`）；刪掉或改名的條目也列（取改動前的名稱）；
@@ -30,6 +30,8 @@
 //               DEPS_PROSE <n> last new #<m> [#<k>…]（內文寫「最後做」卻沒號碼，#m… 比 blocked_by 最新一張（空時比自己）還新、開著、不在 blocked_by，
 //                 retro-candidates、母單與已在等 #n 的單不算；要等哪些由 coordinator 判斷）｜DEPS_PROSE <n> last ok（同上但沒有這種新單，不必處理）｜
 //               DEPS_PROSE_FAILED <錯誤>（在主 checkout 跑 gh 失敗，其他檢查照跑；同一次查詢的 PARENT_* 也不印）
+//   池子（#240，每次都印一行）：POOL_EMPTY（沒有 ready 單）｜POOL_READY <n>...（ready 桶的單，照同目錄 issue-pool.mjs 的 pool() 分桶與排序，
+//               略過已在開著的 batch checkpoint（current 不是 closed）成員列裡的 Issue）｜POOL_FAILED <錯誤>（同一次查詢 gh 失敗，與 DEPS_PROSE_FAILED 同一個錯誤）
 //   母單（#164）：PARENT_LABEL <n>（開著、或已關閉卻有開著子單的母單，沒有 `parent` label 或還掛 triage label）｜
 //               PARENT_REOPEN <n>（開著的子單的母單 #n 在同一個 repo、已關閉）；各依號碼、每張一次
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
@@ -60,8 +62,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gateLines, isOpenRequest, now, openGates, parksAllPush, tableCells } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 import { ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
+import { POOL_FIELDS, pool } from './issue-pool.mjs';
 
-const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{number body createdAt labels(first:50){nodes{name}} blockedBy(first:50){nodes{number createdAt repository{nameWithOwner}}} subIssuesSummary{total} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
+// 池子摘要要的欄位取 issue-pool 的 POOL_FIELDS（#240）；同名的 blockedBy 在 GraphQL 裡合併成一份選取。
+const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
 const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const TRACKER = join(dirname(fileURLToPath(import.meta.url)), 'gh-tracker.mjs');
@@ -306,10 +310,19 @@ function applyParentFixes(checkout, fixes) {
 }
 
 /**
- * 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE 與 PARENT_* 行（同一次查詢），以及 PARENT_* 對應的 tracker 寫入（不在這裡寫）；
- * gh 失敗時只有一行 DEPS_PROSE_FAILED，不中斷其他檢查。
+ * 池子摘要（#240）：ready 桶裡不在 `batched`（開著的 batch checkpoint 的成員）的 Issue，照 issue-pool 的排序印 `POOL_READY <n>...`，
+ * 一張都沒有時 `POOL_EMPTY`。分桶與排序只用 issue-pool.mjs 的 pool()，不另寫一份。
  */
-export function trackerLines(checkout) {
+export function poolLine(issues, repo, batched = new Set()) {
+  const ready = pool(issues, { repo }).filter(({ issue, bucket }) => bucket === 'ready' && !batched.has(String(issue.number))).map(({ issue }) => issue.number);
+  return ready.length ? `POOL_READY ${ready.join(' ')}` : 'POOL_EMPTY';
+}
+
+/**
+ * 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE、PARENT_* 與池子摘要行（同一次查詢），以及 PARENT_* 對應的 tracker 寫入（不在這裡寫）；
+ * gh 失敗時只有 DEPS_PROSE_FAILED 與 POOL_FAILED 兩行，不中斷其他檢查。
+ */
+export function trackerLines(checkout, batched = new Set()) {
   try {
     const repo = gh(checkout, 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim();
     const [owner, name] = repo.split('/');
@@ -320,9 +333,9 @@ export function trackerLines(checkout) {
       ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
     }
     const { lines, fixes } = parentFixes(issues, repo);
-    return { lines: [...depsProse(issues, repo), ...lines], fixes };
+    return { lines: [...depsProse(issues, repo), ...lines, poolLine(issues, repo, batched)], fixes };
   } catch (error) {
-    return { lines: [`DEPS_PROSE_FAILED ${error.message}`], fixes: [] };
+    return { lines: [`DEPS_PROSE_FAILED ${error.message}`, `POOL_FAILED ${error.message}`], fixes: [] };
   }
 }
 
@@ -672,7 +685,10 @@ export function statusReport(checkout, { integration = 'pilot/integration', main
 
 export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false, capacity } = {}) {
   const pilot = join(checkout, '.scratch/pilot');
-  const tracker = trackerLines(checkout);
+  // 開著的 batch checkpoint 的成員：Pool 不再挑它們，池子摘要也略過。
+  const batched = new Set(batchFiles(pilot).map(file => parseBatch(readFileSync(join(pilot, file), 'utf8')))
+    .filter(({ current }) => !/^closed\b/.test(current)).flatMap(({ members }) => members.map(({ n }) => n)));
+  const tracker = trackerLines(checkout, batched);
   const out = [...checkoutState(checkout, main), ...adapterAhead(checkout, { integration, main }), ...openRows(pilot), ...tracker.lines];
   if (apply) out.push(...applyParentFixes(checkout, tracker.fixes));
   const landing = [];

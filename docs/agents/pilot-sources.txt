@@ -1,0 +1,13 @@
+# pilot coordinator 的來源清單（pilot.md 的 Sources 條目；pilot-register.mjs --sources-file 讀這份）。
+# 一行一個來源：相對主 checkout 的路徑或絕對路徑，~ 開頭展開成 $HOME；空行與 # 開頭的行略過。
+# adapter 新增或拆出 coordinator 要讀的檔（例如 Pilot 段新連到的 pilot-*.md）時，在這裡加一行。
+CLAUDE.md
+docs/agents/issue-run.md
+docs/agents/pilot.md
+docs/agents/pilot-after-merge.md
+docs/agents/pilot-conflict.md
+docs/agents/pilot-exceptions.md
+docs/agents/pilot-retro-collect.md
+skills/engineering/issue-pilot/SKILL.md
+skills/engineering/issue-pilot/PILOT-STORE.md
+~/.claude/skills/poteto-mode/SKILL.md
