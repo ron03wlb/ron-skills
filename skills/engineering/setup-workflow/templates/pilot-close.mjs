@@ -3,7 +3,8 @@
 // setup-workflow 正本：/issue-pilot coordinator 的 Close（adapter Pilot 段的 Close；結果行見 skills/engineering/issue-pilot/PILOT-STORE.md 的 Canonical scripts）：
 // batch 的 merge 進到 origin/<主分支> 之後收掉每個 done 成員。專案值都從參數來：
 //   --repo [<host>/]<owner>/<repo>  tracker 的 GitHub 專案（同 adapter ## Tracker 段；沒寫主機是 github.com）：讀 Issue、母單與證據留言的 PR 網址都用它；
-//   --main <分支>                   主分支（預設 main）。
+//   --main <分支>                   主分支（預設 main）；
+//   --protect-path <路徑>           可重複：快轉主分支會刪掉這些路徑底下的追蹤檔時印 STOP <key> main，不動主 checkout（只在主 checkout 有工作副本的私人檔，#286）。
 // 先跑 Bare guard（旁邊的 pilot-unbare.sh；上一輪可能中斷在 Orca 設成 bare 之後），確認 merge SHA 已在 origin/<主分支>、主 checkout 的主分支跟上它（落後就 --ff-only），再對每個成員依序做
 // evidence（證據留言）→ counterpart（對應單交接）→ close（關 Issue）→ terminal → worktree（rm 後跑 Bare guard）→ branch（`branch -d`）
 // → remote（刪遠端分支）→ parent（子單全部結束就留言關母單）。每一步先看做過沒有，做過就 SKIP，所以中斷後可以重跑。
@@ -20,7 +21,7 @@
 // 對應單的交接內容要人寫：coordinator 先寫 <主 checkout>/.scratch/pilot/counterpart-<n>.md，內容要有 merge SHA 與 `<owner>/<repo>#<n>`，
 // 重跑時才認得出已經留過言。
 //
-// 用法：node scripts/pilot-close.mjs <batch key> <pr> <merge sha> --repo [<host>/]<owner>/<repo> [--main <分支>]（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
+// 用法：node scripts/pilot-close.mjs <batch key> <pr> <merge sha> --repo [<host>/]<owner>/<repo> [--main <分支>] [--protect-path <路徑>]...（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
 // stdout：每一步一行 `DONE <n> <step>` 或 `SKIP <n> <step>`；counterpart 有對應單交給人時，先每張印 `HANDOFF <n> <ref> ! <指令>`，
 //   該步印 `MANUAL <n> counterpart` 並往下做；其他任何一步失敗都印 `STOP <n> <step> <原因>` 並停下
 //   （開頭 main 那步的 <n> 是 batch key；checkpoint 讀不到或沒有 done 成員只印 STOP <key> checkpoint；
@@ -32,9 +33,9 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const USAGE = '用法：node scripts/pilot-close.mjs <batch key> <pr> <merge sha> --repo [<host>/]<owner>/<repo> [--main <分支>]（需要 ORCA_CLI_COMMAND）';
+const USAGE = '用法：node scripts/pilot-close.mjs <batch key> <pr> <merge sha> --repo [<host>/]<owner>/<repo> [--main <分支>] [--protect-path <路徑>]...（需要 ORCA_CLI_COMMAND）';
 /** 專案值：命令列解析完填入。host 是 tracker 的 GitHub 主機，repo 是 <owner>/<repo>，main 是主分支。 */
-const config = { host: 'github.com', repo: '', main: 'main' };
+const config = { host: 'github.com', repo: '', main: 'main', protect: [] };
 /** gh 的 --repo 值：github.com 只寫 <owner>/<repo>，其他主機加在前面。 */
 const ghRepo = () => (config.host === 'github.com' ? config.repo : `${config.host}/${config.repo}`);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -109,6 +110,10 @@ function syncMain(main, sha) {
   const behind = gitIn(main, 'merge-base', '--is-ancestor', upstream, branch).status;
   if (behind === 0) return 'SKIP';
   if (behind !== 1) throw new Stop('main', `merge-base exit ${behind}`);
+  if (config.protect.length) {
+    const deleted = must('main', 'git', ['-C', main, 'diff', '--name-only', '--diff-filter=D', branch, upstream, '--', ...config.protect]).trim();
+    if (deleted) throw new Stop('main', `快轉會刪掉被保護的路徑 ${deleted.split('\n').join(' ')}，交給人處理`);
+  }
   must('main', 'git', ['-C', main, 'merge', '--ff-only', upstream]);
   return 'DONE';
 }
@@ -271,6 +276,10 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const options = {};
   let bad = false;
   for (let i = 0; i < rest.length; i += 2) {
+    if (rest[i] === '--protect-path' && rest[i + 1]) {
+      config.protect.push(rest[i + 1]);
+      continue;
+    }
     const name = { '--repo': 'repo', '--main': 'main' }[rest[i]];
     if (!name || name in options || rest[i + 1] === undefined) bad = true;
     else options[name] = rest[i + 1];
