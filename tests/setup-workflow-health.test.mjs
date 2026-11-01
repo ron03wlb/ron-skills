@@ -432,3 +432,15 @@ test('hook 副本沒掛在 .claude/settings.json 的任何 hook 指令時回報 
   assert.equal(unwired.length, 1, lines.join('\n'));
   assert.match(unwired[0], /^FINDING unwired-hook scripts\/claude-hook-unbare\.sh .*# \.claude\/settings\.json$/);
 });
+
+// #281：mec-wiki 試跑時，複製進來的範本測試檔裡的示範路徑被報成 cross-repo。沒改過的副本內容屬於正本，由 ron-skills 自己負責。
+test('隱性跨 repo 依賴：清單記錄而且沒改過的副本不掃；改過的副本照掃', t => {
+  const sample = '#!/usr/bin/env node\nconst demo = "~/code/spay2/scripts/x.mjs";\n';
+  const { lines } = health(withCopies(t, {
+    'scripts/pristine.test.mjs': [sample, sample],
+    'scripts/edited.mjs': [sample, 'old\n'],
+  }));
+  const crossRepo = lines.filter(line => line.startsWith('FINDING cross-repo'));
+  assert.equal(crossRepo.length, 1, lines.join('\n'));
+  assert.match(crossRepo[0], /# scripts\/edited\.mjs:2$/);
+});
