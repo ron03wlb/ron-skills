@@ -19,7 +19,7 @@
 //            $PILOT_MACHINE_WORKER_CAP（預設 4）時最後印 OVER_CAP <合計> <上限>。只回報，不改派工；沒帶時不碰帳本。
 //            <repo> 空白或帶 tab、換行，或上限不是正整數時是用法錯誤（exit 2）。
 //   --apply、--status 都不改其他輸出行，stdout 與不帶旗標時相同（APPLY_MISS、PARENT_APPLY_FAILED 除外）。
-//   Bare guard：同目錄有 pilot-unbare.sh（正本，Orca＋WSL 時帶入，`<checkout> <時機>`，還原時印 UNBARE）時先跑它（時機 probe），沒有就略過。
+//   Bare guard：同目錄有 pilot-unbare.sh（setup-workflow 正本，`<checkout> <時機>`，還原時印 UNBARE）時先跑它（時機 probe），沒有就略過。
 // stdout 每行一項，沒事的項目不印（全部正常且沒有 batch 時只印池子那一行）：
 //   主 checkout：UNBARE <checkout>（Bare guard 剛還原 core.bare）｜NOT_MAIN <分支>｜HOLD｜DIRTY <git status --short 的一行>
 //   adapter：ADAPTER_AHEAD <檔案> [<名稱>[,<名稱>…]]（整合分支上的 adapter 比主分支新：docs/agents/issue-run.md，以及它 `## Pilot` 段連到的同目錄 .md；
@@ -79,7 +79,7 @@ function git(checkout, ...args) {
   return spawnSync('git', ['-C', checkout, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
-/** Bare guard：同目錄有 pilot-unbare.sh（正本，Orca＋WSL 時帶入）才跑（Orca 從 WSL 操作 worktree 會把主 checkout 設成 bare），傳回它印的行。 */
+/** Bare guard：同目錄有 pilot-unbare.sh（setup-workflow 正本）才跑（Orca 從 WSL 操作 worktree 會把主 checkout 設成 bare），傳回它印的行。 */
 function bareGuard(checkout, when) {
   if (!existsSync(GUARD)) return [];
   const unbare = spawnSync(GUARD, [checkout, when], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
