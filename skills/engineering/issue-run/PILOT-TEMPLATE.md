@@ -12,7 +12,7 @@ The script commands and result lines are in ~/.claude/skills/issue-pilot/PILOT-S
 -->
 # Pilot: {{repo}}
 
-Project settings for the user-level `/issue-pilot` coordinator (`/loop /issue-pilot`). Every section of [issue-run.md](issue-run.md) still applies under the pilot; this file holds only what differs. Every file under `.scratch/pilot/` (batch checkpoints included) follows the `issue-pilot` skill's `PILOT-STORE.md` (`~/.claude/skills/issue-pilot/PILOT-STORE.md`), which also lists each script's commands and result lines; only this repo's values are written here. Every script named below is a setup-workflow template copy in `scripts/`.
+Project settings for the user-level `/issue-pilot` coordinator (`/loop /issue-pilot`). Every section of `docs/agents/issue-run.md` still applies under the pilot; this file holds only what differs. Every file under `.scratch/pilot/` (batch checkpoints included) follows the `issue-pilot` skill's `PILOT-STORE.md` (`~/.claude/skills/issue-pilot/PILOT-STORE.md`), which also lists each script's commands and result lines; only this repo's values are written here. Every script named below is a setup-workflow template copy in `scripts/`.
 
 - **Coordinator checkout.** `<main checkout>` below is this repo's main checkout: the parent of `git rev-parse --path-format=absolute --git-common-dir` (the same answer from any worktree). Substitute the absolute path when running. `.scratch/pilot/` lives there and is gitignored. Orca commands are written `"$ORCA_CLI_COMMAND"`; without that variable, report to the human instead of guessing a command name.
 
@@ -20,7 +20,7 @@ Project settings for the user-level `/issue-pilot` coordinator (`/loop /issue-pi
 
 - **Sessions.** On becoming coordinator, and at the start of every Reconcile before the Probe, run in the main checkout `node scripts/pilot-register.mjs <main checkout> --name <session name from ListAgents> --loop yes|no --sources-file docs/agents/pilot-sources.txt` (pid and session default to `$CLAUDE_PID`, `$CLAUDE_CODE_SESSION_ID`). `STOP retired` means this session already handed off: do nothing else. Treat its `SOURCE_CHANGED` and `SOURCE_MISSING` lines per Sources.
 
-- **Sources.** The list is [pilot-sources.txt](pilot-sources.txt), one path per line. Reread each file the Sessions command prints as `SOURCE_CHANGED` (only the entries or headings listed under it, when it lists any) or `SOURCE_MISSING`. When this adapter starts pointing at another file the coordinator must read, add it to the list in the same commit.
+- **Sources.** The list is `docs/agents/pilot-sources.txt`, one path per line. Reread each file the Sessions command prints as `SOURCE_CHANGED` (only the entries or headings listed under it, when it lists any) or `SOURCE_MISSING`. When this adapter starts pointing at another file the coordinator must read, add it to the list in the same commit.
 
 - **Decisions, requests, hold.** Append to `decisions.md` only with `node scripts/pilot-decision.mjs <main checkout> --decision <text> --reason <text> --evidence <text> --result <text>` (no `|` in a field; `--repair` when the table looks broken). List and mark requests with `node scripts/pilot-request.mjs <main checkout> list`, `apply <line no> [--note <text>]`, `decline <line no> --reason <text>`. Set, clear and show the hold with `node scripts/pilot-hold.mjs <main checkout> set <reason>`, `clear`, `show`.
 
