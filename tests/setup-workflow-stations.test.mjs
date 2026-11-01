@@ -80,3 +80,18 @@ test('#281：adr-next.mjs 只帶給用 README 記下一個編號的 repo，用�
   assert.match(row, /docs\/adr\/README\.md/);
   assert.match(row, /does not bring it/);
 });
+
+test('#281：L3 的 pilot.md 從 PILOT-TEMPLATE.md 複製填值，範本的每個 {{placeholder}} 都在開頭註解裡說明', () => {
+  const adapter = steps(read(SKILL)).find(step => step.name === 'Adapter');
+  assert.match(adapter.text, /PILOT-TEMPLATE\.md/);
+  assert.match(adapter.text, /pilot-sources\.txt/);
+  const template = read('skills/engineering/issue-run/PILOT-TEMPLATE.md');
+  const [comment, body] = template.split('-->');
+  const used = new Set([...body.matchAll(/\{\{([^}]+)\}\}/g)].map(match => match[1]));
+  assert.ok(used.size > 0);
+  for (const name of used) assert.ok(comment.includes(`{{${name}}}`), `開頭註解沒說明 {{${name}}}`);
+  for (const entry of ['Sessions', 'Probe', 'Dispatch', 'Stage, regression, integrate', 'Push gate', 'Close', 'Handoff']) {
+    assert.match(body, new RegExp(`^- \\*\\*${entry}\\.\\*\\*`, 'm'), `範本缺 ${entry}`);
+  }
+  assert.match(read('skills/engineering/issue-run/ADAPTER.md'), /\[PILOT-TEMPLATE\.md\]\(PILOT-TEMPLATE\.md\)/);
+});
