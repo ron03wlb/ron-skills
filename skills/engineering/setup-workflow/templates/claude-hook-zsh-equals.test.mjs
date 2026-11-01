@@ -2,9 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { equalsWords, nomatchWords, usesPipestatus } from '../scripts/claude-hook-zsh-equals.mjs';
+import { equalsWords, nomatchWords, usesPipestatus } from './claude-hook-zsh-equals.mjs';
 
-const HOOK = fileURLToPath(new URL('../scripts/claude-hook-zsh-equals.mjs', import.meta.url));
+const HOOK = fileURLToPath(new URL('./claude-hook-zsh-equals.mjs', import.meta.url));
 const run = input => spawnSync('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8' });
 const bash = command => run({ tool_name: 'Bash', tool_input: { command } });
 
