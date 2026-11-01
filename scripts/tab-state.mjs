@@ -7,7 +7,7 @@
 //
 // 用法：node scripts/tab-state.mjs <處理中|待 Retro|待關閉> [--topic <主題>]
 // --topic 把標題整個設成 `<狀態>｜<主題>`，不讀目前標題：session 開頭用它，記錄裡可能還是同一個 handle 上一個 session 的主題（#141）；
-// 之後的狀態切換不帶 --topic。
+// 之後換階段、動作、Issue、⏸，或離開處理中要拿掉階段與動作時也帶 --topic；只換狀態前綴時不帶（標題格式見 issue-run ADAPTER.md 的 Tab state 段）。
 // stdout：改名成功時印 `TAB_STATE <新標題>`。
 // exit：0 已改名，或沒有 ORCA_TERMINAL_HANDLE、Orca 呼叫失敗（都不輸出）；2 狀態不合法、--topic 沒有值。
 // ORCA_CLI_COMMAND 沒設時用 PATH 上的 `orca`。

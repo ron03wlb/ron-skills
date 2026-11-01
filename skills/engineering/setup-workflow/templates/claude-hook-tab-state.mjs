@@ -111,7 +111,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         const title = await currentTitle(ctx, handle);
         if (!hasState(title)) {
           process.stderr.write(`分頁狀態：目前分頁標題「${title}」開頭沒有狀態前綴（${STATES.map(s => `${s}｜`).join('、')}）。`
-            + '請用 `node scripts/tab-state.mjs <狀態>` 補上前綴，或照 Orca session titles 的格式以 `orca terminal rename` 改名；'
+            + '請用 `node scripts/tab-state.mjs <狀態>` 補上前綴，或以 `node scripts/tab-state.mjs <狀態> --topic "<主題>"` 照 adapter Tab state 段的標題格式重設；'
             + '還在處理（含等使用者回答或核准）用處理中，工作已交付、等使用者跑 /retro 用待 Retro，/retro 已結束用待關閉。\n');
           process.exit(2);
         }
