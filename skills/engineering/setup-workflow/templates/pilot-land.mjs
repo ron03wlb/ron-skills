@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// copy-templates: requires orca-worktree-create.mjs pilot-unbare.sh
 // setup-workflow 正本：/issue-pilot coordinator 的 Stage → Regression → hold 檢查 → Integrate，一個指令完成（adapter Pilot 段的 Stage、Regression、Integrate；
 // 結果行與 checkpoint 格式見 skills/engineering/issue-pilot/PILOT-STORE.md 的 Canonical scripts）。專案值都從參數來：
 //   --check-command <指令>  Regression 指令，在 stage worktree 以 sh 執行（預設 bin/check）；

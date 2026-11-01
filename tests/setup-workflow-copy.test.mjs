@@ -226,3 +226,38 @@ test('#277：真正的範本 check-portability 與 issue-pool 可以 dry-run，i
     rmSync(temp, { recursive: true, force: true });
   }
 });
+
+test('#281：開頭的 `// copy-templates: requires <檔名>...` 宣告一定要帶上的同目錄檔；沒宣告的 join(here, …) 選用檔不帶', t => {
+  const { source, target, copier } = fixture(t);
+  const templates = join(source, 'skills/engineering/setup-workflow/templates');
+  write(templates, {
+    'd.mjs': "#!/usr/bin/env node\n// copy-templates: requires e.mjs guard.sh\nconst opt = join(here, 'optional.mjs');\n",
+    'e.mjs': '// e\n',
+    'guard.sh': '#!/usr/bin/env bash\n',
+    'optional.mjs': '// 旁邊有才用\n',
+  });
+  git(source, 'add', '.');
+  git(source, 'commit', '-qm', 'requires');
+  const result = run(copier, target, '--dry-run', 'd');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), ['COPY scripts/d.mjs', 'COPY scripts/e.mjs', 'COPY scripts/guard.sh', 'PLANNED 3']);
+  write(templates, { 'f.mjs': '// copy-templates: requires missing.mjs\n' });
+  git(source, 'add', '.');
+  git(source, 'commit', '-qm', 'missing');
+  const missing = run(copier, target, '--dry-run', 'f');
+  assert.equal(missing.status, 2);
+  assert.match(missing.stderr, /正本不存在：templates\/missing\.mjs/);
+});
+
+test('#281：真正的 pilot-close 帶上 pilot-counterpart 與 pilot-unbare.sh，不帶只支援 GitHub 的 gh-tracker', () => {
+  const temp = mkdtempSync(join(realTmpdir(), 'setup-workflow-copy-close-'));
+  try {
+    git(temp, 'init', '-q', '-b', 'main');
+    const result = run(script, temp, '--dry-run', '--no-tests', 'pilot-close.mjs', 'pilot-land.mjs');
+    assert.equal(result.status, 0, result.stderr);
+    for (const file of ['pilot-counterpart.mjs', 'pilot-unbare.sh', 'orca-worktree-create.mjs']) assert.match(result.stdout, new RegExp(`^COPY scripts/${file}$`, 'm'), file);
+    assert.doesNotMatch(result.stdout, /gh-tracker/);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
