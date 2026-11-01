@@ -21,6 +21,8 @@ const option = (name, short, long) => new RegExp(`${cmd(name)}${OPTS}\\s+(?:${sh
 // quoted：比對路徑字面值的規則在 shell 檔看保留引號內容的那一行（路徑常寫在引號裡），其他規則看清掉引號內容的那一行。
 const RULES = [
   { id: 'tmpdir', kinds: ['test'], pattern: /(?<![\w$])tmpdir\(\s*\)/, hint: 'macOS 的 tmpdir() 是 symlink，測試改用 realTmpdir()' },
+  // realTmpdir() 回傳共用的系統暫存目錄本身，不是新目錄；整個指派給變數再往裡寫，第二次跑就撞上上一次留下的檔（retro 1101c：EEXIST .scratch）。
+  { id: 'realtmpdir-dir', kinds: ['test'], pattern: /=\s*realTmpdir\(\s*\)\s*(?:;|$)/, hint: "realTmpdir() 是共用的系統暫存目錄，改用 mkdtempSync(join(realTmpdir(), '<前綴>-'))" },
   { id: 'proc', kinds: ['js', 'shell'], quoted: true, pattern: /\/proc\//, hint: 'macOS 沒有 /proc，改用 process 或 ps 的資訊' },
   { id: 'declare-A', kinds: ['bash'], pattern: new RegExp(`${cmd('declare|typeset|local')}${OPTS}\\s+-[A-Za-z]*A`), hint: 'macOS 的 bash 3.2 沒有關聯陣列，改寫成 node' },
   // sed 的 script 常帶空白與 -i 字樣，引號內整段當參數的一部分（--expression='…'）。
