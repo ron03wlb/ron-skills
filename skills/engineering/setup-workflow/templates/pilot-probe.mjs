@@ -53,6 +53,9 @@
 //          兩個成員改到同一個檔，或整合分支自成員的 merge-base 以來也改了它改的檔；`.md` 檔的改動都在 `- **<名稱>.**` 條目裡時細到條目，
 //          相接的行與同一處的插入也算，git 合併時會衝突；同一對只印一行，後面列重疊的條目名稱，#176：條目不帶檔名、不同檔的同名條目只列一次，
 //          名稱可能有空格，以 `**`…`.**` 切分；數量固定寫 files，1 也是）
+//   落後主分支：BEHIND_MAIN <落後數> <origin/主分支 SHA>（整合分支沒有包含 origin/<主分支>，例如 retro 直接合進主分支之後；
+//          比的是本機最後一次 fetch 的 origin ref，有 merged／pushed 的 batch 時在這一輪的 fetch 之後比；兩個 ref 有一個不存在時不印。
+//          #268：沒有這一行時 coordinator 要自己算 rev-list 才知道要 sync-main，漏掉就在舊 tip 上 stage，到 Push gate 才 STOP behind-main）
 //   全機上限：OVER_CAP <合計> <上限>（帶 --capacity 時，見上）
 // exit：0 印完；2 用法錯誤；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS、PARENT_APPLY_FAILED 等）。
 import { spawnSync } from 'node:child_process';
@@ -649,6 +652,15 @@ function age(time, at) {
   return minutes >= 60 ? `${Math.floor(minutes / 60)}h${minutes % 60}m` : `${minutes}m`;
 }
 
+/** 整合分支沒有包含 origin/<主分支> 時的 `BEHIND_MAIN <落後數> <SHA>`（#268）；任一個 ref 不存在或沒有落後時回空陣列。 */
+export function behindMain(checkout, { integration = 'pilot/integration', main = 'main' } = {}) {
+  const [tip, upstream] = [rev(checkout, `refs/heads/${integration}`), rev(checkout, `refs/remotes/origin/${main}`)];
+  if (!tip || !upstream || git(checkout, 'merge-base', '--is-ancestor', upstream, tip).status === 0) return [];
+  const count = git(checkout, 'rev-list', '--count', `${tip}..${upstream}`);
+  if (count.status !== 0) throw new Error(`git rev-list exit ${count.status}：${count.stderr.trim()}`);
+  return [`BEHIND_MAIN ${count.stdout.trim()} ${upstream}`];
+}
+
 /**
  * `--status`：status.md 的內容（PILOT-STORE.md）。沒關的 batch 與成員、開著的 gate（id、Issue、開了多久）、開著的 request、
  * origin/<主分支>、<主分支>、<整合分支> 的 SHA（本機的 ref，origin 是最後一次 fetch 的結果）。
@@ -732,6 +744,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
       if (parked) out.push(`PUSH_PARKED ${parking.id} ${parked} batches`);
     }
   }
+  out.push(...behindMain(checkout, { integration, main }));
   if (capacity) {
     const { total, cap } = report(ledgerPath(), capacity, running);
     if (total > cap) out.push(`OVER_CAP ${total} ${cap}`);
