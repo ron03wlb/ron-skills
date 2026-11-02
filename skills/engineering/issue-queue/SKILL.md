@@ -3,6 +3,8 @@ name: issue-queue
 description: "Show the human the tracker pool by bucket with the in-progress count against the worker cap, refine Issues with the human's confirmation, and flag parent Issues whose children may have lost a detail: /issue-queue. Use only when the user runs /issue-queue or /loop /issue-queue (the loop invokes it through the Skill tool); never on your own initiative."
 ---
 
+**Repo skill first.** When the repo has `.claude/skills/issue-queue/SKILL.md`, a user-level skill shadows it under the same name: Read that file and follow it with these arguments, in place of everything below.
+
 The human's view of the pool. `/issue-pilot` and `/issue-run --pool` take Issues from it unattended; `/issue-queue` shows the human what is in it, what is stuck, and what still needs a decision, and changes the tracker only when the human says so. Run it by hand or under `/loop /issue-queue`.
 
 Project facts come from the repo adapter `docs/agents/issue-run.md`: its **Tracker** section gives the tracker commands (on GitHub, `gh` reads as below; writes through the adapter's wrapper when it names one), its **Readiness** section the ready state, its **Pilot** section (or the file it points to) the worker cap, its **Pool** section the claim timeout and category labels, and its **Issue queue** section whether parent hints are on. The buckets come only from the repo's `scripts/issue-pool.mjs`, the same list the pilot and `--pool` read. When the repo has no `scripts/issue-pool.mjs`, stop and tell the human to run `/setup-workflow`; never bucket Issues another way.
