@@ -4,11 +4,13 @@
 // 用法：bin/sync-skills [--check | --list]
 //   --check  只檢查 overlay 能否套用在目前的上游 checkout，不改任何連結。
 //   --list   列出目前可用的 skill：user/model、名稱、來源（含目前目錄的 .claude/skills 專案 skill）。
+// 同步時也把 hooks/ 的檔案連到 HOOK_DIR：沒版控的全域 hook 只存在一台機器，換機就失效。實體檔內容相同才換成連結，不同就 SKIP。
 // 環境變數：MATT_SKILLS（預設 ~/code/skills）、PSTACK_SKILLS（預設 ~/code/pstack）、
-//           SKILL_DIRS（預設 ~/.claude/skills 與 ~/.agents/skills）
+//           SKILL_DIRS（預設 ~/.claude/skills 與 ~/.agents/skills）、
+//           HOOK_DIR（預設 ~/.claude/hooks）
 // 清單檔：matt-skills.txt（相對 skills/，兩層 <類別>/<名稱>）、pstack-skills.txt（相對 skills/，一層 <名稱>）。
 // 清單內 `# pin: <SHA>` 註明驗證過的上游版本；checkout 的 HEAD 不同時只警告。
-// stdout：--list 每個 skill 一行；--check 成功時 `CHECK_OK <n> skills`；同步成功時 `SYNCED <n> skills → <dirs>`。
+// stdout：--list 每個 skill 一行；--check 成功時 `CHECK_OK <n> skills`；同步成功時先印內容有變的 overlay `SKILL_CHANGED <名稱>`（已安裝的全域行為變了，retro spay2 b949589b#2），再印 `SYNCED <n> skills → <dirs>`。
 // stderr：MISSING、DUPLICATE、OVERLAY_FAILED（exit 1），NEW、SKIP、WARN（只提示）。exit 0 成功、1 有任何 exit 1 的行或檢查失敗。
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -21,6 +23,7 @@ const HOME = homedir();
 const MATT = process.env.MATT_SKILLS || join(HOME, 'code/skills');
 const PSTACK = process.env.PSTACK_SKILLS || join(HOME, 'code/pstack');
 const BUILD = join(process.env.XDG_DATA_HOME || join(HOME, '.local/share'), 'ron-skills/overlay');
+const HOOK_DIR = process.env.HOOK_DIR || join(HOME, '.claude/hooks');
 const DESTS = (process.env.SKILL_DIRS || `${HOME}/.claude/skills ${HOME}/.agents/skills`).split('\n')[0].split(/[ \t]+/).filter(Boolean);
 // git hook（pre-commit 跑 bin/check）會匯出這些變數，`git -C <上游 checkout>` 繼承後讀到的是本 repo。
 const env = { ...process.env };
@@ -159,6 +162,7 @@ function sync(check) {
     for (const patch of entries(join(ROOT, 'overlays')).filter(path => path.endsWith('.patch'))) {
       const name = basename(patch, '.patch');
       if (!isDir(join(tmp, name))) continue;
+      if (!sameTree(join(BUILD, name), join(tmp, name))) console.log(`SKILL_CHANGED ${name}`);
       rmSync(join(BUILD, name), { recursive: true, force: true });
       move(join(tmp, name), join(BUILD, name));
     }
@@ -181,10 +185,33 @@ function sync(check) {
         symlinkSync(to, path);
       }
     }
+    syncHooks();
     console.log(`SYNCED ${target.size} skills → ${DESTS.join(' ')}`);
     return 0;
   } finally {
     rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+/** 兩個目錄的檔案清單與內容是否相同；不存在的目錄視為空。 */
+function sameTree(a, b) {
+  const listing = dir => (isDir(dir) ? readdirSync(dir, { recursive: true }).map(String).filter(name => isFile(join(dir, name))).sort() : []);
+  const [left, right] = [listing(a), listing(b)];
+  return left.length === right.length && left.every((name, i) => name === right[i] && readFileSync(join(a, name)).equals(readFileSync(join(b, name))));
+}
+
+/** hooks/ 的每個檔案連到 HOOK_DIR；內容不同的實體檔留著，交給人判斷。 */
+function syncHooks() {
+  const hooks = entries(join(ROOT, 'hooks'));
+  if (hooks.length) mkdirSync(HOOK_DIR, { recursive: true });
+  for (const from of hooks) {
+    const path = join(HOOK_DIR, basename(from));
+    if (isFile(path) && !isLink(path) && !readFileSync(path).equals(readFileSync(from))) {
+      warn(`SKIP ${path}（實體檔內容不同，不覆蓋）`);
+      continue;
+    }
+    rmSync(path, { force: true });
+    symlinkSync(from, path);
   }
 }
 

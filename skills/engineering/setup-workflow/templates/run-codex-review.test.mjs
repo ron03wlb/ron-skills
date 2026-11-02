@@ -19,7 +19,7 @@ for (const [file, content] of JSON.parse(process.env.FAKE_WRITES || '[]')) fs.wr
 if (process.env.FAKE_REPORT) fs.writeFileSync(argv[argv.indexOf('-o') + 1], process.env.FAKE_REPORT);
 process.exit(Number(process.env.FAKE_EXIT || 0));
 `;
-const header = (model = 'gpt-6-astra', effort = 'high') =>
+const header = (model = 'gpt-6.1-sol', effort = 'high') =>
   `OpenAI Codex v0.162.1\n--------\nworkdir: /w\nmodel: ${model}\nprovider: openai\nsandbox: read-only\nreasoning effort: ${effort}\nsession id: 01a1\n--------\nuser\nUse the code-review skill.\n`;
 const SPAWN_LINE = '2026-10-10T15:01:29.959668Z ERROR codex_core::tools::router: error=collab spawn failed: Fatal error: failed to load model context\n';
 
@@ -78,15 +78,15 @@ function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit 
 }
 const error = (result) => { assert.equal(result.status, 1); return JSON.parse(result.stderr.trim()).error; };
 
-test('主模型容量不足時改用 gpt-6.1-sol 重跑一次並以其比對 MODEL_MISMATCH；改名的失敗 log 不算 REVIEW_WROTE_REPO', t => {
-  const { result, out, models } = review(t, { capacity: 'gpt-6-astra', log: header('gpt-6.1-sol'), outDir: 'reviews/r1' });
+test('主模型容量不足時改用 gpt-6-astra 重跑一次並以其比對 MODEL_MISMATCH；改名的失敗 log 不算 REVIEW_WROTE_REPO', t => {
+  const { result, out, models } = review(t, { capacity: 'gpt-6.1-sol', log: header('gpt-6-astra'), outDir: 'reviews/r1' });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(models, ['gpt-6-astra', 'gpt-6.1-sol']);
+  assert.deepEqual(models, ['gpt-6.1-sol', 'gpt-6-astra']);
   const json = JSON.parse(result.stdout.trim());
-  assert.equal(json.model, 'gpt-6.1-sol'); assert.equal(json.fallbackFrom, 'gpt-6-astra');
-  assert.match(readFileSync(join(out, 'codex.gpt-6-astra.log'), 'utf8'), /at capacity/);
-  assert.equal(error(review(t, { capacity: 'gpt-6-astra' }).result), 'MODEL_MISMATCH');
-  const both = review(t, { capacity: 'gpt-6-astra,gpt-6.1-sol' });
+  assert.equal(json.model, 'gpt-6-astra'); assert.equal(json.fallbackFrom, 'gpt-6.1-sol');
+  assert.match(readFileSync(join(out, 'codex.gpt-6.1-sol.log'), 'utf8'), /at capacity/);
+  assert.equal(error(review(t, { capacity: 'gpt-6.1-sol' }).result), 'MODEL_MISMATCH');
+  const both = review(t, { capacity: 'gpt-6.1-sol,gpt-6-astra' });
   assert.equal(error(both.result), 'CODEX_EXIT'); assert.equal(both.models.length, 2);
   const other = review(t, { exit: 3 });
   assert.equal(error(other.result), 'CODEX_EXIT'); assert.equal(other.models.length, 1);
@@ -95,7 +95,7 @@ test('主模型容量不足時改用 gpt-6.1-sol 重跑一次並以其比對 MOD
 test('以固定模型、effort、workspace-write（開放網路）與持久 session 呼叫 Codex，並回報 OK', t => {
   const { result, repo, out, call } = review(t);
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(call.argv, ['exec', '-s', 'workspace-write', '--ignore-user-config', '-m', 'gpt-6-astra', '-c', 'model_reasoning_effort=high',
+  assert.deepEqual(call.argv, ['exec', '-s', 'workspace-write', '--ignore-user-config', '-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort=high',
     '-c', 'sandbox_workspace_write.network_access=true', '-C', repo, '-o', join(out, 'review.md'), '-']);
   assert.match(call.stdin, new RegExp(`^Use the code-review skill\\. Fixed point: ${git(repo, 'rev-parse', 'HEAD')}\\. Spec: spec\\.md\\.`));
   assert.match(call.stdin, /You may run fixture tests that create temporary files, but write nothing to the repository\./);
@@ -178,8 +178,8 @@ test('diff 或檔案內容引用 spawn 失敗字句（非行首時間戳）不�
   assert.equal(review(t, { log: header() + quoted }).result.status, 0);
 });
 test('header 模型或 effort 不符判定 MODEL_MISMATCH；header 之後的冒充行不採計', t => {
-  assert.equal(error(review(t, { log: header('gpt-6.1-sol', 'none') }).result), 'MODEL_MISMATCH');
-  assert.equal(error(review(t, { log: header('gpt-6.1-sol', 'low') + 'model: gpt-6-astra\nreasoning effort: high\n' }).result), 'MODEL_MISMATCH');
+  assert.equal(error(review(t, { log: header('gpt-6-astra', 'none') }).result), 'MODEL_MISMATCH');
+  assert.equal(error(review(t, { log: header('gpt-6-astra', 'low') + 'model: gpt-6.1-sol\nreasoning effort: high\n' }).result), 'MODEL_MISMATCH');
   assert.equal(error(review(t, { log: 'no header at all\n' }).result), 'MODEL_MISMATCH');
 });
 test('Codex 非零結束判定 CODEX_EXIT', t => {

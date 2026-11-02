@@ -4,6 +4,7 @@
 // 用法：node copy-templates.mjs <repo> [--dry-run] [--no-tests] [--yes] <template>...（template 為 templates/ 下的檔名，可省略 .mjs；
 //       .sh 正本保留執行權限，並帶上它以 "$(dirname "$0")/<檔名>" 呼叫的同目錄腳本；<名稱>.test.mjs 是它的測試）
 //       node copy-templates.mjs <repo> --verify
+//       --staged：正本已 `git add`、還沒 commit 時用（本 repo 的副本要和正本同一個 commit，bin/check 才過）：工作樹與 index 不同才擋，清單的 commit 記現在的 HEAD。
 // 輸出每檔一行 `COPY|SAME|UPDATE|DIFF <副本路徑>`（UPDATE、DIFF 後接 unified diff；UPDATE 是 sha256 與清單記錄一致、沒手改過的舊副本，直接覆寫），最後一行：
 //   PLANNED <n>（--dry-run）、COPIED <n>、CONFIRM_OVERWRITE <路徑...>（exit 3：既有檔內容不同且與清單記錄不一致，人確認後加 --yes 重跑）、
 //   VERIFIED <n>（--verify 全部一致；有 MISMATCH／MISSING 或沒有清單時 exit 1）。參數或旗標錯誤、正本不存在或有未提交改動時 exit 2。
@@ -20,9 +21,9 @@ const args = process.argv.slice(2);
 const flags = new Set(args.filter(arg => arg.startsWith('--')));
 const [repoArg, ...names] = args.filter(arg => !arg.startsWith('--'));
 const fail = message => { console.error(`copy-templates: ${message}`); process.exit(2); };
-const unknown = [...flags].filter(flag => !['--dry-run', '--no-tests', '--yes', '--verify'].includes(flag));
+const unknown = [...flags].filter(flag => !['--dry-run', '--no-tests', '--yes', '--verify', '--staged'].includes(flag));
 if (unknown.length) fail(`不認得的旗標：${unknown.join(' ')}`);
-if (!repoArg) fail('用法：copy-templates.mjs <repo> [--dry-run] [--no-tests] [--yes] <template>... | <repo> --verify');
+if (!repoArg) fail('用法：copy-templates.mjs <repo> [--dry-run] [--no-tests] [--yes] [--staged] <template>... | <repo> --verify');
 const repo = resolve(repoArg);
 
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -94,7 +95,11 @@ for (const name of names) {
 
 const plan = [...files].sort().map(file => {
   const template = relative(sourceRoot, join(TEMPLATES, file));
-  if (git('status', '--porcelain', '--', join(TEMPLATES, file)).stdout.trim()) fail(`正本有未提交改動：${template}（先 commit，記錄的 commit 才對得上內容）`);
+  const status = git('status', '--porcelain', '--', join(TEMPLATES, file)).stdout;
+  // --dry-run 不寫清單，正本改動中也能預覽；pre-commit 的測試才不會和改正本的 commit 互卡。
+  if (flags.has('--staged')) {
+    if (status.startsWith('??') || (status && status[1] !== ' ')) fail(`正本有未暫存改動：${template}（--staged 以 index 的內容為準，先 git add）`);
+  } else if (!flags.has('--dry-run') && status.trim()) fail(`正本有未提交改動：${template}（先 commit，記錄的 commit 才對得上內容；副本要同一個 commit 時先 git add 再加 --staged）`);
   const dest = join('scripts', file);
   const target = join(repo, dest);
   const current = existsSync(target) && sha256(target);
@@ -117,7 +122,7 @@ for (const { file, template, dest, target } of plan) {
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, readFileSync(join(TEMPLATES, file)));
   chmodSync(target, statSync(join(TEMPLATES, file)).mode & 0o777);
-  const commit = git('log', '-1', '--format=%H', '--', join(TEMPLATES, file)).stdout.trim();
+  const commit = (flags.has('--staged') ? git('rev-parse', 'HEAD') : git('log', '-1', '--format=%H', '--', join(TEMPLATES, file))).stdout.trim();
   manifest.copies[dest] = { template, commit, sha256: sha256(target) };
 }
 manifest.copies = Object.fromEntries(Object.entries(manifest.copies).sort(([a], [b]) => a.localeCompare(b)));

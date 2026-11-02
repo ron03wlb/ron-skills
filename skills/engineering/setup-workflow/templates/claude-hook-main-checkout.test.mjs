@@ -157,6 +157,21 @@ test('Bash：行尾反斜線續行不產生寫入目標；續行後的目標檔�
   }
 });
 
+// 主 checkout 停在整合分支的 repo（spay2 #692）：origin/HEAD 是 develop，以預設分支判斷時切回整合分支被擋、切離反而放行。
+test('Bash：adapter ## Detect 宣告整合分支時，主 checkout 只能切回它，預設分支不再放行', () => {
+  const { main } = fixture();
+  mkdirSync(join(main, 'docs', 'agents'), { recursive: true });
+  writeFileSync(join(main, 'docs', 'agents', 'issue-run.md'), '# adapter\n\n## Detect\n\nIntegration branch: feature/x/#1\n\n## Other\n\nIntegration branch: wrong\n');
+  git(main, 'branch', 'feature/x/#1');
+  const bash = command => hook(JSON.stringify({ tool_name: 'Bash', cwd: main, tool_input: { command } }));
+  assert.equal(bash('git switch feature/x/#1').status, 0);
+  assert.equal(bash('git checkout feature/x/#1').status, 0);
+  const denied = bash('git switch main');
+  assert.equal(denied.status, 2);
+  assert.match(denied.stderr, /一直停在 feature\/x\/#1/);
+  assert.equal(bash('git switch wrong').status, 2);
+});
+
 // 真實發生過的錯（retro 2026-10-30）：在主 checkout `git switch -c` 開分支後，另一個 session 也在主 checkout 開分支，commit 落到對方分支。
 test('Bash：主 checkout 切換或新開分支 exit 2；切回預設分支、還原檔案、worktree 內切分支放行', () => {
   const { main, worktree } = fixture();

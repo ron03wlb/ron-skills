@@ -23,7 +23,7 @@
 // 用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--check-command <command>] [--body-file <file>] [--title <title>] [--main <branch>]
 // 主分支（下文的 main）：`--main <branch>`；沒帶時讀 origin/HEAD（clone 時設定，`git remote set-head origin --auto` 可重設），都沒有才用 main（#281）。
 // stdout：每步一行進度（PUSHED、PR、CHECKS_PASSED、RESTAMPED <pr> <新 tip>（合入 main 沒有衝突時是 MAIN_MERGED），`--local-checks` 時是 LOCAL_CHECKS <pr> <sha> <結果行>，收尾的 UNBARE、
-//   WORKTREE_REMOVED、BRANCH_DELETED，最後 MAIN、SYNC_SKILLS）；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
+//   WORKTREE_REMOVED、BRANCH_DELETED，最後 MAIN、SKILL_CHANGED <名稱>（sync-skills 換掉內容的全域 skill，每個一行）、SYNC_SKILLS）；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
 //   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、restamp-checks-failed、merge、not-merged、worktree-rm）。
 // 合入之後的收尾問題（main 沒跟上、sync-skills 失敗）印 WARN，不影響 LANDED。
 // exit：0 已合入；4 STOP；2 用法錯誤；1 其他失敗。
@@ -426,6 +426,7 @@ export async function land({ branch, keepBranch = false, localChecksSha, checkCo
   const sync = join(main, 'bin/sync-skills');
   if (existsSync(sync)) {
     const result = run(sync, [], main);
+    for (const line of result.stdout.split('\n')) if (line.startsWith('SKILL_CHANGED ')) console.log(line);
     console.log(result.status === 0 ? 'SYNC_SKILLS ok' : `WARN sync-skills exit ${result.status}`);
   }
   return { number: pr.number, sha };

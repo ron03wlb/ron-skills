@@ -28,7 +28,7 @@ diff --git a/SKILL.md b/SKILL.md
  
  ➡️ <your recommended answer>
  ```
-@@ -25,6 +26,10 @@
+@@ -25,6 +26,14 @@
  
  Each round the user answers reshapes the tree: settled decisions push the frontier outward and unblock questions that depended on them. Recompute the frontier and ask the next round. A question whose answer depends on another question still open in this round belongs to a _later_ round, not this one.
  
@@ -38,5 +38,9 @@ diff --git a/SKILL.md b/SKILL.md
 +A recommended answer that changes existing behaviour cites the decision record governing that behaviour (the repo's ADRs, its glossary's `_Avoid_` terms, the topic's contract), looked up before you recommend. When the recommendation departs from an accepted decision, the question names that decision and says it supersedes it, so the user decides the departure knowingly. Before recommending a departure, also find the decisions that build on the one you would supersede and the open tracker items citing either (a later decision may already carry it into delivery); the question names each such item and what happens to it.
 +
 +Before round 1, list the tracker's open Issues whose title or body names the topic's files or skills. An open Issue outranks a doc describing current behaviour: a recommendation overlapping one names that Issue and how the two fit (build on it, wait for it, or drop yours).
++
++A recommendation that replaces the operation the user named with a different one (they said edit, you propose retire-and-recreate) says so in the question's title, in the user's own word.
++
++Before the session ends, state each decided operation as the user will observe it: its identity, its state afterwards, and when it takes effect.
  
  The session is done when the frontier is empty: every branch of the design tree visited, nothing left silently assumed. Do not act on it until the user confirms you have reached a shared understanding.

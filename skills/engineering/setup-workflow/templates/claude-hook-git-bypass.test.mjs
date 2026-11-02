@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { backgroundJobReason, bypassReason, probeFilterReason } from './claude-hook-git-bypass.mjs';
+import { backgroundJobReason, bypassReason, exitGateReason, probeFilterReason } from './claude-hook-git-bypass.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-git-bypass.mjs', import.meta.url));
 const hook = (input, args = []) => spawnSync('node', [script, ...args], { input, encoding: 'utf8' });
@@ -96,4 +96,31 @@ test('hook 參數：旗標後面緊接另一個旗標時不當成 spec', () => {
   assert.equal(hook(input('node x.mjs --whole-output &'), args).status, 0);
   const denied = hook(input('node scripts/job-watch.mjs | grep x'), args);
   assert.equal(denied.status, 2); assert.match(denied.stderr, /job-watch\.mjs 的輸出以 grep 過濾/);
+});
+
+const GATES = ['check-contracts.sh', 'fix-land.mjs', 'batch-land.mjs', 'close-issue.mjs', 'land.mjs'];
+
+// 真實指令：retro spay2 b949589b#1，兩次都通知 exit 0，輸出卻是失敗（`STOP merge exit 9 HELD`）。
+test('exitGateReason：長跑 gate 接 grep／head／tail 時攔下', () => {
+  assert.deepEqual(exitGateReason('node scripts/fix-land.mjs ron.chang/feature-ron-fix-tab-state 2>&1 | tail -12 | cut -c1-260', GATES), { script: 'fix-land.mjs', filter: 'tail' });
+  assert.deepEqual(exitGateReason('bash scripts/check-contracts.sh 2>&1 | tail -15', GATES), { script: 'check-contracts.sh', filter: 'tail' });
+  assert.deepEqual(exitGateReason('cd /m && FOO=1 node /m/scripts/land.mjs x | head -3', GATES), { script: 'land.mjs', filter: 'head' });
+  assert.deepEqual(exitGateReason('X=$(node scripts/batch-land.mjs c |& grep -c LANDED)', GATES), { script: 'batch-land.mjs', filter: 'grep' });
+  assert.deepEqual(exitGateReason('scripts/check-contracts.sh | tee /tmp/x | rg FAIL', GATES), { script: 'check-contracts.sh', filter: 'rg' });
+});
+
+test('exitGateReason：沒執行 gate、結果看得到 exit code、未指定時不攔', () => {
+  for (const command of ['cat scripts/fix-land.mjs | head -3', 'git log -- scripts/fix-land.mjs | head', 'sed -n 1,5p scripts/check-contracts.sh | tail -2',
+    'grep -n "fix-land.mjs | tail" docs/a.md', 'node --test scripts/fix-land.test.mjs | tail -5', 'node scripts/fix-land.mjs x > f 2>&1; rc=$?; tail -n 20 f; exit $rc',
+    'node scripts/fix-land.mjs x; git log | head -3', 'set -o pipefail; bash scripts/check-contracts.sh 2>&1 | tail -15']) assert.equal(exitGateReason(command, GATES), null, command);
+  assert.equal(exitGateReason('node scripts/batch-land.mjs c | tail -1', ['land.mjs']), null, 'land.mjs 不比到 batch-land.mjs');
+  assert.equal(exitGateReason('node scripts/fix-land.mjs x | tail -1'), null);
+});
+
+test('hook：--exit-gate 命中時 exit 2 並給改法，沒帶參數不攔', () => {
+  const input = JSON.stringify({ tool_input: { command: 'bash scripts/check-contracts.sh 2>&1 | tail -15' } });
+  const denied = hook(input, ['--exit-gate', 'check-contracts.sh']);
+  assert.equal(denied.status, 2);
+  assert.match(denied.stderr, /rc=\$\?/);
+  assert.equal(hook(input).status, 0);
 });

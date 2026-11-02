@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // 分頁狀態（GLOSSARY.md「分頁狀態」）：Orca 分頁標題最前面的 `<狀態>｜` 前綴，狀態是處理中、待 Retro、待關閉。
 // 只換目前分頁（ORCA_TERMINAL_HANDLE）標題的狀態前綴，沒有前綴就補上，其他文字不動；agent、skill、pilot script 與 claude-hook-tab-state.mjs 都用它。
-// Orca（1.4.245）讀不回 `terminal rename` 設的分頁標題：`terminal list` 的 title 是 Claude 的自動標題。所以每個 handle 最後設定的標題
-// 記在本機 TAB_STATE_DIR（預設 ~/.local/state/orca-tab-titles）的 `<handle>` 檔：本腳本改名後寫入，hook 從 Bash 的
-// `orca terminal rename` 指令擷取寫入；沒有記錄時以 Orca 的自動標題為目前標題（從沒改過名的分頁顯示的就是它）。
+// 目前標題以 Orca 的分頁資料為準：`terminal list --include-visual-layouts` 的 tab title；`terminals[].title` 是程式自己的標題（Claude 的自動標題），不是分頁標題。
+// 每個 handle 最後設定的標題另記在本機 TAB_STATE_DIR（預設 ~/.local/state/orca-tab-titles）的 `<handle>` 檔：本腳本改名後寫入，hook 從 Bash 的
+// `orca terminal rename` 指令擷取寫入；Orca 查不到分頁時才用它，其他會改標題的 hook 也靠它判斷標題歸本腳本管理。
 //
 // 用法：node scripts/tab-state.mjs <處理中|待 Retro|待關閉> [--topic <主題>]
 // --topic 把標題整個設成 `<狀態>｜<主題>`，不讀目前標題：session 開頭用它，記錄裡可能還是同一個 handle 上一個 session 的主題（#141）；
@@ -11,17 +11,33 @@
 // stdout：改名成功時印 `TAB_STATE <新標題>`。
 // exit：0 已改名，或沒有 ORCA_TERMINAL_HANDLE、Orca 呼叫失敗（都不輸出）；2 狀態不合法、--topic 沒有值。
 // ORCA_CLI_COMMAND 沒設時用 PATH 上的 `orca`。
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { orca } from './orca-session-send.mjs';
 
 export const STATES = ['處理中', '待 Retro', '待關閉'];
 const SEP = '｜';
 const PREFIX = new RegExp(`^(?:${STATES.join('|')})${SEP}`);
 /** 一次 tab-state 或 hook 呼叫裡全部 Orca 呼叫共用的上限。 */
 const ORCA_BUDGET_MS = 10000;
+
+/**
+ * Orca CLI 呼叫；回傳 JSON 的 result，失敗丟出含錯誤碼的 Error，`signal` 中止時殺掉 CLI。
+ * 本腳本不 import orca-session-send.mjs：專案可能有自己的（例如同步版）送出腳本，tab-state 與 hook 要能原樣複製進去。
+ */
+async function orca({ cli, signal }, ...args) {
+  const child = spawn(cli, [...args, '--json'], { stdio: ['ignore', 'pipe', 'pipe'], signal });
+  let stdout = '', stderr = '';
+  child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
+  child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+  const status = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
+  let body;
+  try { body = JSON.parse(stdout); } catch { throw new Error((stderr || stdout || '').trim().split('\n').pop() || `exit ${status}`); }
+  if (!body.ok) throw new Error(body.error?.code ?? body.error?.message ?? 'orca 失敗');
+  return body.result;
+}
 
 /** 去掉標題最前面的狀態前綴。 */
 export const stripState = title => String(title ?? '').replace(PREFIX, '');
@@ -58,8 +74,28 @@ export function recordTitle(handle, title) {
   }
 }
 
-/** 目前標題：記錄，沒有時是 Orca 的自動標題。`ctx` 是 `{ cli, signal? }`（同 orca-session-send.mjs）。 */
+/** 找出含 `handle` 這個 pane 的分頁標題；visualLayouts 是分割、群組與分頁組成的巢狀結構。 */
+function tabTitleOf(node, handle) {
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const title = tabTitleOf(item, handle);
+      if (title != null) return title;
+    }
+    return null;
+  }
+  if (node === null || typeof node !== 'object') return null;
+  if (node.panes && JSON.stringify(node.panes).includes(JSON.stringify(handle))) return node.title ?? null;
+  return tabTitleOf(Object.values(node), handle);
+}
+
+/** 目前標題：Orca 的實際分頁標題；Orca 查不到時用記錄，再沒有就是 Orca 的自動標題。`ctx` 是 `{ cli, signal? }`。 */
 export async function currentTitle(ctx, handle) {
+  let live = null;
+  try {
+    const { visualLayouts } = await orca(ctx, 'terminal', 'list', '--include-visual-layouts');
+    live = tabTitleOf(visualLayouts, handle);
+  } catch { /* 舊版 Orca 沒有這個旗標，或 Orca 暫時連不上 */ }
+  if (live !== null) return live;
   const recorded = recordedTitle(handle);
   if (recorded !== null) return recorded;
   const { terminals } = await orca(ctx, 'terminal', 'list');

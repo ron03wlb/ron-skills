@@ -3,7 +3,7 @@
 // Stop 時標題沒有合法前綴就要求改名。只在 Orca 裡跑的 session（有 ORCA_TERMINAL_HANDLE）才動作。
 // 依 stdin hook JSON 的 hook_event_name：
 // - PostToolUse（matcher Bash）：輸出命中 PostToolUse 觸發條件就換狀態；指令裡有改本分頁標題的 `orca terminal rename … --title <標題>`
-//   時記下這個標題（Orca 讀不回 rename 設的標題，見 tab-state.mjs），之後 tab-state 才換得到前綴、Stop 才檢查得到。
+//   時記下這個標題（Orca 查不到分頁時的備援，見 tab-state.mjs）。
 // - Stop：最後一段 assistant 文字命中 Stop 觸發條件就換狀態；接著檢查標題，沒有 `<狀態>｜` 前綴就 exit 2，stderr 交回 agent 改名。
 //   只檢查格式，不判斷狀態對不對；stop_hook_active 為 true（已因 Stop hook 續跑一次）時不檢查。
 // 預設觸發條件見 DEFAULT_TRIGGERS；`/retro` 的待關閉由 retro 最後一步自己呼叫 tab-state。專案可以在 `docs/agents/tab-state.json`

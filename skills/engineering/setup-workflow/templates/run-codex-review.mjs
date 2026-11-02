@@ -18,8 +18,8 @@ import { createHash } from 'node:crypto';
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-const MODEL = 'gpt-6-astra';
-const FALLBACK_MODEL = 'gpt-6.1-sol';
+const MODEL = 'gpt-6.1-sol';
+const FALLBACK_MODEL = 'gpt-6-astra';
 const AT_CAPACITY = /^ERROR: Selected model is at capacity/m;
 const EFFORT = 'high';
 // 只認帶時間戳的 log 行；review diff 或 Codex 讀取的檔案引用這句時不會以時間戳開頭。
