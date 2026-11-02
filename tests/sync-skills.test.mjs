@@ -57,6 +57,24 @@ test('--list 依連結的真實位置標出來源，並列出目前目錄的專�
   ].join('\n'));
 });
 
+test('同步把 hooks/ 連到 HOOK_DIR：沒有就建，內容相同的實體檔換成連結，內容不同的不覆蓋', t => {
+  const tmp = scratch(t);
+  const hooks = join(tmp, 'hooks');
+  mkdirSync(hooks);
+  const same = join(hooks, 'orca-tab-title.sh'), different = join(hooks, 'orca-tab-title.test.sh');
+  writeFileSync(same, readFileSync(join(root, 'hooks/orca-tab-title.sh')));
+  writeFileSync(different, '本機改過\n');
+  const result = run([], { XDG_DATA_HOME: join(tmp, 'xdg'), SKILL_DIRS: join(tmp, 'a'), HOOK_DIR: hooks });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readlinkSync(same), join(root, 'hooks/orca-tab-title.sh'));
+  assert.equal(lstatSync(different).isSymbolicLink(), false);
+  assert.equal(readFileSync(different, 'utf8'), '本機改過\n');
+  assert.match(result.stderr, /SKIP .*orca-tab-title\.test\.sh/);
+  const fresh = join(tmp, 'fresh');
+  assert.equal(run([], { XDG_DATA_HOME: join(tmp, 'xdg'), SKILL_DIRS: join(tmp, 'a'), HOOK_DIR: fresh }).status, 0);
+  assert.equal(readlinkSync(join(fresh, 'orca-tab-title.sh')), join(root, 'hooks/orca-tab-title.sh'));
+});
+
 test('同步只換掉受管連結：清掉清單外的舊連結，不碰別處的連結與實體目錄', t => {
   const tmp = scratch(t);
   const xdg = join(tmp, 'xdg'), a = join(tmp, 'a'), b = join(tmp, 'b');
@@ -64,7 +82,7 @@ test('同步只換掉受管連結：清掉清單外的舊連結，不碰別處�
   symlinkSync(join(root, 'skills/engineering/removed-skill'), join(a, 'removed-skill'));
   symlinkSync(join(tmp, 'foreign'), join(a, 'foreign'));
   skill(join(a, 'issue-pilot'));
-  const extra = { XDG_DATA_HOME: xdg, SKILL_DIRS: `${a} ${b}` };
+  const extra = { XDG_DATA_HOME: xdg, SKILL_DIRS: `${a} ${b}`, HOOK_DIR: join(tmp, 'hooks') };
 
   const count = run(['--check'], extra).stdout.match(/^CHECK_OK (\d+) skills$/m)?.[1];
   const result = run([], extra);

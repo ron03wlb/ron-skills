@@ -96,9 +96,10 @@ for (const name of names) {
 const plan = [...files].sort().map(file => {
   const template = relative(sourceRoot, join(TEMPLATES, file));
   const status = git('status', '--porcelain', '--', join(TEMPLATES, file)).stdout;
+  // --dry-run 不寫清單，正本改動中也能預覽；pre-commit 的測試才不會和改正本的 commit 互卡。
   if (flags.has('--staged')) {
     if (status.startsWith('??') || (status && status[1] !== ' ')) fail(`正本有未暫存改動：${template}（--staged 以 index 的內容為準，先 git add）`);
-  } else if (status.trim()) fail(`正本有未提交改動：${template}（先 commit，記錄的 commit 才對得上內容；副本要同一個 commit 時先 git add 再加 --staged）`);
+  } else if (!flags.has('--dry-run') && status.trim()) fail(`正本有未提交改動：${template}（先 commit，記錄的 commit 才對得上內容；副本要同一個 commit 時先 git add 再加 --staged）`);
   const dest = join('scripts', file);
   const target = join(repo, dest);
   const current = existsSync(target) && sha256(target);

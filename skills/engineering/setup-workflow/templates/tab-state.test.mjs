@@ -11,9 +11,9 @@ import { sameTopic, stripState, withState } from './tab-state.mjs';
 const script = fileURLToPath(new URL('./tab-state.mjs', import.meta.url));
 const SELF = 'term_self';
 
-// 記錄呼叫的假 Orca CLI：`terminal list` 回本分頁（標題是 Claude 的自動標題，`rename` 設的標題 Orca 讀不回）。
+// 記錄呼叫的假 Orca CLI：`terminal list` 回本分頁（title 是 Claude 的自動標題；`tabTitle` 是 --include-visual-layouts 回的實際分頁標題）。
 // `failing` 為真時每個呼叫都回錯。標題記錄放在 fixture 的 TAB_STATE_DIR，不碰家目錄。
-function fixture(t, { autoTitle = 'Claude 自動標題', failing = false } = {}) {
+function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTitle } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'tab-state-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const log = join(temp, 'orca.log');
@@ -25,6 +25,7 @@ const fs = require('fs'); const [, b] = process.argv.slice(2); const arg = k => 
 fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 ${orcaReplySource()}
 if (${failing}) fail('runtime_unavailable');
+else if (b === 'list' && ${JSON.stringify(tabTitle ?? null)} !== null && process.argv.includes('--include-visual-layouts')) reply('list-visual', { visualLayouts: [{ root: { second: { tabs: [{ title: ${JSON.stringify(tabTitle ?? '')}, panes: { second: { handle: ${JSON.stringify(SELF)} } } }] } } }] });
 else if (b === 'list') reply('list', { terminals: [{ handle: 'term_other', title: '別人' }, { handle: ${JSON.stringify(SELF)}, title: ${JSON.stringify(autoTitle)} }], totalCount: 2 });
 else if (b === 'rename') reply('rename', { rename: { handle: arg('--terminal'), title: arg('--title') } });
 `);
@@ -36,6 +37,13 @@ else if (b === 'rename') reply('rename', { rename: { handle: arg('--terminal'), 
   });
   return { log, record, recorded, run, calls: () => readFileSync(log, 'utf8') };
 }
+
+test('換狀態前綴：以 Orca 實際分頁標題為準，不用過期的記錄', t => {
+  const { record, recorded, run } = fixture(t, { tabTitle: '處理中｜新主題' });
+  record('處理中｜舊主題');
+  assert.equal(run(['待 Retro']).status, 0);
+  assert.equal(recorded(), '待 Retro｜新主題');
+});
 
 test('換狀態前綴：只換最前面的狀態，其他文字不動，並記下新標題', t => {
   const { record, recorded, run, calls } = fixture(t);

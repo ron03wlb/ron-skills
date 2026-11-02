@@ -12,8 +12,8 @@ const SELF = 'term_self';
 const SHA = '4b14f45a922942987473d3a1b9358740c2409777';
 
 // 專案目錄（放 docs/agents/tab-state.json）、記錄呼叫的假 Orca CLI 與 TAB_STATE_DIR。
-// `terminal list` 回本分頁，title 是 Claude 的自動標題；`failing` 為真時每個 Orca 呼叫都回錯。
-function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, config } = {}) {
+// `terminal list` 回本分頁，title 是 Claude 的自動標題；`tabTitle` 是 Orca 分頁資料（--include-visual-layouts）裡的實際標題；`failing` 為真時每個 Orca 呼叫都回錯。
+function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, config, tabTitle } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'claude-hook-tab-state-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const project = join(temp, 'project');
@@ -28,6 +28,7 @@ const fs = require('fs'); const [, b] = process.argv.slice(2); const arg = k => 
 fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 ${orcaReplySource()}
 if (${failing}) fail('runtime_unavailable');
+else if (b === 'list' && ${JSON.stringify(tabTitle ?? null)} !== null && process.argv.includes('--include-visual-layouts')) reply('list-visual', { visualLayouts: [{ root: { second: { tabs: [{ title: ${JSON.stringify(tabTitle ?? '')}, panes: { second: { handle: ${JSON.stringify(SELF)} } } }] } } }] });
 else if (b === 'list') reply('list', { terminals: [{ handle: ${JSON.stringify(SELF)}, title: ${JSON.stringify(autoTitle)} }], totalCount: 1 });
 else if (b === 'rename') reply('rename', { rename: { handle: arg('--terminal'), title: arg('--title') } });
 `);
@@ -82,6 +83,18 @@ test('Stop：worker 最後一段文字是 DONE 結果行就轉成待 Retro，之
   const result = hook({ hook_event_name: 'Stop', stop_hook_active: false });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(recorded(), '待 Retro｜#126 分頁狀態｜收尾｜候選');
+});
+
+test('Stop：別的 hook 蓋掉標題時，以 Orca 實際分頁標題為準：記錄有前綴也要求改名；實際標題有前綴時放行', t => {
+  const clobbered = fixture(t, { tabTitle: 'Claude 自動標題' });
+  clobbered.say('還在跑測試。');
+  clobbered.record('處理中｜Codex review 預設模型');
+  const denied = clobbered.hook({ hook_event_name: 'Stop', stop_hook_active: false });
+  assert.equal(denied.status, 2);
+  assert.match(denied.stderr, /Claude 自動標題/);
+  const live = fixture(t, { tabTitle: '處理中｜Codex review 預設模型' });
+  live.say('還在跑測試。');
+  assert.equal(live.hook({ hook_event_name: 'Stop', stop_hook_active: false }).status, 0);
 });
 
 test('Stop：標題沒有合法前綴就 exit 2 要求改名；stop_hook_active 為 true 時放行；有前綴時不輸出', t => {

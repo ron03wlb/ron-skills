@@ -15,7 +15,7 @@
 
 ```bash
 bin/sync-skills --check   # 只檢查 overlay 能否套用在目前的 Matt 版本，並提示上游新增的 skill
-bin/sync-skills           # 重建 ~/.claude/skills 與 ~/.agents/skills 的連結
+bin/sync-skills           # 重建 ~/.claude/skills 與 ~/.agents/skills 的連結，並把 hooks/ 連到 ~/.claude/hooks
 bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來源（在專案目錄執行會含專案 skill）
 ```
 

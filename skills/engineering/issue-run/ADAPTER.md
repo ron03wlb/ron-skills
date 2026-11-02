@@ -89,7 +89,7 @@ What `/issue-queue` reads beyond the Tracker, Readiness, Pool, and Pilot section
 ## Detect
 
 The names `/setup-workflow`'s `detect.mjs` reads when this repo's integration branch or stage commits do not follow its fixed rules (a branch named `integration`, with or without a prefix; a subject containing `pilot/stage-` or `stage batch-`). Each is one line of its own in this section, written in this file and not in a file it points to: start a line with `Integration branch:` followed by the branch name, and a line with `Stage commit:` followed by a JavaScript regex matched against commit subjects (for example `feature/ron/#24846` and `^merge: 整合 `). A leading `- ` and backticks around the value are optional, any other markup (bold, `* `) is not read as a declaration, and a `#` is part of the value. A declaration replaces the fixed rule for that item only: the branch counts when it exists locally or on `origin`, and it becomes the base for `IN_FLIGHT`; a subject scan keeps its range (90 days, 300 commits). A branch that does not exist or a regex that does not compile makes that signal `missing`, with the declaration in its evidence.
-Default: no declarations; the fixed rules apply. A declaration changes what is detected, not what is installed: a new resident pilot still needs a GitHub tracker.
+Default: no declarations; the fixed rules apply. A declaration changes what is detected, not what is installed: a new resident pilot still needs a GitHub tracker. The `claude-hook-main-checkout` copy also reads `Integration branch` as the only branch the main checkout may switch back to.
 
 ## Pilot
 
