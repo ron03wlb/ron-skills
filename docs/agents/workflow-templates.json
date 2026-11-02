@@ -62,7 +62,7 @@
     },
     "scripts/issue-pool.mjs": {
       "template": "skills/engineering/setup-workflow/templates/issue-pool.mjs",
-      "commit": "774f7b44ee01e33305be974d55c6837733d406a0",
+      "commit": "b6adf8972ae8c6be56cbc5e57417930cd3dde301",
       "sha256": "6343148cdb2d5991d1f81bdd2c85e4b9c747f3cdfd32372e8071b8b9f2fa6595"
     },
     "scripts/land.mjs": {
@@ -72,17 +72,17 @@
     },
     "scripts/lib/hosts.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/hosts.mjs",
-      "commit": "774f7b44ee01e33305be974d55c6837733d406a0",
+      "commit": "2f0dc3f0f274ce4a88e535c8f22c37049c111053",
       "sha256": "27903739d0a621c91f571544ec51cd07b96e94484697a6a38f18b4b99864791b"
     },
     "scripts/lib/pilot-store.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/pilot-store.mjs",
-      "commit": "774f7b44ee01e33305be974d55c6837733d406a0",
+      "commit": "b6adf8972ae8c6be56cbc5e57417930cd3dde301",
       "sha256": "22b4d5a76ddacef8995f41694313510fecb2cb4b40e61775b49383185f1002ed"
     },
     "scripts/orca-session-send.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-send.mjs",
-      "commit": "774f7b44ee01e33305be974d55c6837733d406a0",
+      "commit": "a67eced93e4fbce3a9bda94fa4a36b5fcc22546d",
       "sha256": "1d21dba80395af6ece014501d7c828667ddd95b852fa9476642941f5e44340b2"
     },
     "scripts/orca-session-split.mjs": {
@@ -102,17 +102,17 @@
     },
     "scripts/pilot-capacity.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-capacity.mjs",
-      "commit": "774f7b44ee01e33305be974d55c6837733d406a0",
+      "commit": "ab589a14be02cf0e8215f16431060c1780313bf1",
       "sha256": "7be3a06f4bc7c0f6ae26a2cc4013de2f8d14f0686cc49eb29783e814f443c5cc"
     },
     "scripts/pilot-close.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-close.mjs",
-      "commit": "e561d0dbe2f52d93506aa5df81e07d6e4b781d06",
-      "sha256": "f590327234279eca2914079f0fce58c8657a2f86d09a5f913a2c9489ec991803"
+      "commit": "2f0dc3f0f274ce4a88e535c8f22c37049c111053",
+      "sha256": "649e54b3f5616988435417fa611406c064bdbfee61057fc9a8528e4cfda34507"
     },
     "scripts/pilot-counterpart.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-counterpart.mjs",
-      "commit": "9c102eb2809708c28510dd8d64a39f0fb9d125ed",
+      "commit": "2f0dc3f0f274ce4a88e535c8f22c37049c111053",
       "sha256": "c31c9403d7ebb17c569bdbca6cdeacf8b2a45a94de0e4c1adda8230f0ecb818d"
     },
     "scripts/pilot-decision.mjs": {
@@ -172,7 +172,7 @@
     },
     "scripts/pilot-unbare.sh": {
       "template": "skills/engineering/setup-workflow/templates/pilot-unbare.sh",
-      "commit": "3ba9acc35f2e6e6e8d94ff80d3641c4b36e7214f",
+      "commit": "2f0dc3f0f274ce4a88e535c8f22c37049c111053",
       "sha256": "93c37ad070828d1f3ea76888b30a48e3f7520024b55149fd4e339e55f32353a1"
     },
     "scripts/tab-state.mjs": {

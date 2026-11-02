@@ -16,6 +16,15 @@ test('issue-queue 是 /loop 可呼叫的 skill，description 限定觸發時機'
   assert.match(skill.split('\n---\n')[0], /description: .*only when the user runs `?\/issue-queue`? or `?\/loop \/issue-queue`?/);
 });
 
+// spay2 retro b8698cce：user-level skill 蓋過 repo 同名 skill，`/issue-queue 694 702` 停在缺 issue-pool.mjs，repo 自己的細化流程沒跑到。
+test('repo 有自己的 issue-queue skill 時改讀那份照做，排在分桶與 /setup-workflow 之前', () => {
+  const marker = skill.indexOf('.claude/skills/issue-queue/SKILL.md');
+  assert.ok(marker > 0, '沒有指向 repo skill');
+  assert.ok(marker < skill.indexOf('/setup-workflow'));
+  assert.ok(marker < skill.indexOf('## Steps'));
+  assert.match(paragraph('.claude/skills/issue-queue/SKILL.md'), /\$ARGUMENTS|arguments/);
+});
+
 // 分桶只讀 issue-pool.mjs，和 pilot、--pool 同一份；沒有這支就交給 /setup-workflow，不自己拼查詢。
 test('分桶讀 scripts/issue-pool.mjs，沒有時停下指向 /setup-workflow', () => {
   assert.match(skill, /node scripts\/issue-pool\.mjs/);
