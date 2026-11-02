@@ -79,10 +79,13 @@ test('retro overlay：條目宣告 Collect command 時照它的第一行走路�
 
   const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
   const collect = skill.split('\n\n').find(paragraph => paragraph.includes('**Collect mode.**'));
-  assert.match(collect, /declares no `Collect command:`/, '沒宣告才走開單的收集模式');
+  assert.match(collect, /declares none of those lines/, '三行都沒宣告才走開單的收集模式');
+  assert.ok(skill.indexOf('**Declared collect.**') < skill.indexOf('**Collect mode.**'), '先判斷宣告完不完整：只宣告一部分時，照順序讀不能先開單才停');
+  assert.match(collect, /With no \*\*Retro collect\*\* entry at all/);
   const declared = skill.split('\n\n').find(paragraph => paragraph.includes('**Declared collect.**'));
   assert.ok(declared, 'overlay 沒有 Declared collect 段落');
   assert.match(declared, /opens no `retro-candidates` Issue/);
+  assert.match(declared, /format the entry states/, 'spay2 的檔案首行有固定格式，少了它 --close 關不到分頁');
   assert.match(declared, /first line/, 'spay2 的第二行是換待關閉的提示，只能讀第一行');
   assert.match(declared, /`COLLECT <file>`[^.]*implement nothing/);
   assert.match(declared, /`NORMAL`[^.]*implement/);

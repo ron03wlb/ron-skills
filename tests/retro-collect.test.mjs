@@ -41,6 +41,10 @@ test('retro-collect：條目宣告名單時 Roster、Plan、Close 改用宣告�
   assert.ok(declared, 'skill 沒有 Declared roster 段落');
   assert.match(declared, /`Roster command:`, `Collect command:`, and `Close command:`/);
   assert.match(declared, /stop and name/);
+  assert.match(step('Roster'), /`Roster command:`[^.]*`\$ARGUMENTS`/, '宣告分支也要照 $ARGUMENTS 過濾');
+  assert.match(step('Roster'), /nothing to read[^.]*report/, 'spay2 的 PENDING 沒有檔案：不能進計畫，也不能傳給結案指令');
+  assert.match(step('Plan'), /Done when every candidate[^.]*roster item/);
+  assert.match(declared, /`retro` Issue[^.]*still/, '太大的候選照樣開 retro Issue，要明寫');
   assert.match(declared, /no `retro-candidates` Issue/);
   assert.doesNotMatch(skill, /retro-collect\.mjs|--role|--mark/, 'skill 不寫死專案的腳本名');
 });
@@ -51,6 +55,8 @@ test('retro-collect 宣告：ADAPTER 寫明三行與預設，ADR 0003 記下例�
   for (const name of ['Roster command:', 'Collect command:', 'Close command:']) assert.ok(entry.includes(`\`${name}\``), name);
   assert.match(entry, /`COLLECT <file>`/);
   assert.match(entry, /`NORMAL`/);
+  assert.match(entry, /entry states[^.]*format/, '檔案格式由條目寫明');
+  assert.match(entry, /placeholders/, '條目寫明結案指令的佔位符怎麼填');
   assert.match(entry, /Default: none; `\/retro-collect` stops and says so\./, '沒宣告的預設不變');
   const adr = readFileSync(new URL('../docs/adr/0003-tracker-shared-state.md', import.meta.url), 'utf8');
   assert.match(adr, /`Roster command:`/);
