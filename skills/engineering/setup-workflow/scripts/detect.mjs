@@ -9,6 +9,7 @@
 // 之後 `TARGET <等級>  # <依據>`：這次要裝到哪裡，不問人、不限一次升一級（#278，規則見檔尾 installTarget），
 // 最後一行 `LEVEL <等級>`；--json 印同樣內容的物件（缺口在 gaps、證據在 evidence、目標在 target）。exit 0；不是 git repo 或旗標不認得時 exit 2。
 // 開放 Issue 數經 gh 取得，測試以 DETECT_GH 取代 gh 指令。
+// 專案用自己的命名時，在 adapter 的 `## Detect` 段宣告整合分支與 stage 主旨（格式見 ../../issue-run/ADAPTER.md），integration、pilotCommits、IN_FLIGHT 的基準依宣告（#289）。
 //
 // 環境站：node detect.mjs [<repo>] --env [--copy <template>...] [--json]，只看這台機器，repo 只讀它的 CI 設定，不必是 git repo。
 // 每項一行：`ENV platform <macos|wsl|linux|…>`、必要工具 `REQUIRED <name> met|missing|skipped <value>`、
@@ -278,8 +279,25 @@ function hook(check) {
   return signal(null, [`${dir} 沒有呼叫 ${head ?? '檢查入口'} 的 pre-push 或 pre-commit`]);
 }
 
-// 整合分支：本機或遠端名為 integration 的分支（可帶前綴，如 pilot/integration）。
+/** adapter `## Detect` 段宣告的值（`<label>: <值>`，值可包反引號）；沒有宣告或值是空的時 null。分支名的 `#` 是值的一部分，不當註解。 */
+function declared(label) {
+  const raw = section(adapter, 'Detect')?.match(new RegExp(`^(?:- )?${label}:[ \\t]*(.*)$`, 'm'))?.[1].trim();
+  return raw?.replace(/^`(.*)`$/, '$1') || null;
+}
+const declarationOf = label => `${adapterPath} ## Detect 宣告的 ${label}`;
+
+// 宣告的整合分支：以完整 ref 查，本機優先，其次 origin。value 是給人看的短名，ref 是給 git 比對用的完整 ref（同名 tag 不會蓋過它）。
+const declaredBranch = declared('Integration branch');
+const declaredIntegration = !declaredBranch ? null
+  : [[`refs/heads/${declaredBranch}`, declaredBranch], [`refs/remotes/origin/${declaredBranch}`, `origin/${declaredBranch}`]]
+    .map(([ref, value]) => ({ ref, value })).find(({ ref }) => git('show-ref', '--verify', '--quiet', ref) !== null) ?? null;
+
+// 整合分支：有宣告時只看宣告；沒有時是本機或遠端名為 integration 的分支（可帶前綴，如 pilot/integration）。
 function integration() {
+  if (declaredBranch) {
+    const evidence = `${declarationOf('Integration branch')} ${declaredBranch}`;
+    return signal(declaredIntegration?.value, [declaredIntegration ? evidence : `${evidence} 不存在（本機與 origin 都沒有）`]);
+  }
   const refs = lines(git('for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes'));
   const hit = refs.find(ref => /(^|\/)integration$/.test(ref) && !ref.startsWith('origin/')) ?? refs.find(ref => /(^|\/)integration$/.test(ref));
   return signal(hit, hit ? [`git branch: ${hit}`] : ['沒有名為 integration 的分支']);
@@ -294,9 +312,18 @@ function worktrees() {
   return signal(hit, hit ? ['git worktree list／合入紀錄'] : ['worktree 與最近 300 個合入紀錄都沒有帶 Issue 號碼的分支']);
 }
 
-// 近期的 pilot 或 stage commit：90 天內的 commit 主旨提到 pilot/stage-<key> 或 stage batch-<key>。
+// 近期的 pilot 或 stage commit：90 天內的 commit 主旨符合宣告的樣式；沒有宣告時是提到 pilot/stage-<key> 或 stage batch-<key>。
 function pilotCommits() {
   const subjects = lines(git('log', '--all', '-n', '300', '--since=90.days', '--format=%h %s'));
+  const pattern = declared('Stage commit');
+  if (pattern) {
+    const evidence = `${declarationOf('Stage commit')} ${pattern}`;
+    let regex;
+    try { regex = new RegExp(pattern); } catch (error) { return signal(null, [`${evidence} 不合法：${error.message}`]); }
+    // 只比對主旨，不含短碼，`^` 才錨定在主旨開頭。
+    const match = subjects.find(line => regex.test(line.slice(line.indexOf(' ') + 1)));
+    return signal(match, [match ? evidence : `${evidence}：90 天內沒有符合的 commit`]);
+  }
   const hit = subjects.find(subject => /\bpilot\/stage-|\bstage[\s-]batch-/i.test(subject));
   return signal(hit, hit ? ['git log --all --since=90.days'] : ['90 天內沒有 pilot/stage 或 stage batch commit']);
 }
@@ -403,13 +430,13 @@ function installTarget() {
 }
 const target = installTarget();
 
-/** 進行中的 linked worktree：比對預設分支（origin/HEAD，沒有時用主 checkout 目前的分支）。 */
+/** 進行中的 linked worktree：比對宣告且存在的整合分支，否則預設分支（origin/HEAD，沒有時用主 checkout 目前的分支）。 */
 function inFlightWorktrees() {
   if (!station) return [];
   const blocks = git('worktree', 'list', '--porcelain').split(/\n\n+/).map(block => ({
     path: block.match(/^worktree (.*)$/m)?.[1], branch: block.match(/^branch refs\/heads\/(.*)$/m)?.[1],
   })).filter(({ path }) => path);
-  const base = git('symbolic-ref', '--short', 'refs/remotes/origin/HEAD') || blocks[0]?.branch;
+  const base = declaredIntegration?.ref || git('symbolic-ref', '--short', 'refs/remotes/origin/HEAD') || blocks[0]?.branch;
   return blocks.slice(1).filter(({ path }) => existsSync(path)).flatMap(({ path, branch }) => {
     const ahead = branch && base ? Number(git('rev-list', '--count', `${base}..${branch}`) || 0) : 0;
     const dirty = Boolean(spawnSync('git', ['-C', path, 'status', '--porcelain'], { encoding: 'utf8' }).stdout?.trim());

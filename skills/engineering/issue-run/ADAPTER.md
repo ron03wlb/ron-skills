@@ -86,6 +86,11 @@ Default: claim timeout 24 hours; categories `bug`, `enhancement`.
 
 What `/issue-queue` reads beyond the Tracker, Readiness, Pool, and Pilot sections: `Parent hints: off` turns off its parent hints and the per-parent review. Default: on. Its worker cap is the Pilot section's; with no Pilot section (L1, L2) or no cap named there, the cap is `不限`.
 
+## Detect
+
+The names `/setup-workflow`'s `detect.mjs` reads when this repo's integration branch or stage commits do not follow its fixed rules (a branch named `integration`, with or without a prefix; a subject containing `pilot/stage-` or `stage batch-`). Each is one line of its own in this section, written in this file and not in a file it points to: start a line with `Integration branch:` followed by the branch name, and a line with `Stage commit:` followed by a JavaScript regex matched against commit subjects (for example `feature/ron/#24846` and `^merge: 整合 `). A leading `- ` and backticks around the value are optional, any other markup (bold, `* `) is not read as a declaration, and a `#` is part of the value. A declaration replaces the fixed rule for that item only: the branch counts when it exists locally or on `origin`, and it becomes the base for `IN_FLIGHT`; a subject scan keeps its range (90 days, 300 commits). A branch that does not exist or a regex that does not compile makes that signal `missing`, with the declaration in its evidence.
+Default: no declarations; the fixed rules apply. A declaration changes what is detected, not what is installed: a new resident pilot still needs a GitHub tracker.
+
 ## Pilot
 
 A filled-in skeleton for every entry below, wired to the setup-workflow template scripts, is [PILOT-TEMPLATE.md](PILOT-TEMPLATE.md): copy it to `docs/agents/pilot.md` and point this section at it. What `/issue-pilot` needs on top of the sections above: pool query, worker cap and batch size, dispatch, watch and probe commands, stage, regression, integrate, close, and handoff. The files under `.scratch/pilot/`, batch checkpoints included, follow [PILOT-STORE.md](../issue-pilot/PILOT-STORE.md): write only the values that differ per project here, never a file format. Besides those, name:
