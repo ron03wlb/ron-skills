@@ -9,12 +9,12 @@
 // 依指令中的 cd 與 hook 輸入的 cwd 解析相對路徑並展開 `{a,b}`，每個目標用和 Edit|Write 同一個判斷；heredoc 內文與引號內文字不算。eval、子 shell 字串等寫法不在辨識範圍。
 // `$NAME`／`${NAME}` 先用同一條指令裡的賦值、再用 hook 的環境變數代換；解析不了的（未賦值、`$(…)`、`${X:-y}`）不算寫入目標，
 // 否則 `cat > "$SP/x.md"` 會被接在 cwd 底下誤判成主 checkout 內的新檔（#71）。
-// 主 checkout 切分支也擋（git switch、git checkout -b 或切到其他本機分支，切回預設分支放行）：曾有兩個 session 先後在主 checkout 開分支，
+// 主 checkout 切分支也擋（git switch、git checkout -b 或切到其他本機分支，切回它該停的分支放行：adapter `## Detect` 宣告的整合分支，沒宣告時是預設分支）：曾有兩個 session 先後在主 checkout 開分支，
 // 一方的 commit 落到另一方的分支上，送出的是沒有新 commit 的空分支（retro 2026-10-30）。
 // 輸入不合法、git 失敗等任何無法判定的情況 exit 0 不輸出（fail-open），避免卡住正常工作。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const git = (cwd, ...args) => spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
@@ -218,14 +218,31 @@ function defaultBranches(dir) {
   return head.status === 0 ? [head.stdout.trim().replace(/^origin\//, '')] : ['main', 'master'];
 }
 
+/** adapter `## Detect` 宣告的整合分支（格式同 setup-workflow 的 detect.mjs）；沒宣告或讀不到時 null。 */
+function declaredIntegration(dir) {
+  const root = git(dir, 'rev-parse', '--show-toplevel');
+  if (root.status !== 0) return null;
+  let adapter;
+  try { adapter = readFileSync(join(root.stdout.trim(), 'docs/agents/issue-run.md'), 'utf8'); } catch { return null; }
+  const section = adapter.split(/^## /m).find(part => /^Detect\b/.test(part));
+  const raw = section?.match(/^(?:- )?Integration branch:[ \t]*(.*)$/m)?.[1].trim();
+  return raw?.replace(/^`(.*)`$/, '$1') || null;
+}
+
+/** 主 checkout 該停的分支：有宣告整合分支時只有它，否則是預設分支。 */
+function homeBranches(dir) {
+  const integration = declaredIntegration(dir);
+  return integration ? [integration] : defaultBranches(dir);
+}
+
 const CREATE_FLAGS = new Set(['-c', '-C', '--create', '--force-create', '-b', '-B', '--orphan', '--detach', '-d']);
 
 /**
  * Bash 指令在主 checkout 切換或新開分支的位置（啟發式）：git switch、git checkout -b／-B／--orphan／--detach，或 git checkout <本機分支>；
- * 切到預設分支、`git checkout -- <檔案>` 放行。
+ * 切到主 checkout 該停的分支（homeBranches）、`git checkout -- <檔案>` 放行。
  * @param {string} command Bash tool 的 command
  * @param {string} cwd hook 輸入的 cwd；指令內的 `cd <dir>` 與 `git -C <dir>` 依序套用
- * @returns {{repo: string, unresolvedC?: string}[]} 會被切走分支的主 checkout 目錄；`git -C` 的引數解析不了、改依目前目錄判斷時，
+ * @returns {{repo: string, home: string, unresolvedC?: string}[]} 會被切走分支的主 checkout 目錄；`git -C` 的引數解析不了、改依目前目錄判斷時，
  *   unresolvedC 是那個未代換的引數。無法解析時丟錯（呼叫端 fail-open）
  */
 export function bashBranchSwitches(command, cwd) {
@@ -252,9 +269,10 @@ export function bashBranchSwitches(command, cwd) {
     if (!isMainCheckout(repo)) continue;
     const target = rest.find(arg => !arg.startsWith('-'));
     const creates = rest.some(arg => CREATE_FLAGS.has(arg));
-    if (!creates && defaultBranches(repo).includes(target)) continue;
+    if (!creates && homeBranches(repo).includes(target)) continue;
     if (sub === 'checkout' && !creates && git(repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${target}`).status !== 0) continue;
-    found.push(unresolvedC === undefined ? { repo } : { repo, unresolvedC });
+    const home = homeBranches(repo).join('／');
+    found.push(unresolvedC === undefined ? { repo, home } : { repo, home, unresolvedC });
   }
   return found;
 }
@@ -280,7 +298,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     try { switches = bashBranchSwitches(command, typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd()); } catch { process.exit(0); }
     if (switches.length) {
       const unresolved = switches.find(found => found.unresolvedC !== undefined);
-      process.stderr.write(`主 checkout 防護：不在主 checkout（${switches[0].repo}）切換或新開分支，它要一直停在預設分支；其他 session 同時在這裡開分支時，commit 會落到別人的分支上。`
+      process.stderr.write(`主 checkout 防護：不在主 checkout（${switches[0].repo}）切換或新開分支，它要一直停在 ${switches[0].home}；其他 session 同時在這裡開分支時，commit 會落到別人的分支上。`
         + '請用 `node scripts/orca-worktree-create.mjs --name <name> --base-branch <integration> --branch <branch>` 開 worktree 再 commit。'
         + (unresolved ? `\n\`git -C ${unresolved.unresolvedC}\` 的路徑 hook 解析不了，改依目前目錄判斷；目標其實是 worktree 時，改寫成字面路徑或先 cd 過去再跑。` : '')
         + '\n');
