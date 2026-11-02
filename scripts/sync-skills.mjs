@@ -2,7 +2,7 @@
 // 重建 skill 連結：上游原版（Matt、pstack，皆唯讀）＋ overlays/ 補丁＋本 repo 自有 skills。
 // 由 bin/sync-skills 呼叫；原本是 bash，macOS 內建 bash 3.2 沒有 `declare -A`，改寫成 node（#85）。
 // 用法：bin/sync-skills [--check | --list]
-//   --check  只檢查 overlay 能否套用在目前的上游 checkout，不改任何連結。
+//   --check  只檢查 overlay 能否套用在目前的上游 checkout，不改任何連結；也回報 SKILL_DIRS 裡的失效連結與 repo 外的來源（#287），這是這台機器的狀態，不影響 exit。
 //   --list   列出目前可用的 skill：user/model、名稱、來源（含目前目錄的 .claude/skills 專案 skill）。
 // 同步時也把 hooks/ 的檔案連到 HOOK_DIR：沒版控的全域 hook 只存在一台機器，換機就失效。實體檔內容相同才換成連結，不同就 SKIP。
 // 環境變數：MATT_SKILLS（預設 ~/code/skills）、PSTACK_SKILLS（預設 ~/code/pstack）、
@@ -11,7 +11,7 @@
 // 清單檔：matt-skills.txt（相對 skills/，兩層 <類別>/<名稱>）、pstack-skills.txt（相對 skills/，一層 <名稱>）。
 // 清單內 `# pin: <SHA>` 註明驗證過的上游版本；checkout 的 HEAD 不同時只警告。
 // stdout：--list 每個 skill 一行；--check 成功時 `CHECK_OK <n> skills`；同步成功時先印內容有變的 overlay `SKILL_CHANGED <名稱>`（已安裝的全域行為變了，retro spay2 b949589b#2），再印 `SYNCED <n> skills → <dirs>`。
-// stderr：MISSING、DUPLICATE、OVERLAY_FAILED（exit 1），NEW、SKIP、WARN（只提示）。exit 0 成功、1 有任何 exit 1 的行或檢查失敗。
+// stderr：MISSING、DUPLICATE、OVERLAY_FAILED（exit 1），NEW、SKIP、WARN、DANGLING <連結> -> <目標>、EXTERNAL <連結> -> <真實路徑>（只提示）。exit 0 成功、1 有任何 exit 1 的行或檢查失敗。
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -59,6 +59,20 @@ const logicalCwd = () => {
 
 /** 受管來源，依 --list 判斷來源的順序；同步時只清掉指向這些位置的舊連結。 */
 const MANAGED = [{ base: BUILD, label: 'overlay' }, { base: MATT, label: 'matt' }, { base: PSTACK, label: 'pstack' }, { base: ROOT, label: 'ron-skills' }];
+
+/** 主 checkout：從 worktree 跑時 ROOT 是 worktree，已安裝的連結指向主 checkout 不算外部來源。 */
+const mainCheckout = () => dirname(resolve(ROOT, git(ROOT, ['rev-parse', '--git-common-dir'], { fallback: '.git' })));
+
+/** --check 的提示：連結目標已不存在（DANGLING），或來源不在受管位置、也不在另一個 SKILL_DIRS 裡（EXTERNAL）。舊 repo 搬走時不會有別的東西提醒。 */
+function reportLinks() {
+  const known = [...MANAGED.map(({ base }) => base), mainCheckout(), ...DESTS];
+  for (const dest of DESTS) {
+    for (const link of entries(dest).filter(isLink)) {
+      if (!existsSync(link)) warn(`DANGLING ${link} -> ${readlinkSync(link)}`);
+      else if (!known.some(base => under(realpathSync(link), base))) warn(`EXTERNAL ${link} -> ${realpathSync(link)}`);
+    }
+  }
+}
 
 function list() {
   const pwd = logicalCwd();
@@ -154,6 +168,7 @@ function sync(check) {
 
     if (failed) return 1;
     if (check) {
+      reportLinks();
       console.log(`CHECK_OK ${target.size} skills`);
       return 0;
     }

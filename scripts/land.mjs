@@ -24,8 +24,9 @@
 // 主分支（下文的 main）：`--main <branch>`；沒帶時讀 origin/HEAD（clone 時設定，`git remote set-head origin --auto` 可重設），都沒有才用 main（#281）。
 // stdout：每步一行進度（PUSHED、PR、CHECKS_PASSED、RESTAMPED <pr> <新 tip>（合入 main 沒有衝突時是 MAIN_MERGED），`--local-checks` 時是 LOCAL_CHECKS <pr> <sha> <結果行>，收尾的 UNBARE、
 //   WORKTREE_REMOVED、BRANCH_DELETED，最後 MAIN、SKILL_CHANGED <名稱>（sync-skills 換掉內容的全域 skill，每個一行）、SYNC_SKILLS）；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
-//   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、restamp-checks-failed、merge、not-merged、worktree-rm）。
-// 合入之後的收尾問題（main 沒跟上、sync-skills 失敗）印 WARN，不影響 LANDED。
+//   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、local-checks-timeout、restamp-checks-failed、restamp-checks-timeout、merge、not-merged、worktree-rm）。
+// local-checks-timeout、restamp-checks-timeout 是檢查跑到 LAND_LOCAL_CHECKS_TIMEOUT_MS 被中止，不是檢查沒過：結果未知，在該 SHA 跑過檢查才重跑（#297）。
+// 合入之後的收尾問題（main 沒跟上、sync-skills 失敗）印 WARN，不影響 LANDED；main 沒跟上時不跑 sync-skills，印 WARN skills-not-updated <merge sha>（已安裝的 skill 還是舊版，#297）。
 // exit：0 已合入；4 STOP；2 用法錯誤；1 其他失敗。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -201,6 +202,7 @@ function runLocalChecks(main, branch, tip, expected, command) {
     const log = join(main, '.scratch', `land-local-checks-${tip}.log`);
     writeFileSync(log, output);
     const pass = output.match(/^CHECK_PASS .*$/m)?.[0] ?? output.trim().split('\n').pop();
+    if (result.error?.code === 'ETIMEDOUT') throw new Stop(`local-checks-timeout ${tip} ${log}`);
     if (result.status !== 0 || !pass) throw new Stop(`local-checks-failed ${tip} exit ${result.error?.code ?? result.status}${pass ? '' : ' 沒有輸出'} ${log}`);
     return pass;
   } finally {
@@ -277,6 +279,7 @@ async function mergeMainAndRestamp(main, branch, tree, number, command) {
     mkdirSync(join(main, '.scratch'), { recursive: true });
     const log = join(main, '.scratch', `land-restamp-checks-${sha}.log`);
     writeFileSync(log, output);
+    if (result.error?.code === 'ETIMEDOUT') throw new Stop(`restamp-checks-timeout ${sha} ${log}`);
     if (result.status !== 0) throw new Stop(`restamp-checks-failed ${sha} exit ${result.error?.code ?? result.status} ${log}`);
     const push = run('git', ['push', 'origin', branch], main);
     if (push.status !== 0) throw new Stop(`push ${push.stderr.trim().split('\n').pop()}`);
@@ -424,7 +427,9 @@ export async function land({ branch, keepBranch = false, localChecksSha, checkCo
   const notSynced = syncMain(main);
   console.log(notSynced ? `WARN main-not-synced ${notSynced}` : `MAIN ${git(main, 'rev-parse', 'HEAD')}`);
   const sync = join(main, 'bin/sync-skills');
-  if (existsSync(sync)) {
+  // 主 checkout 還是舊內容，這時同步只會把舊版裝回去，再印 SYNC_SKILLS ok 就誤導了（#297：裝上的 retro 還是舊版）。
+  if (existsSync(sync) && notSynced) console.log(`WARN skills-not-updated ${sha}`);
+  else if (existsSync(sync)) {
     const result = run(sync, [], main);
     for (const line of result.stdout.split('\n')) if (line.startsWith('SKILL_CHANGED ')) console.log(line);
     console.log(result.status === 0 ? 'SYNC_SKILLS ok' : `WARN sync-skills exit ${result.status}`);

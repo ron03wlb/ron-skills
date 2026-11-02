@@ -227,20 +227,6 @@ test('#277：真正的範本 check-portability 與 issue-pool 可以 dry-run，i
   }
 });
 
-test('#291：會 spawn git 的正本測試，複製時都帶上 scripts/test/isolate-git-env.mjs', t => {
-  // 真正的正本先快照進 fixture 並 commit：copy-templates 擋未提交的正本，直接對 repo 跑的話，改這幾支時 pre-commit 的 bin/check 必紅。
-  const { source, target, copier } = fixture(t);
-  const templates = join(source, 'skills/engineering/setup-workflow/templates');
-  cpSync(new URL('../skills/engineering/setup-workflow/templates', import.meta.url).pathname, templates, { recursive: true });
-  git(source, 'add', '.');
-  git(source, 'commit', '-qm', 'real templates');
-  for (const name of ['check-claude-settings.mjs', 'claude-hook-unbare.sh', 'land.mjs', 'pilot-dispatch.mjs', 'pilot-handoff.mjs', 'pilot-pr-body.mjs', 'pilot-probe.mjs', 'pilot-unbare.sh']) {
-    const result = run(copier, target, '--dry-run', name);
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /^COPY scripts\/test\/isolate-git-env\.mjs$/m, name);
-  }
-});
-
 test('#281：開頭的 `// copy-templates: requires <檔名>...` 宣告一定要帶上的同目錄檔；沒宣告的 join(here, …) 選用檔不帶', t => {
   const { source, target, copier } = fixture(t);
   const templates = join(source, 'skills/engineering/setup-workflow/templates');

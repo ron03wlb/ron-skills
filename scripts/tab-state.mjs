@@ -9,7 +9,8 @@
 // --topic 把標題整個設成 `<狀態>｜<主題>`，不讀目前標題：session 開頭用它，記錄裡可能還是同一個 handle 上一個 session 的主題（#141）；
 // 之後換階段、動作、Issue、⏸，或離開處理中要拿掉階段與動作時也帶 --topic；只換狀態前綴時不帶（標題格式見 issue-run ADAPTER.md 的 Tab state 段）。
 // stdout：改名成功時印 `TAB_STATE <新標題>`。
-// exit：0 已改名，或沒有 ORCA_TERMINAL_HANDLE、Orca 呼叫失敗（都不輸出）；2 狀態不合法、--topic 沒有值。
+// stderr：Orca 呼叫失敗時印 `TAB_STATE_FAILED <狀態> <原因>`；原因是逾時時改名可能已送達，分頁實際標題要另外看（#295：沒印 TAB_STATE 卻改成功、和完全沒改，看起來一樣）。
+// exit：0 已改名，或沒有 ORCA_TERMINAL_HANDLE（不輸出）、Orca 呼叫失敗（不擋 hook 與 script）；2 狀態不合法、--topic 沒有值。
 // ORCA_CLI_COMMAND 沒設時用 PATH 上的 `orca`。
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -21,7 +22,9 @@ export const STATES = ['處理中', '待 Retro', '待關閉'];
 const SEP = '｜';
 const PREFIX = new RegExp(`^(?:${STATES.join('|')})${SEP}`);
 /** 一次 tab-state 或 hook 呼叫裡全部 Orca 呼叫共用的上限。 */
-const ORCA_BUDGET_MS = 10000;
+const ORCA_BUDGET_MS = Number(process.env.TAB_STATE_BUDGET_MS || 10000);
+/** 讀目前標題的 `terminal list --include-visual-layouts` 另外的上限：它在這台機器花過 12.8 秒（#295），不留時間給改名的話，整次都被中止。逾時就改用記錄的標題。 */
+const ORCA_LIST_MS = Number(process.env.TAB_STATE_LIST_BUDGET_MS || 6000);
 
 /**
  * Orca CLI 呼叫；回傳 JSON 的 result，失敗丟出含錯誤碼的 Error，`signal` 中止時殺掉 CLI。
@@ -92,9 +95,10 @@ function tabTitleOf(node, handle) {
 export async function currentTitle(ctx, handle) {
   let live = null;
   try {
-    const { visualLayouts } = await orca(ctx, 'terminal', 'list', '--include-visual-layouts');
+    const limit = AbortSignal.timeout(ORCA_LIST_MS);
+    const { visualLayouts } = await orca({ ...ctx, signal: ctx.signal ? AbortSignal.any([ctx.signal, limit]) : limit }, 'terminal', 'list', '--include-visual-layouts');
     live = tabTitleOf(visualLayouts, handle);
-  } catch { /* 舊版 Orca 沒有這個旗標，或 Orca 暫時連不上 */ }
+  } catch { /* 舊版 Orca 沒有這個旗標、Orca 暫時連不上，或太慢 */ }
   if (live !== null) return live;
   const recorded = recordedTitle(handle);
   if (recorded !== null) return recorded;
@@ -124,7 +128,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     const title = await setState(orcaContext(), handle, state, topic);
     console.log(`TAB_STATE ${title}`);
-  } catch {
+  } catch (error) {
+    console.error(`TAB_STATE_FAILED ${state} ${error.name === 'AbortError' ? `逾時（${ORCA_BUDGET_MS} ms），改名可能已送達` : error.message}`);
     process.exit(0);
   }
 }

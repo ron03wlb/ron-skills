@@ -127,7 +127,7 @@ ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? 
   }
   const probe = ({ input = 'stdin 不該被 orca 讀到\n', args = [], extraEnv = {} } = {}) =>
     spawnSync('node', [probeScript, repo, ...args], { encoding: 'utf8', input, env: { ...probeEnv, ORCA_CLI_COMMAND: cli, ...extraEnv } });
-  return { repo, pilot, origin, git, log, batch, probe, probeEnv, ghLog: join(temp, 'gh.log') };
+  return { repo, pilot, origin, git, log, batch, probe, probeEnv, cli, temp, ghLog: join(temp, 'gh.log') };
 }
 
 // 池子摘要（POOL_EMPTY｜POOL_READY｜POOL_FAILED，#240）每次都印一行；其他測試只看自己的行，比對前去掉它，池子的測試另外看 stdout。
@@ -208,6 +208,30 @@ test('呼叫 orca 時不把 stdin 交給它，每個成員都讀得到', t => {
 });
 
 // 這一輪剛讀到 DONE 的成員與 checkpoint 已記成 done 的成員都算 done；stop 的成員要先移走（#163：照跑 pilot-land 只得到 STOP member）；
+// #295：batch-53-55 已 closed，兩列 state 還是 running，Probe 印 WORKER 53 STUCK orca terminal_handle_stale，帳本記 2。
+test('closed batch 殘留的 running 列：不印 WORKER、不讀 terminal、不算容量', t => {
+  const ledger = join(realTmpdir(), `probe-ledger-${process.pid}-closed.tsv`);
+  t.after(() => rmSync(ledger, { force: true }));
+  const { batch, probe } = fixture(t, { screens: {} });
+  batch('53-55', 'closed 2026-10-30T13:38:21+08:00', [{ n: 53, state: 'running', handle: 'term_53', started: ago(5), stuckAfter: '60m' }]);
+
+  const result = probe({ args: ['--capacity', 'app'], extraEnv: { PILOT_WORKERS_LEDGER: ledger } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /^WORKER 53 /m);
+  assert.match(readFileSync(ledger, 'utf8'), /^app\t0\b/m);
+});
+
+test('--tail：印 worker 畫面的最後 n 行，不需要 jq', t => {
+  const { cli, temp } = fixture(t, { screens: { term_9: { tail: ['a', 'b', 'c', 'DONE 9 abc'] } } });
+  const run = (...args) => spawnSync('node', [script, ...args], { encoding: 'utf8', env: { ...env, ORCA_CLI_COMMAND: cli }, cwd: temp });
+  const two = run('--tail', 'term_9', '--lines', '2');
+  assert.equal(two.status, 0, two.stderr);
+  assert.equal(two.stdout, 'c\nDONE 9 abc\n');
+  assert.equal(run('--tail', 'term_9').stdout, 'a\nb\nc\nDONE 9 abc\n');
+  assert.equal(run('--tail').status, 2);
+  assert.equal(run('--tail', 'term_9', '--lines', '0').status, 2);
+});
+
 // 已經 staged、merged、closed 的 batch 不再印（它們的成員也都是 done）。
 test('dispatched 的 batch 每個成員都 done 時才印 STAGEABLE <key>；有 done 也有 stop 時印 MOVE <key> <stop 成員>', t => {
   const { batch, probe } = fixture(t, { screens: {

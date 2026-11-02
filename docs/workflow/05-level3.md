@@ -89,7 +89,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | 用途 | 做法 |
 | --- | --- |
 | 派工 | 三步：`orca worktree create`（不帶 `--repo`、不帶 `--agent`）→ `orca terminal create --command claude` → 用會確認送達的送出腳本送 `/issue-run <n> --worker <checkpoint>`；worktree 路徑與 terminal handle 記進批次 checkpoint；`worktree create` 之後確認主 checkout 沒有被設成 bare（見 [08 常見坑](08-pitfalls.md)） |
-| 監看 | `orca terminal read --terminal <handle>`：畫面最後一行是 `DONE <n> <sha>` 或 `STOP <n> <原因>` 就是做完；terminal 已結束但沒有這行就是卡住 |
+| 監看 | `node scripts/pilot-probe.mjs --tail <handle>`：畫面最後一行是 `DONE <n> <sha>` 或 `STOP <n> <原因>` 就是做完；terminal 已結束但沒有這行就是卡住 |
 | 結案 | `orca worktree rm` 移除 worktree，Orca 不會留下孤兒紀錄；rm 之後確認主 checkout 沒有被設成 bare（見 [08 常見坑](08-pitfalls.md)） |
 | 每個 tick | coordinator 每次被叫醒先確認主 checkout 沒有被設成 bare：Orca 的 worktree 操作可能稍後才改動 `core.bare`（見 [08 常見坑](08-pitfalls.md)） |
 | 分頁狀態 | 每個分頁標題以 `處理中｜`、`待 Retro｜` 或 `待關閉｜` 開頭（[分頁狀態](../../GLOSSARY.md#分頁狀態)）：派工與交接開出的分頁先是處理中；單獨跑的 `/issue-run` 合入（`LANDED`；coordinator 以 `--keep-branch` 落地不算）、worker 寫出 `DONE`（早於 coordinator 合入）、coordinator 交接完成（`HANDED_OFF`）時 hook 自動換成待 Retro；`/retro` 結束時自己換成待關閉，分頁由人關。切換用 `scripts/tab-state.mjs`，格式、改名時機與轉換條件寫在 adapter 的分頁狀態（Tab state）段 |

@@ -20,7 +20,7 @@
 
 - **Gates.** 見 [pilot-exceptions.md](pilot-exceptions.md)：要開或解 gate（Probe 印 `GATE`、`GATE_MALFORMED`，或任何條目寫「變成 gate」）時讀。
 
-- **Defaults for `preferences.md`.** 整台機器同時跑的 worker 合計最多 4 個（`$PILOT_MACHINE_WORKER_CAP`，寫在 `~/.zshrc`，沒設時 4），含 investing 等其他 repo 的 pilot／cycle，fresh 重派也算在內；合計讀全機帳本（Probe 的 `--capacity` 寫入、Dispatch 的 `--capacity` 檢查）；還沒寫帳本的 repo（investing 的對應單合入前）不在帳本裡，派工前另把它在跑的 worker 加進來（investing 讀 `$INVESTING_DATA_ROOT/.local/agent-notes/cycle/state.md` 的 Batch in flight 裡「開跑」的子代理），合計加上這批人數超過上限就不 Pick、不 Dispatch。依據：這台 10 核機器上 `bin/check` 的 `node --test` 開 `availableParallelism()-1` = 9 個並行程序，同時 8 個 worker 時 1 分鐘 load 約 90，Regression 的計時測試失敗；2–4 個時都通過（#178）。每批最多 2 個 Issue；worker 指令見 Dispatch；只有 coordinator 合進 batch 與整合分支；push、開 PR、合進 `main` 都由 coordinator 照 Push gate 做，不交給人（worker 不 push、不開 PR）；每個 session 合入 2 批或遇到 compaction 就 handoff。
+- **Defaults for `preferences.md`.** 整台機器同時跑的 worker 合計最多 4 個（`$PILOT_MACHINE_WORKER_CAP`，寫在 `~/.zshrc`，沒設時 4），含 investing 等其他 repo 的 pilot／cycle，fresh 重派也算在內；合計讀全機帳本（Probe 的 `--capacity` 寫入、Dispatch 的 `--capacity` 檢查）；還沒寫帳本的 repo（`scripts/` 沒有 `pilot-capacity.mjs` 或沒帶 `--capacity`，例如 investing、spay2（#298））不在帳本裡，派工前另把它在跑的 worker 加進來（investing 讀 `$INVESTING_DATA_ROOT/.local/agent-notes/cycle/state.md` 的 Batch in flight 裡「開跑」的子代理；其他 repo 看 `ListAgents` 裡該 repo 的 busy session，#295），合計加上這批人數超過上限就不 Pick、不 Dispatch。依據：這台 10 核機器上 `bin/check` 的 `node --test` 開 `availableParallelism()-1` = 9 個並行程序，同時 8 個 worker 時 1 分鐘 load 約 90，Regression 的計時測試失敗；2–4 個時都通過（#178）。每批最多 2 個 Issue；worker 指令見 Dispatch；只有 coordinator 合進 batch 與整合分支；push、開 PR、合進 `main` 都由 coordinator 照 Push gate 做，不交給人（worker 不 push、不開 PR）；每個 session 合入 2 批或遇到 compaction 就 handoff。
 
 - **Integration branch.** 本機 `pilot/integration`，第一次用時從 `main` 開（`git branch pilot/integration main`）。push、開 PR、合進 `main` 和之後跟上 `origin/main` 都見 Push gate。要讓它跟上 `origin/main` 時（例如 retro 分支直接落地進 `main` 之後、下一次 Stage 之前）在主 checkout 跑 `node scripts/pilot-land.mjs sync-main --check-command 'bin/check --upstream' --resolver scripts/pilot-resolve.mjs`（見 Push gate 第 3 步，入口自己轉到 stage worktree 的版本，不必算路徑）：切分支與快轉都在 `<stage worktree>` 做，主 checkout 不切分支，也不再手打 `merge --ff-only`。
 
@@ -40,7 +40,7 @@
 
 - **Scope supplement.** 見 [pilot-exceptions.md](pilot-exceptions.md)：Dispatch 之後要給 worker 補範圍時讀。
 
-- **Watch.** `"$ORCA_CLI_COMMAND" terminal read --terminal <handle> --screen --json | jq -r '.result.terminal.tail[-40:][]'`（JSON 其餘大多是每行的 `trailingSpaces` 中繼資料，只取 `tail`；worker 的摘要和結果行都在這 40 行裡）：畫面最後一行是 `DONE <n> <sha>` 或 `STOP <n> <cause>` 就是做完了；`status: exited` 但沒有這行就是卡住。stuck-after 預設 90 分鐘，等累積了實際跑的時間再調。沒有背景 watcher 指令：worker 還在跑時，coordinator 每次被叫醒都 read 一次，以 1200 秒排下一次喚醒。
+- **Watch.** `node scripts/pilot-probe.mjs --tail <handle>`（畫面最後 40 行，`--lines <n>` 可調；不依賴 `jq`，#295；worker 的摘要和結果行都在這 40 行裡）：畫面最後一行是 `DONE <n> <sha>` 或 `STOP <n> <cause>` 就是做完了；`status: exited` 但沒有這行就是卡住。stuck-after 預設 90 分鐘，等累積了實際跑的時間再調。沒有背景 watcher 指令：worker 還在跑時，coordinator 每次被叫醒都 read 一次，以 1200 秒排下一次喚醒。
 
 - **Agent rows.** 記在 batch checkpoint 的成員行（見 Batch）；worker 自己開的 subagent 不另外記。
 

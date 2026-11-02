@@ -5,12 +5,15 @@
 // 命中的字：不在引號、heredoc 內容、註解、`[[ … ]]` 與 `(( … ))` 裡，以 `=` 開頭、後面還有字的字（`===`、`==`、`=x`）。
 // 單獨一個 `=`（`[ a = b ]`）、`VAR=x`、`--opt=x`、`a==b` 都不是以 `=` 開頭的字，放行。
 // NOMATCH：沒加引號、含 `*`／`?` 的 `--<opt>=<pattern>` 字（`--include=*.md`）zsh 會當檔名展開，找不到就印
-// `no matches found: --include=*.md` 並中止整串指令（session 19341230，#209）。一般的 `*.md` 參數多半是刻意展開，放行。
+// `no matches found: --include=*.md` 並中止整串指令（session 19341230，#209）。
 // 分支 pattern 同理：沒加引號、含 `*`／`?`、以 `issue/`、`pilot/`、`retro/`、`origin/` 開頭的字（`git merge-base issue/193-* …`）
 // 不是檔案，zsh 一樣印 `no matches found` 中止（session cbef7b39，#218）。
 // for 清單：`for d in ~/a/*/x; do` 的 glob 沒有相符檔案時，NOMATCH 中止整串指令，連清單之後的 `echo done` 都不會跑，agent 看到沒有輸出就回報「找不到」
 // （session f236b357 jsonl 第 207 行：`~/Documents/Workspace/mec-wiki` 明明存在，#284）。多半有相符檔案的 `for f in tests/*.test.mjs` 不該擋，所以 hook 實際比對檔案系統，
 // 只擋此刻沒有相符檔案的；帶 `(N)` 限定、`setopt nullglob`、含變數或大括號（看不出會展開成什麼）、指令裡有 `cd` 時的相對路徑（不知道當時的目錄）都放行。
+// 一般參數（#287）：`grep -l x scripts/*health* 2>/dev/null` 沒有相符檔案時一樣 NOMATCH 中止（session 3cf4e67c jsonl 第 196 行），而且 2>/dev/null 救不了。和 for 清單一樣比對檔案系統，有相符的放行；
+// 只在 $SHELL 是 zsh 時擋：bash 把沒有相符的 glob 原樣傳給指令，無害。`case`、`noglob` 看不出是不是 glob，放行。
+// 指令開頭只有一個 `cd <字面絕對路徑>` 時，相對路徑以該路徑解析（#287 的兩條指令都以 `cd /Users/…` 開頭）；其他 cd、pushd 看不出當時的目錄，相對路徑放行。
 // PIPESTATUS：Bash 工具跑的是 zsh，bash 的 `${PIPESTATUS[0]}` 在 zsh 展開成空字串，pipe 前那支指令的 exit code 就不見了
 // （session 8d8ec702 jsonl 第 183 行 `… | tail -20; echo "exit=${PIPESTATUS[0]}"` 印 `exit=`，#238）。沒加引號或在雙引號裡的才算，單引號與 heredoc 內容放行。
 // 命中時 exit 2，stderr 說明原因與改法；輸入不合法或不是 Bash 時 exit 0 不輸出。
@@ -38,6 +41,11 @@ export function forGlobWords(command) {
   return scan(command).forGlobs;
 }
 
+/** 一般參數（不在 for 清單、`--opt=` 或 ref 字裡）沒加引號、含 `*`／`?`、沒帶 `(N)` 限定的字（依出現順序）。 */
+export function argGlobWords(command) {
+  return scan(command).argGlobs;
+}
+
 /** 一個 glob 此刻有沒有相符的路徑；`**`、大括號這類看不出會展開成什麼的算有，不擋。 */
 export function globMatches(pattern, { cwd = process.cwd(), home = homedir() } = {}) {
   if (/[$`{\\'"]|\*\*/.test(pattern) || /^~[^/]/.test(pattern)) return true;
@@ -63,12 +71,33 @@ export function globMatches(pattern, { cwd = process.cwd(), home = homedir() } =
 
 // 指令自己關掉 NOMATCH 時清單不會中止。
 const NOMATCH_OFF = /\b(?:setopt\s+[^;\n]*\b(?:null_?glob|no_?nomatch)\b|unsetopt\s+[^;\n]*\bnomatch\b)/i;
+// `case` 的 pattern 與 `noglob` 之後的字不展開。
+const NOT_GLOB_CONTEXT = /(?:^|[\s;&|(])(?:case|noglob)\s/;
 
-/** 指令裡 for 清單中此刻沒有相符檔案的 glob；指令會 cd 時相對路徑看不出當時的目錄，放行。 */
-export function unmatchedForGlobs(command, { cwd, home } = {}) {
+/** 相對路徑在指令裡是以哪個目錄解析：沒有 cd 時是 cwd，開頭唯一的 `cd <字面絕對路徑>` 且目錄存在時是它，其他情況看不出來（null）。 */
+function globCwd(command, { cwd, home = homedir() } = {}) {
+  const moves = command.match(/(?:^|[\s;&|(])(?:cd|pushd)\s/g)?.length ?? 0;
+  if (!moves) return { cwd };
+  const target = moves === 1 && command.match(/^\s*cd\s+(~\/[^\s;&|$`'"*?\\]*|\/[^\s;&|$`'"*?\\]*)\s*(?:&&|;|\n)/)?.[1];
+  const dir = target && (target.startsWith('~/') ? join(home, target.slice(2)) : target);
+  return dir && existsSync(dir) ? { cwd: dir } : null;
+}
+
+/** 這些字裡此刻沒有相符檔案的；相對路徑看不出當時的目錄時放行。 */
+function unmatched(words, command, { cwd, home } = {}) {
   if (NOMATCH_OFF.test(command)) return [];
-  const moves = /(?:^|[\s;&|(])(?:cd|pushd)\s/.test(command);
-  return forGlobWords(command).filter(word => (!moves || /^[~/]/.test(word)) && !globMatches(word, { cwd, home }));
+  const at = globCwd(command, { cwd, home });
+  return words.filter(word => (at || /^[~/]/.test(word)) && !globMatches(word, { cwd: at?.cwd, home }));
+}
+
+/** 指令裡 for 清單中此刻沒有相符檔案的 glob。 */
+export function unmatchedForGlobs(command, options) {
+  return unmatched(forGlobWords(command), command, options);
+}
+
+/** 指令裡一般參數中此刻沒有相符檔案的 glob。 */
+export function unmatchedArgGlobs(command, options) {
+  return NOT_GLOB_CONTEXT.test(command) ? [] : unmatched(argGlobWords(command), command, options);
 }
 
 /** 指令有沒有在 zsh 會展開的地方用到 bash 的 `$PIPESTATUS`。 */
@@ -83,6 +112,7 @@ function scan(command) {
   const found = [];
   const nomatch = [];
   const forGlobs = [];
+  const argGlobs = [];
   let pipestatus = false;
   let forList = 0; // 1：剛看到 for；2：看過變數名；3：在 in 之後的清單裡
   let atCommand = true; // 目前的字在指令開頭（for 只有在這裡才是關鍵字）
@@ -98,9 +128,11 @@ function scan(command) {
     if (startsWithEquals && word.length > 1 && depth === 0) found.push(word);
     if (glob && depth === 0) nomatch.push(word);
     if (word && depth === 0) {
+      const qualified = /^\([^)]*N[^)]*\)/.test(command.slice(i, i + 16));
+      if (wild && !glob && forList !== 3 && !qualified && !/^\w+=/.test(word)) argGlobs.push(word);
       if (forList === 3) {
         if (word === 'do') forList = 0;
-        else if (wild && !/^\([^)]*N[^)]*\)/.test(command.slice(i, i + 16))) forGlobs.push(word);
+        else if (wild && !qualified) forGlobs.push(word);
       } else if (forList === 2) forList = word === 'in' ? 3 : 0;
       else if (forList === 1) forList = 2;
       else if (word === 'for' && atCommand) forList = 1;
@@ -182,7 +214,7 @@ function scan(command) {
     i++;
   }
   end();
-  return { equals: found, nomatch, pipestatus, forGlobs };
+  return { equals: found, nomatch, pipestatus, forGlobs, argGlobs };
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
@@ -193,8 +225,9 @@ if (isMain) {
   if (input?.tool_name && input.tool_name !== 'Bash') process.exit(0);
   if (typeof command !== 'string') process.exit(0);
   const { equals, nomatch, pipestatus } = scan(command);
-  const unmatched = unmatchedForGlobs(command, { cwd: input?.cwd });
-  if (!equals.length && !nomatch.length && !pipestatus && !unmatched.length) process.exit(0);
+  const unmatchedFor = unmatchedForGlobs(command, { cwd: input?.cwd });
+  const args = /(?:^|\/)zsh$/.test(process.env.SHELL ?? '') ? unmatchedArgGlobs(command, { cwd: input?.cwd }) : [];
+  if (!equals.length && !nomatch.length && !pipestatus && !unmatchedFor.length && !args.length) process.exit(0);
   const lines = [];
   if (equals.length) lines.push(
     `zsh 會把沒加引號、以 = 開頭的字當 EQUALS 展開成指令路徑：${equals.map(w => `\`${w}\``).join('、')}。`,
@@ -209,10 +242,15 @@ if (isMain) {
       `把 pattern 加引號：${quoted.map(w => `\`${w}\``).join('、')}；要找分支用 \`git branch --list '<pattern>'\`（#218）。`,
     );
   }
-  if (unmatched.length) lines.push(
-    `for 清單裡的 glob 此刻沒有相符的檔案：${unmatched.map(w => `\`${w}\``).join('、')}。`,
+  if (args.length) lines.push(
+    `沒加引號的 glob 此刻沒有相符的檔案：${args.map(w => `\`${w}\``).join('、')}。`,
+    'zsh 的 NOMATCH 會中止整串指令，`2>/dev/null` 也救不了，後面的指令都不跑（#287）。',
+    `不是要展開就加引號；可能沒有相符時改成 \`${args[0]}(N)\` 或改用 \`find\`。`,
+  );
+  if (unmatchedFor.length) lines.push(
+    `for 清單裡的 glob 此刻沒有相符的檔案：${unmatchedFor.map(w => `\`${w}\``).join('、')}。`,
     'zsh 的 NOMATCH 會中止整串指令，清單之後的指令都不跑、也沒有輸出；這不代表要找的東西不存在（#284）。',
-    `改成 \`${unmatched[0]}(N)\`（沒有相符時展開成空），或改用 \`find\`。`,
+    `改成 \`${unmatchedFor[0]}(N)\`（沒有相符時展開成空），或改用 \`find\`。`,
   );
   if (pipestatus) lines.push(
     'Bash 工具跑的是 zsh，bash 的 `$PIPESTATUS` 在 zsh 展開成空字串，pipe 前那支指令的 exit code 會不見（#238）。',

@@ -40,7 +40,7 @@ Project settings for the user-level `/issue-pilot` coordinator (`/loop /issue-pi
 
 - **Dispatch.** First claim each member in the main checkout with `node scripts/issue-pool.mjs claim <n>`; dispatch only on `CLAIMED <n>` (or `CLAIMED <n> takeover <session>`), and leave a member claimed by another session out of the batch. Then, after this tick's Probe, run in the main checkout with Bash `timeout: 600000` `node scripts/pilot-dispatch.mjs <key> <n>:<slug>... --capacity` (members in number order). It prints `DISPATCHED <n> <handle>` or `STOP <n> <cause>` per member, and only `STOP capacity <total>/<cap>` when the machine is full (leave the batch for the next tick and release the claims with `node scripts/gh-tracker.mjs edit <n> --remove-assignee @me`).
 
-- **Watch.** `"$ORCA_CLI_COMMAND" terminal read --terminal <handle> --screen --json | jq -r '.result.terminal.tail[-40:][]'`: a last line `DONE <n> <sha>` or `STOP <n> <cause>` means finished; `status: exited` without one means stuck. Stuck-after is the default 90 minutes.
+- **Watch.** `node scripts/pilot-probe.mjs --tail <handle>` (the screen's last 40 lines; `--lines <n>` changes it): a last line `DONE <n> <sha>` or `STOP <n> <cause>` means finished; `status: exited` without one means stuck. Stuck-after is the default 90 minutes.
 
 - **Agent rows.** The member rows of the batch checkpoint; subagents a worker spawns are not recorded.
 

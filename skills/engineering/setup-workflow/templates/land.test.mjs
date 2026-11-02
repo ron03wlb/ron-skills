@@ -63,7 +63,7 @@ function fixture(t, { seed = {}, mainMovesAtMerge = null, checks = [PASS], orcaF
   }
   // 假 bin/check：記下參數、所在 SHA 與工作樹是否乾淨，印 CHECK_PASS 行後以 localCheckExit 結束（--local-checks 用）。
   const log = join(temp, 'calls.log');
-  mkdirSync(join(main, 'bin'));
+  mkdirSync(join(main, 'bin'), { recursive: true });
   writeFileSync(join(main, 'bin/check'), `#!/usr/bin/env bash
 echo "check $* $(git rev-parse HEAD) dirty=[$(git status --porcelain)]" >> ${JSON.stringify(log)}
 echo 'ℹ tests 7'
@@ -170,9 +170,10 @@ console.log(JSON.stringify({ ok: true, result: {} }));
   const body = join(temp, 'body.md');
   writeFileSync(body, '## Summary\n');
 
-  const land = (args, cwd = wt) => spawnSync('node', [selfHosted ? join(wt, 'scripts/land.mjs') : script, ...args], {
-    cwd, encoding: 'utf8', timeout: 30000,
-    env: { ...env, ...IDENTITY, PATH: `${bin}:${env.PATH}`, ORCA_CLI_COMMAND: join(bin, 'orca'), LAND_CHECKS_POLL_MS: '1', LAND_CHECKS_TIMEOUT_MS: '2000' },
+  // 期限放寬：高負載下 2 秒內輪詢不完四次，就變成 STOP checks-timeout（#297：load 62 時 commit 被這條擋下，load 77 重現 3/6）。只有測逾時的案例帶短期限。
+  const land = (args, cwd = wt, extraEnv = {}) => spawnSync('node', [selfHosted ? join(wt, 'scripts/land.mjs') : script, ...args], {
+    cwd, encoding: 'utf8', timeout: 120000,
+    env: { ...env, ...IDENTITY, PATH: `${bin}:${env.PATH}`, ORCA_CLI_COMMAND: join(bin, 'orca'), LAND_CHECKS_POLL_MS: '1', LAND_CHECKS_TIMEOUT_MS: '60000', ...extraEnv },
   });
   const calls = () => readFileSync(log, 'utf8');
   const prs = () => JSON.parse(readFileSync(state, 'utf8')).prs;
@@ -388,7 +389,7 @@ test('PR 的 head 還是前一個 SHA 時不採計它的 checks：等到新 head
 test('PR 的 head 一直沒更新到 push 的 SHA：STOP checks-timeout，不合併', t => {
   const { body, land, calls, prs, last } = fixture(t, { checks: [{ head: OLD_HEAD, checks: PASS }] });
 
-  const result = land(['feature', '--body-file', body]);
+  const result = land(['feature', '--body-file', body], undefined, { LAND_CHECKS_TIMEOUT_MS: '500' });
   assert.equal(result.status, 4);
   assert.equal(last(result), 'STOP checks-timeout 40');
   assert.doesNotMatch(calls(), /^gh pr merge /m);
@@ -460,7 +461,7 @@ test('--keep-branch：PR 開著時中斷，重跑沿用同一個 PR 接著合併
   sh(main, 'worktree', 'remove', wt);
   sh(main, 'branch', '-m', 'feature', 'integration');
 
-  const first = land(['integration', '--keep-branch', '--body-file', body], main);
+  const first = land(['integration', '--keep-branch', '--body-file', body], main, { LAND_CHECKS_TIMEOUT_MS: '500' });
   assert.equal(first.status, 4);
   assert.match(last(first), /^STOP checks-timeout/);
   assert.equal(prs()[0].state, 'OPEN');
@@ -586,6 +587,54 @@ test('PR 只有戳記檔和 main 衝突：合入 origin/main、restamp、跑檢�
   assert.equal(sh(origin, 'show', 'main:stamp.json') + '\n', stamp({ 'a.txt': 'a1\n', 'b.txt': 'b1\n' }));
   assert.equal(sh(main, 'rev-parse', 'HEAD'), pr.mergeCommit.oid);
   assert.equal(existsSync(wt), false);
+});
+
+// #297：a33b66a 的 bin/check 跑超過 420 秒被中止，land 印 restamp-checks-failed … exit ETIMEDOUT，而同一個 SHA 獨立跑是綠的；失敗與逾時的處理不同。
+test('restamp 後的檢查逾時：STOP restamp-checks-timeout，不 push、不合併', t => {
+  const { wt, origin, body, sh, land, calls, last, pushMain, commitFeature } = fixture(t, { seed: STAMP_SEED });
+  commitFeature({ 'src/a.txt': 'a1\n', 'stamp.json': stamp({ 'a.txt': 'a1\n', 'b.txt': 'b0\n' }) });
+  pushMain({ 'src/b.txt': 'b1\n', 'stamp.json': stamp({ 'a.txt': 'a0\n', 'b.txt': 'b1\n' }) });
+
+  const result = land(['feature', '--body-file', body, '--check-command', 'exec sleep 60'], undefined, { LAND_LOCAL_CHECKS_TIMEOUT_MS: '1000' });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  const tip = sh(wt, 'rev-parse', 'HEAD');
+  assert.match(last(result), new RegExp(`^STOP restamp-checks-timeout ${tip} `));
+  assert.doesNotMatch(calls(), /^gh pr merge /m);
+  assert.notEqual(sh(origin, 'rev-parse', 'feature'), tip);
+});
+
+test('restamp 後的檢查沒過：仍是 STOP restamp-checks-failed', t => {
+  const { wt, body, sh, land, last, pushMain, commitFeature } = fixture(t, { seed: STAMP_SEED });
+  commitFeature({ 'src/a.txt': 'a1\n', 'stamp.json': stamp({ 'a.txt': 'a1\n', 'b.txt': 'b0\n' }) });
+  pushMain({ 'src/b.txt': 'b1\n', 'stamp.json': stamp({ 'a.txt': 'a0\n', 'b.txt': 'b1\n' }) });
+
+  const result = land(['feature', '--body-file', body, '--check-command', 'exit 3']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(last(result), new RegExp(`^STOP restamp-checks-failed ${sh(wt, 'rev-parse', 'HEAD')} exit 3 `));
+});
+
+test('--local-checks 逾時：STOP local-checks-timeout，不合併', t => {
+  const { wt, body, sh, land, calls, last } = fixture(t, { checks: [FAIL] });
+  const tip = sh(wt, 'rev-parse', 'HEAD');
+
+  const result = land(['feature', '--body-file', body, '--local-checks', tip, '--check-command', 'exec sleep 60'], undefined, { LAND_LOCAL_CHECKS_TIMEOUT_MS: '1000' });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(last(result), new RegExp(`^STOP local-checks-timeout ${tip} `));
+  assert.doesNotMatch(calls(), /^gh pr merge /m);
+});
+
+// #297：PR #296 合入時主 checkout 有未提交的改動，輸出 WARN main-not-synced、SYNC_SKILLS ok，已安裝的 retro 其實還是舊版。
+test('main 沒跟上時不跑 sync-skills：WARN skills-not-updated <merge sha>，不印 SYNC_SKILLS', t => {
+  const { main, body, land, prs, last } = fixture(t, { seed: { 'bin/sync-skills': '#!/bin/sh\necho ran\n' } });
+  writeFileSync(join(main, 'dirty.txt'), 'x\n');
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [pr] = prs();
+  assert.match(result.stdout, /^WARN main-not-synced /m);
+  assert.match(result.stdout, new RegExp(`^WARN skills-not-updated ${pr.mergeCommit.oid}$`, 'm'));
+  assert.doesNotMatch(result.stdout, /SYNC_SKILLS|WARN sync-skills/);
+  assert.equal(last(result), `LANDED ${pr.number} ${pr.mergeCommit.oid}`);
 });
 
 test('等 CI 期間 main 前進而合併被拒（--local-checks）：合入、restamp，改附新 tip 的本機檢查結果，不等 CI', t => {
