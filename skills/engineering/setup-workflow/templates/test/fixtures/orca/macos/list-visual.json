@@ -1,0 +1,110 @@
+{
+  "terminals": [
+    {
+      "handle": "term_sample",
+      "ptyId": "sample",
+      "incarnationId": "sample",
+      "orphaned": false,
+      "worktreeId": "sample",
+      "worktreePath": "sample",
+      "branch": "sample",
+      "tabId": "sample",
+      "leafId": "sample",
+      "title": "sample",
+      "paneTitle": "sample",
+      "connected": true,
+      "writable": true,
+      "lastOutputAt": 1793402558357,
+      "preview": "sample",
+      "executionHostId": "sample",
+      "agentIdentity": "sample"
+    }
+  ],
+  "hostScope": {
+    "hostIds": [
+      "sample"
+    ],
+    "omittedHostIds": []
+  },
+  "topologyRevisions": {},
+  "totalCount": 1,
+  "truncated": false,
+  "visualLayouts": [
+    {
+      "worktreeId": "sample",
+      "worktreePath": "sample",
+      "root": {
+        "type": "split",
+        "direction": "vertical",
+        "first": {
+          "type": "group",
+          "groupId": "group-first",
+          "activeTabId": "sample",
+          "tabs": [
+            {
+              "tabId": "sample",
+              "title": "tab title",
+              "activeLeafId": "sample",
+              "panes": {
+                "type": "pane-split",
+                "direction": "vertical",
+                "first": {
+                  "type": "terminal",
+                  "handle": "term_sample",
+                  "tabId": "sample",
+                  "leafId": "sample",
+                  "title": "pane title",
+                  "connected": true,
+                  "active": true
+                },
+                "second": {
+                  "type": "terminal",
+                  "handle": "term_second",
+                  "tabId": "sample",
+                  "leafId": "leaf-second",
+                  "title": "pane title",
+                  "connected": true,
+                  "active": true
+                }
+              }
+            }
+          ]
+        },
+        "second": {
+          "type": "group",
+          "groupId": "group-second",
+          "activeTabId": "sample",
+          "tabs": [
+            {
+              "tabId": "sample",
+              "title": "tab title",
+              "activeLeafId": "sample",
+              "panes": {
+                "type": "pane-split",
+                "direction": "vertical",
+                "first": {
+                  "type": "terminal",
+                  "handle": "term_sample",
+                  "tabId": "sample",
+                  "leafId": "sample",
+                  "title": "pane title",
+                  "connected": true,
+                  "active": true
+                },
+                "second": {
+                  "type": "terminal",
+                  "handle": "term_second",
+                  "tabId": "sample",
+                  "leafId": "leaf-second",
+                  "title": "pane title",
+                  "connected": true,
+                  "active": true
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

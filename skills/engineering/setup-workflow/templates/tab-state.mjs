@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // 分頁狀態（GLOSSARY.md「分頁狀態」）：Orca 分頁標題最前面的 `<狀態>｜` 前綴，狀態是處理中、待 Retro、待關閉。
 // 只換目前分頁（ORCA_TERMINAL_HANDLE）標題的狀態前綴，沒有前綴就補上，其他文字不動；agent、skill、pilot script 與 claude-hook-tab-state.mjs 都用它。
-// Orca（1.4.245）讀不回 `terminal rename` 設的分頁標題：`terminal list` 的 title 是 Claude 的自動標題。所以每個 handle 最後設定的標題
-// 記在本機 TAB_STATE_DIR（預設 ~/.local/state/orca-tab-titles）的 `<handle>` 檔：本腳本改名後寫入，hook 從 Bash 的
-// `orca terminal rename` 指令擷取寫入；沒有記錄時以 Orca 的自動標題為目前標題（從沒改過名的分頁顯示的就是它）。
+// 目前標題以 Orca 的分頁資料為準：`terminal list --include-visual-layouts` 的 tab title；`terminals[].title` 是程式自己的標題（Claude 的自動標題），不是分頁標題。
+// 每個 handle 最後設定的標題另記在本機 TAB_STATE_DIR（預設 ~/.local/state/orca-tab-titles）的 `<handle>` 檔：本腳本改名後寫入，hook 從 Bash 的
+// `orca terminal rename` 指令擷取寫入；Orca 查不到分頁時才用它，其他會改標題的 hook 也靠它判斷標題歸本腳本管理。
 //
 // 用法：node scripts/tab-state.mjs <處理中|待 Retro|待關閉> [--topic <主題>]
 // --topic 把標題整個設成 `<狀態>｜<主題>`，不讀目前標題：session 開頭用它，記錄裡可能還是同一個 handle 上一個 session 的主題（#141）；
@@ -74,8 +74,28 @@ export function recordTitle(handle, title) {
   }
 }
 
-/** 目前標題：記錄，沒有時是 Orca 的自動標題。`ctx` 是 `{ cli, signal? }`。 */
+/** 找出含 `handle` 這個 pane 的分頁標題；visualLayouts 是分割、群組與分頁組成的巢狀結構。 */
+function tabTitleOf(node, handle) {
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const title = tabTitleOf(item, handle);
+      if (title != null) return title;
+    }
+    return null;
+  }
+  if (node === null || typeof node !== 'object') return null;
+  if (node.panes && JSON.stringify(node.panes).includes(JSON.stringify(handle))) return node.title ?? null;
+  return tabTitleOf(Object.values(node), handle);
+}
+
+/** 目前標題：Orca 的實際分頁標題；Orca 查不到時用記錄，再沒有就是 Orca 的自動標題。`ctx` 是 `{ cli, signal? }`。 */
 export async function currentTitle(ctx, handle) {
+  let live = null;
+  try {
+    const { visualLayouts } = await orca(ctx, 'terminal', 'list', '--include-visual-layouts');
+    live = tabTitleOf(visualLayouts, handle);
+  } catch { /* 舊版 Orca 沒有這個旗標，或 Orca 暫時連不上 */ }
+  if (live !== null) return live;
   const recorded = recordedTitle(handle);
   if (recorded !== null) return recorded;
   const { terminals } = await orca(ctx, 'terminal', 'list');
