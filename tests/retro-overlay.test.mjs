@@ -68,3 +68,26 @@ test('retro overlay 收集模式：每個 session 把候選開成一張 retro-ca
   const dedupe = skill.split('\n\n').find(paragraph => paragraph.includes('**Tracker duplicates.**'));
   assert.doesNotMatch(dedupe, /`retro` Issue in collect mode/, '收集模式開的是 retro-candidates，不是 retro');
 });
+
+// #293：spay2 選本機檔案（G77），它的收集指令還會回 NORMAL（不是退役 coordinator 就照常實作），所以開單不能是唯一路線。
+test('retro overlay：條目宣告 Collect command 時照它的第一行走路線，不開 retro-candidates Issue', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'retro-overlay-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(upstream, dir, { recursive: true });
+  const applied = spawnSync('git', ['apply', patch], { cwd: dir, encoding: 'utf8', env });
+  assert.equal(applied.status, 0, applied.stderr);
+
+  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
+  const collect = skill.split('\n\n').find(paragraph => paragraph.includes('**Collect mode.**'));
+  assert.match(collect, /declares no `Collect command:`/, '沒宣告才走開單的收集模式');
+  const declared = skill.split('\n\n').find(paragraph => paragraph.includes('**Declared collect.**'));
+  assert.ok(declared, 'overlay 沒有 Declared collect 段落');
+  assert.match(declared, /opens no `retro-candidates` Issue/);
+  assert.match(declared, /first line/, 'spay2 的第二行是換待關閉的提示，只能讀第一行');
+  assert.match(declared, /`COLLECT <file>`[^.]*implement nothing/);
+  assert.match(declared, /`NORMAL`[^.]*implement/);
+  assert.match(declared, /any other first line[^.]*stop/i);
+  assert.match(declared, /Step 7 runs once/);
+  assert.match(declared, /`Roster command:`[^.]*`Close command:`[^.]*stop/, '只宣告一部分會寫一邊讀另一邊，要停下');
+  assert.doesNotMatch(declared, /retro-collect\.mjs|--role/, 'overlay 不寫死專案的腳本名');
+});

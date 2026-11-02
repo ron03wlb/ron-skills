@@ -30,3 +30,30 @@ test('retro-collect 的 Close 依收集單的 Orca handle 關掉待關閉的來�
   assert.match(close, /orca terminal close --terminal <handle> --tab/);
   assert.match(close, /leave any other state alone/);
 });
+
+// #293：候選不在 tracker 的專案（spay2 G77）由條目宣告名單與結案，Roster、Plan、Close 三步都不能只會讀 Issue。
+test('retro-collect：條目宣告名單時 Roster、Plan、Close 改用宣告，只宣告一部分就停', () => {
+  const step = name => skill.split('\n\n').find(paragraph => paragraph.includes(`**${name}.**`));
+  assert.match(step('Roster'), /`Roster command:`[^.]*instead of listing and claiming/);
+  assert.match(step('Plan'), /declared roster/);
+  assert.match(step('Close'), /`Close command:`[^.]*instead of/);
+  const declared = step('Declared roster');
+  assert.ok(declared, 'skill 沒有 Declared roster 段落');
+  assert.match(declared, /`Roster command:`, `Collect command:`, and `Close command:`/);
+  assert.match(declared, /stop and name/);
+  assert.match(declared, /no `retro-candidates` Issue/);
+  assert.doesNotMatch(skill, /retro-collect\.mjs|--role|--mark/, 'skill 不寫死專案的腳本名');
+});
+
+test('retro-collect 宣告：ADAPTER 寫明三行與預設，ADR 0003 記下例外與代價', () => {
+  const adapter = readFileSync(new URL('../skills/engineering/issue-run/ADAPTER.md', import.meta.url), 'utf8');
+  const entry = adapter.split('\n').find(line => line.startsWith('- **Retro collect.**'));
+  for (const name of ['Roster command:', 'Collect command:', 'Close command:']) assert.ok(entry.includes(`\`${name}\``), name);
+  assert.match(entry, /`COLLECT <file>`/);
+  assert.match(entry, /`NORMAL`/);
+  assert.match(entry, /Default: none; `\/retro-collect` stops and says so\./, '沒宣告的預設不變');
+  const adr = readFileSync(new URL('../docs/adr/0003-tracker-shared-state.md', import.meta.url), 'utf8');
+  assert.match(adr, /`Roster command:`/);
+  assert.match(adr, /另一台機器看不到/);
+  assert.match(adr, /預設仍是 tracker/);
+});
