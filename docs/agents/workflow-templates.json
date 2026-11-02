@@ -62,8 +62,8 @@
     },
     "scripts/land.mjs": {
       "template": "skills/engineering/setup-workflow/templates/land.mjs",
-      "commit": "0c6888ff8829df120c2ac24e92dbd08822ac38c4",
-      "sha256": "1cc3c569a2104825788564a9049737f1b39c091ad59297be79bf7250b57c332f"
+      "commit": "a67eced93e4fbce3a9bda94fa4a36b5fcc22546d",
+      "sha256": "f980f860439aa774728871a957ab994dbd6596ce7a406d7ff96ba159bdd268f6"
     },
     "scripts/lib/hosts.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/hosts.mjs",
@@ -77,7 +77,7 @@
     },
     "scripts/orca-session-send.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-send.mjs",
-      "commit": "a019991b1a36ab49bac2f7fe9ed04a335eb5a520",
+      "commit": "a67eced93e4fbce3a9bda94fa4a36b5fcc22546d",
       "sha256": "1d21dba80395af6ece014501d7c828667ddd95b852fa9476642941f5e44340b2"
     },
     "scripts/orca-session-split.mjs": {

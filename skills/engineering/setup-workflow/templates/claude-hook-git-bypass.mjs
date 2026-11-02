@@ -5,7 +5,9 @@
 // 必須改用 Bash tool 的 run_in_background。與 git 無關，但 settings.json 只有使用者能改，沿用這支既有的 Bash PreToolUse hook。
 // 另攔要整份讀的指令（`--whole-output` 指定）以管線接 grep／head／tail：過濾會丟掉縮排明細行
 // （文字規則寫了仍再犯，依「prose rules become scripts」改由 hook 擋，與背景化長等待指令同為拒絕）。
-// 用法：node scripts/claude-hook-git-bypass.mjs [--long-wait <spec>]… [--whole-output <spec>]…
+// 另攔長跑 gate（`--exit-gate` 指定）以管線接 grep／head／tail：Bash 回報的 exit code 是管線最後一支的，gate 失敗也通知 exit 0
+// （retro spay2 b949589b#1：`check-contracts.sh | tail -15` 與 `fix-land.mjs … | tail -12` 都假綠，靠讀輸出才發現）。同一指令有 pipefail 時 exit code 正確，不攔。
+// 用法：node scripts/claude-hook-git-bypass.mjs [--long-wait <spec>]… [--whole-output <spec>]… [--exit-gate <script 名稱>]…
 //   spec 是「script 名稱[ 旗標]」，例如 `watch.mjs` 或 `queue.mjs --wait`：帶旗標時同段指令要有該旗標才算。不帶時只攔 git 繞過。
 // stdin 是 hook JSON（tool_input.command）；命中時 exit 2，stderr 交回 agent；其他情況 exit 0 不輸出。
 import { readFileSync } from 'node:fs';
@@ -75,6 +77,23 @@ function filteredOutput(command, specs) {
   return null;
 }
 
+/**
+ * script 要被實際執行才算（同段開頭，可帶環境變數與 node／bash／sh，可帶路徑）；`cat x.mjs | head`、`git log -- x.mjs | head`、引號內的字樣不算。
+ * @param {string} command Bash tool 的完整指令
+ * @param {string[]} scripts 長跑 gate 的 script 名稱
+ * @returns {{ script: string, filter: string }|null} 被接管線的 gate 與過濾指令名稱；未命中為 null
+ */
+export function exitGateReason(command, scripts = []) {
+  if (/\bpipefail\b/.test(command)) return null;
+  for (const script of scripts) {
+    const pattern = new RegExp(String.raw`(?:^|[;&|\n(])\s*(?:\w+=\S*\s+)*(?:(?:node|bash|sh)\s+)?(?:[^\s;&|"']*\/)?${escape(script)}(?![\w.-])`
+      + String.raw`(?:[^;&|\n]|(?<=[<>])&|\|(?!${FILTER}))*?(?<filter>${FILTER})`);
+    const filter = pattern.exec(command)?.groups.filter;
+    if (filter) return { script, filter: /(e?grep|rg|head|tail)\b/.exec(filter)[1] };
+  }
+  return null;
+}
+
 /** argv 中所有 `<flag> <value>` 的 value；緊接的是另一個旗標時不算值。 */
 const values = (args, flag) => args.flatMap((arg, i) => (arg === flag && args[i + 1] && !args[i + 1].startsWith('--') ? [args[i + 1]] : []));
 
@@ -96,6 +115,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (found) {
     const { spec, filter } = found;
     process.stderr.write(`拒絕：${spec} 的輸出以 ${filter} 過濾。這個輸出要整份讀：底下的縮排明細行會被濾掉，下一輪誤判為沒變。拿掉管線，直接執行。\n`);
+    process.exit(2);
+  }
+  const gate = exitGateReason(command, values(args, '--exit-gate'));
+  if (gate) {
+    process.stderr.write(`拒絕：${gate.script} 接 ${gate.filter}，回報的 exit code 是 ${gate.filter} 的，gate 失敗也顯示成功。改成 \`<指令> > <log> 2>&1; rc=$?; tail -n 20 <log>; exit $rc\`。\n`);
     process.exit(2);
   }
 }

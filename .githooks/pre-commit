@@ -5,4 +5,6 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 # hook 帶入的 GIT_DIR、GIT_INDEX_FILE 等會被 bin/check 裡測試的 git 繼承，`git init` 就把主 checkout 設成 bare（#25）；清掉 git 自己列出的 repo 區域變數（連帶清掉 `git -c` 帶入的設定）。
 unset $(git rev-parse --local-env-vars)
-bin/check >/dev/null
+# 成功時不吵；失敗時 CHECK_FAIL 在 stdout，必須印出來，否則 commit 只有 exit 1、沒有任何訊息（retro spay2 b949589b#3）。
+log=$(mktemp); trap 'rm -f "$log"' EXIT
+bin/check >"$log" || { tail -n 20 "$log" >&2; exit 1; }
