@@ -172,7 +172,7 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "90b7ca2436ce1b04a293b775ebbc2a0f9e7f8adc",
+      "commit": "8a81a65cd9a440f06fc1117b921bcbbae9a976a6",
       "sha256": "59df03b7fcc27afc40cf8e545a0a7f4d04b40c9b87954358d7207a034c0e37a3"
     }
   },
