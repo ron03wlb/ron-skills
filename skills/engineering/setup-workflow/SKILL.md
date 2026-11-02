@@ -38,8 +38,8 @@ Steps 1–4 only read; steps 5–10 write, all inside the worktree step 5 opens.
    | --- | --- |
    | L0 | no tracker setup, or no Issue delivery (`docs/agents/issue-run.md` missing) |
    | L1 | `tracker`: `docs/agents/issue-tracker.md`; `adapter`: `docs/agents/issue-run.md`; `check`: its `## Checks` names one command that exists (before the adapter exists: `bin/check`, `npm run check` or `make check`) |
-   | L2 | `integration`: an `integration` branch; `hook`: a pre-push (or, second best, pre-commit) hook that runs the check entry; `worktrees`: Issue-numbered branches in worktrees or merges |
-   | L3 | `pilot`: the adapter has `## Pilot`; `pilotCommits`: a `pilot/stage-*` or `stage batch-*` commit in the last 90 days |
+   | L2 | `integration`: an `integration` branch, or the one the adapter's `## Detect` declares; `hook`: a pre-push (or, second best, pre-commit) hook that runs the check entry; `worktrees`: Issue-numbered branches in worktrees or merges |
+   | L3 | `pilot`: the adapter has `## Pilot`; `pilotCommits`: a `pilot/stage-*` or `stage batch-*` commit in the last 90 days, or one matching the subject regex `## Detect` declares |
 
    The target is the `TARGET` line, never asked and never limited to one level per run: a repo already at L3 stays there; with Orca and a GitHub tracker it is L3 (the resident pilot: the agent picks, dispatches and integrates Issues, and push and the merge to the default branch stay with the human); otherwise L2 (one worktree per Issue, an integration branch, the pre-push check and remote CI). Setting up a level means writing everything each level up to it needs (steps 6–9). Signals that only use creates (`worktrees`, `pilotCommits`) stay missing after setup; the report says they appear once Issues are delivered. Edge cases:
    - `check` is missing: build the single check entry yourself in step 8 as `bin/check` (`#!/usr/bin/env bash`, `set -euo pipefail`, then the repo's existing lint, type-check, test and build commands found in its manifests, in that order), before the copied checks are added to it. Say in the report which commands it chains.
