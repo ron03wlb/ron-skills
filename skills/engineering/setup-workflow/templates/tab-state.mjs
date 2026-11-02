@@ -11,17 +11,33 @@
 // stdout：改名成功時印 `TAB_STATE <新標題>`。
 // exit：0 已改名，或沒有 ORCA_TERMINAL_HANDLE、Orca 呼叫失敗（都不輸出）；2 狀態不合法、--topic 沒有值。
 // ORCA_CLI_COMMAND 沒設時用 PATH 上的 `orca`。
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { orca } from './orca-session-send.mjs';
 
 export const STATES = ['處理中', '待 Retro', '待關閉'];
 const SEP = '｜';
 const PREFIX = new RegExp(`^(?:${STATES.join('|')})${SEP}`);
 /** 一次 tab-state 或 hook 呼叫裡全部 Orca 呼叫共用的上限。 */
 const ORCA_BUDGET_MS = 10000;
+
+/**
+ * Orca CLI 呼叫；回傳 JSON 的 result，失敗丟出含錯誤碼的 Error，`signal` 中止時殺掉 CLI。
+ * 本腳本不 import orca-session-send.mjs：專案可能有自己的（例如同步版）送出腳本，tab-state 與 hook 要能原樣複製進去。
+ */
+async function orca({ cli, signal }, ...args) {
+  const child = spawn(cli, [...args, '--json'], { stdio: ['ignore', 'pipe', 'pipe'], signal });
+  let stdout = '', stderr = '';
+  child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
+  child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+  const status = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
+  let body;
+  try { body = JSON.parse(stdout); } catch { throw new Error((stderr || stdout || '').trim().split('\n').pop() || `exit ${status}`); }
+  if (!body.ok) throw new Error(body.error?.code ?? body.error?.message ?? 'orca 失敗');
+  return body.result;
+}
 
 /** 去掉標題最前面的狀態前綴。 */
 export const stripState = title => String(title ?? '').replace(PREFIX, '');
@@ -58,7 +74,7 @@ export function recordTitle(handle, title) {
   }
 }
 
-/** 目前標題：記錄，沒有時是 Orca 的自動標題。`ctx` 是 `{ cli, signal? }`（同 orca-session-send.mjs）。 */
+/** 目前標題：記錄，沒有時是 Orca 的自動標題。`ctx` 是 `{ cli, signal? }`。 */
 export async function currentTitle(ctx, handle) {
   const recorded = recordedTitle(handle);
   if (recorded !== null) return recorded;
