@@ -50,7 +50,7 @@ git clone https://github.com/backnotprop/pstack ~/code/pstack
 
 ### 3. 安裝目標與檢查入口
 
-`detect.mjs` 偵測現況（每個訊號的證據與量測數字），最後兩行是 `TARGET`（這次要裝到哪裡與依據）和目前狀態。它不問是非題，也不限一次只升一級：已經是常駐 pilot 的維持；有 Orca 而且 tracker 在 GitHub 就裝常駐 pilot；其他裝到 integration 分支加 push 前檢查。
+`detect.mjs` 偵測現況（每個訊號的證據與量測數字），最後兩行是 `TARGET`（這次要裝到哪裡與依據）和目前狀態。它不問是非題，也不限一次只升一級：已經是常駐 pilot 的維持；有 Orca 而且 tracker 在 GitHub 就裝常駐 pilot；其他裝到 integration 分支加 push 前檢查。專案的整合分支或 stage commit 有自己的命名時，在 adapter 的 `## Detect` 段宣告（格式見 [ADAPTER.md](../../skills/engineering/issue-run/ADAPTER.md)），它就依宣告判定，不會把已在跑常駐 pilot 的專案判低；新導入常駐 pilot 仍要 GitHub tracker。
 
 所有檢查都要經過同一條單一檢查入口：一條指令跑完這個 repo 所有該跑的檢查（lint、型別、測試、文件守門），全過才 exit 0。pre-push、CI 和 adapter 都只呼叫它，檢查清單只寫在這一個地方。
 

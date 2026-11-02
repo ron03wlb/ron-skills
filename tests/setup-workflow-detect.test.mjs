@@ -342,3 +342,136 @@ test('有未合入 commit 或未提交改動的 linked worktree 印 IN_FLIGHT，
   assert.doesNotMatch(text.stdout, /IN_FLIGHT issue\/done/);
   assert.deepEqual(detect(root, '--no-station').inFlight, []);
 });
+
+// #289：spay2 的整合分支是 feature/ron/#24846、合入主旨是 `merge: 整合 …`，固定規則把已在跑常駐 pilot 的專案判成 L1。
+const INTEGRATION = 'feature/ron/#24846';
+const DETECT_SECTION = `\n## Detect\n\nIntegration branch: \`${INTEGRATION}\`\nStage commit: \`^merge: 整合 \`\n`;
+const GITLAB_TRACKER = { 'docs/agents/issue-tracker.md': 'Read an Issue: `glab issue view <n>`\n' };
+const adapterWith = (...parts) => [L1_FILES['docs/agents/issue-run.md'], ...parts].join('');
+const PILOT_SECTION = '\n## Pilot\n\n- **Pool.** x\n';
+
+/** l2 的整合分支改成宣告的名稱；origin 指向 GitLab。 */
+function declaredRepo(t, adapter = adapterWith(PILOT_SECTION, DETECT_SECTION)) {
+  const root = l2(t, { ...GITLAB_TRACKER, 'docs/agents/issue-run.md': adapter });
+  git(root, 'branch', '-m', 'pilot/integration', INTEGRATION);
+  git(root, 'remote', 'add', 'origin', 'http://192.168.200.202/spay/spay2.git');
+  return root;
+}
+const emptyCommit = (root, subject) => git(root, 'commit', '-q', '--no-verify', '--allow-empty', '-m', subject);
+
+test('有宣告的 GitLab repo 判為 LEVEL L3、TARGET L3，SIGNAL 的 evidence 註明來自 adapter 宣告', t => {
+  const root = declaredRepo(t);
+  emptyCommit(root, 'merge: 整合 batch-3');
+  const result = detect(root);
+  assert.equal(result.level, 'L3');
+  assert.deepEqual(result.target, { value: 'L3', evidence: ['已經是 L3'] });
+  assert.deepEqual(target(root, withOrca), { value: 'L3', evidence: ['已經是 L3'] });
+  assert.equal(result.signals.integration.value, INTEGRATION);
+  assert.match(result.signals.integration.evidence.join(), /docs\/agents\/issue-run\.md ## Detect/);
+  assert.match(result.signals.pilotCommits.value, /merge: 整合 batch-3$/);
+  assert.match(result.signals.pilotCommits.evidence.join(), /docs\/agents\/issue-run\.md ## Detect/);
+  const text = spawnSync('node', [script, root], { encoding: 'utf8', env: offline }).stdout;
+  assert.match(text, /^SIGNAL integration met feature\/ron\/#24846 {2}# .*## Detect/m);
+  assert.match(text, /^LEVEL L3$/m);
+  // health 用 --no-station 判等級，宣告同樣要生效。
+  assert.equal(detect(root, '--no-station').level, 'L3');
+});
+
+test('新導入常駐 pilot 仍需 GitHub tracker：有宣告但還不到 L3 的 GitLab repo，有 Orca 也只裝到 L2', t => {
+  const root = declaredRepo(t);
+  const result = target(root, withOrca);
+  assert.equal(detect(root).level, 'L2');
+  assert.deepEqual(result, { value: 'L2', evidence: ['tracker gitlab', 'Orca 可用', '常駐 pilot 需要 GitHub tracker'] });
+});
+
+test('宣告的分支不存在時 SIGNAL integration missing，evidence 指出該宣告，不退回固定規則', t => {
+  const root = l2(t, { 'docs/agents/issue-run.md': adapterWith(DETECT_SECTION) });
+  const { integration } = detect(root).signals;
+  assert.equal(integration.met, false);
+  assert.match(integration.evidence.join(), /## Detect.*feature\/ron\/#24846/);
+  const text = spawnSync('node', [script, root], { encoding: 'utf8', env: offline }).stdout;
+  assert.match(text, /^SIGNAL integration missing - {2}# .*## Detect.*feature\/ron\/#24846/m);
+});
+
+test('宣告的分支只在 origin 上也算存在；宣告不是完整 ref 名稱的（main^）不算', t => {
+  const root = repo(t, { 'docs/agents/issue-run.md': adapterWith(DETECT_SECTION) });
+  git(root, 'update-ref', `refs/remotes/origin/${INTEGRATION}`, 'HEAD');
+  assert.equal(detect(root).signals.integration.value, `origin/${INTEGRATION}`);
+  const revision = repo(t, { 'docs/agents/issue-run.md': adapterWith('\n## Detect\n\nIntegration branch: `main^{commit}`\n') });
+  assert.equal(detect(revision).signals.integration.met, false);
+});
+
+test('宣告主旨樣式時只用宣告，不退回固定規則；^ 錨定主旨開頭，不是 commit 短碼', t => {
+  const root = repo(t, { 'docs/agents/issue-run.md': adapterWith('\n## Detect\n\nStage commit: `^merge: 整合 `\n') });
+  emptyCommit(root, 'stage batch-3');
+  const fixed = detect(root).signals.pilotCommits;
+  assert.equal(fixed.met, false);
+  assert.match(fixed.evidence.join(), /## Detect.*\^merge: 整合/);
+  emptyCommit(root, 'merge: 整合 batch-4');
+  assert.match(detect(root).signals.pilotCommits.value, /^\S+ merge: 整合 batch-4$/);
+});
+
+test('宣告的 regex 不合法時 SIGNAL pilotCommits missing，evidence 指出該宣告，exit code 不變', t => {
+  const root = repo(t, { 'docs/agents/issue-run.md': adapterWith('\n## Detect\n\nStage commit: `merge: (`\n') });
+  emptyCommit(root, 'stage batch-3');
+  const { pilotCommits } = detect(root).signals;
+  assert.equal(pilotCommits.met, false);
+  assert.match(pilotCommits.evidence.join(), /## Detect.*merge: \(.*不合法/);
+  const text = spawnSync('node', [script, root], { encoding: 'utf8', env: offline });
+  assert.equal(text.status, 0, text.stderr);
+  assert.match(text.stdout, /^SIGNAL pilotCommits missing - {2}# .*不合法/m);
+});
+
+test('宣告是逐項的：只宣告分支時主旨沿用固定規則，只宣告主旨時分支沿用固定規則', t => {
+  const onlyBranch = declaredRepo(t, adapterWith(PILOT_SECTION, `\n## Detect\n\n- Integration branch: ${INTEGRATION}\n`));
+  emptyCommit(onlyBranch, 'stage batch-3');
+  assert.equal(detect(onlyBranch).signals.integration.value, INTEGRATION);
+  assert.deepEqual(detect(onlyBranch).signals.pilotCommits.evidence, ['git log --all --since=90.days']);
+  const onlySubject = l2(t, { 'docs/agents/issue-run.md': adapterWith('\n## Detect\n\nStage commit: `^x`\n') });
+  assert.deepEqual(detect(onlySubject).signals.integration, { met: true, value: 'pilot/integration', evidence: ['git branch: pilot/integration'] });
+});
+
+test('沒有宣告的 repo 輸出不變：SIGNAL 的值與 evidence 都是固定規則的；## Detect 段以外的同名文字與 adapter 範本原文都不算宣告', t => {
+  const adapterTemplate = readFileSync(new URL('../skills/engineering/issue-run/ADAPTER.md', import.meta.url), 'utf8');
+  assert.match(adapterTemplate, /^## Detect$/m);
+  for (const adapter of [
+    L1_FILES['docs/agents/issue-run.md'],
+    adapterWith('\n## Pilot\n\nIntegration branch: `other`\nStage commit: `(`\n'),
+    `${adapterTemplate}${L1_FILES['docs/agents/issue-run.md']}`,
+  ]) {
+    const root = l2(t, { 'docs/agents/issue-run.md': adapter });
+    emptyCommit(root, 'stage batch-3');
+    const { integration, pilotCommits } = detect(root).signals;
+    assert.deepEqual(integration, { met: true, value: 'pilot/integration', evidence: ['git branch: pilot/integration'] });
+    assert.match(pilotCommits.value, /^\S+ stage batch-3$/);
+    assert.deepEqual(pilotCommits.evidence, ['git log --all --since=90.days']);
+    const none = repo(t, { 'docs/agents/issue-run.md': adapter });
+    const missing = detect(none).signals;
+    assert.deepEqual(missing.integration, { met: false, value: null, evidence: ['沒有名為 integration 的分支'] });
+    assert.deepEqual(missing.pilotCommits, { met: false, value: null, evidence: ['90 天內沒有 pilot/stage 或 stage batch commit'] });
+    const text = spawnSync('node', [script, none], { encoding: 'utf8', env: offline }).stdout;
+    assert.match(text, /^SIGNAL integration missing - {2}# 沒有名為 integration 的分支$/m);
+    assert.match(text, /^SIGNAL pilotCommits missing - {2}# 90 天內沒有 pilot\/stage 或 stage batch commit$/m);
+  }
+});
+
+test('有宣告且分支存在時 IN_FLIGHT 以整合分支為基準；分支不存在或沒有宣告時沿用現行基準', t => {
+  const inFlightFixture = adapter => {
+    const root = repo(t, { 'docs/agents/issue-run.md': adapter });
+    git(root, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+    git(root, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
+    git(root, 'switch', '-q', '-c', INTEGRATION);
+    emptyCommit(root, 'integration 1');
+    emptyCommit(root, 'integration 2');
+    const tree = name => join(root, '..', `${root.split('/').pop()}-${name}`);
+    t.after(() => { for (const name of ['clean', 'ahead']) rmSync(tree(name), { recursive: true, force: true }); });
+    git(root, 'worktree', 'add', '-q', '-b', 'issue/clean', tree('clean'), INTEGRATION);
+    git(root, 'worktree', 'add', '-q', '-b', 'issue/ahead', tree('ahead'), INTEGRATION);
+    emptyCommit(tree('ahead'), 'work');
+    return root;
+  };
+  const rows = root => detect(root).inFlight.map(({ branch, ahead }) => [branch, ahead]).sort();
+  assert.deepEqual(rows(inFlightFixture(adapterWith(DETECT_SECTION))), [['issue/ahead', 1]]);
+  assert.deepEqual(rows(inFlightFixture(L1_FILES['docs/agents/issue-run.md'])), [['issue/ahead', 3], ['issue/clean', 2]]);
+  assert.deepEqual(rows(inFlightFixture(adapterWith('\n## Detect\n\nIntegration branch: `no/such`\n'))), [['issue/ahead', 3], ['issue/clean', 2]]);
+});
