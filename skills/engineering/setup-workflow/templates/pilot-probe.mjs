@@ -18,6 +18,8 @@
 //            （同目錄 pilot-capacity.mjs 的 report：$PILOT_WORKERS_LEDGER，預設 ~/.local/state/pilot-workers.tsv）；所有 repo 的合計超過
 //            $PILOT_MACHINE_WORKER_CAP（預設 4）時最後印 OVER_CAP <合計> <上限>。只回報，不改派工；沒帶時不碰帳本。
 //            <repo> 空白或帶 tab、換行，或上限不是正整數時是用法錯誤（exit 2）。
+//   --tail <handle> [--lines <n>]（取代主 checkout 引數，只做這件事）：印那個 worker 分頁畫面的最後 n 行（預設 40），給 Watch 用，不必手拼 JSON 或依賴 jq（#295）；
+//            沒有 ORCA_CLI_COMMAND 或讀不到時 stderr 說明、exit 1。
 //   --apply、--status 都不改其他輸出行，stdout 與不帶旗標時相同（APPLY_MISS、PARENT_APPLY_FAILED 除外）。
 //   Bare guard：同目錄有 pilot-unbare.sh（setup-workflow 正本，`<checkout> <時機>`，還原時印 UNBARE）時先跑它（時機 probe），沒有就略過。
 // stdout 每行一項，沒事的項目不印（全部正常且沒有 batch 時只印池子那一行）：
@@ -69,7 +71,7 @@ import { POOL_FIELDS, pool } from './issue-pool.mjs';
 
 // 池子摘要要的欄位取 issue-pool 的 POOL_FIELDS（#240）；同名的 blockedBy 在 GraphQL 裡合併成一份選取。
 const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
-const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>]';
+const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>]｜node scripts/pilot-probe.mjs --tail <handle> [--lines <n>]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const TRACKER = join(dirname(fileURLToPath(import.meta.url)), 'gh-tracker.mjs');
 
@@ -695,6 +697,12 @@ export function statusReport(checkout, { integration = 'pilot/integration', main
   return `${out.join('\n')}\n`;
 }
 
+/** `--tail`：worker 分頁畫面的最後 `lines` 行。 */
+export async function workerTail(ctx, handle, lines = 40) {
+  const { terminal } = await orca(ctx, 'terminal', 'read', '--terminal', handle, '--screen');
+  return (terminal?.tail ?? []).slice(-lines);
+}
+
 export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false, capacity } = {}) {
   const pilot = join(checkout, '.scratch/pilot');
   // 開著的 batch checkpoint 的成員：Pool 不再挑它們，池子摘要也略過。
@@ -712,7 +720,8 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     batches.push({ key, current, members });
     const active = members.filter(m => !/^moved\b/.test(m.state));
     const results = [];
-    for (const member of members.filter(m => m.state === 'running')) {
+    // 已 closed 的 batch 沒有在跑的 worker：殘留的 running 列不讀 terminal、不算容量（#295：batch-53-55 的兩列印 STUCK orca terminal_handle_stale，帳本記 2）。
+    for (const member of /^closed\b/.test(current) ? [] : members.filter(m => m.state === 'running')) {
       const state = await workerState(ctx, member);
       const [, kind, value] = state.match(/^(DONE|STOP) (.+)$/) ?? [];
       if (kind) results.push({ n: member.n, state: kind === 'DONE' ? 'done' : 'stop', sha: kind === 'DONE' ? value : undefined });
@@ -759,6 +768,24 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const cli = process.env.ORCA_CLI_COMMAND;
+  if (args[0] === '--tail') {
+    const lines = args[2] === '--lines' ? Number(args[3]) : 40;
+    if (!args[1] || args[1].startsWith('--') || args.length !== (args[2] === '--lines' ? 4 : 2) || !Number.isInteger(lines) || lines < 1) {
+      console.error(USAGE);
+      process.exit(2);
+    }
+    if (!cli) {
+      console.error('沒有 ORCA_CLI_COMMAND，讀不到 terminal');
+      process.exit(1);
+    }
+    try {
+      for (const line of await workerTail({ cli }, args[1], lines)) console.log(line);
+    } catch (error) {
+      console.error(error.message);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
   const positional = [];
   const options = {};
   let bad = false;

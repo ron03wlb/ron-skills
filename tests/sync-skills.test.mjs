@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
@@ -27,6 +27,23 @@ test('PATH 上的 bash 是 /bin/bash 時 --check 照樣通過', { skip: !hasSyst
   const result = run(['--check'], { PATH: systemBashPath(t) });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^CHECK_OK \d+ skills$/m);
+});
+
+// #287：連結目標消失時 --check 仍只印 CHECK_OK，依賴 repo 外來源也看不出來（~/Documents/Workspace/skills 四個連結）。
+test('--check 回報失效連結與 repo 外的來源，不影響 exit；受管來源不報', t => {
+  const tmp = scratch(t);
+  const dest = join(tmp, 'dest');
+  mkdirSync(dest);
+  symlinkSync(join(tmp, 'gone/old-skill'), join(dest, 'gone'));
+  const outside = realpathSync(skill(join(tmp, 'elsewhere/delta')));
+  symlinkSync(outside, join(dest, 'delta'));
+  symlinkSync(join(root, 'skills/engineering/issue-run'), join(dest, 'issue-run'));
+
+  const result = run(['--check'], { SKILL_DIRS: dest });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, new RegExp(`^DANGLING ${join(dest, 'gone')} -> `, 'm'));
+  assert.match(result.stderr, new RegExp(`^EXTERNAL ${join(dest, 'delta')} -> ${outside}$`, 'm'));
+  assert.doesNotMatch(result.stderr, /(DANGLING|EXTERNAL) \S*\/issue-run /);
 });
 
 test('--list 依連結的真實位置標出來源，並列出目前目錄的專案 skill', t => {

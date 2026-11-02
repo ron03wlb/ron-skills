@@ -4,11 +4,12 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { equalsWords, forGlobWords, nomatchWords, unmatchedForGlobs, usesPipestatus } from './claude-hook-zsh-equals.mjs';
+import { argGlobWords, equalsWords, forGlobWords, nomatchWords, unmatchedArgGlobs, unmatchedForGlobs, usesPipestatus } from './claude-hook-zsh-equals.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const HOOK = fileURLToPath(new URL('./claude-hook-zsh-equals.mjs', import.meta.url));
-const run = input => spawnSync('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8' });
+// $SHELL 預設 bash：一般參數的 glob 只在 zsh 才擋，測試結果不該跟著跑測試的機器變。
+const run = (input, shell = '/bin/bash') => spawnSync('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8', env: { ...process.env, SHELL: shell } });
 const bash = command => run({ tool_name: 'Bash', tool_input: { command } });
 
 // session 2ebf77bf 的原指令形狀：`echo ===` 當分隔線，zsh 印 `(eval):1: == not found`，後面的 pilot-probe 沒跑（#203）。
@@ -149,6 +150,51 @@ test('原指令經 hook 被擋（exit 2），訊息提示 (N) 與 find', () => {
 });
 
 // session 8d8ec702 jsonl 第 183 行的原指令：zsh 裡 `${PIPESTATUS[0]}` 展開成空字串，印 `exit=`（#238）。
+// session 3cf4e67c jsonl 第 196 行的原指令（路徑換成 fixture）：scripts/*health* 沒有相符，`(eval):1: no matches found`、exit 1，後面的指令都沒跑（#287）。
+const S196 = dir => `cd ${dir} && grep -l -iE 'merged|is-ancestor' scripts/*health* 2>/dev/null; echo after`;
+
+test('一般參數的 glob：cd 字面絕對路徑後沒有相符時，zsh 下經 hook 被擋；bash 下放行', t => {
+  const home = forFixture(t);
+  mkdirSync(join(home, 'repo/scripts'), { recursive: true });
+  writeFileSync(join(home, 'repo/scripts/a.mjs'), '');
+  const input = { tool_name: 'Bash', tool_input: { command: S196(join(home, 'repo')) } };
+  const zsh = run(input, '/bin/zsh');
+  assert.equal(zsh.status, 2);
+  assert.match(zsh.stderr, /scripts\/\*health\*/);
+  assert.match(zsh.stderr, /find/);
+  assert.equal(run(input, '/bin/bash').status, 0);
+  // 有相符時放行。
+  writeFileSync(join(home, 'repo/scripts/x-health.mjs'), '');
+  assert.equal(run(input, '/bin/zsh').status, 0);
+});
+
+test('一般參數的 glob：放行與擋下的邊界', t => {
+  const home = forFixture(t);
+  mkdirSync(join(home, 'repo/scripts'), { recursive: true });
+  const opts = { cwd: join(home, 'repo'), home };
+  assert.deepEqual(argGlobWords('ls scripts/*x* --include=*.md issue/1-*'), ['scripts/*x*'], '--opt= 與 ref 字走自己的訊息');
+  assert.deepEqual(unmatchedArgGlobs('ls scripts/*x* | wc -l', opts), ['scripts/*x*']);
+  assert.deepEqual(unmatchedArgGlobs("cd ~/repo; ls /no/such/*", opts), ['/no/such/*']);
+  assert.deepEqual(unmatchedArgGlobs('cd ~/repo && ls scripts/*x*', opts), ['scripts/*x*'], '~/ 開頭的 cd 目標也解析');
+  for (const command of [
+    "ls 'scripts/*x*'",
+    'ls scripts/\\*x\\*',
+    'ls scripts/*x*(N)',
+    'A=scripts/*x* node a.mjs',
+    'ls $DIR/*x*',
+    'ls {a,b}*x*',
+    'setopt null_glob; ls scripts/*x*',
+    'case $a in x*) echo y;; esac',
+    'noglob ls scripts/*x*',
+    'cd /no/such/dir && ls scripts/*x*',
+    'cd a && cd b && ls scripts/*x*',
+    'cd "$D" && ls scripts/*x*',
+    "cat <<'EOF'\nls scripts/*x*\nEOF",
+    '[[ $a == scripts/*x* ]] && echo ok',
+    'for f in a; do echo "$f"; done',
+  ]) assert.deepEqual(unmatchedArgGlobs(command, opts), [], command);
+});
+
 test('雙引號或未加引號的 PIPESTATUS 被擋下，提示改用 zsh 的 pipestatus', () => {
   const result = bash('cd /Users/ron/Documents/Workspace/ron-skills; sysctl -n vm.loadavg; node scripts/pilot-land.mjs 227 </dev/null 2>&1 | tail -20; echo "exit=${PIPESTATUS[0]}"');
   assert.equal(result.status, 2);

@@ -13,7 +13,7 @@ const SELF = 'term_self';
 
 // 記錄呼叫的假 Orca CLI：`terminal list` 回本分頁（title 是 Claude 的自動標題；`tabTitle` 是 --include-visual-layouts 回的實際分頁標題）。
 // `failing` 為真時每個呼叫都回錯。標題記錄放在 fixture 的 TAB_STATE_DIR，不碰家目錄。
-function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTitle } = {}) {
+function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTitle, slow = '' } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'tab-state-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const log = join(temp, 'orca.log');
@@ -24,6 +24,7 @@ function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTit
 const fs = require('fs'); const [, b] = process.argv.slice(2); const arg = k => process.argv[process.argv.indexOf(k) + 1];
 fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 ${orcaReplySource()}
+if (b === ${JSON.stringify(slow)}) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);
 if (${failing}) fail('runtime_unavailable');
 else if (b === 'list' && ${JSON.stringify(tabTitle ?? null)} !== null && process.argv.includes('--include-visual-layouts')) reply('list-visual', { visualLayouts: [{ root: { second: { tabs: [{ title: ${JSON.stringify(tabTitle ?? '')}, panes: { second: { handle: ${JSON.stringify(SELF)} } } }] } } }] });
 else if (b === 'list') reply('list', { terminals: [{ handle: 'term_other', title: '別人' }, { handle: ${JSON.stringify(SELF)}, title: ${JSON.stringify(autoTitle)} }], totalCount: 2 });
@@ -82,14 +83,41 @@ test('--topic 沒有值或是空字串：exit 2，不呼叫 Orca', t => {
   assert.equal(calls(), '');
 });
 
-test('沒有 ORCA_TERMINAL_HANDLE、Orca 呼叫失敗：exit 0 不輸出、不改記錄', t => {
-  for (const [options, extra] of [[{}, { ORCA_TERMINAL_HANDLE: '' }], [{ failing: true }, {}]]) {
-    const { recorded, run } = fixture(t, options);
-    const result = run(['待關閉'], extra);
-    assert.equal(result.status, 0);
-    assert.equal(result.stdout + result.stderr, '');
-    assert.equal(recorded(), null);
-  }
+test('沒有 ORCA_TERMINAL_HANDLE：exit 0 不輸出、不改記錄', t => {
+  const { recorded, run } = fixture(t);
+  const result = run(['待關閉'], { ORCA_TERMINAL_HANDLE: '' });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout + result.stderr, '');
+  assert.equal(recorded(), null);
+});
+
+// #295：`tab-state 處理中 --topic …` 只有 exit 0、沒有 TAB_STATE 行，分不出成功或失敗。
+test('Orca 呼叫失敗：exit 0、stdout 空、stderr 印 TAB_STATE_FAILED 與原因，不改記錄', t => {
+  const { recorded, run } = fixture(t, { failing: true });
+  const result = run(['待關閉']);
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr.trim(), 'TAB_STATE_FAILED 待關閉 runtime_unavailable');
+  assert.equal(recorded(), null);
+});
+
+test('改名逾時：stderr 講明逾時、改名可能已送達，不改記錄', t => {
+  const { recorded, run } = fixture(t, { slow: 'rename' });
+  const result = run(['待關閉', '--topic', 'x'], { TAB_STATE_BUDGET_MS: '300' });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, '');
+  assert.match(result.stderr, /^TAB_STATE_FAILED 待關閉 逾時（300 ms），改名可能已送達$/m);
+  assert.equal(recorded(), null);
+});
+
+// #295：terminal list --include-visual-layouts 花 12.8 秒，超過共用的 10 秒，改名連帶被中止。
+test('讀目前標題太慢：改用記錄的標題，改名照常完成', t => {
+  const { record, recorded, run } = fixture(t, { slow: 'list' });
+  record('處理中｜主題');
+  const result = run(['待關閉'], { TAB_STATE_LIST_BUDGET_MS: '300', TAB_STATE_BUDGET_MS: '20000' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'TAB_STATE 待關閉｜主題');
+  assert.equal(recorded(), '待關閉｜主題');
 });
 
 test('狀態不合法：exit 2，不呼叫 Orca', t => {

@@ -9,6 +9,8 @@ Project facts come from the repo adapter `docs/agents/issue-run.md`: its **Track
 
 The pilot's own refinement (its Pool and Probe steps relabelling and reopening on their own) is unchanged: this skill adds a human entry beside it and never edits the pilot, `/triage`, or any other skill.
 
+Arguments, optional: `/issue-queue <n> [<n>...]` limits step 5 (Refine) to those Issues; every other step reports the whole pool as usual.
+
 ## Steps
 
 1. **Pool.** Run `node scripts/issue-pool.mjs`, with `--stale-hours <h>` when the adapter's Pool section sets `Claim timeout: <h> hours` and `--categories <label>,...` when it sets `Categories: <label>,...`, and keep its output: one `<bucket> #<n> <title>` line per open Issue, then any `NO_CATEGORY <n>` lines. Done when the command exited 0; on any other exit, report its stderr and stop.

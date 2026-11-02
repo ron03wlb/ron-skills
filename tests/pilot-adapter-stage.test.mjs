@@ -140,9 +140,11 @@ test('pilot 各檔不寫死機器路徑與 Orca 指令名：Orca 一律 "$ORCA_C
     assert.doesNotMatch(text, /\/home\/|\/Users\//, `${path}：不寫機器專屬的絕對路徑`);
     assert.doesNotMatch(text, /orca-ide/, `${path}：Orca 指令寫 "$ORCA_CLI_COMMAND"`);
   }
-  for (const name of ['Watch', 'Stage', 'Close']) {
+  for (const name of ['Stage', 'Close']) {
     assert.match(line(name), /`"\$ORCA_CLI_COMMAND" (terminal|worktree) /, `**${name}.** 的 Orca 指令`);
   }
+  // Watch 經 pilot-probe --tail，它自己讀 ORCA_CLI_COMMAND，不手拼 JSON（#295：機器上沒有 jq）。
+  assert.match(line('Watch'), /`node scripts\/pilot-probe\.mjs --tail <handle>`/);
 });
 
 test('主 checkout 與 stage worktree 各在自己的條目定義一次怎麼取得', () => {

@@ -3,8 +3,12 @@
 # 啟用：ln -s ../../.githooks/pre-commit .git/hooks/pre-commit
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
+# 要 commit 的樹：要在 unset 之前取，`git commit -a` 的 index 是 GIT_INDEX_FILE 指的暫存檔。
+index_tree=$(git write-tree)
 # hook 帶入的 GIT_DIR、GIT_INDEX_FILE 等會被 bin/check 裡測試的 git 繼承，`git init` 就把主 checkout 設成 bare（#25）；清掉 git 自己列出的 repo 區域變數（連帶清掉 `git -c` 帶入的設定）。
 unset $(git rev-parse --local-env-vars)
+# bin/check 剛通過同一棵樹就不再跑（#297）；scripts/check-stamp.mjs 只讀本 worktree 的記錄。
+if [[ -f scripts/check-stamp.mjs ]] && node scripts/check-stamp.mjs fresh "$index_tree"; then exit 0; fi
 # 成功時不吵；失敗時 CHECK_FAIL 在 stdout，必須印出來，否則 commit 只有 exit 1、沒有任何訊息（retro spay2 b949589b#3）。
 log=$(mktemp); trap 'rm -f "$log"' EXIT
 bin/check >"$log" || { tail -n 20 "$log" >&2; exit 1; }
