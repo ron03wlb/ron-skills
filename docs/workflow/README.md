@@ -32,8 +32,8 @@
 正本（ron-skills 的 skills 與 `setup-workflow` 的 script 正本）只對導入的專案保證三件事，這是它唯一的契約。第 1、3 條靠 `scripts/issue-pool.mjs` 讀 tracker，所以只在 tracker 是 GitHub 或 GitLab 時成立；本機 Markdown tracker 沒有池子，也沒有認領。
 
 1. **Issue 能穩定地 loop 循環跑。** 從 L1 起，`/loop /issue-run --pool` 照 `scripts/issue-pool.mjs` 的 `ready` 順序一張接一張跑，停下的單在 Issue 留言寫明停點，被它擋住的單記成 `skipped`，不卡住與它無關的單；L3 改由 `/loop /issue-pilot` 派 worker。
-2. **retro 能共用、統一收集。** adapter 有 Retro collect 條目時，任何 session 的 `/retro` 都把候選寫到 tracker（掛 `retro-candidates` 的 Issue），任一 session、任一台機器都看得到，由 `/retro-collect` 統一收集；在哪裡收、怎麼合入就寫在那個條目（見 [05](05-level3.md#retro-collect)）。條目寫在 adapter 的 Pilot 段，L1、L2 預設沒有這一段；沒有這個條目時 `/retro` 不進收集模式、`/retro-collect` 停下並說明，所以 L1、L2 要這條底線，就在 adapter 補上 Pilot 段的 Retro collect 條目。
-3. **不會有兩個 session 同時處理同一張單。** 從池子撿單的流程（`/issue-run --pool`、pilot 的 Dispatch）開工前都先 `node scripts/issue-pool.mjs claim <n>`，tracker 上的認領留言是唯一的跨機器共享狀態（[ADR 0003](../adr/0003-tracker-shared-state.md)）；別的 session 已認領就不做。`/retro-collect` 用 Retro collect 條目的認領指令，條目寫了怎麼判斷認領者已停時才接手那張。手動打的 `/issue-run <n>` 跑的是 adapter Claim 段的指令（預設沒有），要它也受這條保護，就在 Claim 段寫 `node scripts/issue-pool.mjs claim <n>`。
+2. **retro 能共用、統一收集。** adapter 有 Retro collect 條目時，任何 session 的 `/retro` 都把候選寫到 tracker（掛 `retro-candidates` 的 Issue），任一 session、任一台機器都看得到，由 `/retro-collect` 統一收集（條目宣告本機名單的專案例外）；在哪裡收、怎麼合入就寫在那個條目（見 [05](05-level3.md#retro-collect)）。條目寫在 adapter 的 Pilot 段，L1、L2 預設沒有這一段；沒有這個條目時 `/retro` 不進收集模式、`/retro-collect` 停下並說明，所以 L1、L2 要這條底線，就在 adapter 補上 Pilot 段的 Retro collect 條目。
+3. **不會有兩個 session 同時處理同一張單。** 從池子撿單的流程（`/issue-run --pool`、pilot 的 Dispatch）開工前都先 `node scripts/issue-pool.mjs claim <n>`，tracker 上的認領留言是唯一的跨機器共享狀態（[ADR 0003](../adr/0003-tracker-shared-state.md)）；別的 session 已認領就不做。`/retro-collect` 用 Retro collect 條目的認領指令，條目寫了怎麼判斷認領者已停時才接手那張；條目宣告本機名單的專案沒有認領。手動打的 `/issue-run <n>` 跑的是 adapter Claim 段的指令（預設沒有），要它也受這條保護，就在 Claim 段寫 `node scripts/issue-pool.mjs claim <n>`。
 
 其他都是預設值，adapter 可以覆寫或關閉，寫在 [`ADAPTER.md`](../../skills/engineering/issue-run/ADAPTER.md) 的對應段落：
 
