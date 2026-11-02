@@ -1,7 +1,7 @@
 import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { realTmpdir } from './test/real-tmpdir.mjs';
@@ -20,6 +20,7 @@ function git(cwd, ...args) {
 /**
  * origin（bare）＋ 主 checkout（`main` 分支已合入成員分支並 push）＋ 複製到 scripts/ 的正本（旁邊放什麼都不做的 pilot-unbare.sh）。
  * 成員 worktree 已經移除（terminal、worktree 步驟 SKIP），成員分支也 push 過。假 gh 以號碼記 Issue 狀態，每次呼叫記一行參數。
+ * `protectedFile`：base 多一個 private/a.txt，成員把它刪掉；傳函式時改由它在成員分支上改動（會接著 commit）。
  */
 function fixture(t, { main = 'main', tracker = false, protectedFile = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-close-template-'));
@@ -41,7 +42,8 @@ function fixture(t, { main = 'main', tracker = false, protectedFile = false } = 
   git(repo, 'switch', '-q', '-c', 'issue/12-x');
   writeFileSync(join(repo, 'x.txt'), 'x\n');
   git(repo, 'add', 'x.txt');
-  if (protectedFile) git(repo, 'rm', '-q', 'private/a.txt');
+  if (typeof protectedFile === 'function') protectedFile(repo);
+  else if (protectedFile) git(repo, 'rm', '-q', 'private/a.txt');
   git(repo, 'commit', '-qm', 'member');
   git(repo, 'push', '-q', 'origin', 'issue/12-x');
   git(repo, 'switch', '-q', main);
@@ -145,7 +147,47 @@ test('--protect-path：快轉會刪掉被保護的路徑時 STOP，主分支與�
   assert.equal(f.issue().state, 'OPEN');
 });
 
-test('--protect-path：可重複，沒有被保護的路徑會被刪時照常快轉', t => {
+/** 快轉會讓 private/a.txt 消失時一律 STOP，主分支與檔案都不動。 */
+function assertProtected(t, change, ...paths) {
+  const f = fixture(t, { protectedFile: change });
+  const before = git(f.repo, 'rev-parse', 'main');
+  const result = f.close('--repo', 'acme/app', ...paths.flatMap(path => ['--protect-path', path]));
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(lines(result)[0], /^STOP 12 main .*private\/a\.txt/);
+  assert.equal(git(f.repo, 'rev-parse', 'main'), before);
+  assert.equal(readFileSync(join(f.repo, 'private/a.txt'), 'utf8'), 'only copy\n');
+  assert.equal(f.issue().state, 'OPEN');
+}
+
+test('--protect-path：改名也算刪掉舊路徑，rename 偵測不能讓它漏掉', t => {
+  assertProtected(t, repo => git(repo, 'mv', 'private/a.txt', 'private/b.txt'), 'private');
+  assertProtected(t, repo => {
+    mkdirSync(join(repo, 'other'));
+    git(repo, 'mv', 'private/a.txt', 'other/a.txt');
+  }, 'private', 'other');
+});
+
+test('--protect-path：一般檔換成 symlink 時工作副本的內容一樣不見，要 STOP', t => {
+  assertProtected(t, repo => {
+    rmSync(join(repo, 'private/a.txt'));
+    symlinkSync('../x.txt', join(repo, 'private/a.txt'));
+    git(repo, 'add', 'private/a.txt');
+  }, 'private');
+});
+
+test('--protect-path：可重複，每一個都有效', t => {
+  assertProtected(t, true, 'other', 'private');
+  assertProtected(t, true, 'private', 'other');
+});
+
+test('--protect-path：值是字面路徑，不是 pathspec', t => {
+  const f = fixture(t, { protectedFile: true });
+  const result = f.close('--repo', 'acme/app', '--protect-path', 'p*');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(git(f.repo, 'rev-parse', 'main'), f.sha);
+});
+
+test('--protect-path：沒有被保護的路徑會被刪時照常快轉', t => {
   const f = fixture(t, { protectedFile: true });
   const result = f.close('--repo', 'acme/app', '--protect-path', 'other', '--protect-path', 'more');
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -155,7 +197,7 @@ test('--protect-path：可重複，沒有被保護的路徑會被刪時照常快
 
 test('沒有 --repo、--repo 格式不對或 --main 不是分支名稱：用法錯誤 exit 2，什麼都不動', t => {
   const f = fixture(t);
-  for (const extra of [[], ['--repo', 'acme'], ['--repo', 'a/b/c/d'], ['--repo', 'acme/app', '--main', '-x'], ['--repo', 'acme/app', '--bogus', '1']]) {
+  for (const extra of [[], ['--repo', 'acme'], ['--repo', 'a/b/c/d'], ['--repo', 'acme/app', '--main', '-x'], ['--repo', 'acme/app', '--bogus', '1'], ['--repo', 'acme/app', '--protect-path', '--main']]) {
     const result = f.close(...extra);
     assert.equal(result.status, 2, `${extra.join(' ')}\n${result.stdout}${result.stderr}`);
     assert.match(result.stderr, /用法/);
