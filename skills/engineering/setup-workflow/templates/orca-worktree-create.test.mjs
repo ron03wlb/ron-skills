@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { source, run, git, repoFixture } from './test/repo-fixture.mjs';
 
@@ -119,4 +120,16 @@ test('帶 --repo：exit 2 並提示省略，不呼叫 orca', t => {
   assert.equal(r.status, 2, r.stdout + r.stderr);
   assert.match(r.stderr, /不要帶 --repo/);
   assert.throws(() => f.calls());
+});
+
+test('測試環境清掉繼承的 ORCA_CLI_COMMAND，假 Orca 失效時不會碰到真的 Orca（spay/spay2 retro fc10801a）', t => {
+  const f = repoFixture(t);
+  const log = join(f.temp, 'real-orca-called');
+  const bin = join(f.temp, 'real-orca'); writeFileSync(bin, `#!/bin/sh\ntouch '${log}'\n`); chmodSync(bin, 0o755);
+  // 重現情況：測試設的假 Orca 變數沒有被腳本認得，只剩 session 繼承來的 ORCA_CLI_COMMAND
+  const isolate = join(source, 'test/isolate-git-env.mjs');
+  const env = { ...process.env, ORCA_BIN: '', ORCA_CLI_COMMAND: bin, NODE_OPTIONS: `--import ${isolate}` };
+  const result = spawnSync('node', [script, '--name', NAME], { cwd: f.repo, encoding: 'utf8', env });
+  assert.equal(result.status, 2, result.stdout + result.stderr);
+  assert.equal(existsSync(log), false);
 });
