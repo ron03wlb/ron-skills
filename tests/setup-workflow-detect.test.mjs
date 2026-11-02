@@ -373,6 +373,8 @@ test('有宣告的 GitLab repo 判為 LEVEL L3、TARGET L3，SIGNAL 的 evidence
   const text = spawnSync('node', [script, root], { encoding: 'utf8', env: offline }).stdout;
   assert.match(text, /^SIGNAL integration met feature\/ron\/#24846 {2}# .*## Detect/m);
   assert.match(text, /^LEVEL L3$/m);
+  // health 用 --no-station 判等級，宣告同樣要生效。
+  assert.equal(detect(root, '--no-station').level, 'L3');
 });
 
 test('新導入常駐 pilot 仍需 GitHub tracker：有宣告但還不到 L3 的 GitLab repo，有 Orca 也只裝到 L2', t => {
@@ -447,6 +449,9 @@ test('沒有宣告的 repo 輸出不變：SIGNAL 的值與 evidence 都是固定
     const missing = detect(none).signals;
     assert.deepEqual(missing.integration, { met: false, value: null, evidence: ['沒有名為 integration 的分支'] });
     assert.deepEqual(missing.pilotCommits, { met: false, value: null, evidence: ['90 天內沒有 pilot/stage 或 stage batch commit'] });
+    const text = spawnSync('node', [script, none], { encoding: 'utf8', env: offline }).stdout;
+    assert.match(text, /^SIGNAL integration missing - {2}# 沒有名為 integration 的分支$/m);
+    assert.match(text, /^SIGNAL pilotCommits missing - {2}# 90 天內沒有 pilot\/stage 或 stage batch commit$/m);
   }
 });
 
