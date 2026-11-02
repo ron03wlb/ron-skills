@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { env, git, write } from './helpers/git-fixture.mjs';
@@ -274,4 +274,18 @@ test('#281：真正的 pilot-close 帶上 pilot-counterpart 與 pilot-unbare.sh�
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
+});
+
+// retro spay2 b949589b#3：bin/check 要副本和正本相同、copy-templates 又要正本先 commit，兩者無法同時滿足，只能手動 cp。
+test('--staged：正本已暫存可複製、記 HEAD；未暫存與沒帶旗標照舊擋', t => {
+  const { source, target, copier, commit } = fixture(t);
+  const template = join(source, 'skills/engineering/setup-workflow/templates/b.mjs');
+  writeFileSync(template, 'export const b = 2;\n');
+  assert.match(run(copier, target, '--no-tests', '--staged', 'b').stderr, /未暫存/);
+  git(source, 'add', '.');
+  assert.match(run(copier, target, '--no-tests', 'b').stderr, /未提交.*--staged/);
+  const copied = run(copier, target, '--no-tests', '--staged', 'b');
+  assert.equal(copied.status, 0, copied.stderr);
+  assert.equal(readFileSync(join(target, 'scripts/b.mjs'), 'utf8'), 'export const b = 2;\n');
+  assert.equal(JSON.parse(readFileSync(join(target, 'docs/agents/workflow-templates.json'), 'utf8')).copies['scripts/b.mjs'].commit, commit);
 });

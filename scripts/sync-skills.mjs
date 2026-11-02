@@ -8,7 +8,7 @@
 //           SKILL_DIRS（預設 ~/.claude/skills 與 ~/.agents/skills）
 // 清單檔：matt-skills.txt（相對 skills/，兩層 <類別>/<名稱>）、pstack-skills.txt（相對 skills/，一層 <名稱>）。
 // 清單內 `# pin: <SHA>` 註明驗證過的上游版本；checkout 的 HEAD 不同時只警告。
-// stdout：--list 每個 skill 一行；--check 成功時 `CHECK_OK <n> skills`；同步成功時 `SYNCED <n> skills → <dirs>`。
+// stdout：--list 每個 skill 一行；--check 成功時 `CHECK_OK <n> skills`；同步成功時先印內容有變的 overlay `SKILL_CHANGED <名稱>`（已安裝的全域行為變了，retro spay2 b949589b#2），再印 `SYNCED <n> skills → <dirs>`。
 // stderr：MISSING、DUPLICATE、OVERLAY_FAILED（exit 1），NEW、SKIP、WARN（只提示）。exit 0 成功、1 有任何 exit 1 的行或檢查失敗。
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -159,6 +159,7 @@ function sync(check) {
     for (const patch of entries(join(ROOT, 'overlays')).filter(path => path.endsWith('.patch'))) {
       const name = basename(patch, '.patch');
       if (!isDir(join(tmp, name))) continue;
+      if (!sameTree(join(BUILD, name), join(tmp, name))) console.log(`SKILL_CHANGED ${name}`);
       rmSync(join(BUILD, name), { recursive: true, force: true });
       move(join(tmp, name), join(BUILD, name));
     }
@@ -186,6 +187,13 @@ function sync(check) {
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+/** 兩個目錄的檔案清單與內容是否相同；不存在的目錄視為空。 */
+function sameTree(a, b) {
+  const listing = dir => (isDir(dir) ? readdirSync(dir, { recursive: true }).map(String).filter(name => isFile(join(dir, name))).sort() : []);
+  const [left, right] = [listing(a), listing(b)];
+  return left.length === right.length && left.every((name, i) => name === right[i] && readFileSync(join(a, name)).equals(readFileSync(join(b, name))));
 }
 
 /** 和 mv 一樣：暫存目錄與 BUILD 在不同檔案系統時改成複製再刪除。 */
