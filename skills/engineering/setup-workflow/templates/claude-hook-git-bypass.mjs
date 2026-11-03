@@ -232,16 +232,19 @@ function filteredOutput(command, specs) {
 
 /**
  * script 要被實際執行才算（同段開頭，可帶環境變數與 node／bash／sh，可帶路徑）；`cat x.mjs | head`、`git log -- x.mjs | head`、引號內的字樣不算。
+ * 比對 commandView 的結果：`grep -E 'a|x.mjs|b' | grep -v grep`、`grep "a\\|x.mjs" f | cut` 的 `|` 在引號內，不是分隔（retro spay2 4799d53c#6、1d552915#3）；`bash -c '…'` 內的照常比對。
  * @param {string} command Bash tool 的完整指令
  * @param {string[]} scripts 長跑 gate 的 script 名稱
  * @returns {{ script: string, filter: string }|null} 被接管線的 gate 與過濾指令名稱；未命中為 null
  */
 export function exitGateReason(command, scripts = []) {
-  if (/\bpipefail\b/.test(command)) return null;
+  const view = commandView(command);
+  if (/\bpipefail\b/.test(view)) return null;
   for (const script of scripts) {
-    const pattern = new RegExp(String.raw`(?:^|[;&|\n(])\s*(?:\w+=\S*\s+)*(?:(?:node|bash|sh)\s+)?(?:[^\s;&|"']*\/)?${escape(script)}(?![\w.-])`
+    // `(?<!\\)`：沒加引號的 `grep a\|x.mjs f` 裡，`\|` 也不是分隔。
+    const pattern = new RegExp(String.raw`(?:^|(?<!\\)[;&|\n(])\s*(?:\w+=\S*\s+)*(?:(?:node|bash|sh)\s+)?(?:[^\s;&|"']*\/)?${escape(script)}(?![\w.-])`
       + String.raw`(?:[^;&|\n]|(?<=[<>])&|\|(?!${FILTER}))*?(?<filter>${FILTER})`);
-    const filter = pattern.exec(command)?.groups.filter;
+    const filter = pattern.exec(view)?.groups.filter;
     if (filter) return { script, filter: FILTER_NAME.exec(filter)[1] };
   }
   return null;

@@ -6,7 +6,7 @@
 # 描述：UserPromptSubmit 用提示第一行前 20 字（沿用上次的 issue）；Stop 用 Claude Code 原生摘要，
 #       沒有摘要（如 /clear 後仍是 Claude Code）就沿用上次提示的描述，再沒有就只寫 #<issue>。
 # 沒有 issue 時清掉自訂標題，回到原生標題。任何錯誤皆靜默結束。
-# 例外：tab-state.mjs 的標題記錄帶狀態前綴（處理中｜、待 Retro｜、待關閉｜）時完全不動標題。
+# 例外：tab-state.mjs 的標題記錄帶狀態前綴（處理中｜、待 Retro｜、待關閉｜），或分頁實際標題帶這些前綴（同分頁別的 pane 設的）時完全不動標題。
 
 payload=$(cat)
 [ -n "${ORCA_TERMINAL_HANDLE:-}" ] || exit 0
@@ -27,6 +27,7 @@ except Exception:
 cache_dir = os.path.expanduser("~/.cache/orca-tab-title")
 cache_file = os.path.join(cache_dir, re.sub(r"[^\w-]", "_", handle))
 SYSTEM_PROMPT_PREFIXES = ("<task-notification", "<agent-message", "Another Claude session sent a message")
+STATE_PREFIX = re.compile(r"(?:處理中|待 Retro|待關閉)｜")
 WORKTREE_RE = re.compile(r"(?:~|/[^\s\"\x27\\;`)]*?)/orca/workspaces/[^/\s\"\x27\\;`)]+/[^/\s\"\x27\\;`)]+")
 
 def run(*args):
@@ -113,7 +114,29 @@ def tab_state_owns_title():
     state_dir = os.environ.get("TAB_STATE_DIR") or os.path.expanduser("~/.local/state/orca-tab-titles")
     try:
         with open(os.path.join(state_dir, re.sub(r"[^\w.-]", "_", handle)), encoding="utf-8") as f:
-            return re.match(r"(?:處理中|待 Retro|待關閉)｜", f.read()) is not None
+            return STATE_PREFIX.match(f.read()) is not None
+    except Exception:
+        return False
+
+def tab_title_of(node):
+    # visualLayouts 是分割、群組與分頁的巢狀結構；含這個 pane 的分頁才算（同 tab-state.mjs 的 tabTitleOf）
+    if isinstance(node, list):
+        for item in node:
+            title = tab_title_of(item)
+            if title is not None:
+                return title
+    elif isinstance(node, dict):
+        if json.dumps(handle) in json.dumps(node.get("panes", "")):
+            return node.get("title")
+        return tab_title_of(list(node.values()))
+    return None
+
+def tab_has_state():
+    # 標題是整個分頁一份、記錄是一個 pane 一份：同分頁沒有記錄的 pane 也不能清掉前綴（tab-title-diagnosis R5、R6）。
+    # 讀不到（舊版 Orca、太慢）時無從判斷，照舊改名。只在真的要改名前呼叫：這個指令可能花十幾秒。
+    try:
+        layouts = json.loads(run("terminal", "list", "--include-visual-layouts", "--json").stdout)["result"]["visualLayouts"]
+        return STATE_PREFIX.match(tab_title_of(layouts) or "") is not None
     except Exception:
         return False
 
@@ -155,6 +178,9 @@ elif event == "PostToolUse":
     write_cache(prefix)
     text = read_cache(".text") or ""
 else:
+    sys.exit(0)
+
+if tab_has_state():
     sys.exit(0)
 
 rename(f"{prefix} {text}".strip() if prefix else None)

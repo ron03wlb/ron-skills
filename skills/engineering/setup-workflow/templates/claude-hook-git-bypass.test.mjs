@@ -182,6 +182,26 @@ test('exitGateReason：沒執行 gate、結果看得到 exit code、未指定時
   assert.equal(exitGateReason('node scripts/fix-land.mjs x | tail -1'), null);
 });
 
+test('exitGateReason：引號內與跳脫的 `|` 不是分隔，grep 的搜尋字樣不算執行 gate', () => {
+  // retro spay2 4799d53c#6：ps 查行程的樣式含 gate 名稱，後面還接管線。
+  for (const command of ["ps -eo pid,ppid,etimes,cmd | grep -E 'check-before-push|batch-land|batch-merge.mjs tooling|check-contracts.sh|push-pinned'",
+    "ps -eo pid,ppid,etimes,cmd | grep -E 'check-before-push|batch-land|check-contracts.sh|push-pinned' | grep -v grep | cut -c1-150"]) assert.equal(exitGateReason(command, ['check-contracts.sh']), null, command);
+  // retro spay2 1d552915#3：雙引號內的 `\|` 是 grep 的 alternation。
+  for (const command of [String.raw`grep -n "fix\|land.mjs" docs/agents/issue-run.md | cut -c1-200 | head -12`,
+    String.raw`grep -n fix\|land.mjs docs/agents/issue-run.md | cut -c1-200`,
+    "grep -n 'fix|land.mjs' docs/agents/issue-run.md | cut -c1-200"]) assert.equal(exitGateReason(command, ['land.mjs']), null, command);
+  // 字串裡的 pipefail 不算開了 pipefail。
+  assert.deepEqual(exitGateReason('echo "pipefail on"; node scripts/land.mjs 12 | tail -1', ['land.mjs']), { script: 'land.mjs', filter: 'tail' });
+});
+
+test('exitGateReason：命令位置的 gate 仍攔下，含引號內真的會執行的', () => {
+  assert.deepEqual(exitGateReason('bash scripts/check-contracts.sh | tail', ['check-contracts.sh']), { script: 'check-contracts.sh', filter: 'tail' });
+  assert.deepEqual(exitGateReason('node scripts/land.mjs 12 | cut -c1-200', ['land.mjs']), { script: 'land.mjs', filter: 'cut' });
+  assert.deepEqual(exitGateReason('node "scripts/land.mjs" 12 | cut -c1-200', ['land.mjs']), { script: 'land.mjs', filter: 'cut' });
+  assert.deepEqual(exitGateReason('X="$(node scripts/land.mjs 12 | tail -1)"', ['land.mjs']), { script: 'land.mjs', filter: 'tail' });
+  assert.deepEqual(exitGateReason("bash -c 'node scripts/land.mjs 12 | cut -c1-200'", ['land.mjs']), { script: 'land.mjs', filter: 'cut' });
+});
+
 test('hook：--exit-gate 命中時 exit 2 並給改法，沒帶參數不攔', () => {
   const input = JSON.stringify({ tool_input: { command: 'bash scripts/check-contracts.sh 2>&1 | tail -15' } });
   const denied = hook(input, ['--exit-gate', 'check-contracts.sh']);

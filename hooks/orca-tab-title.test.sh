@@ -12,7 +12,10 @@ mkdir -p "$TAB_STATE_DIR"
 cat > "$tmp/fake-orca" <<EOF
 #!/bin/sh
 echo "\$*" >> "$tmp/calls.log"
-printf '{"result":{"terminal":{"title":"%s"}}}' "\${FAKE_TITLE:-✳ 測試標題}"
+case "\$*" in
+  *--include-visual-layouts*) printf '{"ok":true,"result":{"visualLayouts":[{"root":{"tabs":[{"title":"其他｜不相干","panes":{"first":{"handle":"term_other"}}},{"title":"%s","panes":{"first":{"handle":"term_self"},"second":{"handle":"test_handle"}}}]}}]}}' "\${FAKE_TAB_TITLE:-}" ;;
+  *) printf '{"result":{"terminal":{"title":"%s"}}}' "\${FAKE_TITLE:-✳ 測試標題}" ;;
+esac
 EOF
 chmod +x "$tmp/fake-orca"
 
@@ -74,4 +77,12 @@ check Stop '' '' '待 Retro 前綴同樣不改標題'
 printf '主題' > "$TAB_STATE_DIR/test_handle"
 check Stop '' "--title $issue_a 測試標題" '記錄沒有狀態前綴時照舊改名'
 rm -f "$TAB_STATE_DIR/test_handle"
+
+# 同分頁 sibling pane 沒有記錄：標題是整個分頁一份，看實際分頁標題（tab-title-diagnosis R5、R6）
+export FAKE_TAB_TITLE='處理中｜別的 pane 設的主題'
+check Stop '' '' 'sibling 無記錄、分頁標題帶狀態前綴：回合結束不改標題'
+check UserPromptSubmit '繼續實作' '' 'sibling 無記錄、分頁標題帶狀態前綴：送出提示不改標題'
+export FAKE_TAB_TITLE='一般標題'
+check Stop '' "--title $issue_a 測試標題" 'sibling 無記錄、分頁標題沒有前綴：照舊改名'
+unset FAKE_TAB_TITLE
 exit $fail
