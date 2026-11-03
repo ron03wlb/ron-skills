@@ -8,8 +8,8 @@
 //   #250：Bash 也會漏，hook 觸發時連 3 秒前的文字段都還沒寫入（整則 assistant 訊息延後寫），尾端文字段是空的。所以找不到 tool_use 時
 //   等 RETRY_MS 重讀一次；專案根有 `.scratch/` 時把兩次讀到的行數、有沒有找到、尾端項目的 type 與 timestamp 附加到 `.scratch/language-hook.log`，
 //   累積後判斷寫入時機，再決定改等更久、改用 hook 輸入，或只靠 Stop。
-// - Stop（或未帶 hook_event_name）：檢查最後一個使用者輪的所有文字段；PostToolUse 尚未掛上時仍有覆蓋，
-//   PostToolUse 提示過卻未改正的段落會再提一次（可接受）。
+// - Stop（或未帶 hook_event_name）：檢查最後一個使用者輪（或本 hook 最後一次提示，見下）之後的所有文字段；PostToolUse 尚未掛上時仍有覆蓋，
+//   PostToolUse 提示過的段落不再提一次。
 // 同一條規則也擋簡體字：CJK 比例分不出繁簡，session f236b357 有三段以「这」開頭（jsonl 第 293、610、646 行）都放行（#284）。
 // harness 合成的訊息（用量上限「You've hit your weekly limit · resets 3am」、API Error 等）不是模型輸出：transcript 中這類 assistant 項目
 // 帶 isApiErrorMessage／apiError 或 model `<synthetic>`，整筆略過；結構欄位缺漏時再以固定句型比對文字。

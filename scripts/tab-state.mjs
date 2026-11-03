@@ -9,14 +9,17 @@
 //       node scripts/tab-state.mjs --title <handle> → 印該分頁目前標題（Orca 的版面資料只涵蓋作用中的 worktree，其他分頁退回記錄）；`/retro-collect` 用它判斷能不能關。
 // --topic 把標題整個設成 `<狀態>｜<主題>`，不讀目前標題：session 開頭用它，記錄裡可能還是同一個 handle 上一個 session 的主題（#141）；
 // 之後換階段、動作、Issue、⏸，或離開處理中要拿掉階段與動作時也帶 --topic；只換狀態前綴時不帶（標題格式見 issue-run ADAPTER.md 的 Tab state 段）。
-// stdout：改名成功時印 `TAB_STATE <新標題>`。
+// 改名後讀回實際分頁標題再回報（2026-11-02：Orca 回 ok、分頁實際沒變，只看回傳就回報了沒發生的事）；只有這個 CLI 入口讀回，hook 與 tab-state-finish 直接呼叫 setState，不多花 Orca 呼叫。
+// stdout：改名成功時印 `TAB_STATE <新標題>`；讀不到分頁（舊版 Orca、連不上、太慢）無從比對，照樣算成功。
 // stderr：Orca 呼叫失敗時印 `TAB_STATE_FAILED <狀態> <原因>`；原因是逾時時改名可能已送達，分頁實際標題要另外看（#295：沒印 TAB_STATE 卻改成功、和完全沒改，看起來一樣）。
-// exit：0 已改名，或沒有 ORCA_TERMINAL_HANDLE（不輸出）、Orca 呼叫失敗（不擋 hook 與 script）；2 狀態不合法、--topic 沒有值。
+//   讀回的標題不符時印 `TAB_STATE_MISMATCH <應有標題> actual=<實際標題>`，不印 TAB_STATE。
+// exit：0 已改名，或沒有 ORCA_TERMINAL_HANDLE（不輸出）、Orca 呼叫失敗（不擋 hook 與 script）；1 讀回的標題不符；2 狀態不合法、--topic 沒有值。
 // ORCA_CLI_COMMAND 沒設時用 PATH 上的 `orca`。
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
 export const STATES = ['處理中', '待 Retro', '待關閉'];
@@ -26,6 +29,9 @@ const PREFIX = new RegExp(`^(?:${STATES.join('|')})${SEP}`);
 const ORCA_BUDGET_MS = Number(process.env.TAB_STATE_BUDGET_MS || 10000);
 /** 讀目前標題的 `terminal list --include-visual-layouts` 另外的上限：它在這台機器花過 12.8 秒（#295），不留時間給改名的話，整次都被中止。逾時就改用記錄的標題。 */
 const ORCA_LIST_MS = Number(process.env.TAB_STATE_LIST_BUDGET_MS || 6000);
+/** 改名後讀回：共讀幾次、每次間隔，新標題可能要過一下才反映在 visualLayouts。 */
+const VERIFY_READS = 3;
+const VERIFY_RETRY_MS = Number(process.env.TAB_STATE_VERIFY_RETRY_MS || 400);
 
 /**
  * Orca CLI 呼叫；回傳 JSON 的 result，失敗丟出含錯誤碼的 Error，`signal` 中止時殺掉 CLI。
@@ -92,14 +98,20 @@ export function tabTitleOf(node, handle) {
   return tabTitleOf(Object.values(node), handle);
 }
 
-/** 目前標題：Orca 的實際分頁標題；Orca 查不到時用記錄，再沒有就是 Orca 的自動標題。`ctx` 是 `{ cli, signal? }`。 */
-export async function currentTitle(ctx, handle) {
-  let live = null;
+/** Orca 的實際分頁標題；讀不到時為 null（舊版 Orca 沒有這個旗標、Orca 暫時連不上，或太慢）。 */
+async function liveTitle(ctx, handle) {
   try {
     const limit = AbortSignal.timeout(ORCA_LIST_MS);
     const { visualLayouts } = await orca({ ...ctx, signal: ctx.signal ? AbortSignal.any([ctx.signal, limit]) : limit }, 'terminal', 'list', '--include-visual-layouts');
-    live = tabTitleOf(visualLayouts, handle);
-  } catch { /* 舊版 Orca 沒有這個旗標、Orca 暫時連不上，或太慢 */ }
+    return tabTitleOf(visualLayouts, handle);
+  } catch {
+    return null;
+  }
+}
+
+/** 目前標題：Orca 的實際分頁標題；Orca 查不到時用記錄，再沒有就是 Orca 的自動標題。`ctx` 是 `{ cli, signal? }`。 */
+export async function currentTitle(ctx, handle) {
+  const live = await liveTitle(ctx, handle);
   if (live !== null) return live;
   const recorded = recordedTitle(handle);
   if (recorded !== null) return recorded;
@@ -113,6 +125,17 @@ export async function setState(ctx, handle, state, topic) {
   await orca(ctx, 'terminal', 'rename', '--terminal', handle, '--title', title);
   recordTitle(handle, title);
   return title;
+}
+
+/** 改名後的實際標題與 `title` 不符時傳回實際標題；相符或讀不到分頁時為 null。 */
+export async function titleMismatch(ctx, handle, title) {
+  let actual = null;
+  for (let read = 0; read < VERIFY_READS; read++) {
+    if (read) await sleep(VERIFY_RETRY_MS);
+    actual = await liveTitle(ctx, handle);
+    if (actual === null || actual.trim() === title.trim()) return null;
+  }
+  return actual;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -138,6 +161,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // 改名是冪等的，失敗或逾時就用新的時間上限再送一次：改名可能已送達卻沒寫記錄，`/retro-collect` 讀到舊狀態就不關分頁（1102b 的 #297）。
     const attempt = () => setState(orcaContext(), handle, state, topic);
     const title = await attempt().catch(attempt);
+    // 讀回用自己的時間上限：上面的重送可能已用完前一個 context。
+    const actual = await titleMismatch(orcaContext(), handle, title);
+    if (actual !== null) {
+      console.error(`TAB_STATE_MISMATCH ${title} actual=${actual}`);
+      process.exit(1);
+    }
     console.log(`TAB_STATE ${title}`);
   } catch (error) {
     console.error(`TAB_STATE_FAILED ${state} ${error.name === 'AbortError' ? `逾時（${ORCA_BUDGET_MS} ms），改名可能已送達` : error.message}`);

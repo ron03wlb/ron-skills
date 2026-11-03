@@ -32,8 +32,8 @@
     },
     "scripts/claude-hook-language.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-language.mjs",
-      "commit": "b6adf8972ae8c6be56cbc5e57417930cd3dde301",
-      "sha256": "c93dea9c017c1e8b648f3b45095e81c4ef7ef8164fb28cccf51a2d71ccaaf312"
+      "commit": "463ff1c06098140429a94fa3f5654f198166e851",
+      "sha256": "ea1e0884b3b57cdb03a08556b46281dc394ab6ac74ad76ce59fe34d4d0329fc6"
     },
     "scripts/claude-hook-main-checkout.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-main-checkout.mjs",
@@ -177,8 +177,8 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "d57750e94007a0e77efd43cdceb61b5baeebb2e8",
-      "sha256": "77c3b18d13c55495bcde8fb785d6dc00289b93c5b065ff6d00fdd55e7ff1c464"
+      "commit": "463ff1c06098140429a94fa3f5654f198166e851",
+      "sha256": "e07183483fb0ca80aa508a5bf0d9c5ac312441ffde5c63053346e92bf370ed3d"
     }
   },
   "source": "ron03wlb/ron-skills"

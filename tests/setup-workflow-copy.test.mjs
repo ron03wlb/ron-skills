@@ -275,3 +275,31 @@ test('--staged：正本已暫存可複製、記 HEAD；未暫存與沒帶旗標�
   assert.equal(readFileSync(join(target, 'scripts/b.mjs'), 'utf8'), 'export const b = 2;\n');
   assert.equal(JSON.parse(readFileSync(join(target, 'docs/agents/workflow-templates.json'), 'utf8')).copies['scripts/b.mjs'].commit, commit);
 });
+
+test('--exclude：列出的檔與目錄不複製、不記清單、不追它們的相依，本地版留著不動；接受 scripts/ 前綴', t => {
+  const { target, copier } = fixture(t);
+  write(target, { 'scripts/test/helper.mjs': '// 本地版\n', 'scripts/test/fixtures/orca/send.json': '{"local":true}\n' });
+  const result = run(copier, target, '--exclude', 'scripts/test/helper.mjs', '--exclude', 'test/fixtures/orca/', 'a');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), ['EXCLUDE scripts/test/helper.mjs', 'COPY scripts/a.mjs', 'COPY scripts/a.test.mjs', 'COPY scripts/b.mjs', 'COPY scripts/lib/pre.mjs', 'COPIED 4']);
+  assert.equal(readFileSync(join(target, 'scripts/test/helper.mjs'), 'utf8'), '// 本地版\n');
+  assert.equal(readFileSync(join(target, 'scripts/test/fixtures/orca/send.json'), 'utf8'), '{"local":true}\n');
+  const { copies } = JSON.parse(readFileSync(join(target, MANIFEST), 'utf8'));
+  assert.deepEqual(Object.keys(copies), ['scripts/a.mjs', 'scripts/a.test.mjs', 'scripts/b.mjs', 'scripts/lib/pre.mjs']);
+});
+
+test('--exclude：只排除目錄時其餘相依照帶；排除明列的正本或沒有值時 exit 2、不寫任何檔', t => {
+  const { target, copier } = fixture(t);
+  const noValue = run(copier, target, 'a', '--exclude');
+  assert.equal(noValue.status, 2);
+  assert.match(noValue.stderr, /--exclude/);
+  const named = run(copier, target, '--exclude', 'a.mjs', 'a');
+  assert.equal(named.status, 2);
+  assert.match(named.stderr, /a\.mjs/);
+  assert.equal(existsSync(join(target, 'scripts')), false);
+  const dir = run(copier, target, '--dry-run', '--exclude', 'test/fixtures/orca', 'a');
+  assert.equal(dir.status, 0, dir.stderr);
+  assert.match(dir.stdout, /^EXCLUDE scripts\/test\/fixtures\/orca\/send\.json$/m);
+  assert.match(dir.stdout, /^COPY scripts\/test\/helper\.mjs$/m);
+  assert.doesNotMatch(dir.stdout, /^COPY scripts\/test\/fixtures/m);
+});

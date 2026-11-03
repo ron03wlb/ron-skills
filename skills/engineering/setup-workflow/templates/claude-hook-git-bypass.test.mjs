@@ -30,6 +30,62 @@ test('bypassReason：一般 git 指令與內容裡的字樣不攔', () => {
   ]) assert.equal(bypassReason(command), null, command);
 });
 
+// 真實指令：retro spay2 8eaa8b41#4，驗收文字與 hook 的 JSON 測試輸入都只是提到旗標，沒有執行 git commit。
+test('bypassReason：成對引號內的文字不算指令', () => {
+  for (const command of [
+    "node scripts/orca-session-send.mjs term_x --prompt '驗收：git commit --no-verify -m x 應被拒'",
+    'node scripts/orca-session-send.mjs term_x --prompt "驗收：git -c core.hooksPath=/dev/null commit 應被拒"',
+    `printf '{"tool_input":{"command":"git commit --no-verify -m x"}}' | node scripts/claude-hook-git-bypass.mjs`,
+    'git commit -m "docs: 說明 git push --no-verify 為何被拒"',
+    'git commit -m "feat: 加上 -n 選項"',
+    `echo "don't run git commit --no-verify"`,
+    `git commit -m "$(cat <<'EOF'\nfix: 拒絕 git commit --no-verify，that's it\nEOF\n)"`,
+    "cat > note.md <<'EOF'\ngit commit --no-verify 會被拒\nEOF",
+    "grep -e 'git commit --no-verify' docs/a.md",
+    "node scripts/issue-create.mjs --body-file - <<'EOF'\ngit commit --no-verify 會被拒\nEOF",
+    '# 註解提到 git commit --no-verify\ngit status',
+  ]) assert.equal(bypassReason(command), null, command);
+});
+
+test('bypassReason：引號不掩蓋真正的繞過', () => {
+  for (const [command, reason] of [
+    ['git commit -m "fix: x" --no-verify', '--no-verify'],
+    ['git commit -m "a; b" --no-verify', '--no-verify'],
+    ['git commit "--no-verify" -m x', '--no-verify'],
+    ["git commit -m 'x y' -n", 'git commit -n'],
+    ['git -c "core.hooksPath=/tmp/a b" commit -m x', '改寫 core.hooksPath'],
+    ['git config core.hooksPath "/tmp/a b"', '改寫 core.hooksPath'],
+    ['git config core.hooksPath ""', '改寫 core.hooksPath'],
+    // 引號內是會被執行的指令
+    ["bash -c 'git commit --no-verify -m x'", '--no-verify'],
+    ['sh -c "cd wt && git push --no-verify origin x"', '--no-verify'],
+    ["bash -lc 'git -c core.hooksPath=/dev/null commit -m x'", '改寫 core.hooksPath'],
+    ['sudo bash -c "git commit -m \\"a b\\" --no-verify"', '--no-verify'],
+    [`bash -c "sh -c 'git commit --no-verify'"`, '--no-verify'],
+    ["flock -w 10 /tmp/l -c 'git push --no-verify'", '--no-verify'],
+    ['eval "git commit --no-verify"', '--no-verify'],
+    ["ssh host 'git push --no-verify'", '--no-verify'],
+    ["echo 'git commit --no-verify' | bash", '--no-verify'],
+    ["bash <<< 'git commit --no-verify'", '--no-verify'],
+    ["bash <<'EOF'\ngit commit --no-verify\nEOF", '--no-verify'],
+    ["cat <<'EOF' | sh\ngit commit --no-verify\nEOF", '--no-verify'],
+    ["python3 - <<'EOF'\nos.system('cd x && git commit --no-verify')\nEOF", '--no-verify'],
+    ["ssh host <<'EOF'\ngit push --no-verify\nEOF", '--no-verify'],
+    [`python3 -c "import os; os.system('git commit --no-verify')"`, '--no-verify'],
+    [`node -e "execSync('cd x && git commit --no-verify')"`, '--no-verify'],
+    // 雙引號內的 command substitution 會執行
+    ['echo "結果 $(git commit --no-verify -m x)"', '--no-verify'],
+    ['echo "結果 `git commit --no-verify -m x`"', '--no-verify'],
+    ['echo `git commit --no-verify -m x`', '--no-verify'],
+    // 引號以外的撇號不能吃掉後面的真實指令
+    ["# don't\ngit commit --no-verify # it's", '--no-verify'],
+    ["cat <<EOF\ndon't\nEOF\ngit commit --no-verify # it's", '--no-verify'],
+    ["echo don\\'t; git commit --no-verify; echo it\\'s", '--no-verify'],
+    // 引號不成對：其餘原樣比對，寧可攔
+    ['echo "x; git commit --no-verify', '--no-verify'],
+  ]) assert.equal(bypassReason(command), reason, command);
+});
+
 test('hook：命中時 exit 2 並說明，未命中或輸入不合法時 exit 0 無輸出', () => {
   const denied = hook(JSON.stringify({ tool_input: { command: 'git -c core.hooksPath=/dev/null commit -m x' } }));
   assert.equal(denied.status, 2); assert.match(denied.stderr, /繞過 git hook/);
@@ -73,6 +129,14 @@ test('probeFilterReason：--whole-output 指令以管線接 grep／head／tail �
   assert.equal(probeFilterReason('node scripts/job-status.mjs --probe | /usr/bin/egrep X', WHOLE_OUTPUT), 'egrep');
 });
 
+// 真實指令：retro spay2 c96f4bce#4，probe 長行後面正是要執行的指令，cut 會截掉。
+test('probeFilterReason：--whole-output 指令以管線接 cut 時攔下', () => {
+  assert.equal(probeFilterReason('node scripts/pilot-status.mjs --probe | cut -c1-900', ['pilot-status.mjs --probe']), 'cut');
+  assert.equal(probeFilterReason('node scripts/job-status.mjs --probe 2>&1 | /usr/bin/cut -c1-700', WHOLE_OUTPUT), 'cut');
+  const denied = hook(JSON.stringify({ tool_input: { command: 'node scripts/job-status.mjs --probe 2>&1 | cut -c1-900' } }), ARGS);
+  assert.equal(denied.status, 2); assert.match(denied.stderr, /以 cut 過濾/);
+});
+
 test('probeFilterReason：整份讀、其他旗標與其他指令不攔', () => {
   for (const command of ['node scripts/job-status.mjs --probe', 'node scripts/job-status.mjs --probe 2>&1',
     'node scripts/job-status.mjs --probe > /tmp/p.txt', 'node scripts/job-status.mjs --coordinator | grep ACTIVE',
@@ -107,6 +171,7 @@ test('exitGateReason：長跑 gate 接 grep／head／tail 時攔下', () => {
   assert.deepEqual(exitGateReason('cd /m && FOO=1 node /m/scripts/land.mjs x | head -3', GATES), { script: 'land.mjs', filter: 'head' });
   assert.deepEqual(exitGateReason('X=$(node scripts/batch-land.mjs c |& grep -c LANDED)', GATES), { script: 'batch-land.mjs', filter: 'grep' });
   assert.deepEqual(exitGateReason('scripts/check-contracts.sh | tee /tmp/x | rg FAIL', GATES), { script: 'check-contracts.sh', filter: 'rg' });
+  assert.deepEqual(exitGateReason('bash scripts/check-contracts.sh 2>&1 | cut -c1-200', GATES), { script: 'check-contracts.sh', filter: 'cut' });
 });
 
 test('exitGateReason：沒執行 gate、結果看得到 exit code、未指定時不攔', () => {

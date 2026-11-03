@@ -13,12 +13,19 @@ const SELF = 'term_self';
 
 // 記錄呼叫的假 Orca CLI：`terminal list` 回本分頁（title 是 Claude 的自動標題；`tabTitle` 是 --include-visual-layouts 回的實際分頁標題）。
 // `failing` 為真時每個呼叫都回錯。標題記錄放在 fixture 的 TAB_STATE_DIR，不碰家目錄。
-function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTitle, slow = '', firstRenameFails = false } = {}) {
+// `tabTitle` 有值時 rename 會改掉回報的分頁標題；`stuck` 為真時 rename 回 ok、回報的標題不變（2026-11-02 coordinator 回報改名成功，分頁實際沒變）。
+// `lagReads` 是改名後還回舊標題的讀取次數。
+function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTitle, slow = '', stuck = false, lagReads = 0, firstRenameFails = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'tab-state-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const log = join(temp, 'orca.log');
   writeFileSync(log, '');
   const dir = join(temp, 'titles');
+  const live = join(temp, 'live-title');
+  const pending = join(temp, 'pending-title');
+  const lag = join(temp, 'lag-reads');
+  if (tabTitle !== undefined) writeFileSync(live, tabTitle);
+  writeFileSync(lag, String(lagReads));
   const cli = join(temp, 'orca');
   writeFileSync(cli, `#!/usr/bin/env node
 const fs = require('fs'); const [, b] = process.argv.slice(2); const arg = k => process.argv[process.argv.indexOf(k) + 1];
@@ -27,9 +34,19 @@ ${orcaReplySource()}
 if (b === ${JSON.stringify(slow)}) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);
 if (${failing}) fail('runtime_unavailable');
 else if (${firstRenameFails} && b === 'rename' && fs.readFileSync(${JSON.stringify(log)}, 'utf8').split('terminal rename').length === 2) fail('runtime_unavailable');
-else if (b === 'list' && ${JSON.stringify(tabTitle ?? null)} !== null && process.argv.includes('--include-visual-layouts')) reply('list-visual', { visualLayouts: [{ root: { second: { tabs: [{ title: ${JSON.stringify(tabTitle ?? '')}, panes: { second: { handle: ${JSON.stringify(SELF)} } } }] } } }] });
+else if (b === 'list' && fs.existsSync(${JSON.stringify(live)}) && process.argv.includes('--include-visual-layouts')) {
+  const left = Number(fs.readFileSync(${JSON.stringify(lag)}, 'utf8'));
+  if (fs.existsSync(${JSON.stringify(pending)})) {
+    if (left > 0) fs.writeFileSync(${JSON.stringify(lag)}, String(left - 1));
+    else fs.renameSync(${JSON.stringify(pending)}, ${JSON.stringify(live)});
+  }
+  reply('list-visual', { visualLayouts: [{ root: { second: { tabs: [{ title: fs.readFileSync(${JSON.stringify(live)}, 'utf8'), panes: { second: { handle: ${JSON.stringify(SELF)} } } }] } } }] });
+}
 else if (b === 'list') reply('list', { terminals: [{ handle: 'term_other', title: '別人' }, { handle: ${JSON.stringify(SELF)}, title: ${JSON.stringify(autoTitle)} }], totalCount: 2 });
-else if (b === 'rename') reply('rename', { rename: { handle: arg('--terminal'), title: arg('--title') } });
+else if (b === 'rename') {
+  if (!${stuck} && fs.existsSync(${JSON.stringify(live)})) fs.writeFileSync(${JSON.stringify(pending)}, arg('--title'));
+  reply('rename', { rename: { handle: arg('--terminal'), title: arg('--title') } });
+}
 `);
   chmodSync(cli, 0o755);
   const record = title => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, SELF), title); };
@@ -72,7 +89,7 @@ test('--topic：一次設定前綴與主題，不沿用記錄裡上一個 sessio
   const result = run(['處理中', '--topic', '[維運] retro 收集']);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), 'TAB_STATE 處理中｜[維運] retro 收集');
-  assert.equal(calls(), 'terminal rename --terminal term_self --title 處理中｜[維運] retro 收集 --json\n');
+  assert.equal(calls(), 'terminal rename --terminal term_self --title 處理中｜[維運] retro 收集 --json\nterminal list --include-visual-layouts --json\n', '不讀目前標題，只有改名後讀回');
   assert.equal(recorded(), '處理中｜[維運] retro 收集');
 });
 
@@ -82,6 +99,45 @@ test('--topic 沒有值或是空字串：exit 2，不呼叫 Orca', t => {
     assert.equal(run(args).status, 2, args.join(' '));
   }
   assert.equal(calls(), '');
+});
+
+// retro spay2 92fa93fe#7：Orca 回 ok 但分頁標題沒變，只看回傳就回報了沒發生的事。
+test('改名回 ok 但讀回的標題不符：不印 TAB_STATE，印 TAB_STATE_MISMATCH 並 exit 1', t => {
+  const { run } = fixture(t, { tabTitle: 'Loop issue-pilot command', stuck: true });
+  const result = run(['處理中', '--topic', '[維運] 主題'], { TAB_STATE_VERIFY_RETRY_MS: '1' });
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr.trim(), 'TAB_STATE_MISMATCH 處理中｜[維運] 主題 actual=Loop issue-pilot command');
+});
+
+test('改名後讀回的標題相符：照常印 TAB_STATE、exit 0', t => {
+  const { run } = fixture(t, { tabTitle: '舊標題' });
+  const result = run(['處理中', '--topic', '主題']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'TAB_STATE 處理中｜主題');
+  assert.equal(result.stderr, '');
+});
+
+test('改名後要過一下才讀得到新標題：重讀到相符就算成功', t => {
+  const { run } = fixture(t, { tabTitle: '舊標題', lagReads: 1 });
+  const result = run(['處理中', '--topic', '主題'], { TAB_STATE_VERIFY_RETRY_MS: '1' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'TAB_STATE 處理中｜主題');
+});
+
+test('讀不到分頁（舊版 Orca、連不上）不算不符：照常印 TAB_STATE、exit 0', t => {
+  const { run } = fixture(t);
+  const result = run(['處理中', '--topic', '主題']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'TAB_STATE 處理中｜主題');
+  assert.equal(result.stderr, '');
+});
+
+test('改名後讀回太慢：不算不符，照常印 TAB_STATE、exit 0', t => {
+  const { run } = fixture(t, { slow: 'list' });
+  const result = run(['處理中', '--topic', '主題'], { TAB_STATE_LIST_BUDGET_MS: '300', TAB_STATE_BUDGET_MS: '20000' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'TAB_STATE 處理中｜主題');
 });
 
 test('沒有 ORCA_TERMINAL_HANDLE：exit 0 不輸出、不改記錄', t => {

@@ -4,6 +4,8 @@
 // 用法：node copy-templates.mjs <repo> [--dry-run] [--no-tests] [--yes] <template>...（template 為 templates/ 下的檔名，可省略 .mjs；
 //       .sh 正本保留執行權限，並帶上它以 "$(dirname "$0")/<檔名>" 呼叫的同目錄腳本；<名稱>.test.mjs 是它的測試）
 //       node copy-templates.mjs <repo> --verify
+//       --exclude <路徑>（可重複；templates/ 下的檔或目錄，可帶 scripts/ 前綴）：目標 repo 有自己版本的檔，不複製、不記清單、不追它的相依，
+//       既有檔與清單項目不動（spay2 的 scripts/test/fake-orca.mjs 與 scripts/test/fixtures/orca/），每個被排除的檔印一行 `EXCLUDE <副本路徑>`。
 //       --staged：正本已 `git add`、還沒 commit 時用（本 repo 的副本要和正本同一個 commit，bin/check 才過）：工作樹與 index 不同才擋，清單的 commit 記現在的 HEAD。
 // 輸出每檔一行 `COPY|SAME|UPDATE|DIFF <副本路徑>`（UPDATE、DIFF 後接 unified diff；UPDATE 是 sha256 與清單記錄一致、沒手改過的舊副本，直接覆寫），最後一行：
 //   PLANNED <n>（--dry-run）、COPIED <n>、CONFIRM_OVERWRITE <路徑...>（exit 3：既有檔內容不同且與清單記錄不一致，人確認後加 --yes 重跑）、
@@ -17,13 +19,21 @@ import { fileURLToPath } from 'node:url';
 const TEMPLATES = fileURLToPath(new URL('../templates/', import.meta.url));
 const MANIFEST = 'docs/agents/workflow-templates.json';
 
-const args = process.argv.slice(2);
+const fail = message => { console.error(`copy-templates: ${message}`); process.exit(2); };
+const excludes = [];
+const args = process.argv.slice(2).filter((arg, i, all) => {
+  if (all[i - 1] === '--exclude') return false;
+  if (arg !== '--exclude') return true;
+  if (!all[i + 1] || all[i + 1].startsWith('--')) fail('--exclude 要接路徑');
+  excludes.push(all[i + 1].replace(/^(\.\/)?(scripts\/)?/, '').replace(/\/+$/, ''));
+  return false;
+});
+const excluded = file => excludes.some(path => file === path || file.startsWith(`${path}/`));
 const flags = new Set(args.filter(arg => arg.startsWith('--')));
 const [repoArg, ...names] = args.filter(arg => !arg.startsWith('--'));
-const fail = message => { console.error(`copy-templates: ${message}`); process.exit(2); };
 const unknown = [...flags].filter(flag => !['--dry-run', '--no-tests', '--yes', '--verify', '--staged'].includes(flag));
 if (unknown.length) fail(`不認得的旗標：${unknown.join(' ')}`);
-if (!repoArg) fail('用法：copy-templates.mjs <repo> [--dry-run] [--no-tests] [--yes] [--staged] <template>... | <repo> --verify');
+if (!repoArg) fail('用法：copy-templates.mjs <repo> [--dry-run] [--no-tests] [--yes] [--staged] [--exclude <路徑>]... <template>... | <repo> --verify');
 const repo = resolve(repoArg);
 
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -80,14 +90,17 @@ function references(file) {
 }
 
 const files = new Set();
+const skipped = new Set();
 const visit = file => {
   if (files.has(file)) return;
+  if (excluded(file)) { skipped.add(file); return; }
   if (!existsSync(join(TEMPLATES, file)) || isDir(file)) fail(`正本不存在：templates/${file}`);
   files.add(file);
   if (file.endsWith('.mjs') || file.endsWith('.sh')) references(file).forEach(visit);
 };
 for (const name of names) {
   const file = /\.(mjs|sh)$/.test(name) ? name : `${name}.mjs`;
+  if (excluded(file)) fail(`--exclude 排除了明列的正本：${file}`);
   visit(file);
   const testFile = file.replace(/\.(mjs|sh)$/, '.test.mjs');
   if (!flags.has('--no-tests') && existsSync(join(TEMPLATES, testFile))) visit(testFile);
@@ -107,6 +120,7 @@ const plan = [...files].sort().map(file => {
   return { file, template, dest, target, state };
 });
 
+for (const file of [...skipped].sort()) console.log(`EXCLUDE ${join('scripts', file)}`);
 const diffs = [];
 for (const { file, dest, target, state } of plan) {
   console.log(`${state} ${dest}`);

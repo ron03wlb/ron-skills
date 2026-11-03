@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { lostFiles, parseRan, recordedPass, reportedTotal, untraced } from './node-test-guarded.mjs';
+import { failedFiles, lostFiles, parseRan, recordedPass, reportedTotal, soloOptions, untraced } from './node-test-guarded.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./node-test-guarded.mjs', import.meta.url));
@@ -15,7 +15,7 @@ function fixture(t, files, extraEnv = {}) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
   const env = { ...process.env };
-  for (const key of ['NODE_TEST_CONTEXT', 'NODE_TEST_COUNT_FILE', 'NODE_TEST_COUNT_ROOT', 'NODE_TEST_COUNTED', 'NODE_OPTIONS', 'NODE_TEST_GUARD_WAIT_MS']) delete env[key];
+  for (const key of ['NODE_TEST_CONTEXT', 'NODE_TEST_COUNT_FILE', 'NODE_TEST_COUNT_ROOT', 'NODE_TEST_COUNTED', 'NODE_OPTIONS', 'NODE_TEST_GUARD_WAIT_MS', 'NODE_TEST_RERUN_TIMEOUT_MS', 'NODE_TEST_FLAKE_MAX_FILES']) delete env[key];
   Object.assign(env, extraEnv);
   return (...args) => spawnSync(process.execPath, [SCRIPT, '--test-force-exit', ...args], { cwd: dir, encoding: 'utf8', env });
 }
@@ -57,7 +57,7 @@ test('子行程記下跑完的測試名稱：不必等候逾時，exit 0、不�
   assert.doesNotMatch(result.stderr, /NODE_TEST_LOST|NODE_TEST_COUNT_MISMATCH/);
 });
 
-test('測試失敗：原樣回傳 node --test 的 exit code，不另印 NODE_TEST_LOST', t => {
+test('測試失敗且單獨重跑仍失敗：回傳 node --test 的 exit code，不另印 NODE_TEST_LOST', t => {
   const run = fixture(t, { 'f.test.mjs': "import { test } from 'node:test';\ntest('f', () => { throw new Error('boom'); });\n" });
   const result = run('f.test.mjs');
   assert.equal(result.status, 1);
@@ -71,6 +71,83 @@ const LOSSY = "import { test } from 'node:test';\nimport { existsSync, rmSync } 
   + "test('mute', () => { if (existsSync('MUTE')) { if (existsSync('FLAKY_ONCE')) rmSync('MUTE'); process.stdout.write = () => true; } });\n"
   + "test('cut', () => { if (existsSync('CUT')) { if (existsSync('FLAKY_ONCE')) rmSync('CUT'); process.exit(0); } });\n"
   + "for (const n of [1, 2, 3]) test(`t${n}`, () => {});\n";
+
+// 第一次失敗、之後通過：以 FAIL_ONCE 檔記狀態（不共用 LOSSY 的 FLAKY_ONCE，兩檔並行時才不互相影響），模擬高負載下才失敗的測試（retro spay2 92fa93fe#3：單獨重跑全過）。
+const FLAKY = "import { test } from 'node:test';\nimport { existsSync, rmSync } from 'node:fs';\n"
+  + "test('flaky', () => { if (existsSync('FAIL_ONCE')) { rmSync('FAIL_ONCE'); throw new Error('boom'); } });\n";
+const OK = "import { test } from 'node:test';\ntest('ok', () => {});\n";
+const BROKEN = "import { test } from 'node:test';\ntest('broken', () => { throw new Error('boom'); });\n";
+
+test('第一次失敗、單獨重跑通過：exit 0，印 NODE_TEST_FLAKE_SUSPECT，只重跑失敗的檔', { skip: NO_CHANNEL }, t => {
+  const run = fixture(t, { 'flaky.test.mjs': FLAKY, 'ok.test.mjs': OK, FAIL_ONCE: '' });
+  const result = run('flaky.test.mjs', 'ok.test.mjs');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stderr, /^NODE_TEST_FLAKE_SUSPECT flaky\.test\.mjs$/m);
+  assert.doesNotMatch(result.stderr, /ok\.test\.mjs/);
+  assert.equal(result.stdout.match(/^✔ ok\b/gm).length, 1, '通過的檔不重跑');
+});
+
+test('兩次都失敗：回傳第一次的 exit code，印 NODE_TEST_RERUN FAIL，不印 NODE_TEST_FLAKE_SUSPECT', { skip: NO_CHANNEL }, t => {
+  const run = fixture(t, { 'broken.test.mjs': BROKEN, 'ok.test.mjs': OK });
+  const result = run('broken.test.mjs', 'ok.test.mjs');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /^NODE_TEST_RERUN broken\.test\.mjs FAIL$/m);
+  assert.doesNotMatch(result.stderr, /NODE_TEST_FLAKE_SUSPECT/);
+});
+
+test('多檔失敗：一檔重跑通過、一檔仍失敗：exit 1，只有通過的檔算 NODE_TEST_FLAKE_SUSPECT', { skip: NO_CHANNEL }, t => {
+  const run = fixture(t, { 'broken.test.mjs': BROKEN, 'flaky.test.mjs': FLAKY, FAIL_ONCE: '' });
+  const result = run('broken.test.mjs', 'flaky.test.mjs');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /^NODE_TEST_FLAKE_SUSPECT flaky\.test\.mjs$/m);
+  assert.match(result.stderr, /^NODE_TEST_RERUN broken\.test\.mjs FAIL$/m);
+});
+
+test('測試檔載入就失敗且重跑仍失敗：exit 非 0，不算 flake', t => {
+  const run = fixture(t, { 'crash.test.mjs': "throw new Error('boom');\n" });
+  const result = run('crash.test.mjs');
+  assert.notEqual(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stderr, /NODE_TEST_FLAKE_SUSPECT/);
+});
+
+test('失敗的檔超過重跑上限：不逐檔重跑，印 NODE_TEST_FLAKE_SKIPPED、exit 非 0', { skip: NO_CHANNEL }, t => {
+  const run = fixture(t, { 'a.test.mjs': BROKEN, 'b.test.mjs': BROKEN }, { NODE_TEST_FLAKE_MAX_FILES: '1' });
+  const result = run('a.test.mjs', 'b.test.mjs');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /^NODE_TEST_FLAKE_SKIPPED 2 /m);
+  assert.doesNotMatch(result.stderr, /NODE_TEST_RERUN/);
+});
+
+test('一檔失敗重跑通過、另一檔回報遺失且紀錄不完整：遺失照樣重跑判定', { skip: NO_CHANNEL }, t => {
+  const run = fixture(t, { 'flaky.test.mjs': FLAKY, 'lossy.test.mjs': LOSSY, FAIL_ONCE: '', MUTE: '', CUT: '' });
+  const result = run('flaky.test.mjs', 'lossy.test.mjs');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /^NODE_TEST_FLAKE_SUSPECT flaky\.test\.mjs$/m);
+  assert.match(result.stderr, /^NODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
+});
+
+test('soloOptions：單獨重跑拿掉 --test-force-exit（retro spay2 1102a：pilot-status 135/156、0 fail 判 FAIL），其他選項不動', () => {
+  assert.deepEqual(soloOptions(['--test-reporter=spec', '--test-force-exit', '--test-timeout=120000']), ['--test-reporter=spec', '--test-timeout=120000']);
+});
+
+test('failedFiles：紀錄有失敗、exit 非 0 或沒有紀錄的檔；全部沒有事件時找不出', () => {
+  const rec = (file, fields) => `${JSON.stringify({ file, names: ['x'], traced: true, started: 1, failed: 0, code: 0, ...fields })}\n`;
+  const text = rec('/a', {}) + rec('/b', { failed: 1, code: 1 }) + rec('/c', { code: 1 });
+  assert.deepEqual(failedFiles(text, ['/a', '/b', '/c', '/d']), ['/b', '/c', '/d']);
+  assert.deepEqual(failedFiles('{"file":"/a","names":[],"traced":false,"failed":0,"code":1}\n', ['/a']), []);
+});
+
+test('單獨重跑沒有 force-exit 收尾、測試檔留下掛著的 handle：逾時收掉並判 FAIL，不會卡住', { skip: NO_CHANNEL }, t => {
+  const hang = "import { test } from 'node:test';\nimport { existsSync, rmSync } from 'node:fs';\n"
+    + "test('flaky', () => { if (existsSync('FLAKY_ONCE')) { rmSync('FLAKY_ONCE'); throw new Error('boom'); } setInterval(() => {}, 1000); });\n";
+  const run = fixture(t, { 'hang.test.mjs': hang, FLAKY_ONCE: '' }, { NODE_TEST_RERUN_TIMEOUT_MS: '3000' });
+  const started = Date.now();
+  const result = run('hang.test.mjs');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /^NODE_TEST_RERUN_TIMEOUT hang\.test\.mjs 3000$/m);
+  assert.match(result.stderr, /^NODE_TEST_RERUN hang\.test\.mjs FAIL$/m);
+  assert.ok(Date.now() - started < 60000);
+});
 
 test('子行程紀錄不完整、回報遺失且 exit 0：印 NODE_TEST_LOST，單獨重跑通過即 exit 0', { skip: NO_CHANNEL }, t => {
   const run = fixture(t, { 'lossy.test.mjs': LOSSY, 'ok.test.mjs': "import { test } from 'node:test';\ntest('ok', () => {});\n", MUTE: '', CUT: '', FLAKY_ONCE: '' });
