@@ -177,8 +177,8 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "463ff1c06098140429a94fa3f5654f198166e851",
-      "sha256": "e07183483fb0ca80aa508a5bf0d9c5ac312441ffde5c63053346e92bf370ed3d"
+      "commit": "ca1a40af485317dd5c2ae4752db5a4a1de10c3af",
+      "sha256": "136a892d904cd5d6365e73c99ed49fa0fce3c935ece3f184b8afb33cc12a5f79"
     }
   },
   "source": "ron03wlb/ron-skills"
