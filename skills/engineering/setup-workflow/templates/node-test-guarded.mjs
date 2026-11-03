@@ -10,7 +10,8 @@
 //   沒有 node.test tracing channel 的 Node（22）記不到名稱：所有記錄都沒收到事件時放行，只回傳 node --test 的 exit code。
 // 用法：node scripts/node-test-guarded.mjs <node --test 的選項（--name=value 形式）…> <測試檔…>
 //   node --test 失敗時，依子行程紀錄（failed、code）找出失敗的檔（沒有紀錄的檔也算），各單獨重跑一次（高負載下才失敗的測試，retro spay2 92fa93fe#3）：
-//   全過時每檔印 `NODE_TEST_FLAKE_SUSPECT <path>` 到 stderr、不算失敗，呼叫端自行記錄；重跑仍失敗印 `NODE_TEST_RERUN <path> FAIL`，回傳第一次的 exit code。
+//   全過時每檔印 `NODE_TEST_FLAKE_SUSPECT <path>` 到 stderr、不算失敗；cwd 有 scripts/followups.mjs 時另寫一行 followups [tooling]，每個呼叫端都記到（followups 264：
+//   原本只有 push gate 會寫，batch-merge verify 與 fix-land 的 check-contracts 只留在 log）。內容相同的未處理行已存在時它不重複寫；寫不成不影響結果。重跑仍失敗印 `NODE_TEST_RERUN <path> FAIL`，回傳第一次的 exit code。
 //   找不出失敗的檔（Node 22 沒有紀錄、載入就失敗的單檔）時直接回傳第一次的 exit code；失敗的檔超過 FLAKE_MAX_FILES 時印 `NODE_TEST_FLAKE_SKIPPED <n> …`、不重跑，視為真實失敗。
 //   有遺失時每檔印 `NODE_TEST_LOST <path> ran=<子行程跑完數> missing=<輸出中缺的數>` 到 stderr，單獨重跑該檔，
 //   印 `NODE_TEST_RERUN <path> PASS|FAIL`；全部 PASS 時 exit 0，否則 exit 1。
@@ -19,7 +20,7 @@
 //   遺失的是回報而不是執行時（Linux CI 上單獨重跑也會遺失，#256）：子行程紀錄完整（每個開始的測試都有結束紀錄）、
 //   沒有失敗、子行程 exit 0，就印 `NODE_TEST_RECORDED <path> PASS：<說明>` 判定通過、不重跑；其餘照舊單獨重跑，重跑也以同樣規則判定。
 //   總數不等卻找不到是哪個檔時印 `NODE_TEST_COUNT_MISMATCH`，exit 1。
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
@@ -145,6 +146,15 @@ async function runOnce(options, files, { timeoutMs } = {}) {
 /** 單獨重跑的選項：拿掉 force-exit，父行程才會等子行程把結果送完。 */
 export const soloOptions = options => options.filter(option => option !== '--test-force-exit');
 
+/**
+ * flake 寫進 followups 的 [tooling] 行，交 /retro-collect（retro 92fa93fe#3、followups 264）。followups.mjs 依 git common dir 寫回主 checkout，暫時 worktree 裡跑也一樣。
+ * 只認 cwd 自己的 scripts/followups.mjs 與 cwd 內的檔：測試 fixture 的 cwd 沒有它，不會寫到真正的 followups。不丟錯、不輸出：不能讓記錄影響測試結果。
+ */
+function recordFlake(path) {
+  if (path.startsWith('..') || !existsSync('scripts/followups.mjs')) return;
+  spawnSync(process.execPath, ['scripts/followups.mjs', 'add', 'node-test-guarded', '--tooling', `NODE_TEST_FLAKE_SUSPECT ${path}：首輪失敗、單獨重跑全過`], { stdio: 'ignore', timeout: 30_000 });
+}
+
 /** 單獨重跑一檔；全過回 true。 */
 async function rerun(options, path) {
   const solo = await runOnce(soloOptions(options), [path], { timeoutMs: RERUN_TIMEOUT_MS });
@@ -169,8 +179,10 @@ export async function main(args) {
   let status = 0;
   for (const file of first.failed) {
     const path = relative(process.cwd(), file);
-    if (await rerun(options, path)) console.error(`NODE_TEST_FLAKE_SUSPECT ${path}`);
-    else {
+    if (await rerun(options, path)) {
+      console.error(`NODE_TEST_FLAKE_SUSPECT ${path}`);
+      recordFlake(path);
+    } else {
       console.error(`NODE_TEST_RERUN ${path} FAIL`);
       status = first.code;
     }
