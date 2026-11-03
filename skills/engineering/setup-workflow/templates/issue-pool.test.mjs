@@ -45,7 +45,7 @@ const view = ({ assignees = [], comments = [] } = {}) => mergeSample(VIEW, {
 /** PATH 上的假 gh：`api graphql` 回 issues 頁面；`issue view` 依序回 views 的第 i 個（用完就一直回最後一個），其餘只記錄 argv；
  * 每次呼叫一行 JSON 寫進 calls.log。script 在暫存的 git repo 裡跑，sessions 給了就寫成它的 `.scratch/pilot/sessions.md`。
  * CLAUDE_CONFIG_DIR 指向暫存目錄，不讀使用者的 ~/.claude；transcripts 是 { <session>: [最後寫入幾小時前, 內容] }。 */
-function fakeGh({ issues = [], views = [view()], sessions, transcripts = {}, children } = {}) {
+function fakeGh({ issues = [], views = [view()], sessions, transcripts = {}, children, linkedPrs = [] } = {}) {
   const dir = mkdtempSync(join(realTmpdir(), 'issue-pool-'));
   const repo = join(dir, 'repo');
   mkdirSync(repo);
@@ -73,7 +73,8 @@ const log = ${JSON.stringify(join(dir, 'calls.log'))};
 let previous = [];
 try { previous = readFileSync(log, 'utf8').trim().split('\\n').map(line => JSON.parse(line)); } catch {}
 appendFileSync(log, JSON.stringify(args) + '\\n');
-if (args[0] === 'api' && args[1] === 'graphql' && args.some(arg => arg.includes('subIssues('))) process.stdout.write(readFileSync(${JSON.stringify(join(dir, 'children.json'))}));
+if (args[0] === 'api' && args[1] === 'graphql' && args.some(arg => arg.includes('headRefName'))) process.stdout.write(JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes: ${JSON.stringify(linkedPrs)} } } } } }));
+else if (args[0] === 'api' && args[1] === 'graphql' && args.some(arg => arg.includes('subIssues('))) process.stdout.write(readFileSync(${JSON.stringify(join(dir, 'children.json'))}));
 else if (args[0] === 'api' && args[1] === 'graphql') process.stdout.write(readFileSync(${JSON.stringify(join(dir, 'page.json'))}));
 else if (args[0] === 'issue' && args[1] === 'view') {
   const views = JSON.parse(readFileSync(${JSON.stringify(join(dir, 'views.json'))}, 'utf8'));
@@ -722,4 +723,32 @@ test('同種 GitLab 加 --repo：-R 與 --hostname 都指向 origin 的主機，
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(calls()[0], ['api', 'projects/spay%2Fspay2/issues/7', '--hostname', '192.168.200.202']);
   assert.deepEqual(glWrites(calls())[0], ['issue', 'note', '7', '-R', 'https://192.168.200.202/spay/spay2', '-m', `認領：${glMine}`]);
+});
+
+// #300：#286 帶 ready-for-agent、沒指派、沒留言，Gate 通過；PR #288 其實已開了 15 小時，只是順手 grep 分支才沒重做一份。
+const linked = (number, state, branch) => ({ number, state, url: `https://github.com/acme/app/pull/${number}`, headRefName: branch });
+
+test('open-work：印開著的關聯 PR 與同號分支，已合併的 PR 與別張單的分支不算', () => {
+  const { run, repo } = fakeGh({ linkedPrs: [linked(288, 'OPEN', 'issue/286-pilot-close-protect'), linked(250, 'MERGED', 'issue/286-old')] });
+  const bare = join(repo, '..', 'origin.git');
+  git(repo, 'init', '-q', '--bare', bare);
+  git(repo, 'remote', 'add', 'origin', bare);
+  git(repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x');
+  git(repo, 'branch', 'issue/286-local');
+  git(repo, 'branch', 'issue/2860-other');
+  git(repo, 'push', '-q', 'origin', 'HEAD:refs/heads/issue/286-pilot-close-protect', 'HEAD:refs/heads/issue/1286-other');
+  const result = run('open-work', '286');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    'OPEN_PR 286 288 issue/286-pilot-close-protect https://github.com/acme/app/pull/288',
+    'BRANCH 286 issue/286-local local',
+    'BRANCH 286 issue/286-pilot-close-protect origin',
+  ]);
+});
+
+test('open-work：沒有進行中的工作時印 NO_OPEN_WORK，沒有 origin 也不失敗', () => {
+  const { run } = fakeGh({ linkedPrs: [linked(250, 'CLOSED', 'issue/286-old')] });
+  const result = run('open-work', '286');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'NO_OPEN_WORK 286\n');
 });

@@ -52,8 +52,8 @@
     },
     "scripts/claude-hook-zsh-equals.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-zsh-equals.mjs",
-      "commit": "774f7b44ee01e33305be974d55c6837733d406a0",
-      "sha256": "6ca8924558d3c4b4febff55f3ee63b1243a03f3412f5bd88fed1644d4e63f2e1"
+      "commit": "5c138eef43cfcbe045652d2c70e65478041e4ade",
+      "sha256": "302012dcbd11998c01787ebb3045b84da7297bb1d01fba8557a48567b59a3f47"
     },
     "scripts/gh-tracker.mjs": {
       "template": "skills/engineering/setup-workflow/templates/gh-tracker.mjs",
@@ -62,17 +62,17 @@
     },
     "scripts/issue-pool.mjs": {
       "template": "skills/engineering/setup-workflow/templates/issue-pool.mjs",
-      "commit": "b6adf8972ae8c6be56cbc5e57417930cd3dde301",
-      "sha256": "6343148cdb2d5991d1f81bdd2c85e4b9c747f3cdfd32372e8071b8b9f2fa6595"
+      "commit": "5c138eef43cfcbe045652d2c70e65478041e4ade",
+      "sha256": "79fce9bb08d019b68b66cdc0f6eaf31f518a35068f280de7260f21fe3b2e3a7f"
     },
     "scripts/land.mjs": {
       "template": "skills/engineering/setup-workflow/templates/land.mjs",
-      "commit": "774f7b44ee01e33305be974d55c6837733d406a0",
-      "sha256": "e2efc353e88da8275265e1faaa51bb93f5c2639e270247335e23ecb5d3ca813d"
+      "commit": "5c138eef43cfcbe045652d2c70e65478041e4ade",
+      "sha256": "732010d398a30c0e03c3d52047a043a69c9c100fca166402d99b35b85620b58e"
     },
     "scripts/lib/hosts.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/hosts.mjs",
-      "commit": "2f0dc3f0f274ce4a88e535c8f22c37049c111053",
+      "commit": "5c138eef43cfcbe045652d2c70e65478041e4ade",
       "sha256": "27903739d0a621c91f571544ec51cd07b96e94484697a6a38f18b4b99864791b"
     },
     "scripts/lib/pilot-store.mjs": {
@@ -82,7 +82,7 @@
     },
     "scripts/orca-session-send.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-send.mjs",
-      "commit": "a67eced93e4fbce3a9bda94fa4a36b5fcc22546d",
+      "commit": "5c138eef43cfcbe045652d2c70e65478041e4ade",
       "sha256": "1d21dba80395af6ece014501d7c828667ddd95b852fa9476642941f5e44340b2"
     },
     "scripts/orca-session-split.mjs": {
@@ -92,8 +92,8 @@
     },
     "scripts/orca-worktree-create.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-worktree-create.mjs",
-      "commit": "d949d9446d7c758aeb965c0c69183e1184726d73",
-      "sha256": "c9bfcf8bd3ef0b47724dabe979f50b2038b4d78b7b09dc31b72c6a5208fe5469"
+      "commit": "5c138eef43cfcbe045652d2c70e65478041e4ade",
+      "sha256": "01d40e755d4c42f65b8b19154a348cd00bb5ea2c4a7c5f5c3cdd8ffe4d5ff2bb"
     },
     "scripts/pilot-batch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-batch.mjs",

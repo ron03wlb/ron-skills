@@ -6,6 +6,8 @@
 # 環境變數 MATT_SKILLS、PSTACK_SKILLS 同 bin/sync-skills；--upstream 會覆寫它們。
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# 呼叫者帶來的 GIT_DIR、GIT_INDEX_FILE 等會被測試的 git 繼承，fixture 就改到真正的 repo（#25）；不經 pre-commit 直接跑時（`git rebase --exec`）也要清（#301）。
+unset $(git rev-parse --local-env-vars)
 # 這次檢查的樹：通過時記下，pre-commit 遇到同一棵樹不再跑（scripts/check-stamp.mjs，#297）。取不到不影響檢查。
 stamp_tree=$(node scripts/check-stamp.mjs tree 2>/dev/null) || stamp_tree=
 
@@ -14,8 +16,9 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 # 只看尾段就知道是哪個測試，不必整條重跑存 log 再 grep（#267：`bin/check | tail -8` 只拿到 stack trace）。<步驟> 是 $step，沒設時是失敗的指令。
 step=
 check_fail() {
+  # 不用 paste -d'｜'：GNU paste 只取分隔符的第一個位元組，兩個以上失敗時整行變成無效 UTF-8（#301）。
   local failed=
-  failed=$(cat "$tmp"/*.log 2>/dev/null | sed -n 's/^[[:space:]]*✖ \(.*\) ([0-9.]*m\{0,1\}s)$/\1/p' | sort -u | paste -sd'｜' -) || true
+  failed=$(cat "$tmp"/*.log 2>/dev/null | sed -n 's/^[[:space:]]*✖ \(.*\) ([0-9.]*m\{0,1\}s)$/\1/p' | sort -u | awk 'NR>1{printf "｜"}{printf "%s",$0}END{if(NR)print ""}') || true
   echo "CHECK_FAIL ${step:-$1}${failed:+ $failed}"
 }
 trap 'check_fail "$BASH_COMMAND"' ERR
@@ -46,7 +49,7 @@ node scripts/check-workflow-secrets.mjs
 node scripts/check-workflow-sync.mjs
 # 本 repo 與 setup-workflow 的 templates/ 都要在 macOS 與 Linux 上跑（#86）；從 repo 根掃，templates/ 也在範圍內。
 node scripts/check-portability.mjs
-# 會 spawn git 的正本測試要 import 隔離模組，否則在 git hook 裡跑時 fixture 會改到真正的 repo（#295：漏了 8 支，#291 才補上）。tests/ 自己清 GIT_*，不在範圍內。
+# 會 spawn git 的正本測試要 import 隔離模組，否則在 git hook 裡跑時 fixture 會改到真正的 repo（#295：漏了 8 支，#291 才補上）。tests/ 不在範圍內：開頭已清掉 GIT_*（#301）。
 node scripts/check-test-git-isolation.mjs skills/engineering/setup-workflow/templates
 # 只讀文件與清單的規則不到兩秒，在整條測試之前先跑：副本與 sha256（#267：第四次踩到）、pilot.md 大小、docs/agents 的裸 gh 寫入與 allow 規則清單（#274：改 adapter 文字等一分鐘才報，
 # 本機只跑 check-coordinator-permissions.mjs 看不到 allow 清單那條，開了 PR #280 才在 CI 失敗）。通過時不印（整組測試裡會再跑一次），失敗時印 node 的 failing tests 段。

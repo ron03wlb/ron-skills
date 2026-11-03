@@ -12,11 +12,11 @@
 // （session f236b357 jsonl 第 207 行：`~/Documents/Workspace/mec-wiki` 明明存在，#284）。多半有相符檔案的 `for f in tests/*.test.mjs` 不該擋，所以 hook 實際比對檔案系統，
 // 只擋此刻沒有相符檔案的；帶 `(N)` 限定、`setopt nullglob`、含變數或大括號（看不出會展開成什麼）、指令裡有 `cd` 時的相對路徑（不知道當時的目錄）都放行。
 // 一般參數（#287）：`grep -l x scripts/*health* 2>/dev/null` 沒有相符檔案時一樣 NOMATCH 中止（session 3cf4e67c jsonl 第 196 行），而且 2>/dev/null 救不了。和 for 清單一樣比對檔案系統，有相符的放行；
-// 只在 $SHELL 是 zsh 時擋：bash 把沒有相符的 glob 原樣傳給指令，無害。`case`、`noglob` 看不出是不是 glob，放行。
+// bash 把沒有相符的 glob 原樣傳給指令，無害。`case`、`noglob` 看不出是不是 glob，放行。
 // 指令開頭只有一個 `cd <字面絕對路徑>` 時，相對路徑以該路徑解析（#287 的兩條指令都以 `cd /Users/…` 開頭）；其他 cd、pushd 看不出當時的目錄，相對路徑放行。
 // PIPESTATUS：Bash 工具跑的是 zsh，bash 的 `${PIPESTATUS[0]}` 在 zsh 展開成空字串，pipe 前那支指令的 exit code 就不見了
 // （session 8d8ec702 jsonl 第 183 行 `… | tail -20; echo "exit=${PIPESTATUS[0]}"` 印 `exit=`，#238）。沒加引號或在雙引號裡的才算，單引號與 heredoc 內容放行。
-// 命中時 exit 2，stderr 說明原因與改法；輸入不合法或不是 Bash 時 exit 0 不輸出。
+// 命中時 exit 2，stderr 說明原因與改法；$SHELL 不是 zsh（#301）、輸入不合法或不是 Bash 時 exit 0 不輸出。
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -219,6 +219,8 @@ function scan(command) {
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
+  // 全部只在 zsh 才擋：bash 沒有 EQUALS、NOMATCH，`$PIPESTATUS` 又是對的，在 bash 照建議改成 `${pipestatus[1]}` 只拿到空字串（#301）。
+  if (!/(?:^|\/)zsh$/.test(process.env.SHELL ?? '')) process.exit(0);
   let input;
   try { input = JSON.parse(readFileSync(0, 'utf8')); } catch { process.exit(0); }
   const command = input?.tool_input?.command;
@@ -226,7 +228,7 @@ if (isMain) {
   if (typeof command !== 'string') process.exit(0);
   const { equals, nomatch, pipestatus } = scan(command);
   const unmatchedFor = unmatchedForGlobs(command, { cwd: input?.cwd });
-  const args = /(?:^|\/)zsh$/.test(process.env.SHELL ?? '') ? unmatchedArgGlobs(command, { cwd: input?.cwd }) : [];
+  const args = unmatchedArgGlobs(command, { cwd: input?.cwd });
   if (!equals.length && !nomatch.length && !pipestatus && !unmatchedFor.length && !args.length) process.exit(0);
   const lines = [];
   if (equals.length) lines.push(

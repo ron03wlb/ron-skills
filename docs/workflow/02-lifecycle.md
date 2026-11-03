@@ -53,7 +53,7 @@ Matt 的 `triage` skill 定義五個分級角色；本流程再加兩個交付�
 | 交付 | 人 push、開 PR／MR、合併 | candidate 進到主線 |
 | 結案 | 確認 candidate 已在遠端主線後關單 | `completed`；刪掉工作分支與 worktree |
 
-`/issue-run` 在 Gate 一步就會擋下不合格的單：狀態不是 adapter 的 ready 狀態、preflight 不是 exit 0、或有還沒合入的 blocker。它不會自己跑 `/triage` 補規格，只告訴你缺什麼、該跑哪個入口。
+`/issue-run` 在 Gate 一步也用 `issue-pool.mjs open-work <n>` 查這張單已開著的 PR 與同號分支，有的話接著做，不重做一份。它在 Gate 一步就會擋下不合格的單：狀態不是 adapter 的 ready 狀態、preflight 不是 exit 0、或有還沒合入的 blocker。它不會自己跑 `/triage` 補規格，只告訴你缺什麼、該跑哪個入口。
 
 ## tracker 指令對照
 

@@ -75,3 +75,9 @@ test('只讀文件與清單的測試在整條測試之前跑，CHECK_FAIL 帶步
   }
   assert.ok(source.indexOf('step=docs-rules') < source.indexOf('step=tests'), 'docs-rules 要排在 tests 之前');
 });
+
+// #301：`paste -sd'｜'` 在 GNU paste 只取 `｜` 的第一個位元組，兩個以上失敗的測試時整行變成無效 UTF-8，Read 工具也回報檔案不是有效的 UTF-8。
+test('兩個失敗的測試：CHECK_FAIL 以完整的 ｜ 分隔，輸出是有效的 UTF-8', t => {
+  const result = checkFail(t, '✖ 案例a (1ms)\n✖ 案例b (2ms)\n', { step: 'tests' });
+  assert.equal(result.stdout, 'CHECK_FAIL tests 案例a｜案例b\n');
+});
