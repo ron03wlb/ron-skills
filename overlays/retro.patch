@@ -16,7 +16,7 @@ index 12149ac..3ac6a8d 100644
 +
 +6. Every adopted **check** (a lint, a test, a hook, a script gate) must prove itself before it lands: first say why the mistake cannot be made impossible higher up (architecture, then types), then add a fixture of the real past mistake and show the check fails on it, with the command and exit code. A check that only shows correct code passing is not done.
 +
-+7. Last, in normal and collect mode alike: once every adopted item is merged or filed as an Issue, or the candidates went to the collect flow, mark this tab's state as done with retro. When the repo has `scripts/tab-state.mjs`, run `node scripts/tab-state.mjs 待關閉`; it changes only the Orca tab title's state prefix and exits 0 silently outside Orca. The user closes the tab.
++7. Last, in normal and collect mode alike: once every adopted item is merged or filed as an Issue, or the candidates went to the collect flow, mark this tab's state as done with retro. When the repo has `scripts/tab-state.mjs`, run `node scripts/tab-state.mjs 待關閉`; it changes only the Orca tab title's state prefix and exits 0 silently outside Orca. `/retro-collect` or the user closes the tab.
 +
  ## Reference
  

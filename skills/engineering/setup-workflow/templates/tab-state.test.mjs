@@ -13,7 +13,7 @@ const SELF = 'term_self';
 
 // 記錄呼叫的假 Orca CLI：`terminal list` 回本分頁（title 是 Claude 的自動標題；`tabTitle` 是 --include-visual-layouts 回的實際分頁標題）。
 // `failing` 為真時每個呼叫都回錯。標題記錄放在 fixture 的 TAB_STATE_DIR，不碰家目錄。
-function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTitle, slow = '' } = {}) {
+function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTitle, slow = '', firstRenameFails = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'tab-state-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const log = join(temp, 'orca.log');
@@ -26,6 +26,7 @@ fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n
 ${orcaReplySource()}
 if (b === ${JSON.stringify(slow)}) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);
 if (${failing}) fail('runtime_unavailable');
+else if (${firstRenameFails} && b === 'rename' && fs.readFileSync(${JSON.stringify(log)}, 'utf8').split('terminal rename').length === 2) fail('runtime_unavailable');
 else if (b === 'list' && ${JSON.stringify(tabTitle ?? null)} !== null && process.argv.includes('--include-visual-layouts')) reply('list-visual', { visualLayouts: [{ root: { second: { tabs: [{ title: ${JSON.stringify(tabTitle ?? '')}, panes: { second: { handle: ${JSON.stringify(SELF)} } } }] } } }] });
 else if (b === 'list') reply('list', { terminals: [{ handle: 'term_other', title: '別人' }, { handle: ${JSON.stringify(SELF)}, title: ${JSON.stringify(autoTitle)} }], totalCount: 2 });
 else if (b === 'rename') reply('rename', { rename: { handle: arg('--terminal'), title: arg('--title') } });
@@ -99,6 +100,28 @@ test('Orca 呼叫失敗：exit 0、stdout 空、stderr 印 TAB_STATE_FAILED 與�
   assert.equal(result.stdout, '');
   assert.equal(result.stderr.trim(), 'TAB_STATE_FAILED 待關閉 runtime_unavailable');
   assert.equal(recorded(), null);
+});
+
+// 1102b：d6651f99 跑 `tab-state 待關閉` 只有 exit 0、沒有 TAB_STATE，分頁實際已改名但記錄還是待 Retro，#297 的分頁沒被關。
+test('第一次改名失敗：再送一次，成功就印 TAB_STATE 並寫記錄', t => {
+  const { record, recorded, run, calls } = fixture(t, { firstRenameFails: true });
+  record('待 Retro｜x');
+  const result = run(['待關閉']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'TAB_STATE 待關閉｜x');
+  assert.equal(result.stderr, '');
+  assert.equal(recorded(), '待關閉｜x');
+  assert.equal(calls().split('terminal rename').length - 1, 2);
+});
+
+test('--title：有實際分頁標題時不用過期的記錄，查不到才用記錄；沒給 handle 是用法錯誤', t => {
+  const live = fixture(t, { tabTitle: '待關閉｜x' });
+  live.record('待 Retro｜x');
+  assert.equal(live.run(['--title', SELF], { ORCA_TERMINAL_HANDLE: '' }).stdout.trim(), '待關閉｜x');
+  const stale = fixture(t, { failing: true });
+  stale.record('待關閉｜y');
+  assert.equal(stale.run(['--title', SELF]).stdout.trim(), '待關閉｜y');
+  assert.equal(stale.run(['--title']).status, 2);
 });
 
 test('改名逾時：stderr 講明逾時、改名可能已送達，不改記錄', t => {

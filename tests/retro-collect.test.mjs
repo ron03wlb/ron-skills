@@ -27,7 +27,7 @@ test('retro-collect 的 Close 依收集單的 Orca handle 關掉待關閉的來�
   const close = skill.split('\n\n').find(paragraph => paragraph.includes('**Close.**'));
   assert.match(close, /`Orca: <handle>`/);
   assert.match(close, /`待關閉｜`/);
-  assert.match(close, /orca terminal close --terminal <handle> --tab/);
+  assert.match(close, /"\$\{ORCA_CLI_COMMAND:-orca\}" terminal close --terminal <handle> --tab/);
   assert.match(close, /leave any other state alone/);
 });
 
