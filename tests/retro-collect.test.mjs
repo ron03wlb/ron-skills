@@ -63,3 +63,11 @@ test('retro-collect 宣告：ADAPTER 寫明三行與預設，ADR 0003 記下例�
   assert.match(adr, /另一台機器看不到/);
   assert.match(adr, /預設仍是 tracker/);
 });
+
+// #301：#295-6 標了 done，Probe 檢查沒做，關單後沒有地方追蹤；#287 的分頁早就不在，沒有標題記錄就回報成「留著」。
+test('retro-collect：只做一部分的候選，剩下的開 Issue；標題讀不到時查 terminal list', () => {
+  const step = name => skill.split('\n\n').find(paragraph => paragraph.includes(`**${name}.**`));
+  assert.match(step('Implement'), /`done <file>; blocked → #<n>`/);
+  assert.match(step('Close'), /title comes back empty[^.]*terminal list --json/);
+  assert.ok(step('Close').indexOf('title comes back empty') < step('Close').indexOf('terminal_handle_stale'), '先讀標題才關分頁');
+});

@@ -32,7 +32,7 @@ macOS, WSL2, Linux（母單 #82 決策 R1-Q1；原生 Windows 不支援）。本
 
 ## Worktrees and checkpoint
 
-從 `main` 開 `issue/<n>-<slug>` 分支，一張 ticket 也開 worktree：主 checkout 有 `scripts/claude-hook-main-checkout.mjs` 擋寫入（#30）。設了 `ORCA_CLI_COMMAND` 時用 `node scripts/orca-worktree-create.mjs --name issue-<n> --base-branch main --branch issue/<n>-<slug>` 開（看最後一行 JSON 的 `path`），沒有 Orca 時用 `git worktree add`；多張 ticket 依 implement-spec 各開一個。checkpoint 放在 `.scratch/issue-run-<n>/state.md`，不 commit。
+從 `main` 開 `issue/<n>-<slug>` 分支，一張 ticket 也開 worktree：主 checkout 有 `scripts/claude-hook-main-checkout.mjs` 擋寫入（#30）。設了 `ORCA_CLI_COMMAND` 時用 `node scripts/orca-worktree-create.mjs --name issue-<n> --base-branch main --branch issue/<n>-<slug>` 開（看最後一行 JSON 的 `path`），沒有 Orca 時用 `git worktree add`；多張 ticket 依 implement-spec 各開一個。接手已有遠端分支的單（`node scripts/issue-pool.mjs open-work <n>` 印 `OPEN_PR` 或 `BRANCH … origin`）時 `--base-branch origin/<分支> --branch <分支>`；Orca 可能給 `<分支>-2`，腳本在 stderr 印 `BRANCH_RENAMED <拿到的> <要求的>`、JSON 多帶 `requestedBranch`，這時在新 worktree 跑 `git branch -m <要求的>` 與 `git branch -u origin/<要求的>`，否則 `land.mjs` 會另開一個 PR（#300）。checkpoint 放在 `.scratch/issue-run-<n>/state.md`，不 commit。
 
 ## Checks
 
@@ -42,7 +42,7 @@ macOS, WSL2, Linux（母單 #82 決策 R1-Q1；原生 Windows 不支援）。本
 
 ## Review
 
-Skill `code-review`，比對基準是分支的 merge-base。不阻擋的 findings 列在 Issue 的證據留言。所有 `SKILL.md`、`ADAPTER.md` 和 `overlays/*.patch` 都會改變 agent 的行為，不算只改文字。diff 改了這些檔時，Spec reviewer 要照順序走過每個分支，回報有沒有動作排在會阻止它的句子之前：文字契約測試只驗句子在不在，驗不到順序（#293：「只宣告一部分就停」寫在開單的條件之後，照順序讀會先開單才停，`bin/check` 全綠）。
+Skill `code-review`，比對基準是分支的 merge-base。不阻擋的 findings 列在 Issue 的證據留言。所有 `SKILL.md`、`ADAPTER.md` 和 `overlays/*.patch` 都會改變 agent 的行為，不算只改文字。diff 改了這些檔時，Spec reviewer 要照順序走過每個分支，回報有沒有動作排在會阻止它的句子之前：文字契約測試只驗句子在不在，驗不到順序（#293：「只宣告一部分就停」寫在開單的條件之後，照順序讀會先開單才停，`bin/check` 全綠）。review agent 只跑相關的單一測試檔（`node --test tests/<name>.test.mjs`），`bin/check` 由 acceptance 負責，派工 prompt 要寫明（#300：Spec agent 自己跑 `bin/check`，load 40–60 時一輪 30 分鐘；第二輪明寫不要跑，同軸只花 5.5 分鐘）。
 
 ## Candidate and acceptance
 
@@ -55,6 +55,7 @@ candidate 是分支 tip。acceptance 是在 candidate SHA、工作樹乾淨時�
 單獨跑的 `/issue-run` 在 acceptance 通過、證據貼好之後自己落地，不等人：把 PR body（`/pr` 格式，每張 Issue 一行 `Closes #<n>`）寫進 scratchpad，用 Bash `timeout: 600000` 跑 `node scripts/land.mjs <candidate 所在分支> --title '<標題>' --body-file <檔> --check-command 'bin/check --upstream'`。它 push、開 PR、等 CI、以 merge commit 合併，再移除該分支的 worktree、刪本機與 `origin` 分支、讓主 checkout 的 `main` 跟上；多張 ticket 時，各 ticket 的 worktree 在 `LANDED` 之後另外移除（Orca 建的用 `"$ORCA_CLI_COMMAND" worktree rm --worktree path:<path>`，會一起刪掉分支；其餘用 `git worktree remove` 加 `git branch -d`）。讀最後一行：
 
 - `LANDED <pr> <merge sha>`：對每張 Issue 留言 PR 與 merge SHA，還開著的再關閉。
+- `PR_UPDATED <pr>`（進度行）：PR 已開著，帶的 `--title`、`--body-file` 已更新上去；接手別人開的 PR 時也一樣（#300）。`STOP pr-edit <pr> <原因>`：更新失敗，沒有合併；停下回報人。
 - `RESTAMPED <pr> <sha>`（進度行，不是最後一行）：PR 和 `main` 衝突、衝突檔只有戳記檔（`scripts/restamp.mjs` 的 `STAMP_FILES`：`scripts/workflow-doc-sync.json`、`docs/agents/workflow-templates.json`），它已把 `origin/main` 合入分支、取目標分支版本重產站台並 restamp、commit、在新 tip 跑過 `--check-command` 並重新 push，接著照常等 CI、合併（衝突在等 CI 之前判斷，只等一輪；等 CI 期間 `main` 又前進而合併被拒時同樣合入、再驗一輪，合入沒有衝突時印 `MAIN_MERGED` 而不是 `RESTAMPED`；Bash 逾時被中斷時重跑同一條指令，分支已含 `origin/main` 就不再 restamp）；證據留言的 candidate SHA 補上這個新 tip（#173）。
 - `STOP merge <pr> conflict <檔案…>`：還有戳記檔以外的衝突，已 `merge --abort`，分支停在原來的 tip；停下回報人。`STOP restamp-checks-failed <sha> exit <code> <log>`：restamp 後的檢查沒過，合併 commit 只留在本機分支、沒有 push；停下回報人，不要直接重跑（重跑會把這個沒過檢查的 commit 推上去，只剩 CI 把關）。`STOP restamp-checks-timeout <sha> <log>`：檢查跑到 `LAND_LOCAL_CHECKS_TIMEOUT_MS`（預設 420 秒）被中止，結果未知，不是沒過：在該 SHA 的 worktree 跑過 `--check-command`，通過才重跑 land 指令（重跑不會再驗這個 commit，直接 push），沒過就停下回報人（#297）。`STOP local-checks-timeout <sha> <log>` 同樣是結果未知：把 `LAND_LOCAL_CHECKS_TIMEOUT_MS` 調大後重跑。
 - `STOP checks-timeout`：重跑同一條指令。

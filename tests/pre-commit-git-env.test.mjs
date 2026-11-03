@@ -48,3 +48,17 @@ test('worktree 的 GIT_DIR 洩漏給 sync-skills-git-dir 測試時，主 checkou
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(git('config', 'core.bare').stdout.trim(), 'false');
 });
+
+// #301：bin/check 不經 pre-commit 直接跑時（例如 `git rebase --exec`）沒有人清 GIT_*，tests/ 有 15 支不 import 隔離模組。
+// node 換成假的：記下環境後失敗，整條在第一個檢查就停，只驗 bin/check 交給底下指令的環境。
+test('bin/check 自己清掉 repo 區域的 GIT_* 變數，不依賴呼叫者', t => {
+  const { repo } = scratchRepo(t, 'check-git-env-');
+  const fakeBin = join(repo, 'fake-bin');
+  mkdirSync(fakeBin);
+  writeFileSync(join(fakeBin, 'node'), `#!/usr/bin/env bash\nenv | grep ^GIT_ >> "${repo}/seen-env" || true\nexit 1\n`);
+  chmodSync(join(fakeBin, 'node'), 0o755);
+  const check = new URL('../bin/check', import.meta.url).pathname;
+  const result = spawnSync(check, { encoding: 'utf8', env: { ...env, PATH: `${fakeBin}:${env.PATH}`, GIT_DIR: join(repo, '.git'), GIT_INDEX_FILE: join(repo, '.git/index'), GIT_WORK_TREE: repo } });
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(readFileSync(join(repo, 'seen-env'), 'utf8'), /^GIT_(DIR|INDEX_FILE|WORK_TREE)=/m);
+});

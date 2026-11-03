@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 本機 commit 前跑與 CI（.github/workflows/checks.yml）相同的三項檢查，不必等 push 後 CI 才變紅（retro spay2 1021c：先 commit 後測試）。
-# 啟用：ln -s ../../.githooks/pre-commit .git/hooks/pre-commit
+# 啟用：bin/sync-skills 會建連結（#300）；手動是 ln -s ../../.githooks/pre-commit .git/hooks/pre-commit
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 # 要 commit 的樹：要在 unset 之前取，`git commit -a` 的 index 是 GIT_INDEX_FILE 指的暫存檔。

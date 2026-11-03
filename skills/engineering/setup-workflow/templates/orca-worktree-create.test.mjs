@@ -29,8 +29,8 @@ function fixture(t, mode) {
   const f = repoFixture(t);
   const bin = join(f.temp, 'orca'); writeFileSync(bin, FAKE_ORCA); chmodSync(bin, 0o755);
   const log = join(f.temp, 'orca.log');
-  const create = (extra = {}, name = NAME) => {
-    const result = run(f.repo, ['node', script, '--name', name, '--base-branch', 'main', '--no-parent'], { timeout: 60000, env: {
+  const create = (extra = {}, name = NAME, args = []) => {
+    const result = run(f.repo, ['node', script, '--name', name, '--base-branch', 'main', '--no-parent', ...args], { timeout: 60000, env: {
       ORCA_BIN: bin, ORCA_CLI_COMMAND: '', FAKE_ORCA_MODE: mode, FAKE_ORCA_LOG: log, FAKE_ORCA_REPO: f.repo,
       FAKE_ORCA_ROOT: join(f.temp, 'workspaces'), ORCA_POLL_SECONDS: '5', ...extra } });
     return { ...result, json: result.stdout.trim() ? JSON.parse(result.stdout) : null };
@@ -132,4 +132,23 @@ test('測試環境清掉繼承的 ORCA_CLI_COMMAND，假 Orca 失效時不會碰
   const result = spawnSync('node', [script, '--name', NAME], { cwd: f.repo, encoding: 'utf8', env });
   assert.equal(result.status, 2, result.stdout + result.stderr);
   assert.equal(existsSync(log), false);
+});
+
+// #300：接手 PR #288 時要 `--branch issue/286-pilot-close-protect`，Orca 給的是 `…-2`，JSON 照印 CREATED；沒注意的話 land.mjs 會另開一個 PR。
+test('拿到的分支和 --branch 不同：JSON 帶 requestedBranch，stderr 印 BRANCH_RENAMED，仍是 exit 0', t => {
+  const f = fixture(t, 'ok');
+  const result = f.create({}, NAME, ['--branch', 'issue/9-x']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.json.status, 'CREATED');
+  assert.equal(result.json.branch, `user/${NAME}`);
+  assert.equal(result.json.requestedBranch, 'issue/9-x');
+  assert.match(result.stderr, new RegExp(`^BRANCH_RENAMED user/${NAME} issue/9-x$`, 'm'));
+});
+
+test('拿到的分支和 --branch 相同，或沒帶 --branch：輸出不變', t => {
+  const f = fixture(t, 'ok');
+  const same = f.create({}, NAME, ['--branch', `user/${NAME}`]);
+  assert.equal(same.status, 0, same.stderr);
+  assert.equal(same.json.requestedBranch, undefined);
+  assert.doesNotMatch(same.stderr, /BRANCH_RENAMED/);
 });

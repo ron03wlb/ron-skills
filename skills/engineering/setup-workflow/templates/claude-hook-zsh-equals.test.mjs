@@ -8,8 +8,8 @@ import { argGlobWords, equalsWords, forGlobWords, nomatchWords, unmatchedArgGlob
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const HOOK = fileURLToPath(new URL('./claude-hook-zsh-equals.mjs', import.meta.url));
-// $SHELL 預設 bash：一般參數的 glob 只在 zsh 才擋，測試結果不該跟著跑測試的機器變。
-const run = (input, shell = '/bin/bash') => spawnSync('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8', env: { ...process.env, SHELL: shell } });
+// $SHELL 預設 zsh：整支 hook 只在 zsh 才擋，測試結果不該跟著跑測試的機器變。
+const run = (input, shell = '/bin/zsh') => spawnSync('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8', env: { ...process.env, SHELL: shell } });
 const bash = command => run({ tool_name: 'Bash', tool_input: { command } });
 
 // session 2ebf77bf 的原指令形狀：`echo ===` 當分隔線，zsh 印 `(eval):1: == not found`，後面的 pilot-probe 沒跑（#203）。
@@ -69,11 +69,12 @@ test('未加引號、含 * 或 ? 的 --opt=pattern 被擋下，exit 2 並說明 
 });
 
 test('加引號或跳脫的 pattern、一般的 *.md 參數、不含萬用字元的 --opt=x 放行', () => {
+  // 一般參數在 zsh 要看檔案系統，下面的 unmatchedArgGlobs 案例驗；這裡只驗它不算 NOMATCH 字。
+  assert.deepEqual(nomatchWords('ls *.md docs/*.md'), []);
   for (const command of [
     "grep -r x --include='*.md' .",
     'grep -r x --include="*.md" .',
     'grep -r x --include=\\*.md .',
-    'ls *.md docs/*.md',
     'node x.mjs --opt=x --base-branch=main',
     "cat <<'EOF'\n--include=*.md\nEOF\necho ok",
     'echo ok # --include=*.md',
@@ -208,3 +209,11 @@ test('雙引號或未加引號的 PIPESTATUS 被擋下，提示改用 zsh 的 pi
     'gh issue comment 238 --body "擋沒加引號的 \\$PIPESTATUS，改用 \\${pipestatus[1]}"',
   ]) assert.equal(usesPipestatus(command), false, command);
 });
+
+// #301：本機是 bash，`echo ====` 被擋三次；`echo "exit=${PIPESTATUS[0]}"` 被擋且建議改 `${pipestatus[1]}`，在 bash 只拿到空字串，正好是 #238 要避免的結果。
+for (const [name, command] of [['EQUALS', 'echo ===='], ['NOMATCH', 'grep --include=*.md x .'], ['分支 pattern', 'git merge-base issue/193-* main'], ['PIPESTATUS', 'false | true; echo "exit=${PIPESTATUS[0]}"'], ['for 清單', 'for f in /no/such/dir-*/x; do echo $f; done']]) {
+  test(`$SHELL 是 bash 時 ${name} 放行，是 zsh 時才擋`, () => {
+    assert.equal(run({ tool_name: 'Bash', tool_input: { command } }, '/bin/bash').status, 0);
+    assert.equal(run({ tool_name: 'Bash', tool_input: { command } }, '/bin/zsh').status, 2);
+  });
+}

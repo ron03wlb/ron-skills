@@ -3,6 +3,9 @@
 // 用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...]
 //       node scripts/issue-pool.mjs claim <n> [--repo <專案>] [--session <id>] [--take-stale]
 //       node scripts/issue-pool.mjs children <母單> [--repo <專案>] [--ask-prefix <前綴>]...
+//       node scripts/issue-pool.mjs open-work <n> [--repo <專案>]
+// open-work 列出這張單已經在進行的工作，給 `/issue-run` 的 Gate 用（#300：#286 沒指派、沒留言，PR #288 卻已開了 15 小時）：`OPEN_PR <n> <pr> <分支> <網址>` 是開著、會關掉它的 PR，
+// 判斷和 in-review 桶同一個欄位（GitLab 列表沒有這個欄位，只看分支）；`BRANCH <n> <分支> local|origin` 是最後一段以 `<n>-` 開頭的分支；都沒有時印 `NO_OPEN_WORK <n>`。exit 0，查不到 tracker 時 exit 1。
 // tracker 讀 repo 根的 docs/agents/issue-tracker.md（寫 glab 是 GitLab、寫 gh 是 GitHub、沒有這份文件時依 origin，同 HOSTS.md；判定在 lib/hosts.mjs），與程式碼 host（origin）分開：
 // 兩者同種時 CLI 從 checkout 推得主機與專案；不同種時取文件裡第一個該種主機的專案網址（GitLab 寫到 `/-/` 之前）。<專案> 是 GitHub 的 <owner>/<name>
 // 或 GitLab 的 group/…/project，覆寫推得的專案。GitLab 的子項目（Issue 底下是 Task）算 sub-issue，所以掛了 Task 的單歸 parent 桶，`is_blocked_by`／`blocks` 連結算相依，系統紀錄裡的「assigned to」算指派
@@ -40,13 +43,14 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { codeHost, projectInDoc, trackerKind } from './lib/hosts.mjs';
 
-const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] | claim <n> [--repo <專案>] [--session <id>] [--take-stale] | children <母單> [--repo <專案>] [--ask-prefix <前綴>]...';
+const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] | claim <n> [--repo <專案>] [--session <id>] [--take-stale] | children <母單> [--repo <專案>] [--ask-prefix <前綴>]... | open-work <n> [--repo <專案>]';
 /** pool() 與 children 共用的 label、blocked-by 欄位片段。 */
 const LABEL_FIELDS = 'labels(first:50){nodes{name}}';
 const BLOCKED_BY_FIELDS = 'blockedBy(first:50){nodes{number state repository{nameWithOwner}}}';
 /** pool() 分桶與排序要的 GitHub Issue 欄位；pilot-probe 的查詢也引用這一段，bucketOf 多要欄位時只改這裡（#240）。 */
 export const POOL_FIELDS = `number title ${LABEL_FIELDS} assignees(first:20){nodes{login}} subIssuesSummary{total} ${BLOCKED_BY_FIELDS} blocking(first:50){nodes{number state repository{nameWithOwner}}} comments(last:1){nodes{createdAt}} timelineItems(last:1,itemTypes:[ASSIGNED_EVENT]){nodes{... on AssignedEvent{createdAt}}} closedByPullRequestsReferences(first:10,includeClosedPrs:false){nodes{state}}`;
 const QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS}}}}}`;
+const OPEN_WORK_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){closedByPullRequestsReferences(first:20,includeClosedPrs:false){nodes{number state url headRefName}}}}}`;
 const CHILDREN_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number subIssues(first:100){nodes{number title state ${LABEL_FIELDS} ${BLOCKED_BY_FIELDS} comments(last:1){nodes{body}}}}}}}`;
 // GitLab 的 Issue 是 work item：label、指派、子項目、相依與留言都在 widgets 裡；notes 分成留言（comments）與系統紀錄（activity，指派紀錄在這裡）。
 const GITLAB_QUERY = `query($fullPath:ID!,$cursor:String){project(fullPath:$fullPath){workItems(types:[ISSUE],state:opened,first:50,after:$cursor){pageInfo{hasNextPage endCursor} nodes{iid title widgets{__typename ... on WorkItemWidgetLabels{labels(first:50){nodes{title}}} ... on WorkItemWidgetAssignees{assignees(first:20){nodes{username}}} ... on WorkItemWidgetHierarchy{hasChildren} ... on WorkItemWidgetLinkedItems{linkedItems(first:50){nodes{linkType workItem{iid state namespace{fullPath}}}}} ... on WorkItemWidgetNotes{comments:notes(filter:ONLY_COMMENTS,last:1){nodes{createdAt}} activity:notes(filter:ONLY_ACTIVITY,last:100){nodes{createdAt body}}}}}}}}`;
@@ -103,6 +107,10 @@ function github({ repo, host }) {
       const [owner, name] = fullName.split('/');
       return JSON.parse(gh('api', 'graphql', '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `number=${n}`, '-f', `query=${CHILDREN_QUERY}`)).data.repository.issue.subIssues.nodes;
     },
+    closingPrs(fullName, n) {
+      const [owner, name] = fullName.split('/');
+      return JSON.parse(gh('api', 'graphql', '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `number=${n}`, '-f', `query=${OPEN_WORK_QUERY}`)).data.repository.issue.closedByPullRequestsReferences.nodes;
+    },
     view: n => JSON.parse(gh('issue', 'view', ...target(n), '--json', 'assignees,comments')),
     comment: (n, body) => gh('issue', 'comment', ...target(n), '--body', body),
     assign: n => gh('issue', 'edit', ...target(n), '--add-assignee', '@me'),
@@ -120,6 +128,7 @@ function gitlab({ repo, host, origin }) {
   const project = repo ? encodeURIComponent(repo) : ':id';
   const target = n => [n, ...(repo ? ['-R', origin ? `${origin}/${repo}` : repo] : [])];
   return {
+    closingPrs: () => [],
     repo: () => repo ?? api(`projects/${project}`).path_with_namespace,
     issues(fullPath) {
       const issues = [];
@@ -351,6 +360,21 @@ function children(n, tracker, askPrefixes) {
   return 0;
 }
 
+/** 分支最後一段以 `<n>-` 開頭：issue/286-x 算，issue/2860-x、issue/1286-x 不算。 */
+const branchOfIssue = (branch, n) => branch.split('/').pop().startsWith(`${n}-`);
+
+function openWork(n, tracker) {
+  const prs = openNodes({ nodes: tracker.closingPrs(tracker.repo(), n) });
+  const lines = prs.map(pr => `OPEN_PR ${n} ${pr.number} ${pr.headRefName} ${pr.url}`);
+  const local = (gitOut('for-each-ref', '--format=%(refname:short)', 'refs/heads') ?? '').split('\n').filter(Boolean);
+  // ls-remote 不必先 fetch；沒有 origin 時 gitOut 回 undefined，只看本機。
+  const remote = (gitOut('ls-remote', '--heads', 'origin') ?? '').split('\n').filter(Boolean).map(line => line.split('\t')[1].replace('refs/heads/', ''));
+  for (const branch of local.filter(name => branchOfIssue(name, n))) lines.push(`BRANCH ${n} ${branch} local`);
+  for (const branch of remote.filter(name => branchOfIssue(name, n))) lines.push(`BRANCH ${n} ${branch} origin`);
+  console.log(lines.length ? lines.join('\n') : `NO_OPEN_WORK ${n}`);
+  return 0;
+}
+
 function main(argv) {
   let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, session = defaultSession(), takeStale = false;
   const askPrefixes = [];
@@ -366,11 +390,12 @@ function main(argv) {
     else { console.error(USAGE); return 2; }
   }
   const [command, n] = positional;
-  if (command !== undefined && !(['claim', 'children'].includes(command) && /^\d+$/.test(n ?? '') && positional.length === 2)) { console.error(USAGE); return 2; }
+  if (command !== undefined && !(['claim', 'children', 'open-work'].includes(command) && /^\d+$/.test(n ?? '') && positional.length === 2)) { console.error(USAGE); return 2; }
   try {
     const tracker = trackerOf(repo);
     if (command === 'claim') return claim(n, tracker, session, takeStale);
     if (command === 'children') return children(n, tracker, askPrefixes);
+    if (command === 'open-work') return openWork(n, tracker);
     repo = tracker.repo();
     const issues = tracker.issues(repo);
     for (const { issue, bucket } of pool(issues, { repo, staleHours })) console.log(`${bucket} #${issue.number} ${issue.title}`);

@@ -151,3 +151,26 @@ test('pre-commit：bin/check 失敗時把 stdout 的 CHECK_FAIL 印到 stderr；
   assert.equal(passed.status, 0);
   assert.equal(passed.stdout + passed.stderr, '');
 });
+
+// #300：3c9db54 只改正本、630edfb 才改副本，pre-commit 該擋卻進了分支；hook 要每個 clone 手動 ln，Mac 那份 clone 有沒有做過看不出來。
+test('同步時連結 git 的 pre-commit hook；已有的不覆蓋；--check 不動', t => {
+  const dir = scratch(t);
+  const hooks = join(dir, 'git-hooks');
+  const base = { SKILL_DIRS: join(dir, 'skills'), HOOK_DIR: join(dir, 'claude-hooks'), XDG_DATA_HOME: join(dir, 'data'), GIT_HOOKS_DIR: hooks };
+  mkdirSync(hooks);
+  assert.equal(run(['--check'], base).status, 0);
+  assert.equal(existsSync(join(hooks, 'pre-commit')), false);
+
+  const linked = run([], base);
+  assert.equal(linked.status, 0, linked.stderr);
+  assert.match(linked.stderr, new RegExp(`^GIT_HOOK_LINKED ${join(hooks, 'pre-commit')}$`, 'm'));
+  assert.ok(lstatSync(join(hooks, 'pre-commit')).isSymbolicLink());
+  assert.match(readFileSync(join(hooks, 'pre-commit'), 'utf8'), /bin\/check/, '連結要指到真的 hook');
+
+  rmSync(join(hooks, 'pre-commit'));
+  writeFileSync(join(hooks, 'pre-commit'), '#!/bin/sh\n# 使用者自己的 hook\n');
+  const kept = run([], base);
+  assert.equal(kept.status, 0, kept.stderr);
+  assert.match(kept.stderr, /^SKIP .*pre-commit/m);
+  assert.match(readFileSync(join(hooks, 'pre-commit'), 'utf8'), /使用者自己的 hook/);
+});

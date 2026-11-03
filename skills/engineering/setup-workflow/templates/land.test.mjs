@@ -2,7 +2,7 @@ import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { mergeSample } from './test/fake-orca.mjs';
 import { GH_SAMPLES } from './test/gh-samples.mjs';
@@ -119,6 +119,10 @@ else if (sub === 'create') {
   const head = arg('--head'); git('fetch', '-q', 'origin');
   const pr = { head, base: arg('--base'), number: 40 + s.prs.length, state: 'OPEN', url: 'https://github.com/o/r/pull/' + (40 + s.prs.length), headRefOid: git('rev-parse', 'origin/' + head), mergeCommit: null };
   s.prs.push(pr); save(); console.log(pr.url);
+}
+else if (sub === 'edit') {
+  if (process.env.FAKE_GH_EDIT_FAILS) { console.error('GraphQL: edit refused'); process.exit(1); }
+  console.log(find(args[2]).url);
 }
 else if (sub === 'view' && arg('--json').includes('statusCheckRollup')) {
   const pr = find(args[2]);
@@ -751,4 +755,40 @@ test('rollupChecks：head 不符回空；同一個 run 重跑只留最新一筆�
   assert.deepEqual(rollupChecks(view([run(1, 't1', 'FAILURE'), run(1, 't2', 'SUCCESS')]), 'new').map(check => check.bucket), ['pass']);
   // push 與 pull_request：不同 run id，晚開始的通過也不能蓋掉另一個 run 的失敗。
   assert.equal(checksVerdict(rollupChecks(view([run(1, 't1', 'FAILURE'), run(2, 't2', 'SUCCESS')]), 'new')), 'fail');
+});
+
+// #300：#286 的 PR #288 是接手前開的，land 帶新的 --title、--body-file 卻只在新開 PR 時用，舊描述（`6 個全過`）就這樣合入，沒有任何警告。
+test('PR 已開著又帶 --title、--body-file：先更新 PR 再等 CI 合併', t => {
+  const { body, land, calls, prs, last } = fixture(t, { checks: [PENDING] });
+  assert.equal(land(['feature', '--body-file', body], undefined, { LAND_CHECKS_TIMEOUT_MS: '50' }).status, 4);
+  const number = prs()[0].number;
+
+  const state = join(dirname(body), 'gh-state.json');
+  writeFileSync(state, JSON.stringify({ ...JSON.parse(readFileSync(state, 'utf8')), checks: [PASS] }));
+  const result = land(['feature', '--title', '新標題', '--body-file', body]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(calls(), new RegExp(`^gh pr edit ${number} --title 新標題 --body-file ${body}$`, 'm'));
+  assert.match(result.stdout, new RegExp(`^PR_UPDATED ${number}$`, 'm'));
+  assert.equal(last(result), `LANDED ${number} ${prs()[0].mergeCommit.oid}`);
+  const log = calls();
+  assert.ok(log.indexOf('gh pr edit') < log.lastIndexOf('gh pr merge'), '要先更新才合併');
+});
+
+test('PR 已開著、沒帶 --title 也沒帶 --body-file：不動 PR', t => {
+  const { body, land, calls, prs } = fixture(t, { checks: [PENDING] });
+  assert.equal(land(['feature', '--body-file', body], undefined, { LAND_CHECKS_TIMEOUT_MS: '50' }).status, 4);
+  const state = join(dirname(body), 'gh-state.json');
+  writeFileSync(state, JSON.stringify({ ...JSON.parse(readFileSync(state, 'utf8')), checks: [PASS] }));
+  assert.equal(land(['feature']).status, 0);
+  assert.equal(prs()[0].state, 'MERGED');
+  assert.doesNotMatch(calls(), /^gh pr edit /m);
+});
+
+test('更新既有 PR 失敗：STOP pr-edit，不合併', t => {
+  const { body, land, calls, prs, last } = fixture(t, { checks: [PENDING] });
+  assert.equal(land(['feature', '--body-file', body], undefined, { LAND_CHECKS_TIMEOUT_MS: '50' }).status, 4);
+  const result = land(['feature', '--body-file', body], undefined, { FAKE_GH_EDIT_FAILS: '1' });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(last(result), new RegExp(`^STOP pr-edit ${prs()[0].number} GraphQL: edit refused$`));
+  assert.doesNotMatch(calls(), /^gh pr merge /m);
 });

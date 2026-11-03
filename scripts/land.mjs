@@ -22,9 +22,10 @@
 //
 // 用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--check-command <command>] [--body-file <file>] [--title <title>] [--main <branch>]
 // 主分支（下文的 main）：`--main <branch>`；沒帶時讀 origin/HEAD（clone 時設定，`git remote set-head origin --auto` 可重設），都沒有才用 main（#281）。
+// PR 已開著又帶 `--title`、`--body-file` 時以 `gh pr edit` 更新，印 PR_UPDATED <pr>；更新失敗 STOP pr-edit <pr> <原因>，不合併（#300）。
 // stdout：每步一行進度（PUSHED、PR、CHECKS_PASSED、RESTAMPED <pr> <新 tip>（合入 main 沒有衝突時是 MAIN_MERGED），`--local-checks` 時是 LOCAL_CHECKS <pr> <sha> <結果行>，收尾的 UNBARE、
 //   WORKTREE_REMOVED、BRANCH_DELETED，最後 MAIN、SKILL_CHANGED <名稱>（sync-skills 換掉內容的全域 skill，每個一行）、SYNC_SKILLS）；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
-//   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、local-checks-timeout、restamp-checks-failed、restamp-checks-timeout、merge、not-merged、worktree-rm）。
+//   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、pr-edit、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、local-checks-timeout、restamp-checks-failed、restamp-checks-timeout、merge、not-merged、worktree-rm）。
 // local-checks-timeout、restamp-checks-timeout 是檢查跑到 LAND_LOCAL_CHECKS_TIMEOUT_MS 被中止，不是檢查沒過：結果未知，在該 SHA 跑過檢查才重跑（#297）。
 // 合入之後的收尾問題（main 沒跟上、sync-skills 失敗）印 WARN，不影響 LANDED；main 沒跟上時不跑 sync-skills，印 WARN skills-not-updated <merge sha>（已安裝的 skill 還是舊版，#297）。
 // exit：0 已合入；4 STOP；2 用法錯誤；1 其他失敗。
@@ -385,6 +386,12 @@ export async function land({ branch, keepBranch = false, localChecksSha, checkCo
     console.log(`PR_CREATED ${pr.number} ${pr.url}`);
   } else {
     console.log(`PR ${pr.number} ${pr.state} ${pr.url}`);
+    // 接手別人開的 PR 時，帶來的標題與描述才是這次的證據；只在新開時用，舊描述就會無聲合入（#300：PR #288）。
+    if (pr.state === 'OPEN' && (title || bodyFile)) {
+      const edit = run('gh', ['pr', 'edit', String(pr.number), ...(title ? ['--title', title] : []), ...(bodyFile ? ['--body-file', bodyFile] : [])], main);
+      if (edit.status !== 0) throw new Stop(`pr-edit ${pr.number} ${edit.stderr.trim().split('\n').pop()}`);
+      console.log(`PR_UPDATED ${pr.number}`);
+    }
   }
 
   if (pr.state === 'OPEN') {

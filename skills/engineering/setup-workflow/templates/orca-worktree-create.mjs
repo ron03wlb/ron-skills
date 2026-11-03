@@ -4,6 +4,7 @@
 //
 // 用法：node scripts/orca-worktree-create.mjs <orca worktree create 的參數…>（須含 --name；--json 由本腳本補上）
 // stdout 一行 JSON：{"status":"CREATED"|"CREATED_LATE","path","branch"}；失敗為 {"status":"NOT_FOUND"|"FAILED","error"}。
+// 帶 `--branch` 而 Orca 給了別的分支（遠端已有同名分支時會加 `-2`，#300）：JSON 多帶 `requestedBranch`，stderr 印 `BRANCH_RENAMED <拿到的> <要求的>`，仍是 exit 0。接手既有分支的做法見 adapter。
 // exit code：0 已建立、1 失敗、2 參數錯誤或沒有 Orca CLI。
 import { spawnSync } from 'node:child_process';
 import { basename } from 'node:path';
@@ -38,6 +39,7 @@ if (!ORCA || !args.includes('--name') || !name) { console.error(USAGE); process.
 // Orca 記的 repo 路徑是 Windows UNC 形式，--repo path:<WSL 路徑> 回 repo_not_found；id: 又可能對到同名的另一個 repo。省略時 Orca 從 cwd 推斷。
 if (args.includes('--repo')) { console.error(`不要帶 --repo：Orca 從目前目錄推斷 repo（path: 會 repo_not_found）。${USAGE}`); process.exit(2); }
 
+const requested = args.includes('--branch') ? args[args.indexOf('--branch') + 1] : undefined;
 const before = new Set(worktrees().map(w => w.path));
 const result = spawnSync(ORCA, ['worktree', 'create', ...args, '--json'], { encoding: 'utf8' });
 let out = null;
@@ -50,7 +52,11 @@ if (!out?.ok && !PENDING.includes(code)) {
 const deadline = Date.now() + POLL_SECONDS * 1000;
 for (;;) {
   const found = created(name, before);
-  if (found) print({ status: out?.ok ? 'CREATED' : 'CREATED_LATE', path: found.path, branch: found.branch }, 0);
+  if (found) {
+    const renamed = requested !== undefined && found.branch !== requested;
+    if (renamed) console.error(`BRANCH_RENAMED ${found.branch} ${requested}`);
+    print({ status: out?.ok ? 'CREATED' : 'CREATED_LATE', path: found.path, branch: found.branch, ...(renamed ? { requestedBranch: requested } : {}) }, 0);
+  }
   if (Date.now() >= deadline) break;
   sleep(2000);
 }

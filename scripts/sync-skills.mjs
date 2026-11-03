@@ -14,7 +14,7 @@
 // stderr：MISSING、DUPLICATE、OVERLAY_FAILED（exit 1），NEW、SKIP、WARN、DANGLING <連結> -> <目標>、EXTERNAL <連結> -> <真實路徑>（只提示）。exit 0 成功、1 有任何 exit 1 的行或檢查失敗。
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 // 不用 import.meta.url：node 會解開 symlink，ROOT 要和 bash 版的 `cd "$(dirname "$0")/.." && pwd` 一樣是呼叫時的路徑。
@@ -201,6 +201,7 @@ function sync(check) {
       }
     }
     syncHooks();
+    linkPreCommit();
     console.log(`SYNCED ${target.size} skills → ${DESTS.join(' ')}`);
     return 0;
   } finally {
@@ -228,6 +229,19 @@ function syncHooks() {
     rmSync(path, { force: true });
     symlinkSync(from, path);
   }
+}
+
+/** 本 repo 的 pre-commit 連到 git 的 hooks 目錄：手動 ln 的那一步每個 clone 都要記得，漏了也看不出來（#300）。已有的不動，自己的 hook 留著並提示。 */
+function linkPreCommit() {
+  const hooks = process.env.GIT_HOOKS_DIR || git(ROOT, ['rev-parse', '--path-format=absolute', '--git-path', 'hooks']);
+  const from = join(mainCheckout(), '.githooks/pre-commit');
+  if (!hooks || !existsSync(from)) return;
+  const path = join(hooks, 'pre-commit');
+  if (isLink(path) && existsSync(path) && realpathSync(path) === realpathSync(from)) return;
+  if (isLink(path) || existsSync(path)) { warn(`SKIP ${path}（已有別的 hook，不覆蓋；要 bin/check 把關就自己併入 .githooks/pre-commit）`); return; }
+  mkdirSync(hooks, { recursive: true });
+  symlinkSync(relative(hooks, from), path);
+  warn(`GIT_HOOK_LINKED ${path}`);
 }
 
 /** 和 mv 一樣：暫存目錄與 BUILD 在不同檔案系統時改成複製再刪除。 */

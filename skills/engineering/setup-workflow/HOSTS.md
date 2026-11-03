@@ -27,6 +27,7 @@ A `local` side needs no CLI, and a `local` code host has no remote delivery (no 
 | Create a label | `gh label create <name>` | `glab label create --name <name>` | |
 | Comment in another repo | `gh issue comment <n> --repo <owner>/<repo> --body-file <file>` | `glab issue note <n> -R <owner>/<repo> -m "$(cat <file>)"` | `--repo` and `-R` are on every issue and PR/MR subcommand; `glab -R` also takes `group/subgroup/repo` or a full URL |
 | Open a PR / MR | `gh pr create --base <base> --head <branch> --title <title> --body-file <file>` | `glab mr create --target-branch <base> --source-branch <branch> --title <title> --description-file <file> --yes` | |
+| Update a PR / MR | `gh pr edit <pr> --title <title> --body-file <file>` | `glab mr update <pr> --title <title> --description "$(cat <file>)"` | `glab mr update` has no description-file flag |
 | Read a PR / MR | `gh pr view <pr> --json state,headRefOid,mergeCommit` | `glab mr view <pr> -F json` | `glab mr view` and `glab issue view` take `-F` for JSON |
 | Wait for CI | `gh pr checks <pr> --watch` | `glab ci status --branch <branch> --wait` | `glab ci status` JSON output does not combine with `--wait` |
 | Merge | `gh pr merge <pr> --merge --match-head-commit <sha>` | `glab mr merge <pr> --sha <sha> --auto-merge=false --yes` | `glab mr merge` defaults to `--auto-merge` (merge when the pipeline passes); `=false` merges now. Both refuse when the head moved off `<sha>` |
@@ -51,6 +52,7 @@ The assignee flags were added for #108 the same way (`gh issue edit --help` loca
 | `gh issue close --help` | `-c, --comment` |
 | `gh label create --help` | `<name>` positional, `-R, --repo` |
 | `gh pr create --help` | `-B, --base`, `-H, --head`, `-t, --title`, `-F, --body-file` |
+| `gh pr edit --help` | `-t, --title`, `-F, --body-file` |
 | `gh pr view --help` | `--json fields`, `-c, --comments` |
 | `gh pr checks --help` | `--watch`, `--json fields` |
 | `gh pr merge --help` | `-m, --merge`, `--match-head-commit SHA` |
