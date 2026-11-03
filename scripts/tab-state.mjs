@@ -6,7 +6,7 @@
 // `orca terminal rename` 指令擷取寫入；Orca 查不到分頁時才用它，其他會改標題的 hook 也靠它判斷標題歸本腳本管理。
 //
 // 用法：node scripts/tab-state.mjs <處理中|待 Retro|待關閉> [--topic <主題>]
-//       node scripts/tab-state.mjs --title <handle> → 印該分頁目前標題（Orca 的版面資料只涵蓋作用中的 worktree，其他分頁退回記錄）；`/retro-collect` 用它判斷能不能關。
+//       node scripts/tab-state.mjs --title <handle> → 印該分頁目前標題（Orca 的版面資料沒涵蓋的分頁退回記錄）；`/retro-collect` 用它判斷能不能關。
 // --topic 把標題整個設成 `<狀態>｜<主題>`，不讀目前標題：session 開頭用它，記錄裡可能還是同一個 handle 上一個 session 的主題（#141）；
 // 之後換階段、動作、Issue、⏸，或離開處理中要拿掉階段與動作時也帶 --topic；只換狀態前綴時不帶（標題格式見 issue-run ADAPTER.md 的 Tab state 段）。
 // 改名後讀回實際分頁標題再回報（2026-11-02：Orca 回 ok、分頁實際沒變，只看回傳就回報了沒發生的事）；只有這個 CLI 入口讀回，hook 與 tab-state-finish 直接呼叫 setState，不多花 Orca 呼叫。
