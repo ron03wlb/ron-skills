@@ -6,6 +6,7 @@
 // `orca terminal rename` 指令擷取寫入；Orca 查不到分頁時才用它，其他會改標題的 hook 也靠它判斷標題歸本腳本管理。
 //
 // 用法：node scripts/tab-state.mjs <處理中|待 Retro|待關閉> [--topic <主題>]
+//       node scripts/tab-state.mjs --title <handle> → 印該分頁目前標題（Orca 的版面資料只涵蓋作用中的 worktree，其他分頁退回記錄）；`/retro-collect` 用它判斷能不能關。
 // --topic 把標題整個設成 `<狀態>｜<主題>`，不讀目前標題：session 開頭用它，記錄裡可能還是同一個 handle 上一個 session 的主題（#141）；
 // 之後換階段、動作、Issue、⏸，或離開處理中要拿掉階段與動作時也帶 --topic；只換狀態前綴時不帶（標題格式見 issue-run ADAPTER.md 的 Tab state 段）。
 // stdout：改名成功時印 `TAB_STATE <新標題>`。
@@ -78,7 +79,7 @@ export function recordTitle(handle, title) {
 }
 
 /** 找出含 `handle` 這個 pane 的分頁標題；visualLayouts 是分割、群組與分頁組成的巢狀結構。 */
-function tabTitleOf(node, handle) {
+export function tabTitleOf(node, handle) {
   if (Array.isArray(node)) {
     for (const item of node) {
       const title = tabTitleOf(item, handle);
@@ -116,6 +117,14 @@ export async function setState(ctx, handle, state, topic) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
+  if (args[0] === '--title') {
+    if (!args[1]) {
+      console.error('用法：node scripts/tab-state.mjs --title <handle>');
+      process.exit(2);
+    }
+    console.log(await currentTitle(orcaContext(), args[1]).catch(() => recordedTitle(args[1]) ?? ''));
+    process.exit(0);
+  }
   const at = args.indexOf('--topic');
   const state = (at < 0 ? args : args.slice(0, at)).join(' ');
   const topic = at < 0 ? undefined : args.slice(at + 1).join(' ').trim();
@@ -126,7 +135,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const handle = process.env.ORCA_TERMINAL_HANDLE;
   if (!handle) process.exit(0);
   try {
-    const title = await setState(orcaContext(), handle, state, topic);
+    // 改名是冪等的，失敗或逾時就用新的時間上限再送一次：改名可能已送達卻沒寫記錄，`/retro-collect` 讀到舊狀態就不關分頁（1102b 的 #297）。
+    const attempt = () => setState(orcaContext(), handle, state, topic);
+    const title = await attempt().catch(attempt);
     console.log(`TAB_STATE ${title}`);
   } catch (error) {
     console.error(`TAB_STATE_FAILED ${state} ${error.name === 'AbortError' ? `逾時（${ORCA_BUDGET_MS} ms），改名可能已送達` : error.message}`);
