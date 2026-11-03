@@ -42,8 +42,8 @@
     },
     "scripts/claude-hook-tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-tab-state.mjs",
-      "commit": "90b7ca2436ce1b04a293b775ebbc2a0f9e7f8adc",
-      "sha256": "3cb6e334ccf019c9e9511cb02264749fcaf15ce4eaead9bab9336293f44e6ec2"
+      "commit": "e46598eae6cfd5484c1171c2da6a061b71cb704c",
+      "sha256": "a41cc1afa39530000a208a2201e254a8e4f5cec42aa6b028f274646e4e9547d3"
     },
     "scripts/claude-hook-unbare.sh": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-unbare.sh",
@@ -177,7 +177,7 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "ca1a40af485317dd5c2ae4752db5a4a1de10c3af",
+      "commit": "e46598eae6cfd5484c1171c2da6a061b71cb704c",
       "sha256": "136a892d904cd5d6365e73c99ed49fa0fce3c935ece3f184b8afb33cc12a5f79"
     }
   },

@@ -12,8 +12,8 @@ const SELF = 'term_self';
 const SHA = '4b14f45a922942987473d3a1b9358740c2409777';
 
 // 專案目錄（放 docs/agents/tab-state.json）、記錄呼叫的假 Orca CLI 與 TAB_STATE_DIR。
-// `terminal list` 回本分頁，title 是 Claude 的自動標題；`tabTitle` 是 Orca 分頁資料（--include-visual-layouts）裡的實際標題；`failing` 為真時每個 Orca 呼叫都回錯。
-function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, config, tabTitle } = {}) {
+// `terminal list` 回本分頁，title 是 Claude 的自動標題；`tabTitle` 是 Orca 分頁資料（--include-visual-layouts）裡的實際標題；`failing` 為真時每個 Orca 呼叫都回錯；`renameFails` 只讓改名回錯；`stuckTab` 時改名回 ok、分頁實際不變。
+function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, config, tabTitle, renameFails = false, stuckTab = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'claude-hook-tab-state-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const project = join(temp, 'project');
@@ -23,14 +23,20 @@ function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, config
   writeFileSync(log, '');
   const dir = join(temp, 'titles');
   const cli = join(temp, 'orca');
+  const tab = join(temp, 'tab-title');
+  if (tabTitle !== undefined) writeFileSync(tab, tabTitle);
   writeFileSync(cli, `#!/usr/bin/env node
 const fs = require('fs'); const [, b] = process.argv.slice(2); const arg = k => process.argv[process.argv.indexOf(k) + 1];
 fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 ${orcaReplySource()}
 if (${failing}) fail('runtime_unavailable');
-else if (b === 'list' && ${JSON.stringify(tabTitle ?? null)} !== null && process.argv.includes('--include-visual-layouts')) reply('list-visual', { visualLayouts: [{ root: { second: { tabs: [{ title: ${JSON.stringify(tabTitle ?? '')}, panes: { second: { handle: ${JSON.stringify(SELF)} } } }] } } }] });
+else if (b === 'list' && fs.existsSync(${JSON.stringify(tab)}) && process.argv.includes('--include-visual-layouts')) reply('list-visual', { visualLayouts: [{ root: { second: { tabs: [{ title: fs.readFileSync(${JSON.stringify(tab)}, 'utf8'), panes: { second: { handle: ${JSON.stringify(SELF)} } } }] } } }] });
 else if (b === 'list') reply('list', { terminals: [{ handle: ${JSON.stringify(SELF)}, title: ${JSON.stringify(autoTitle)} }], totalCount: 1 });
-else if (b === 'rename') reply('rename', { rename: { handle: arg('--terminal'), title: arg('--title') } });
+else if (b === 'rename' && ${renameFails}) fail('rename_failed');
+else if (b === 'rename') {
+  if (!${stuckTab} && fs.existsSync(${JSON.stringify(tab)})) fs.writeFileSync(${JSON.stringify(tab)}, arg('--title'));
+  reply('rename', { rename: { handle: arg('--terminal'), title: arg('--title') } });
+}
 `);
   chmodSync(cli, 0o755);
   const transcript = join(temp, 'transcript.jsonl');
@@ -44,7 +50,7 @@ else if (b === 'rename') reply('rename', { rename: { handle: arg('--terminal'), 
     { type: 'user', message: { role: 'user', content: '/issue-run 126 --worker x' } },
     { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } },
   ].map(entry => JSON.stringify(entry)).join('\n'));
-  return { record, recorded, hook, say, calls: () => readFileSync(log, 'utf8') };
+  return { record, recorded, hook, say, calls: () => readFileSync(log, 'utf8'), tabNow: () => readFileSync(tab, 'utf8') };
 }
 
 const bash = (command, stdout) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, tool_response: { stdout, stderr: '' } });
@@ -85,35 +91,78 @@ test('Stop：worker 最後一段文字是 DONE 結果行就轉成待 Retro，之
   assert.equal(recorded(), '待 Retro｜#126 分頁狀態｜收尾｜候選');
 });
 
-test('Stop：別的 hook 蓋掉標題時，以 Orca 實際分頁標題為準：記錄有前綴也要求改名；實際標題有前綴時放行', t => {
+test('Stop：別的 hook 蓋掉標題時，以 Orca 實際分頁標題為準：記錄有前綴也要補處理中；實際標題有前綴時不動', t => {
   const clobbered = fixture(t, { tabTitle: 'Claude 自動標題' });
   clobbered.say('還在跑測試。');
   clobbered.record('處理中｜Codex review 預設模型');
-  const denied = clobbered.hook({ hook_event_name: 'Stop', stop_hook_active: false });
-  assert.equal(denied.status, 2);
-  assert.match(denied.stderr, /Claude 自動標題/);
+  const healed = clobbered.hook({ hook_event_name: 'Stop', stop_hook_active: false });
+  assert.equal(healed.status, 0, healed.stderr);
+  assert.equal(clobbered.tabNow(), '處理中｜Claude 自動標題');
   const live = fixture(t, { tabTitle: '處理中｜Codex review 預設模型' });
   live.say('還在跑測試。');
   assert.equal(live.hook({ hook_event_name: 'Stop', stop_hook_active: false }).status, 0);
+  assert.doesNotMatch(live.calls(), /rename/);
 });
 
-test('Stop：標題沒有合法前綴就 exit 2 要求改名；stop_hook_active 為 true 時放行；有前綴時不輸出', t => {
-  const { record, hook, say, calls } = fixture(t, { autoTitle: 'Issue-run 126 batch 126-128' });
+// retro e87d365c#5：Stop hook exit 2 只為要 agent 跑一次 tab-state.mjs 處理中，多花一輪。
+test('Stop：標題沒有前綴時 hook 自行補處理中、exit 0 不輸出；stop_hook_active 為 true 時不動；有前綴時不動', t => {
+  const auto = fixture(t, { autoTitle: 'Issue-run 126 batch 126-128' });
+  auto.say('還在跑測試。');
+  assert.equal(auto.hook({ hook_event_name: 'Stop', stop_hook_active: true }).status, 0);
+  assert.doesNotMatch(auto.calls(), /rename/);
+  const healed = auto.hook({ hook_event_name: 'Stop', stop_hook_active: false });
+  assert.equal(healed.status, 0, healed.stderr);
+  assert.equal(healed.stdout + healed.stderr, '');
+  assert.equal(auto.recorded(), '處理中｜Issue-run 126 batch 126-128');
+  const { record, hook, say, calls } = fixture(t);
   say('還在跑測試。');
-  const denied = hook({ hook_event_name: 'Stop', stop_hook_active: false });
-  assert.equal(denied.status, 2);
-  assert.match(denied.stderr, /Issue-run 126 batch 126-128/);
-  assert.match(denied.stderr, /tab-state\.mjs/);
-  assert.equal(hook({ hook_event_name: 'Stop', stop_hook_active: true }).status, 0);
-  for (const title of ['完成｜#126', '處理中|#126']) {
-    record(title);
-    assert.equal(hook({ hook_event_name: 'Stop', stop_hook_active: false }).status, 2, title);
-  }
   record('處理中｜#126 分頁狀態｜實作｜hook');
   const allowed = hook({ hook_event_name: 'Stop', stop_hook_active: false });
   assert.equal(allowed.status, 0);
   assert.equal(allowed.stdout + allowed.stderr, '');
   assert.doesNotMatch(calls(), /rename/);
+});
+
+test('Stop：補前綴蓋不掉既有狀態：前綴格式錯、記錄是待 Retro／待關閉時不改名，exit 2 交回 agent；Stop 觸發條件優先', t => {
+  for (const title of ['處理中|#126', '待 Retro|#126']) {
+    const malformed = fixture(t);
+    malformed.say('還在跑測試。');
+    malformed.record(title);
+    const denied = malformed.hook({ hook_event_name: 'Stop', stop_hook_active: false });
+    assert.equal(denied.status, 2, title);
+    assert.match(denied.stderr, /tab-state\.mjs/);
+    assert.doesNotMatch(malformed.calls(), /rename/);
+    assert.equal(malformed.recorded(), title);
+  }
+  for (const state of ['待 Retro', '待關閉']) {
+    const clobbered = fixture(t, { tabTitle: 'Claude 自動標題' });
+    clobbered.say('還在跑測試。');
+    clobbered.record(`${state}｜#126 分頁狀態`);
+    const denied = clobbered.hook({ hook_event_name: 'Stop', stop_hook_active: false });
+    assert.equal(denied.status, 2, state);
+    assert.doesNotMatch(clobbered.calls(), /rename/);
+    assert.equal(clobbered.recorded(), `${state}｜#126 分頁狀態`);
+  }
+  const worker = fixture(t, { tabTitle: 'Claude 自動標題' });
+  worker.say(`DONE 126 ${SHA}`);
+  assert.equal(worker.hook({ hook_event_name: 'Stop', stop_hook_active: false }).status, 0);
+  assert.equal(worker.tabNow(), '待 Retro｜Claude 自動標題');
+  assert.equal(worker.calls().match(/rename/g).length, 1, 'Stop 觸發條件已換狀態，不再補處理中');
+  const stuckWorker = fixture(t, { tabTitle: 'Claude 自動標題', stuckTab: true });
+  stuckWorker.say(`DONE 126 ${SHA}`);
+  assert.equal(stuckWorker.hook({ hook_event_name: 'Stop', stop_hook_active: false }).status, 2);
+  assert.equal(stuckWorker.recorded(), '待 Retro｜Claude 自動標題', '分頁沒跟上時也不把待 Retro 蓋成處理中');
+});
+
+test('Stop：改名失敗，或回 ok 但讀回仍沒有前綴：exit 2 交回 agent', t => {
+  for (const options of [{ renameFails: true }, { stuckTab: true }]) {
+    const { hook, say } = fixture(t, { tabTitle: 'Claude 自動標題', ...options });
+    say('還在跑測試。');
+    const denied = hook({ hook_event_name: 'Stop', stop_hook_active: false });
+    assert.equal(denied.status, 2, JSON.stringify(options));
+    assert.match(denied.stderr, /Claude 自動標題/);
+    assert.match(denied.stderr, /tab-state\.mjs/);
+  }
 });
 
 test('沒有 ORCA_TERMINAL_HANDLE、Orca 呼叫失敗、輸入不合法：exit 0 不輸出', t => {

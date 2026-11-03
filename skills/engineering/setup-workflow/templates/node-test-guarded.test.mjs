@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { failedFiles, lostFiles, parseRan, recordedPass, reportedTotal, soloOptions, untraced } from './node-test-guarded.mjs';
@@ -85,6 +85,48 @@ test('第一次失敗、單獨重跑通過：exit 0，印 NODE_TEST_FLAKE_SUSPEC
   assert.match(result.stderr, /^NODE_TEST_FLAKE_SUSPECT flaky\.test\.mjs$/m);
   assert.doesNotMatch(result.stderr, /ok\.test\.mjs/);
   assert.equal(result.stdout.match(/^✔ ok\b/gm).length, 1, '通過的檔不重跑');
+});
+
+// followups 264：flake 只有 push gate 會寫 followups；batch-merge verify、fix-land 跑 check-contracts 時只留在 log 且 exit 0。
+const FAKE_FOLLOWUPS = "import { appendFileSync } from 'node:fs';\nappendFileSync('followups.log', `${process.argv.slice(2).join(' ')}\\n`);\nprocess.exit(Number(process.env.FOLLOWUPS_EXIT ?? 0));\n";
+
+test('flake 由 wrapper 自己寫 followups [tooling]：每個呼叫端都記到；followups 失敗（含 DUPLICATE）不影響結果', { skip: NO_CHANNEL }, t => {
+  for (const exit of ['0', '1']) {
+    const dir = mkdtempSync(join(realTmpdir(), 'node-test-guarded-followups-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    mkdirSync(join(dir, 'scripts'));
+    writeFileSync(join(dir, 'scripts', 'followups.mjs'), FAKE_FOLLOWUPS);
+    writeFileSync(join(dir, 'flaky.test.mjs'), FLAKY);
+    writeFileSync(join(dir, 'ok.test.mjs'), OK);
+    writeFileSync(join(dir, 'FAIL_ONCE'), '');
+    const env = { ...process.env, FOLLOWUPS_EXIT: exit };
+    for (const key of ['NODE_TEST_CONTEXT', 'NODE_TEST_COUNT_FILE', 'NODE_TEST_COUNT_ROOT', 'NODE_TEST_COUNTED', 'NODE_OPTIONS']) delete env[key];
+    const result = spawnSync(process.execPath, [SCRIPT, '--test-force-exit', 'flaky.test.mjs', 'ok.test.mjs'], { cwd: dir, encoding: 'utf8', env });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stderr, /^NODE_TEST_FLAKE_SUSPECT flaky\.test\.mjs$/m);
+    assert.equal(readFileSync(join(dir, 'followups.log'), 'utf8'), 'add node-test-guarded --tooling NODE_TEST_FLAKE_SUSPECT flaky.test.mjs：首輪失敗、單獨重跑全過\n');
+  }
+});
+
+test('真實失敗與 cwd 沒有 scripts/followups.mjs（測試 fixture）都不寫 followups；followups.mjs 壞掉也不影響結果', { skip: NO_CHANNEL }, t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'node-test-guarded-followups-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, 'scripts'));
+  writeFileSync(join(dir, 'scripts', 'followups.mjs'), FAKE_FOLLOWUPS);
+  writeFileSync(join(dir, 'broken.test.mjs'), BROKEN);
+  const env = { ...process.env };
+  for (const key of ['NODE_TEST_CONTEXT', 'NODE_TEST_COUNT_FILE', 'NODE_TEST_COUNT_ROOT', 'NODE_TEST_COUNTED', 'NODE_OPTIONS']) delete env[key];
+  const failed = spawnSync(process.execPath, [SCRIPT, '--test-force-exit', 'broken.test.mjs'], { cwd: dir, encoding: 'utf8', env });
+  assert.equal(failed.status, 1);
+  assert.equal(existsSync(join(dir, 'followups.log')), false);
+  writeFileSync(join(dir, 'scripts', 'followups.mjs'), "throw new Error('壞掉');\n");
+  writeFileSync(join(dir, 'flaky.test.mjs'), FLAKY);
+  writeFileSync(join(dir, 'FAIL_ONCE'), '');
+  const flaky = spawnSync(process.execPath, [SCRIPT, '--test-force-exit', 'flaky.test.mjs'], { cwd: dir, encoding: 'utf8', env });
+  assert.equal(flaky.status, 0, flaky.stdout + flaky.stderr);
+  assert.doesNotMatch(flaky.stderr, /壞掉/);
+  const bare = fixture(t, { 'flaky.test.mjs': FLAKY, FAIL_ONCE: '' });
+  assert.equal(bare('flaky.test.mjs').status, 0);
 });
 
 test('兩次都失敗：回傳第一次的 exit code，印 NODE_TEST_RERUN FAIL，不印 NODE_TEST_FLAKE_SUSPECT', { skip: NO_CHANNEL }, t => {

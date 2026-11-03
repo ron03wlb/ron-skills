@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // Claude Code 分頁狀態 hook：能用程式偵測的分頁狀態轉換（GLOSSARY.md「分頁狀態」）自動以 tab-state.mjs 換掉目前分頁標題的狀態前綴，
-// Stop 時標題沒有合法前綴就要求改名。只在 Orca 裡跑的 session（有 ORCA_TERMINAL_HANDLE）才動作。
+// Stop 時標題沒有合法前綴就自行補上處理中。只在 Orca 裡跑的 session（有 ORCA_TERMINAL_HANDLE）才動作。
 // 依 stdin hook JSON 的 hook_event_name：
 // - PostToolUse（matcher Bash）：輸出命中 PostToolUse 觸發條件就換狀態；指令裡有改本分頁標題的 `orca terminal rename … --title <標題>`
 //   時記下這個標題（Orca 查不到分頁時的備援，見 tab-state.mjs）。
-// - Stop：最後一段 assistant 文字命中 Stop 觸發條件就換狀態；接著檢查標題，沒有 `<狀態>｜` 前綴就 exit 2，stderr 交回 agent 改名。
+// - Stop：最後一段 assistant 文字命中 Stop 觸發條件就換狀態；接著檢查標題，沒有 `<狀態>｜` 前綴就自行設為處理中、exit 0（retro e87d365c#5：exit 2 只為要 agent 跑一次 tab-state，多花一輪）。
 //   只檢查格式，不判斷狀態對不對；stop_hook_active 為 true（已因 Stop hook 續跑一次）時不檢查。
+//   補前綴蓋不掉既有狀態：標題以狀態名開頭但分隔符不對（`待 Retro|…`），或記錄的標題是處理中以外的狀態（別的 hook 蓋掉實際標題，或 Stop 觸發條件剛換狀態但分頁沒跟上）時不改名。
+//   這兩種情況、改名失敗、讀回仍沒有前綴時 exit 2，stderr 交回 agent 改名。
 // 預設觸發條件見 DEFAULT_TRIGGERS；`/retro` 的待關閉由 retro 最後一步自己呼叫 tab-state。專案可以在 `docs/agents/tab-state.json`
 // 新增、覆寫或停用觸發條件：`{ "triggers": { "<名稱>": { "event": "PostToolUse"|"Stop", "match": "<regex，逐行比對>", "skipCommand": "<regex>", "state": "<狀態>" } | null } }`，
 // 同名覆寫、null 停用；PostToolUse 的 match 比對 Bash 的 stdout，Stop 的比對最後一段 assistant 文字；
@@ -14,7 +16,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { STATES, currentTitle, hasState, orcaContext, recordTitle, setState } from './tab-state.mjs';
+import { STATES, currentTitle, hasState, orcaContext, recordTitle, recordedTitle, setState, titleMismatch } from './tab-state.mjs';
 
 export const DEFAULT_TRIGGERS = {
   // land.mjs 合入後的最後一行；pilot 的 coordinator 以 `--keep-branch` 落地整合分支，它還在運作，不算
@@ -86,6 +88,20 @@ function lastAssistantText(path) {
   return text;
 }
 
+/** 標題 `title` 沒有前綴時補上處理中；補上且讀回有前綴才傳回 true。傳回 false 時未改名或改名沒生效，由 agent 決定（見檔頭）。 */
+async function addWorkingPrefix(ctx, handle, title) {
+  const recorded = recordedTitle(handle);
+  if (STATES.some(state => title.startsWith(state)) || (hasState(recorded) && !recorded.startsWith('處理中'))) return false;
+  try {
+    // 帶入已讀到的標題，不再讀一次：讀回之前不留下另一個狀態被蓋掉的空檔。
+    const set = await setState(ctx, handle, '處理中', title);
+    const actual = await titleMismatch(ctx, handle, set);
+    return actual === null || hasState(actual);
+  } catch {
+    return false;
+  }
+}
+
 const output = response => typeof response === 'string' ? response : String(response?.stdout ?? '');
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -109,7 +125,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       if (state) await setState(ctx, handle, state);
       if (!input.stop_hook_active) {
         const title = await currentTitle(ctx, handle);
-        if (!hasState(title)) {
+        if (!hasState(title) && !await addWorkingPrefix(ctx, handle, title)) {
           process.stderr.write(`分頁狀態：目前分頁標題「${title}」開頭沒有狀態前綴（${STATES.map(s => `${s}｜`).join('、')}）。`
             + '請用 `node scripts/tab-state.mjs <狀態>` 補上前綴，或以 `node scripts/tab-state.mjs <狀態> --topic "<主題>"` 照 adapter Tab state 段的標題格式重設；'
             + '還在處理（含等使用者回答或核准）用處理中，工作已交付、等使用者跑 /retro 用待 Retro，/retro 已結束用待關閉。\n');
