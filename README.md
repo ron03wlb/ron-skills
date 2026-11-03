@@ -26,7 +26,7 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 升級 Matt：`~/code/skills` 是 fork（ron03wlb/skills），不會自動跟上 mattpocock 上游，先 `gh repo sync ron03wlb/skills` 再 `git -C ~/code/skills pull --ff-only`；`--check` 通過並試跑後，更新 `matt-skills.txt` 的 `# pin:`，再跑 `bin/sync-skills`。升級 pstack：`git -C ~/code/pstack pull`，`--check` 通過並試跑後，更新 `pstack-skills.txt` 的 `# pin:`。出現 `OVERLAY_FAILED` 代表上游改到補丁位置，連結保持舊版，重做該補丁後再同步。
 
 - `matt-skills.txt`：要連結的 Matt skill 清單（相對 `skills/`）；`-<path>` 表示刻意不連結。`--check` 列出的 `NEW` 行，二選一加入清單。
-- `pstack-skills.txt`：pstack 白名單，同樣格式；`# pin:` 記錄驗證過的上游 SHA，HEAD 不同時只警告。不連結的理由只有三種：與 Matt 或本 repo 的流程重疊（`tdd`、`teach`、`reflect`／`recall`／`correct` 已併入 `retro` 與 `issue-run`、`swarm` 由專案的分區掃描涵蓋）、與 repo 規範衝突（`no-comments` 的刪註解策略、`technical-writing` 的英文句式規則），或 Cursor 專屬。pstack 的方法沒有一個需要兩家以上模型，Claude 加 Codex 即可；`arena` 以 overlay 接本機 worktree 與 Codex judge，`poteto-mode` 的 Eval playbook 經由它執行。`create-formal-verification-skill`／`maintain-formal-verification-skill` 用於金流與並發屬性的形式驗證（TLA+ 等），`statechart` 是前者讀 TLA+ 結果的依賴，一併連結。
+- `pstack-skills.txt`：pstack 白名單，同樣格式；`# pin:` 記錄驗證過的上游 SHA，HEAD 不同時只警告。不連結的理由只有三種：與 Matt 或本 repo 的流程重疊（`tdd`、`teach`、`reflect`／`recall`／`correct` 已併入 `retro` 與 `issue-run`、`swarm` 由專案的分區掃描涵蓋）、與 repo 規範衝突（`no-comments` 的刪註解策略、`technical-writing` 的英文句式規則），或 Cursor 專屬。pstack 的方法沒有一個需要兩家以上模型，Claude 即可，Codex 只做 code review；`arena` 以 overlay 接本機 worktree 與 Claude judge，`poteto-mode` 的 Eval playbook 經由它執行。`create-formal-verification-skill`／`maintain-formal-verification-skill` 用於金流與並發屬性的形式驗證（TLA+ 等），`statechart` 是前者讀 TLA+ 結果的依賴，一併連結。
 - `bin/check`：唯一的檢查入口，依序跑 `bin/sync-skills --check`、連結檢查、流程站三道守門、`tests/` 與 setup-workflow 正本的測試；`bin/check --upstream` 改對 Matt 與 pstack 上游最新 main 檢查（與 CI 相同）。
 - 流程站（`docs/workflow/`，產出在 `site/`）：`bin/check` 跑三道守門。`node scripts/build-workflow-site.mjs --check` 擋手改 HTML 或忘了重產；`node scripts/check-workflow-strings.mjs` 擋 spay2 專屬字串（專案名、`192.168.`、`feature/ron/#`，只放行 spay2 公開站網址）；`node scripts/check-workflow-sync.mjs` 在 `issue-run`／`issue-pilot`／`retro-collect`／`setup-workflow` 的 `SKILL.md` 或 `ADAPTER.md` 變動時失敗，對照 `docs/workflow/` 後執行 `--restamp`。
 - setup-workflow 的 script 正本（`skills/engineering/setup-workflow/templates/`）：其他專案導入用的通用 script 與測試，來自 spay2、已去除專案字樣。本 repo 從正本複製的副本列在 `docs/agents/workflow-templates.json`（正本路徑、ron-skills commit、sha256），`tests/template-copies.test.mjs` 檢查每個副本與正本逐位元組相同、hash 與清單一致：要改就改正本，commit 後用 `node skills/engineering/setup-workflow/scripts/copy-templates.mjs . --no-tests <名稱>` 複製過來。本 repo 不複製正本的測試，正本測試已由 `bin/check` 直接跑。
@@ -46,8 +46,8 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 | `grilling`、`grill-me`、`grill-with-docs` | `effort: high`；`grilling` 另把「派子代理查事實」改為自己用工具查、範圍大才派，並在第一輪前列出與主題相關、還開著的 Issue；建議換掉使用者講的操作時要在題目點明，結束前列出每個決定後使用者實際看到的結果 |
 | `domain-modeling` | repo 自訂的 ADR 版面與索引編號優先；主 checkout 不能寫時，詞條與 ADR 原文寫進負責實作的 Issue，由它在 worktree 提交 |
 | `retro` | 候選開成 Issue 前，依它提到的名稱查開著的 Issue：同一件事就留言補證據不另開，只是同檔不同事就讓新單依賴它；寫入前檢查其他 session 的並行修改；adapter 有 **Retro collect** 條目時一律改為收集模式：不實作，把候選開成一張 `retro-candidates` label 的 Issue（一個 session 一張），等 `/retro-collect`；條目宣告 `Collect command:` 時改照該指令走，不開 Issue |
-| `poteto-mode` | 本機 harness：先讀上游 `docs/harness/claude-code.md` 做名稱對照；repo 規則與語言優先、無 GitHub PR（對應 candidate／整合分支）、無 cloud（Orca terminal）、Claude 加 Codex 兩家、未連結 skill 改用 Matt 對應 |
-| `arena` | 只用在昂貴、難逆轉且多解的設計決策；一席 Claude worktree 子代理、一席 Codex，Codex 唯讀當 judge；Eval 只用於 worker／review／stop-policy 的 skill 變更 |
+| `poteto-mode` | 本機 harness：先讀上游 `docs/harness/claude-code.md` 做名稱對照；repo 規則與語言優先、無 GitHub PR（對應 candidate／整合分支）、無 cloud（Orca terminal）、Codex 只做 code review、未連結 skill 改用 Matt 對應 |
+| `arena` | 只用在昂貴、難逆轉且多解的設計決策；兩席都是 Claude worktree 子代理，judge 是沒寫候選的全新 Claude 子代理；Eval 只用於 worker／review／stop-policy 的 skill 變更 |
 
 ## issue-run
 

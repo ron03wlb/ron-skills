@@ -55,7 +55,7 @@ Steps 1–4 only read; steps 5–10 write, all inside the worktree step 5 opens.
    | `externalEnv` | a compose file, or `testcontainers` in a build manifest | Checks (the env the suite needs) and Stops (the stop code when the env is unreachable) | — |
    | `multiModule` | build manifests in two or more directories | Checks: which tests to run per touched module | — |
    | `customTriage` | a project skill under `.claude/skills/` named for triage, grading or refining | Readiness: that skill replaces `/triage` | — |
-   | `codex` | `.codex/`, or Codex named in `AGENTS.md` or the adapter | Review, and the implementer when Codex builds tickets | `run-codex-review.mjs` |
+   | `codex` | `.codex/`, or Codex named in `AGENTS.md` or the adapter | Review | `run-codex-review.mjs` |
 
    Then pick the templates for every level up to the target and the confirmed extensions from [Templates](#templates). Done when every extension is confirmed present or absent, each with its evidence, and you have the adapter sections to fill and the template list.
 
