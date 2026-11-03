@@ -91,7 +91,7 @@ Open human gates under a `# Gates` heading. Ids are `G<n>`, increasing and never
 
 A gate whose `parked` field (the table's `parks` column) starts with `all-push` blocks every push, not only the batches it names (for example a CI billing stop): write that fixed form, optionally followed by a note, as in `- parked：all-push（billing）`. While such a gate is open, the probe folds every batch it would report `NOT_IN_MAIN` or `RESUME_PUSH` for into one `PUSH_PARKED` line.
 
-A gate is open until its `resolved` mark; never delete one. With the setup-workflow templates, open, resolve, and list gates with `pilot-gate` ([Canonical scripts](#canonical-scripts)) instead of editing the file.
+A gate is open until its `resolved` mark; never delete one. A repo that copied the setup-workflow template `scripts/pilot-gate.mjs` opens, resolves, and lists gates with it ([Canonical scripts](#canonical-scripts)) instead of editing the file; any other repo uses its adapter's gate command.
 
 ## `.scratch/pilot/preferences.md`
 

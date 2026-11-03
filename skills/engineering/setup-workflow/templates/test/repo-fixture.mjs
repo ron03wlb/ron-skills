@@ -10,7 +10,8 @@ import { realTmpdir } from './real-tmpdir.mjs';
 export const source = fileURLToPath(new URL('../', import.meta.url));
 export function run(cwd, args, options = {}) {
   const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
-  return spawnSync(args[0], args.slice(1), { cwd, encoding: 'utf8', timeout: 30000, ...options,
+  // 上限原為 30000：load 70+ 時 merge-into-integration.test 的 merge() 花 26–30 秒，且曾 quiet.word 為空、stdout／stderr 皆空，疑為此上限（spay2 #734，未確認，這裡只是緩解）。
+  return spawnSync(args[0], args.slice(1), { cwd, encoding: 'utf8', timeout: 90000, ...options,
     env: { ...clean, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', ...options.env } });
 }
 export function git(cwd, ...args) {

@@ -11,7 +11,8 @@
 // 之後換階段、動作、Issue、⏸，或離開處理中要拿掉階段與動作時也帶 --topic；只換狀態前綴時不帶（標題格式見 issue-run ADAPTER.md 的 Tab state 段）。
 // 改名後讀回實際分頁標題再回報（2026-11-02：Orca 回 ok、分頁實際沒變，只看回傳就回報了沒發生的事）；只有這個 CLI 入口讀回，hook 與 tab-state-finish 直接呼叫 setState，不多花 Orca 呼叫。
 // stdout：改名成功時印 `TAB_STATE <新標題>`；讀不到分頁（舊版 Orca、連不上、太慢）無從比對，照樣算成功。
-// stderr：Orca 呼叫失敗時印 `TAB_STATE_FAILED <狀態> <原因>`；原因是逾時時改名可能已送達，分頁實際標題要另外看（#295：沒印 TAB_STATE 卻改成功、和完全沒改，看起來一樣）。
+// stderr：Orca 呼叫失敗時印 `TAB_STATE_FAILED <狀態> <原因>`。逾時時腳本自己讀回實際標題：已生效就算成功（#295：沒印 TAB_STATE 卻改成功、和完全沒改，看起來一樣），
+//   確定沒生效就再送一次（retro spay2 b1549391#4：agent 只能自己 --title 再重跑）；仍逾時才印，這時改名可能已送達，分頁實際標題要另外看。
 //   讀回的標題不符時印 `TAB_STATE_MISMATCH <應有標題> actual=<實際標題>`，不印 TAB_STATE。
 // exit：0 已改名，或沒有 ORCA_TERMINAL_HANDLE（不輸出）、Orca 呼叫失敗（不擋 hook 與 script）；1 讀回的標題不符；2 狀態不合法、--topic 沒有值。
 // ORCA_CLI_COMMAND 沒設時用 PATH 上的 `orca`。
@@ -127,6 +128,20 @@ export async function setState(ctx, handle, state, topic) {
   return title;
 }
 
+/**
+ * 改名逾時之後：讀回實際標題，已生效傳回它；確定沒生效就再送一次，傳回新標題；讀不到分頁無從判斷，丟回原本的錯。
+ * 沒帶 topic 時不知道原本要的完整標題，帶著 `state` 前綴就算生效。
+ */
+export async function settleTimeout(handle, state, topic, timeout) {
+  const live = await liveTitle(orcaContext(), handle);
+  if (live === null) throw timeout;
+  if (topic === undefined ? live.startsWith(`${state}${SEP}`) : live.trim() === withState(topic, state).trim()) {
+    recordTitle(handle, live);
+    return live;
+  }
+  return setState(orcaContext(), handle, state, topic);
+}
+
 /** 改名後的實際標題與 `title` 不符時傳回實際標題；相符或讀不到分頁時為 null。 */
 export async function titleMismatch(ctx, handle, title) {
   let actual = null;
@@ -160,7 +175,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     // 改名是冪等的，失敗或逾時就用新的時間上限再送一次：改名可能已送達卻沒寫記錄，`/retro-collect` 讀到舊狀態就不關分頁（1102b 的 #297）。
     const attempt = () => setState(orcaContext(), handle, state, topic);
-    const title = await attempt().catch(attempt);
+    const title = await attempt().catch(attempt).catch(error => {
+      if (error.name !== 'AbortError') throw error;
+      return settleTimeout(handle, state, topic, error);
+    });
     // 讀回用自己的時間上限：上面的重送可能已用完前一個 context。
     const actual = await titleMismatch(orcaContext(), handle, title);
     if (actual !== null) {

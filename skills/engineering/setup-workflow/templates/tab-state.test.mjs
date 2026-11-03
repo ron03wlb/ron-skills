@@ -15,7 +15,7 @@ const SELF = 'term_self';
 // `failing` 為真時每個呼叫都回錯。標題記錄放在 fixture 的 TAB_STATE_DIR，不碰家目錄。
 // `tabTitle` 有值時 rename 會改掉回報的分頁標題；`stuck` 為真時 rename 回 ok、回報的標題不變（2026-11-02 coordinator 回報改名成功，分頁實際沒變）。
 // `lagReads` 是改名後還回舊標題的讀取次數。
-function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTitle, slow = '', stuck = false, lagReads = 0, firstRenameFails = false } = {}) {
+function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTitle, slow = '', stuck = false, lagReads = 0, firstRenameFails = false, slowRenames = 0, renameLands = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'tab-state-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const log = join(temp, 'orca.log');
@@ -32,6 +32,10 @@ const fs = require('fs'); const [, b] = process.argv.slice(2); const arg = k => 
 fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 ${orcaReplySource()}
 if (b === ${JSON.stringify(slow)}) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);
+if (b === 'rename' && fs.readFileSync(${JSON.stringify(log)}, 'utf8').split('terminal rename').length - 1 <= ${slowRenames}) {
+  if (${renameLands}) fs.writeFileSync(${JSON.stringify(live)}, arg('--title'));
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);
+}
 if (${failing}) fail('runtime_unavailable');
 else if (${firstRenameFails} && b === 'rename' && fs.readFileSync(${JSON.stringify(log)}, 'utf8').split('terminal rename').length === 2) fail('runtime_unavailable');
 else if (b === 'list' && fs.existsSync(${JSON.stringify(live)}) && process.argv.includes('--include-visual-layouts')) {
@@ -187,6 +191,45 @@ test('改名逾時：stderr 講明逾時、改名可能已送達，不改記錄'
   assert.equal(result.stdout, '');
   assert.match(result.stderr, /^TAB_STATE_FAILED 待關閉 逾時（300 ms），改名可能已送達$/m);
   assert.equal(recorded(), null);
+});
+
+// retro spay2 b1549391#4：逾時後由腳本自己讀回，不交給 agent 判斷。
+const BUDGET = { TAB_STATE_BUDGET_MS: '2000', TAB_STATE_VERIFY_RETRY_MS: '1' };
+
+test('改名逾時後讀回沒生效：再送一次，成功就印 TAB_STATE 並寫記錄', t => {
+  const { recorded, run, calls } = fixture(t, { tabTitle: '舊標題', slowRenames: 2 });
+  const result = run(['處理中', '--topic', 'x'], BUDGET);
+  assert.equal(result.stderr, '');
+  assert.match(result.stdout, /^TAB_STATE 處理中｜x$/m);
+  assert.equal(recorded(), '處理中｜x');
+  assert.equal(calls().split('terminal rename').length - 1, 3);
+});
+
+test('改名逾時後讀回已生效：不再送，印 TAB_STATE 並寫記錄', t => {
+  const { recorded, run, calls } = fixture(t, { tabTitle: '舊標題', slowRenames: 2, renameLands: true });
+  const result = run(['處理中', '--topic', 'x'], BUDGET);
+  assert.equal(result.stderr, '');
+  assert.match(result.stdout, /^TAB_STATE 處理中｜x$/m);
+  assert.equal(recorded(), '處理中｜x');
+  assert.equal(calls().split('terminal rename').length - 1, 2);
+});
+
+test('只換前綴、改名逾時後讀回已帶該前綴：算生效，記下實際標題', t => {
+  const { recorded, run } = fixture(t, { tabTitle: '舊標題', slowRenames: 2, renameLands: true });
+  const result = run(['處理中'], BUDGET);
+  assert.equal(result.stderr, '');
+  assert.match(result.stdout, /^TAB_STATE 處理中｜舊標題$/m);
+  assert.equal(recorded(), '處理中｜舊標題');
+});
+
+test('改名逾時、讀回沒生效、再送仍逾時：印 TAB_STATE_FAILED，共送三次', t => {
+  const { recorded, run, calls } = fixture(t, { tabTitle: '舊標題', slow: 'rename' });
+  const result = run(['處理中', '--topic', 'x'], BUDGET);
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, '');
+  assert.match(result.stderr, /^TAB_STATE_FAILED 處理中 逾時（2000 ms），改名可能已送達$/m);
+  assert.equal(recorded(), null);
+  assert.equal(calls().split('terminal rename').length - 1, 3);
 });
 
 // #295：terminal list --include-visual-layouts 花 12.8 秒，超過共用的 10 秒，改名連帶被中止。

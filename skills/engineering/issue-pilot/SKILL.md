@@ -38,7 +38,7 @@ The human does exactly three things: a product decision (including a spec that c
 
 ## Program store
 
-The pilot store lives under the coordinator checkout's `.scratch/pilot/`. [PILOT-STORE.md](PILOT-STORE.md) is the only source for every file's path, line format, and legal values, batch checkpoints included; read it before writing any of them. Each Issue's own checkpoint stays where the adapter puts it, and each checkpoint stays the source of truth for its unit.
+The pilot store lives under the coordinator checkout's `.scratch/pilot/`. [PILOT-STORE.md](PILOT-STORE.md) is the only source for every file's path, line format, and legal values, batch checkpoints included; read it only when the adapter has no script for a store file and you must write that file by hand. Each Issue's own checkpoint stays where the adapter puts it, and each checkpoint stays the source of truth for its unit.
 
 - `preferences.md`: the standing orders, numbered, one constraint each. Seed it on the first tick from the adapter's Pilot defaults (worker cap, batch size, worker command, who merges and who pushes), append a line whenever you catch yourself restating an instruction, and pass its path in every fix-unit brief.
 - `gates.md`: one entry per open human gate, with the default you applied or will apply and what is parked behind it; the probe ages gates from their opening time. Mark an entry resolved instead of deleting it.
