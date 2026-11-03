@@ -15,7 +15,7 @@
 | **subagent**（Claude） | controller 以 Agent 工具派出 | 多張 ticket 時的 implementer（`implement-spec`）、`code-review` 的 Standards／Spec 兩軸審查 | 不跨出指派的 worktree；結論交回 controller 判讀 | L1 |
 | **coordinator** | 主 checkout 的 `/loop /issue-pilot` | 對帳、挑單、組批次、派 worker、整批回歸、合入整合分支、交出 push 指令（adapter 允許時自己 push、開 PR／MR、合進主線）、結案；決定記在 `.scratch/pilot/decisions.md` | 不寫產品程式碼；同一個 repo 同時只有一個 coordinator | L3 |
 | **worker** | 每張 Issue 自己的 worktree，跑 `/issue-run <n> --worker <checkpoint>` | 單張 Issue 的實作、本單檢查、review，做到 candidate，最後一行印 `DONE <n> <SHA>` 或 `STOP <n> <原因>` | 不問人（產品問題留言到 Issue 後 `STOP`）；不合入、不 push、不結案 | L3 |
-| **Codex** | 經 adapter 指定的 runner 腳本呼叫 | 跨模型 review、高風險 Issue 的獨立情境驗證、兩輪 review 後仍有爭議的 finding 的第二意見 | 不 commit；結果由 controller 判讀 | L3（L1／L2 可選） |
+| **Codex** | 經 adapter 指定的 runner 腳本呼叫 | 只做 code review：跨模型 review、兩輪 review 後仍有爭議的 finding 的第二意見 | 不 commit；結果由 controller 判讀 | L3（L1／L2 可選） |
 
 controller 與 worker 是同一個 `/issue-run` skill 的兩種模式：沒有 coordinator 時你自己打 `/issue-run <n>`，它就是 controller；在 L3 由 coordinator 派出時加 `--worker`，它就只做到 candidate、用最後一行回報。`--pool` 也是 controller：它在同一個 session 從池子依序認領、一次跑一張，不開分頁、不並行，不需要 Pilot 段，只要 repo 有 `scripts/issue-pool.mjs`。
 
