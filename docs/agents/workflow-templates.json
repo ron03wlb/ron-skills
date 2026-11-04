@@ -55,6 +55,11 @@
       "commit": "5c138eef43cfcbe045652d2c70e65478041e4ade",
       "sha256": "302012dcbd11998c01787ebb3045b84da7297bb1d01fba8557a48567b59a3f47"
     },
+    "scripts/doc-excerpt.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/doc-excerpt.mjs",
+      "commit": "a2005cb75ae3873417ad1f773247b15d4f306e55",
+      "sha256": "9d9427a43d18565e5d1a8c5f52acf1b182ffc7d34698b7e5b87e0b5ff9a64aa7"
+    },
     "scripts/gh-tracker.mjs": {
       "template": "skills/engineering/setup-workflow/templates/gh-tracker.mjs",
       "commit": "507238548fdd01b6e541aab97aea2de675e002b7",
@@ -67,8 +72,8 @@
     },
     "scripts/land.mjs": {
       "template": "skills/engineering/setup-workflow/templates/land.mjs",
-      "commit": "5c138eef43cfcbe045652d2c70e65478041e4ade",
-      "sha256": "732010d398a30c0e03c3d52047a043a69c9c100fca166402d99b35b85620b58e"
+      "commit": "a2005cb75ae3873417ad1f773247b15d4f306e55",
+      "sha256": "fdf6c8cec868c33091a090d33679be870b8a6913ef1b5086dde84ae4c98eecb0"
     },
     "scripts/lib/changed-units.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/changed-units.mjs",
@@ -87,7 +92,7 @@
     },
     "scripts/orca-session-send.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-send.mjs",
-      "commit": "d3288107a4488d49882bcdc781a4fc438f47888e",
+      "commit": "a2005cb75ae3873417ad1f773247b15d4f306e55",
       "sha256": "1d21dba80395af6ece014501d7c828667ddd95b852fa9476642941f5e44340b2"
     },
     "scripts/orca-session-split.mjs": {
@@ -182,8 +187,8 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "b0c323727ae18001cb36049f0a9f94428cb87b8b",
-      "sha256": "68d6f58de48f5639b64c0b0d22abd3e4d19ade0b1c34289877e9fd2631d46368"
+      "commit": "a2005cb75ae3873417ad1f773247b15d4f306e55",
+      "sha256": "f78b7458558e87c3ee724706f21ff11540fc55861d9f8668f313950dbb2cfb1a"
     },
     "scripts/worktree-overlap.mjs": {
       "template": "skills/engineering/setup-workflow/templates/worktree-overlap.mjs",

@@ -792,3 +792,51 @@ test('更新既有 PR 失敗：STOP pr-edit，不合併', t => {
   assert.match(last(result), new RegExp(`^STOP pr-edit ${prs()[0].number} GraphQL: edit refused$`));
   assert.doesNotMatch(calls(), /^gh pr merge /m);
 });
+
+/** origin 的 pre-receive hook：前 `failures` 次 push 印 `message`（git 會加上 `remote: `）並拒絕，之後放行；attempts 回傳 hook 被呼叫的次數。 */
+function rejectPushes(temp, origin, failures, message) {
+  const count = join(temp, 'push-attempts');
+  writeFileSync(count, '');
+  const hook = join(origin, 'hooks/pre-receive');
+  writeFileSync(hook, `#!/bin/sh
+echo x >> ${JSON.stringify(count)}
+[ "$(wc -l < ${JSON.stringify(count)})" -gt ${failures} ] && exit 0
+echo ${JSON.stringify(message)} >&2
+exit 1
+`);
+  chmodSync(hook, 0o755);
+  return () => readFileSync(count, 'utf8').split('\n').filter(Boolean).length;
+}
+// 真實訊息：retro spay2 86eda4c4#4（jsonl 914，PR #313）。手寫重試迴圈第 3 次才成功，STOP 行也沒帶 remote: 那行。
+const COMMIT_REFS = 'fatal error in commit_refs        ';
+
+test('push 遇到 commit_refs：間隔重試，第 3 次成功就照常合入', t => {
+  const { temp, origin, body, land, prs, last } = fixture(t);
+  const attempts = rejectPushes(temp, origin, 2, COMMIT_REFS);
+  const result = land(['feature', '--body-file', body], undefined, { LAND_PUSH_RETRY_MS: '1' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^PUSH_RETRY 1\/2 .*fatal error in commit_refs/m);
+  assert.match(result.stdout, /^PUSH_RETRY 2\/2 /m);
+  assert.equal(last(result), `LANDED ${prs()[0].number} ${prs()[0].mergeCommit.oid}`);
+  assert.ok(attempts() >= 3);
+});
+
+test('push 連續遇到 commit_refs：重試 2 次後 STOP push，帶 remote: 內容，不開 PR', t => {
+  const { temp, origin, body, land, prs, last } = fixture(t);
+  const attempts = rejectPushes(temp, origin, 99, COMMIT_REFS);
+  const result = land(['feature', '--body-file', body], undefined, { LAND_PUSH_RETRY_MS: '1' });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(last(result), /^STOP push error: failed to push some refs .*remote: fatal error in commit_refs$/);
+  assert.equal(attempts(), 3);
+  assert.deepEqual(prs(), []);
+});
+
+test('push 被規則拒絕（不是伺服器端暫時失敗）：不重試，STOP push 帶 remote: 內容', t => {
+  const { temp, origin, body, land, last } = fixture(t);
+  const attempts = rejectPushes(temp, origin, 99, 'error: GH013: Repository rule violations found');
+  const result = land(['feature', '--body-file', body], undefined, { LAND_PUSH_RETRY_MS: '1' });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(last(result), /^STOP push .*remote: error: GH013: Repository rule violations found$/);
+  assert.doesNotMatch(result.stdout, /PUSH_RETRY/);
+  assert.equal(attempts(), 1);
+});

@@ -211,3 +211,17 @@ test('缺參數判定 USAGE', t => {
   const result = run(source, [process.execPath, join(source, 'run-codex-review.mjs'), 'abc123']);
   assert.equal(error(result), 'USAGE');
 });
+
+// 真實 log：retro spay2 86eda4c4#2（jsonl 710）。帳務問題重跑無用，原本只回 CODEX_EXIT，要讀 log 才知道。
+const NO_CREDITS = 'ERROR: Your workspace is out of credits. Ask your workspace owner to refill in order to continue.\n';
+test('額度用完：判定 CODEX_NO_CREDITS，附改用 code-review skill 的提示', t => {
+  const { result } = review(t, { log: header() + NO_CREDITS + NO_CREDITS, exit: 1 });
+  const json = JSON.parse(result.stderr.trim());
+  assert.equal(json.error, 'CODEX_NO_CREDITS');
+  assert.match(json.hint, /code-review/);
+  assert.match(json.log, /codex\.log$/);
+});
+test('額度字句只是被引用（非行首）或 Codex 成功結束：不判 CODEX_NO_CREDITS', t => {
+  assert.equal(error(review(t, { log: header() + '+ ' + NO_CREDITS, exit: 2 }).result), 'CODEX_EXIT');
+  assert.equal(review(t, { log: header() + NO_CREDITS }).result.status, 0);
+});

@@ -22,6 +22,7 @@
 //
 // 用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--check-command <command>] [--body-file <file>] [--title <title>] [--main <branch>]
 // 主分支（下文的 main）：`--main <branch>`；沒帶時讀 origin/HEAD（clone 時設定，`git remote set-head origin --auto` 可重設），都沒有才用 main（#281）。
+// push 遇到伺服器端暫時失敗（commit_refs、`[remote rejected] … (failure)`）時間隔 2 分鐘（LAND_PUSH_RETRY_MS）重試 2 次，每次印 PUSH_RETRY <n>/2 <原因>；STOP push 帶出 `remote:` 行的內容。
 // PR 已開著又帶 `--title`、`--body-file` 時以 `gh pr edit` 更新，印 PR_UPDATED <pr>；更新失敗 STOP pr-edit <pr> <原因>，不合併（#300）。
 // stdout：每步一行進度（PUSHED、PR、CHECKS_PASSED、RESTAMPED <pr> <新 tip>（合入 main 沒有衝突時是 MAIN_MERGED），`--local-checks` 時是 LOCAL_CHECKS <pr> <sha> <結果行>，收尾的 UNBARE、
 //   WORKTREE_REMOVED、BRANCH_DELETED，最後 MAIN、SKILL_CHANGED <名稱>（sync-skills 換掉內容的全域 skill，每個一行）、SYNC_SKILLS）；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
@@ -45,6 +46,10 @@ const CHECKS_POLL_MS = Number(process.env.LAND_CHECKS_POLL_MS || 10000);
 const CHECKS_TIMEOUT_MS = Number(process.env.LAND_CHECKS_TIMEOUT_MS || 480000);
 /** `--local-checks` 的檢查：ron-skills 的 bin/check --upstream 實測 166 秒（#137，macOS）；420 秒之後還留 180 秒給 Bash 600 秒內的 push、合併與收尾。 */
 const LOCAL_CHECKS_TIMEOUT_MS = Number(process.env.LAND_LOCAL_CHECKS_TIMEOUT_MS || 420000);
+/** 伺服器端暫時失敗才重試（retro spay2 86eda4c4#4：GitHub 回 commit_refs，手寫重試迴圈第 3 次成功）；規則拒絕（`pre-receive hook declined`、non-fast-forward）重試無用。 */
+const PUSH_TRANSIENT = /fatal error in commit_refs|\[remote rejected\][^\n]*\(failure\)/;
+const PUSH_RETRIES = 2;
+const PUSH_RETRY_MS = Number(process.env.LAND_PUSH_RETRY_MS || 120000);
 
 class Stop extends Error {}
 
@@ -52,6 +57,25 @@ function run(cmd, args, cwd) {
   const result = spawnSync(cmd, args, { cwd, encoding: 'utf8' });
   if (result.error) throw result.error;
   return result;
+}
+
+/** push 的 STOP 原因：stderr 末行，再帶 `remote:` 行的內容（真正的原因通常在那裡）。 */
+function pushFailure(stderr) {
+  const lines = stderr.trim().split('\n');
+  const remote = lines.flatMap(line => /^remote:\s*(.*\S)\s*$/.exec(line)?.[1] ?? []);
+  return `${lines.pop()}${remote.length ? ` remote: ${remote.join(' ｜ ')}` : ''}`;
+}
+
+/** git push；伺服器端暫時失敗時間隔重試（印 PUSH_RETRY），仍失敗或其他失敗時 Stop。 */
+async function pushOrStop(main, ...args) {
+  for (let retried = 0; ; retried++) {
+    const push = run('git', ['push', ...args], main);
+    if (push.status === 0) return;
+    const reason = pushFailure(push.stderr);
+    if (retried >= PUSH_RETRIES || !PUSH_TRANSIENT.test(push.stderr)) throw new Stop(`push ${reason}`);
+    console.log(`PUSH_RETRY ${retried + 1}/${PUSH_RETRIES} ${reason}`);
+    await sleep(PUSH_RETRY_MS);
+  }
 }
 
 function must(cmd, args, cwd) {
@@ -282,8 +306,7 @@ async function mergeMainAndRestamp(main, branch, tree, number, command) {
     writeFileSync(log, output);
     if (result.error?.code === 'ETIMEDOUT') throw new Stop(`restamp-checks-timeout ${sha} ${log}`);
     if (result.status !== 0) throw new Stop(`restamp-checks-failed ${sha} exit ${result.error?.code ?? result.status} ${log}`);
-    const push = run('git', ['push', 'origin', branch], main);
-    if (push.status !== 0) throw new Stop(`push ${push.stderr.trim().split('\n').pop()}`);
+    await pushOrStop(main, 'origin', branch);
     // 合併沒有衝突（main 前進的部分合得起來）時沒有 restamp，印 MAIN_MERGED，不印 RESTAMPED。
     console.log(`${restamped.length ? 'RESTAMPED' : 'MAIN_MERGED'} ${number} ${sha}`);
     return { sha, pass: output.match(/^CHECK_PASS .*$/m)?.[0] ?? (output.trim().split('\n').pop() || 'exit 0') };
@@ -306,10 +329,10 @@ function syncMain(main) {
 }
 
 /** 分支以 --ff-only 跟上 origin/main 並 push；有 worktree 就在那裡 merge，否則用 fetch 更新 ref（同樣拒絕非 ff，upstream 不變）。 */
-function fastForwardBranch(main, branch, tree) {
+async function fastForwardBranch(main, branch, tree) {
   if (tree) git(tree.path, 'merge', '--ff-only', `origin/${BASE}`);
   else git(main, 'fetch', '.', `refs/remotes/origin/${BASE}:refs/heads/${branch}`);
-  git(main, 'push', 'origin', branch);
+  await pushOrStop(main, 'origin', branch);
 }
 
 async function cleanup(main, branch, tree) {
@@ -369,8 +392,7 @@ export async function land({ branch, keepBranch = false, localChecksSha, checkCo
       if (keepBranch && !contains(`origin/${BASE}`, tip)) throw new Stop(`behind-main ${branch} 沒有包含 origin/${BASE}：先合入 origin/${BASE} 並重跑 Regression`);
       if (localChecksSha) checkPass = runLocalChecks(main, branch, tip, localChecksSha, checkCommand);
     }
-    const push = run('git', ['push', '-u', 'origin', branch], main);
-    if (push.status !== 0) throw new Stop(`push ${push.stderr.trim().split('\n').pop()}`);
+    await pushOrStop(main, '-u', 'origin', branch);
     console.log(`PUSHED ${branch} ${tip}`);
   } else {
     const remote = git(main, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`).split('\n').find(line => line.endsWith(`\trefs/heads/${branch}`));
@@ -428,7 +450,7 @@ export async function land({ branch, keepBranch = false, localChecksSha, checkCo
   console.log(`MERGED ${pr.number} ${sha}`);
 
   git(main, 'fetch', 'origin');
-  if (keepBranch) fastForwardBranch(main, branch, tree);
+  if (keepBranch) await fastForwardBranch(main, branch, tree);
   else await cleanup(main, branch, tree);
 
   const notSynced = syncMain(main);

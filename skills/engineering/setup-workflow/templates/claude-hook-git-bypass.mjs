@@ -8,9 +8,11 @@
 // 另攔長跑 gate（`--exit-gate` 指定）以管線接 grep／head／tail／cut：Bash 回報的 exit code 是管線最後一支的，gate 失敗也通知 exit 0
 // （retro spay2 b949589b#1：`check-contracts.sh | tail -15` 與 `fix-land.mjs … | tail -12` 都假綠，靠讀輸出才發現）。同一指令有 pipefail 時 exit code 正確，不攔；同一支 script 只印資料的形式（EXIT_GATE_READ_ONLY）不攔。
 // 另攔 pilot-handoff.mjs 與其他指令串接（`;`、`&&`、`||`、換行）：內建規則，不需要旗標，見 chainedHandoff。
-// 用法：node scripts/claude-hook-git-bypass.mjs [--long-wait <spec>]… [--whole-output <spec>]… [--exit-gate <script 名稱>]…
+// 另攔要背景執行的指令（`--background-only` 指定）在前景執行：`tool_input.run_in_background` 不是 true 就拒絕（retro spay2 1677d177#1：前景 batch-land.mjs 擋住 session 10 分鐘）。
+// `--long-wait` 只看 shell `&`，攔不到前景呼叫；兩者互不取代，`--exit-gate` 也獨立判定，同一支 script 可以同時帶。
+// 用法：node scripts/claude-hook-git-bypass.mjs [--long-wait <spec>]… [--whole-output <spec>]… [--exit-gate <script 名稱>]… [--background-only <spec>]…
 //   spec 是「script 名稱[ 旗標]」，例如 `watch.mjs` 或 `queue.mjs --wait`：帶旗標時同段指令要有該旗標才算。不帶時只攔 git 繞過。
-// stdin 是 hook JSON（tool_input.command）；命中時 exit 2，stderr 交回 agent；其他情況 exit 0 不輸出。
+// stdin 是 hook JSON（tool_input.command、tool_input.run_in_background）；命中時 exit 2，stderr 交回 agent；其他情況 exit 0 不輸出。
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -19,7 +21,8 @@ const SHELL_NAME = String.raw`(?:ba|z|da|k|fi)?sh`;
 const RUNS_SHELL = new RegExp(String.raw`(?:^|[\s/])(?:(?:${SHELL_NAME}|su|flock|script)\b[^\n]*\s-[a-zA-Z]*c\s*$|${SHELL_NAME}\b[^\n]*<<<\s*$|eval\s+$|(?:ssh|watch|parallel)\s)`);
 const RUNS_CODE = /(?:^|[\s/])(?:python[\d.]*|node|perl|ruby)\b[^\n]*\s(?:-[a-zA-Z]*[ce]|--eval)[\s=]*$/;
 const FEEDS_SHELL = new RegExp(String.raw`^[^;\n]*?\|&?\s*(?:sudo\s+)?(?:\S*\/)?${SHELL_NAME}\b`);
-const HEREDOC_RUNS = new RegExp(String.raw`(?:^|[\s/])(?:(?:${SHELL_NAME}|python[\d.]*|node|perl|ruby)(?:\s+-\S*)*\s*<<|ssh\s[^\n]*<<)`);
+const HEREDOC_SHELL = new RegExp(String.raw`(?:^|[\s/])(?:${SHELL_NAME}(?:\s+-\S*)*\s*<<|ssh\s[^\n]*<<)`);
+const HEREDOC_CODE = /(?:^|[\s/])(?:python[\d.]*|node|perl|ruby)(?:\s+-\S*)*\s*<</;
 const HEREDOC = /^<<-?\s*(['"]?)([\w.-]+)\1/;
 
 /** text[start] 是單引號開頭 → 結束位置與內容；不成對為 null。 */
@@ -102,11 +105,11 @@ function closingParen(text, start) {
 }
 
 /** 一段引號內容在比對用文字裡的樣子：會被執行的展開比對；git 的參數（單一個字、core.hooksPath 設定）去引號；其他文字換成 `""`。 */
-function quotedView({ literal, subs }, segment, rest) {
+function quotedView({ literal, subs }, segment, rest, codeIsData) {
   if (/^\s*core\.hooks/i.test(literal)) return literal;
-  if (RUNS_SHELL.test(segment) || FEEDS_SHELL.test(rest)) return ` ; ${commandView(literal)} ; `;
-  if (RUNS_CODE.test(segment)) return ` ; ${literal.replace(/['"`]/g, ' ')} ; `;
-  const ran = subs.map(sub => ` ; ${commandView(sub)} ; `).join('');
+  if (RUNS_SHELL.test(segment) || FEEDS_SHELL.test(rest)) return ` ; ${commandView(literal, codeIsData)} ; `;
+  if (!codeIsData && RUNS_CODE.test(segment)) return ` ; ${literal.replace(/['"`]/g, ' ')} ; `;
+  const ran = subs.map(sub => ` ; ${commandView(sub, codeIsData)} ; `).join('');
   return (/^[\w./=:@%+,-]+$/.test(literal) ? literal : '""') + ran;
 }
 
@@ -114,8 +117,10 @@ function quotedView({ literal, subs }, segment, rest) {
  * 比對用的指令文字：成對引號內的文字換掉（`--prompt '… git commit --no-verify …'` 只是字串），註解拿掉，
  * 不是餵給 shell 或直譯器的 here-doc 內容拿掉（commit message、寫檔的內容）；會被執行的引號內容（`bash -c '…'`、雙引號內的 `$(…)`）照常比對。
  * 引號不成對時其餘原樣比對：寧可多攔。
+ * codeIsData：直譯器的 here-doc 與 -c／-e 內容也拿掉。git 繞過要看它們（`os.system('git commit --no-verify')`）；gate 的判定不看：
+ * 那是另一種語言，字串不是指令（retro spay2 86eda4c4#3：`s="['node x.mjs … | tail']"` 整行原樣比對，`s="['node ` 還被當成環境變數指派），真的 subprocess 呼叫不在判定範圍。
  */
-function commandView(command) {
+function commandView(command, codeIsData = false) {
   let out = '';
   let segment = 0;
   let line = 0;
@@ -128,7 +133,7 @@ function commandView(command) {
     } else if (c === "'" || c === '"') {
       const quoted = (c === "'" ? singleQuoted : doubleQuoted)(command, i);
       if (!quoted) return out + command.slice(i);
-      out += quotedView(quoted, out.slice(segment), command.slice(quoted.end));
+      out += quotedView(quoted, out.slice(segment), command.slice(quoted.end), codeIsData);
       i = quoted.end;
     } else if (c === '#' && /[\s;&|(]/.test(command[i - 1] ?? ' ')) {
       const newline = command.indexOf('\n', i);
@@ -145,7 +150,8 @@ function commandView(command) {
       const end = heredocEnd(command, i + 1, delimiters);
       if (end < 0) return out + command.slice(i);
       const lineEnd = command.indexOf('\n', i);
-      const executed = HEREDOC_RUNS.test(command.slice(line, lineEnd)) || FEEDS_SHELL.test(command.slice(line, lineEnd));
+      const head = command.slice(line, lineEnd);
+      const executed = HEREDOC_SHELL.test(head) || FEEDS_SHELL.test(head) || (!codeIsData && HEREDOC_CODE.test(head));
       out += executed ? command.slice(i, end) : '\n';
       delimiters = [];
       i = end;
@@ -182,6 +188,9 @@ export function bypassReason(command) {
   for (const [pattern, reason] of BYPASS) if (pattern.test(view)) return reason;
   return null;
 }
+
+/** gate 類判定（exit-gate、串接交接、background-only）用的比對文字：見 commandView 的 codeIsData。 */
+const gateView = command => commandView(command, true);
 
 const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -245,15 +254,62 @@ const EXIT_GATE_READ_ONLY = {
   'issue-create.mjs': /^\s+--template(?![\w-])/,
 };
 
+const COMPOUND_CLOSERS = new Map([['for', 'done'], ['select', 'done'], ['while', 'done'], ['until', 'done'], ['if', 'fi'], ['case', 'esac'], ['{', '}']]);
+// 後面還是指令開頭的關鍵字。
+const KEEPS_COMMAND = new Set(['do', 'then', 'else', 'elif', '!']);
+// 管線之前的文字，同 exitGateReason：不跨 `;`、`&`、換行與 `||`，`2>&1` 等重導向不算，可經過 tee 等其他管線。
+const UNTIL_FILTER = String.raw`(?:[^;&|\n]|(?<=[<>])&|(?!${FILTER})\|(?!\|))*`;
+const PIPED_TO_FILTER = new RegExp(`^${UNTIL_FILTER}?(?<filter>${FILTER})`);
+
+/**
+ * 管線接在整個迴圈或群組之後（`for …; done | tail`、`{ gate; } | tail`、`( gate ) | tail`，followups 394）：回傳各複合指令的內文與過濾指令。
+ * 關鍵字要在指令開頭才算（`followups.mjs done | tail` 的 done 是參數）；`$(…)` 不算，它的 exit code 本來就不會回報。
+ */
+function pipedCompounds(view) {
+  const found = [];
+  const open = [];
+  let atCommand = true;
+  const close = (start, end) => {
+    const { bodyStart, substitution } = open.pop();
+    const filter = PIPED_TO_FILTER.exec(view.slice(end))?.groups.filter;
+    if (filter && !substitution) found.push({ body: view.slice(bodyStart, start), filter });
+  };
+  for (const { 0: token, index } of view.matchAll(/\n|[;&|()]|[^\s;&|()]+/g)) {
+    const end = index + token.length;
+    if (token === '(') {
+      open.push({ closer: ')', bodyStart: end, substitution: /[$<>]/.test(view[index - 1] ?? '') });
+      atCommand = true;
+    } else if (token === ')') {
+      if (open.at(-1)?.closer === ')') close(index, end);
+      atCommand = false;
+    } else if (/^[\n;&|]$/.test(token)) atCommand = true;
+    else if (atCommand) {
+      if (COMPOUND_CLOSERS.has(token)) open.push({ closer: COMPOUND_CLOSERS.get(token), bodyStart: end });
+      else if (open.at(-1)?.closer === token) { close(index, end); atCommand = false; }
+      else if (!KEEPS_COMMAND.has(token)) atCommand = false;
+    }
+  }
+  return found;
+}
+
+/** 這段指令裡有不是唯讀形式的 script 執行。 */
+function runsGate(body, script) {
+  const pattern = new RegExp(runs(script) + `(?<args>${UNTIL_FILTER})`, 'g');
+  for (const { groups: { args } } of body.matchAll(pattern)) {
+    if (args.includes('|') || !EXIT_GATE_READ_ONLY[script]?.test(args)) return true;
+  }
+  return false;
+}
+
 /**
  * script 要被實際執行才算（見 runs）；`cat x.mjs | head`、`git log -- x.mjs | head`、引號內的字樣不算。
- * 比對 commandView 的結果：`grep -E 'a|x.mjs|b' | grep -v grep`、`grep "a\\|x.mjs" f | cut` 的 `|` 在引號內，不是分隔（retro spay2 4799d53c#6、1d552915#3）；`bash -c '…'` 內的照常比對。
+ * 比對 gateView 的結果：`grep -E 'a|x.mjs|b' | grep -v grep`、`grep "a\\|x.mjs" f | cut` 的 `|` 在引號內，不是分隔（retro spay2 4799d53c#6、1d552915#3）；`bash -c '…'` 內的照常比對。
  * @param {string} command Bash tool 的完整指令
  * @param {string[]} scripts 長跑 gate 的 script 名稱
  * @returns {{ script: string, filter: string }|null} 被接管線的 gate 與過濾指令名稱；未命中為 null
  */
 export function exitGateReason(command, scripts = []) {
-  const view = commandView(command);
+  const view = gateView(command);
   if (/\bpipefail\b/.test(view)) return null;
   for (const script of scripts) {
     const pattern = new RegExp(runs(script) + String.raw`(?<args>(?:[^;&|\n]|(?<=[<>])&|\|(?!${FILTER}))*?)(?<filter>${FILTER})`, 'g');
@@ -263,7 +319,27 @@ export function exitGateReason(command, scripts = []) {
       if (args.includes('|') || !EXIT_GATE_READ_ONLY[script]?.test(args)) return { script, filter: FILTER_NAME.exec(filter)[1] };
     }
   }
+  for (const { body, filter } of pipedCompounds(view)) {
+    const script = scripts.find(name => runsGate(body, name));
+    if (script) return { script, filter: FILTER_NAME.exec(filter)[1] };
+  }
   return null;
+}
+
+/**
+ * 要背景執行的指令在前景執行。script 要被實際執行才算（見 runs），註解、字串與直譯器的內容不算。
+ * @param {string} command Bash tool 的完整指令
+ * @param {string[]} specs 要背景執行的 spec（「script 名稱[ 旗標]」）
+ * @param {unknown} runInBackground hook 收到的 tool_input.run_in_background：Bash tool 沒帶背景時可能沒有這個欄位，只有 true 算背景
+ * @returns {string|null} 命中的 spec；未命中為 null
+ */
+export function foregroundReason(command, specs = [], runInBackground = false) {
+  if (runInBackground === true || !specs.length) return null;
+  const view = gateView(command);
+  return specs.find(spec => {
+    const [script, flag] = spec.trim().split(/\s+/);
+    return new RegExp(runs(script) + (flag ? String.raw`[^;&|\n]*\s${escape(flag)}(?![\w-])` : '')).test(view);
+  }) ?? null;
 }
 
 /**
@@ -274,7 +350,7 @@ export function exitGateReason(command, scripts = []) {
  * @returns {boolean} 要拒絕時為 true
  */
 export function chainedHandoff(command) {
-  const statements = commandView(command).split(/(?<!\\)(?:[;\n]|&&|\|\||(?<![<>&])&(?![>&]))/).map(text => text.trim()).filter(Boolean);
+  const statements = gateView(command).split(/(?<!\\)(?:[;\n]|&&|\|\||(?<![<>&])&(?![>&]))/).map(text => text.trim()).filter(Boolean);
   const handoff = new RegExp(runs('pilot-handoff.mjs'));
   return statements.some(text => handoff.test(text)) && statements.filter(text => !/^(?:cd(?:\s|$)|\w+=\S*$)/.test(text)).length > 1;
 }
@@ -284,7 +360,12 @@ const values = (args, flag) => args.flatMap((arg, i) => (arg === flag && args[i 
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   let command = '';
-  try { command = JSON.parse(readFileSync(0, 'utf8'))?.tool_input?.command ?? ''; } catch { process.exit(0); }
+  let runInBackground;
+  try {
+    const input = JSON.parse(readFileSync(0, 'utf8'))?.tool_input;
+    command = input?.command ?? '';
+    runInBackground = input?.run_in_background;
+  } catch { process.exit(0); }
   const reason = bypassReason(command);
   if (reason) {
     process.stderr.write(`拒絕：指令以 ${reason} 繞過 git hook。整合分支 guard 與 push gate 都在 hook 內；照常執行 git，讓 hook 跑完。hook 失敗時修正原因或回報使用者。\n`);
@@ -305,6 +386,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const gate = exitGateReason(command, values(args, '--exit-gate'));
   if (gate) {
     process.stderr.write(`拒絕：${gate.script} 接 ${gate.filter}，回報的 exit code 是 ${gate.filter} 的，gate 失敗也顯示成功。改成 \`<指令> > <log> 2>&1; rc=$?; tail -n 20 <log>; exit $rc\`。\n`);
+    process.exit(2);
+  }
+  const foreground = foregroundReason(command, values(args, '--background-only'), runInBackground);
+  if (foreground) {
+    process.stderr.write(`拒絕：${foreground} 在前景執行，會把這個 session 擋到它結束（最多 600 秒），期間 worker 的結果都不會被處理。改用 Bash tool 的 run_in_background: true 執行同一指令，結束時會收到通知。\n`);
     process.exit(2);
   }
   if (chainedHandoff(command)) {

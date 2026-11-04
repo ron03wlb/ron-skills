@@ -17,7 +17,7 @@
 // exit：0 已改名，或沒有 ORCA_TERMINAL_HANDLE（不輸出）、Orca 呼叫失敗（不擋 hook 與 script）；1 讀回的標題不符；2 狀態不合法、--topic 沒有值。
 // ORCA_CLI_COMMAND 沒設時用 PATH 上的 `orca`。
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -83,6 +83,11 @@ export function recordTitle(handle, title) {
   } catch {
     return false;
   }
+}
+
+/** 刪掉這個 handle 的標題記錄（分頁關了之後用）；沒有記錄或沒給 handle 時什麼都不做，刪不掉時丟錯。 */
+export function forgetTitleRecord(handle) {
+  if (handle) rmSync(file(handle), { force: true });
 }
 
 /** 找出含 `handle` 這個 pane 的分頁標題；visualLayouts 是分割、群組與分頁組成的巢狀結構。 */
