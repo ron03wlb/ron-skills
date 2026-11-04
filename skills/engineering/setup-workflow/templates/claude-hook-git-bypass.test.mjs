@@ -242,6 +242,8 @@ test('exitGateReason：唯讀形式放行，同一支 script 的寫入形式仍�
     ['node scripts/issue-create.mjs --title x --template | head', 'issue-create.mjs', 'head'],
     // 前面的唯讀形式不掩蓋同一條指令後面真正的 gate。
     ['node scripts/followups.mjs list | cut -c1-60; node scripts/followups.mjs done 1 x | tail -1', 'followups.mjs', 'tail'],
+    // 唯讀形式的豁免不蓋過同一條管線後面的 gate（retro spay2 1104c 的 code review）。
+    ['node scripts/followups.mjs list | xargs -n1 node scripts/followups.mjs done | tail -1', 'followups.mjs', 'tail'],
   ]) assert.deepEqual(exitGateReason(command, gates), { script, filter }, command);
 });
 

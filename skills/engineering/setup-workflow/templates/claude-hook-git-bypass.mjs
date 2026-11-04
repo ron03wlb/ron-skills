@@ -259,7 +259,8 @@ export function exitGateReason(command, scripts = []) {
     const pattern = new RegExp(runs(script) + String.raw`(?<args>(?:[^;&|\n]|(?<=[<>])&|\|(?!${FILTER}))*?)(?<filter>${FILTER})`, 'g');
     // 逐一看：前面的唯讀形式不掩蓋同一條指令後面真正的 gate。
     for (const { groups: { args, filter } } of view.matchAll(pattern)) {
-      if (!EXIT_GATE_READ_ONLY[script]?.test(args)) return { script, filter: FILTER_NAME.exec(filter)[1] };
+      // args 來自 commandView（引號內已遮蔽），裡面的 `|` 是真的管線，後面可能接真的 gate（`list | xargs … done | tail`），不算唯讀。
+      if (args.includes('|') || !EXIT_GATE_READ_ONLY[script]?.test(args)) return { script, filter: FILTER_NAME.exec(filter)[1] };
     }
   }
   return null;
