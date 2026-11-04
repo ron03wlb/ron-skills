@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
-import { sameTopic, stripState, withState } from './tab-state.mjs';
+import { forgetTitleRecord, recordTitle, recordedTitle, sameTopic, stripState, withState } from './tab-state.mjs';
 
 const script = fileURLToPath(new URL('./tab-state.mjs', import.meta.url));
 const SELF = 'term_self';
@@ -262,4 +262,23 @@ test('sameTopic：去掉狀態前綴與 [類別] 後比對', () => {
   assert.equal(sameTopic('待 Retro｜[維運] issue-pilot coordinator', '[維運] issue-pilot coordinator'), true);
   assert.equal(sameTopic('處理中｜#126 分頁狀態', 'issue-pilot coordinator'), false);
   assert.equal(sameTopic(null, ''), false);
+});
+
+// 真實情形：followups 395。spay2 的 retro-collect 複製了目錄與檔名規則來刪紀錄，這裡改了就靜默刪不到。
+test('forgetTitleRecord：刪掉 recordTitle 寫的紀錄（含要轉換檔名的 handle），沒有紀錄時不丟錯', t => {
+  const temp = mkdtempSync(join(realTmpdir(), 'tab-state-'));
+  const saved = process.env.TAB_STATE_DIR;
+  process.env.TAB_STATE_DIR = join(temp, 'titles');
+  t.after(() => {
+    if (saved === undefined) delete process.env.TAB_STATE_DIR; else process.env.TAB_STATE_DIR = saved;
+    rmSync(temp, { recursive: true, force: true });
+  });
+  for (const handle of ['term_a', 'term:a/b c']) {
+    assert.equal(recordTitle(handle, '待關閉｜x'), true);
+    assert.equal(recordedTitle(handle), '待關閉｜x');
+    forgetTitleRecord(handle);
+    assert.equal(recordedTitle(handle), null);
+    forgetTitleRecord(handle);
+  }
+  forgetTitleRecord(undefined);
 });

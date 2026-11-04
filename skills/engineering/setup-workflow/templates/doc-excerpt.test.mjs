@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { realTmpdir } from './helpers/real-tmpdir.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
-const script = new URL('../scripts/doc-excerpt.mjs', import.meta.url).pathname;
+const script = new URL('./doc-excerpt.mjs', import.meta.url).pathname;
 const run = (...args) => spawnSync('node', [script, ...args], { encoding: 'utf8' });
 
 test('長單行只印比對處前後，每處一行，帶檔名與行號；沒相符 exit 1；用法錯誤 exit 2', t => {

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { backgroundJobReason, bypassReason, chainedHandoff, exitGateReason, probeFilterReason } from './claude-hook-git-bypass.mjs';
+import { backgroundJobReason, bypassReason, chainedHandoff, exitGateReason, foregroundReason, probeFilterReason } from './claude-hook-git-bypass.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-git-bypass.mjs', import.meta.url));
 const hook = (input, args = []) => spawnSync('node', [script, ...args], { input, encoding: 'utf8' });
@@ -287,4 +287,117 @@ test('hook：串接 pilot-handoff.mjs 不需要任何參數就攔下，並說明
   assert.match(denied.stderr, /pilot-handoff\.mjs/);
   assert.match(denied.stderr, /單獨/);
   assert.equal(hook(input('node scripts/pilot-handoff.mjs --reason r')).status, 0);
+});
+
+// 真實指令：retro spay2 86eda4c4#3（jsonl 817）。python heredoc 的內容原樣進比對，`s="['node ` 被當成環境變數指派，後面的字串就成了 gate。
+test('exitGateReason：直譯器 heredoc 與 -c 的內容是程式，不算 gate', () => {
+  const gates = ['followups.mjs'];
+  for (const command of [
+    `python3 - <<'E'\ns="['node scripts/followups.mjs done 1 x | tail -1', 'a']"\nE`,
+    `python3 - <<'E'\nnode scripts/followups.mjs done 1 x | tail -1\nE`,
+    `node - <<E\ns="node scripts/followups.mjs done 1 x | tail -1"\nE`,
+    `python3 -c "s=['node scripts/followups.mjs done 1 x | tail -1']"`,
+    `cat > f.txt <<'E'\ns="['node scripts/followups.mjs done 1 x | tail -1', 'a']"\nE`,
+  ]) assert.equal(exitGateReason(command, gates), null, command);
+  // heredoc 之後真的 gate、餵給 shell 的 heredoc 仍攔。
+  for (const command of [
+    `python3 - <<'E'\nprint(1)\nE\nnode scripts/followups.mjs done 1 x | tail -1`,
+    `bash <<'E'\nnode scripts/followups.mjs done 1 x | tail -1\nE`,
+    `cat <<'E' | sh\nnode scripts/followups.mjs done 1 x | tail -1\nE`,
+  ]) assert.deepEqual(exitGateReason(command, gates), { script: 'followups.mjs', filter: 'tail' }, command);
+});
+
+test('bypassReason：直譯器 heredoc 與 -c 內的 git 繞過仍攔（只放寬 exit-gate）', () => {
+  assert.equal(bypassReason(`python3 - <<'E'\nos.system('cd x && git commit --no-verify')\nE`), '--no-verify');
+  assert.equal(bypassReason(`python3 -c "os.system('git commit --no-verify')"`), '--no-verify');
+});
+
+test('chainedHandoff：直譯器 heredoc 裡的字串不算交接', () => {
+  assert.equal(chainedHandoff(`python3 - <<'E'\ns="node scripts/pilot-handoff.mjs --reason r"\nE\ngit status`), false);
+});
+
+// 真實形狀：followups 394（retro 4a22bbe7#3、6d21b9cc#3 的剩餘範圍）。管線接在整個迴圈或群組之後，回報的一樣是 tail 的 exit code。
+test('exitGateReason：管線接在整個迴圈或群組之後也攔', () => {
+  const gates = ['followups.mjs', 'check-contracts.sh'];
+  for (const [command, script, filter] of [
+    ['for n in 1 2; do node scripts/followups.mjs adopt $n b; done | tail -1', 'followups.mjs', 'tail'],
+    ['for n in 1 2; do node scripts/followups.mjs adopt $n b; done 2>&1 | tail -1', 'followups.mjs', 'tail'],
+    ['for n in 1 2\ndo\n  node scripts/followups.mjs adopt $n b\ndone | grep x', 'followups.mjs', 'grep'],
+    ['while read n; do node scripts/followups.mjs done $n x; done < f | head', 'followups.mjs', 'head'],
+    ['{ node scripts/followups.mjs done 1 x; } | tail -1', 'followups.mjs', 'tail'],
+    ['{ cd wt && bash scripts/check-contracts.sh; echo end; } 2>&1 | tail -15', 'check-contracts.sh', 'tail'],
+    ['( cd wt && bash scripts/check-contracts.sh ) | tail -15', 'check-contracts.sh', 'tail'],
+    ['if true; then node scripts/followups.mjs done 1 x; fi | tail -1', 'followups.mjs', 'tail'],
+    ['for a in 1; do for b in 2; do node scripts/followups.mjs done $b x; done; done | tail -1', 'followups.mjs', 'tail'],
+    ['{ node scripts/followups.mjs done 1 x; } | tee log | tail -1', 'followups.mjs', 'tail'],
+    // 唯讀形式的豁免不蓋過同一個迴圈或群組裡真正的 gate。
+    ['for n in 1; do node scripts/followups.mjs list; node scripts/followups.mjs done $n x; done | tail -1', 'followups.mjs', 'tail'],
+    ['{ node scripts/followups.mjs list | xargs -n1 node scripts/followups.mjs done; } | tail -1', 'followups.mjs', 'tail'],
+  ]) assert.deepEqual(exitGateReason(command, gates), { script, filter }, command);
+});
+
+test('exitGateReason：迴圈或群組的唯讀、無關形式不攔', () => {
+  const gates = ['followups.mjs'];
+  for (const command of [
+    'for n in 1; do node scripts/followups.mjs list; done | tail -1',
+    '{ node scripts/followups.mjs list --observation; } | cut -c1-60',
+    '{ node scripts/followups.mjs list | grep x; } | tail -1',
+    '{ node scripts/followups.mjs list || true; } | tail -1',
+    // 迴圈結束後另一段才接管線。
+    'for n in 1; do node scripts/followups.mjs done $n x; done; git log | tail -1',
+    // gate 的 exit code 沒被管線蓋掉。
+    'for n in 1; do node scripts/followups.mjs done $n x; done',
+    '{ node scripts/followups.mjs done 1 x; } > log 2>&1',
+    'for n in 1; do git log; done | tail -1',
+    // 只是提到：參數、字串、不在指令位置的 done。
+    'for n in 1; do echo node scripts/followups.mjs; done | tail -1',
+    'for n in 1; do echo "node scripts/followups.mjs done"; done | tail -1',
+    'echo done | tail -1',
+    'echo $(node scripts/followups.mjs done 1 x; echo y) | tail -1',
+  ]) assert.equal(exitGateReason(command, gates), null, command);
+  assert.equal(exitGateReason('set -o pipefail; for n in 1; do node scripts/followups.mjs done $n x; done | tail -1', gates), null);
+});
+
+// 真實指令：retro spay2 1677d177#1（jsonl 269）。前景跑 batch-land.mjs，session 被擋 10 分鐘，worker 的 DONE 也晚了 5 分鐘才 drain；--long-wait 只看 shell `&`，攔不到。
+const BATCH_LAND = 'node scripts/batch-land.mjs .scratch/batch-i751/state.md --result /var/tmp/batch-i751/w1; echo "exit=$?"';
+
+test('foregroundReason：符合 spec 的前景呼叫才攔，run_in_background 為 true 放行', () => {
+  const specs = ['batch-land.mjs'];
+  for (const command of [BATCH_LAND, 'node scripts/batch-land.mjs x --result y', 'cd /m && node scripts/batch-land.mjs x',
+    'for b in a; do node /m/scripts/batch-land.mjs $b; done', `bash -c 'node scripts/batch-land.mjs x'`]) {
+    assert.equal(foregroundReason(command, specs, undefined), 'batch-land.mjs', command);
+    assert.equal(foregroundReason(command, specs, false), 'batch-land.mjs', command);
+    assert.equal(foregroundReason(command, specs, true), null, command);
+  }
+  assert.equal(foregroundReason('node scripts/batch-land.mjs x', [], false), null);
+});
+
+test('foregroundReason：提到它、不是執行它時不攔', () => {
+  const specs = ['batch-land.mjs'];
+  for (const command of ['# node scripts/batch-land.mjs x --result y\ngit status', 'echo "node scripts/batch-land.mjs x --result y"',
+    "grep -n 'node scripts/batch-land.mjs' docs/a.md", 'cat scripts/batch-land.mjs', 'git add scripts/batch-land.mjs',
+    'node --test scripts/batch-land.test.mjs', 'node scripts/orca-batch-land.mjs x', "git commit -m 'node scripts/batch-land.mjs 改背景'",
+    "cat > note.md <<'E'\nnode scripts/batch-land.mjs x\nE", `python3 - <<'E'\ns="node scripts/batch-land.mjs x"\nE`,
+  ]) assert.equal(foregroundReason(command, specs, false), null, command);
+});
+
+test('foregroundReason：spec 帶旗標時同段指令要有該旗標', () => {
+  assert.equal(foregroundReason('node scripts/job.mjs x --wait', ['job.mjs --wait'], false), 'job.mjs --wait');
+  assert.equal(foregroundReason('node scripts/job.mjs x; echo --wait', ['job.mjs --wait'], false), null);
+});
+
+test('hook：--background-only 讀 tool_input.run_in_background，且與 --exit-gate 各自判定', () => {
+  const args = ['--exit-gate', 'batch-land.mjs', '--background-only', 'batch-land.mjs'];
+  const call = (command, extra = {}) => hook(JSON.stringify({ tool_input: { command, ...extra } }), args);
+  const absent = call(BATCH_LAND);
+  assert.equal(absent.status, 2);
+  assert.match(absent.stderr, /batch-land\.mjs/);
+  assert.match(absent.stderr, /run_in_background/);
+  assert.equal(call(BATCH_LAND, { run_in_background: false }).status, 2);
+  assert.equal(call(BATCH_LAND, { run_in_background: true }).status, 0);
+  assert.equal(call('echo "node scripts/batch-land.mjs x --result y"').status, 0);
+  // 背景執行也不能接 tail：--exit-gate 照攔。
+  const piped = call('node scripts/batch-land.mjs x --result y | tail -3', { run_in_background: true });
+  assert.equal(piped.status, 2);
+  assert.match(piped.stderr, /接 tail/);
 });
