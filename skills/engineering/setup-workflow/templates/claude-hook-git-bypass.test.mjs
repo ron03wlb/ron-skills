@@ -290,13 +290,12 @@ test('hook：串接 pilot-handoff.mjs 不需要任何參數就攔下，並說明
 });
 
 // 真實指令：retro spay2 86eda4c4#3（jsonl 817）。python heredoc 的內容原樣進比對，`s="['node ` 被當成環境變數指派，後面的字串就成了 gate。
-test('exitGateReason：直譯器 heredoc 與 -c 的內容是程式，不算 gate', () => {
+test('exitGateReason：直譯器 heredoc 的內容是程式，不算 gate', () => {
   const gates = ['followups.mjs'];
   for (const command of [
     `python3 - <<'E'\ns="['node scripts/followups.mjs done 1 x | tail -1', 'a']"\nE`,
     `python3 - <<'E'\nnode scripts/followups.mjs done 1 x | tail -1\nE`,
     `node - <<E\ns="node scripts/followups.mjs done 1 x | tail -1"\nE`,
-    `python3 -c "s=['node scripts/followups.mjs done 1 x | tail -1']"`,
     `cat > f.txt <<'E'\ns="['node scripts/followups.mjs done 1 x | tail -1', 'a']"\nE`,
   ]) assert.equal(exitGateReason(command, gates), null, command);
   // heredoc 之後真的 gate、餵給 shell 的 heredoc 仍攔。
@@ -304,12 +303,31 @@ test('exitGateReason：直譯器 heredoc 與 -c 的內容是程式，不算 gate
     `python3 - <<'E'\nprint(1)\nE\nnode scripts/followups.mjs done 1 x | tail -1`,
     `bash <<'E'\nnode scripts/followups.mjs done 1 x | tail -1\nE`,
     `cat <<'E' | sh\nnode scripts/followups.mjs done 1 x | tail -1\nE`,
+    // PR #314 的 review：-c／-e 是真的呼叫，#314 曾放寬成 rc=0。
+    `python3 -c "import os;os.system('node scripts/followups.mjs done 1 x | tail -1')"`,
   ]) assert.deepEqual(exitGateReason(command, gates), { script: 'followups.mjs', filter: 'tail' }, command);
 });
 
 test('bypassReason：直譯器 heredoc 與 -c 內的 git 繞過仍攔（只放寬 exit-gate）', () => {
   assert.equal(bypassReason(`python3 - <<'E'\nos.system('cd x && git commit --no-verify')\nE`), '--no-verify');
   assert.equal(bypassReason(`python3 -c "os.system('git commit --no-verify')"`), '--no-verify');
+});
+
+test('hook：python -c 裡的 gate 接 tail、串接交接都拒絕，heredoc 字串放行', () => {
+  const status = (command, args = []) => hook(JSON.stringify({ tool_input: { command } }), args).status;
+  const gate = ['--exit-gate', 'followups.mjs'];
+  assert.equal(status(`python3 -c "import os;os.system('node scripts/followups.mjs done 1 x | tail -1')"`, gate), 2);
+  assert.equal(status(`python3 -c "import os;os.system('node scripts/pilot-handoff.mjs --reason r; echo x')"`), 2);
+  assert.equal(status(`python3 - <<'E'\ns="['node scripts/followups.mjs done 1 x | tail -1', 'a']"\nE`, gate), 0);
+});
+
+// PR #314 的 review：long-wait 原本比對原始指令，字串與 heredoc 裡的字樣也算。
+test('backgroundJobReason：字串、註解與直譯器 heredoc 不算，bash -c、python -c 裡的 `&` 照攔', () => {
+  for (const command of ['echo "node scripts/job-watch.mjs &"', '# node scripts/job-watch.mjs &\ngit status',
+    `python3 - <<'E'\ns="node scripts/job-watch.mjs &"\nE`, `cat > f <<'E'\nnode scripts/job-watch.mjs &\nE`,
+  ]) assert.equal(backgroundJobReason(command, LONG_WAIT), null, command);
+  for (const command of [`bash -c 'node scripts/job-watch.mjs &'`, `python3 -c "os.system('node scripts/job-watch.mjs &')"`,
+  ]) assert.equal(backgroundJobReason(command, LONG_WAIT), 'job-watch.mjs', command);
 });
 
 test('chainedHandoff：直譯器 heredoc 裡的字串不算交接', () => {

@@ -108,7 +108,7 @@ function closingParen(text, start) {
 function quotedView({ literal, subs }, segment, rest, codeIsData) {
   if (/^\s*core\.hooks/i.test(literal)) return literal;
   if (RUNS_SHELL.test(segment) || FEEDS_SHELL.test(rest)) return ` ; ${commandView(literal, codeIsData)} ; `;
-  if (!codeIsData && RUNS_CODE.test(segment)) return ` ; ${literal.replace(/['"`]/g, ' ')} ; `;
+  if (RUNS_CODE.test(segment)) return ` ; ${literal.replace(/['"`]/g, ' ')} ; `;
   const ran = subs.map(sub => ` ; ${commandView(sub, codeIsData)} ; `).join('');
   return (/^[\w./=:@%+,-]+$/.test(literal) ? literal : '""') + ran;
 }
@@ -117,8 +117,9 @@ function quotedView({ literal, subs }, segment, rest, codeIsData) {
  * 比對用的指令文字：成對引號內的文字換掉（`--prompt '… git commit --no-verify …'` 只是字串），註解拿掉，
  * 不是餵給 shell 或直譯器的 here-doc 內容拿掉（commit message、寫檔的內容）；會被執行的引號內容（`bash -c '…'`、雙引號內的 `$(…)`）照常比對。
  * 引號不成對時其餘原樣比對：寧可多攔。
- * codeIsData：直譯器的 here-doc 與 -c／-e 內容也拿掉。git 繞過要看它們（`os.system('git commit --no-verify')`）；gate 的判定不看：
- * 那是另一種語言，字串不是指令（retro spay2 86eda4c4#3：`s="['node x.mjs … | tail']"` 整行原樣比對，`s="['node ` 還被當成環境變數指派），真的 subprocess 呼叫不在判定範圍。
+ * codeIsData：直譯器的 here-doc 內容也拿掉。git 繞過要看它（`os.system('cd x && git …')`）；gate 的判定不看：
+ * 那是另一種語言，字串不是指令（retro spay2 86eda4c4#3：`s="['node x.mjs … | tail']"` 整行原樣比對，`s="['node ` 還被當成環境變數指派）。
+ * 直譯器的 -c／-e 內容照常比對（`python3 -c "os.system('x.mjs | tail')"` 是一行寫完的真實呼叫，PR #314 的 review）。
  */
 function commandView(command, codeIsData = false) {
   let out = '';
@@ -211,7 +212,7 @@ const backgrounded = specs => new RegExp(`(${specs.map(specPattern).join('|')})[
  */
 export function backgroundJobReason(command, specs = []) {
   if (!specs.length) return null;
-  const match = backgrounded(specs).exec(command);
+  const match = backgrounded(specs).exec(gateView(command));
   return match ? specs.find(spec => new RegExp(`^${specPattern(spec)}`).test(match[1])) : null;
 }
 
@@ -327,7 +328,7 @@ export function exitGateReason(command, scripts = []) {
 }
 
 /**
- * 要背景執行的指令在前景執行。script 要被實際執行才算（見 runs），註解、字串與直譯器的內容不算。
+ * 要背景執行的指令在前景執行。script 要被實際執行才算（見 runs），註解、字串與直譯器 here-doc 的內容不算。
  * @param {string} command Bash tool 的完整指令
  * @param {string[]} specs 要背景執行的 spec（「script 名稱[ 旗標]」）
  * @param {unknown} runInBackground hook 收到的 tool_input.run_in_background：Bash tool 沒帶背景時可能沒有這個欄位，只有 true 算背景
