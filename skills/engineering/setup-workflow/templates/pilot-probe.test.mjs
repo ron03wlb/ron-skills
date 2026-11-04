@@ -113,7 +113,7 @@ ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? 
   if (guard !== undefined || world !== undefined || tracker !== undefined) {
     const scripts = join(temp, 'scripts');
     mkdirSync(join(scripts, 'lib'), { recursive: true });
-    const names = ['pilot-probe.mjs', 'pilot-capacity.mjs', 'orca-session-send.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'lib/pilot-store.mjs', ...(tracker === undefined ? [] : ['gh-tracker.mjs'])];
+    const names = ['pilot-probe.mjs', 'pilot-capacity.mjs', 'orca-session-send.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'lib/pilot-store.mjs', 'lib/changed-units.mjs', ...(tracker === undefined ? [] : ['gh-tracker.mjs'])];
     for (const name of names) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
     if (guard !== undefined) {
       writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);

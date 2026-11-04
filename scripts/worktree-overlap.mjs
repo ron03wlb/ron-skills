@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // 各 worktree 的未合入改動碰到哪些檔、哪些條目（#194）。唯讀。
 // /retro-collect 判斷候選 covered 或衝突、retro 的 concurrent-edit 步驟，原本各自手寫迴圈對每個 worktree 跑
-// `git diff --name-only $(merge-base …)`，再另一個迴圈 grep 改到 pilot.md 哪些條目（1031c、1031d 各寫一次）。
+// `git diff --name-only $(merge-base …)`，再另一個迴圈 grep 改到 adapter 哪些條目（1031c、1031d 各寫一次）。
 //
-// 做成獨立指令、不做成 pilot-probe.mjs 的子命令：pilot-probe 是 setup-workflow 正本的副本，介面是「對主 checkout 的 pilot 存檔對帳」，
+// setup-workflow 正本。做成獨立指令、不做成 pilot-probe.mjs 的子命令：pilot-probe 的介面是「對主 checkout 的 pilot 存檔對帳」，
 // 這支看的是所有 worktree、不讀 `.scratch/pilot/`，呼叫者也不是 coordinator。條目判斷與 Probe 的 OVERLAP（#176）共用
-// pilot-probe.mjs 的 changedUnits（`to` 給 null 時比工作樹），不另寫一份。
+// lib/changed-units.mjs 的 changedUnits（`to` 給 null 時比工作樹），不另寫一份；只靠它，所以可以複製到沒有 pilot 腳本的 repo。
 //
 // 用法：node scripts/worktree-overlap.mjs [--main <分支>] [--mine | <檔案>…]（cwd 在 repo 任一 worktree 的任一目錄；檔案一律是 repo 根的相對路徑，
 //   不隨 cwd 的子目錄改變，每個 worktree 才能用同一組 pathspec）
@@ -20,12 +20,13 @@
 //   所以附了條目也可能還改了標題或段落，沒附條目就是改動都不在條目裡。
 //   沒帶 --mine 時，呼叫者自己所在的 worktree 也列（它的分支名稱看得出來）；主 checkout 不列。
 //   基準預設是 main：從 pilot/integration 開的 worktree，整合分支上還沒進 main 的改動也會算進去，只看各自的改動時帶 --main pilot/integration。
+//   沒有 main 這條分支的 repo（整合分支另有名稱）一律帶 --main <整合分支>。
 //   detached HEAD 的 worktree，<分支> 寫成 `detached@<HEAD 前 7 碼>`。和主分支沒有共同祖先、或還沒有 commit 的 worktree 略過。沒有命中時不輸出。
 // exit：0 印完（不論有無命中）；2 用法錯誤；1 git 失敗。
 import { spawnSync } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { changedUnits } from './pilot-probe.mjs';
+import { changedUnits } from './lib/changed-units.mjs';
 
 const USAGE = '用法：node scripts/worktree-overlap.mjs [--main <分支>] [--mine | <檔案>…]';
 

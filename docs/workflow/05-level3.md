@@ -58,6 +58,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Sessions | 怎麼登記 coordinator session（寫 `coordinator`、附加 `sessions.md` 的 start 行） |
 | Sources | coordinator 改了就要重讀的規則檔清單 |
 | Decisions, requests, hold | 寫 `decisions.md`、標記 `requests.md`、設清 `hold` 的指令；有 setup-workflow 正本時用 `pilot-decision`、`pilot-request`、`pilot-hold` |
+| Decisions command | 選用：列出等人決定事項（開著的 gate、未決定的項目）的唯讀指令；`/issue-pilot` 的 Report、Notify 與人問「有什麼等我決定」時都用它 |
 | Gates | 開、解、列出 `gates.md` gate 的指令；有 setup-workflow 正本時用 `pilot-gate` |
 | Defaults | worker 上限、每批張數、誰合入、誰 push 與合併 PR／MR、何時交棒 |
 | Integration branch | 本機整合分支的名稱、怎麼開、合進主線後怎麼跟上 |
