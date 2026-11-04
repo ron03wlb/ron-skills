@@ -6,7 +6,8 @@
 // 另攔要整份讀的指令（`--whole-output` 指定）以管線接 grep／head／tail／cut：過濾會丟掉縮排明細行，cut 會截掉長行尾端的指令
 // （文字規則寫了仍再犯，依「prose rules become scripts」改由 hook 擋，與背景化長等待指令同為拒絕）。
 // 另攔長跑 gate（`--exit-gate` 指定）以管線接 grep／head／tail／cut：Bash 回報的 exit code 是管線最後一支的，gate 失敗也通知 exit 0
-// （retro spay2 b949589b#1：`check-contracts.sh | tail -15` 與 `fix-land.mjs … | tail -12` 都假綠，靠讀輸出才發現）。同一指令有 pipefail 時 exit code 正確，不攔。
+// （retro spay2 b949589b#1：`check-contracts.sh | tail -15` 與 `fix-land.mjs … | tail -12` 都假綠，靠讀輸出才發現）。同一指令有 pipefail 時 exit code 正確，不攔；同一支 script 只印資料的形式（EXIT_GATE_READ_ONLY）不攔。
+// 另攔 pilot-handoff.mjs 與其他指令串接（`;`、`&&`、`||`、換行）：內建規則，不需要旗標，見 chainedHandoff。
 // 用法：node scripts/claude-hook-git-bypass.mjs [--long-wait <spec>]… [--whole-output <spec>]… [--exit-gate <script 名稱>]…
 //   spec 是「script 名稱[ 旗標]」，例如 `watch.mjs` 或 `queue.mjs --wait`：帶旗標時同段指令要有該旗標才算。不帶時只攔 git 繞過。
 // stdin 是 hook JSON（tool_input.command）；命中時 exit 2，stderr 交回 agent；其他情況 exit 0 不輸出。
@@ -231,7 +232,21 @@ function filteredOutput(command, specs) {
 }
 
 /**
- * script 要被實際執行才算（同段開頭，可帶環境變數與 node／bash／sh，可帶路徑）；`cat x.mjs | head`、`git log -- x.mjs | head`、引號內的字樣不算。
+ * 「這一段指令在執行 script」的 regex 片段：段落開頭，可接 shell 關鍵字（`do`、`then`、`{` 等，retro spay2 6d21b9cc#3：for 迴圈內的管線原本看不到）、
+ * 環境變數與 node／bash／sh，可帶路徑。`(?<!\\)`：沒加引號的 `grep a\|x.mjs f` 裡，`\|` 也不是分隔。
+ */
+const runs = script => String.raw`(?:^|(?<!\\)[;&|\n(])\s*(?:(?:do|then|else|elif|if|while|until|\{|!)\s+)*(?:\w+=\S*\s+)*(?:(?:node|bash|sh)\s+)?(?:[^\s;&|"']*\/)?${escape(script)}(?![\w.-])`;
+
+// 只印資料、不是 gate 的形式：script 之後的參數符合就不算 exit gate（retro spay2 4a22bbe7#3：`followups.mjs list | cut`、`issue-create.mjs --template | head`
+// 被拒，理由是「gate 失敗也顯示成功」，但它們不是 gate，整段多指令 Bash 卻要重送）。寫死在這裡而不是新增旗標：hook 的參數在 settings.json，只有使用者能改。
+// 寫入形式要繼續攔，所以比對開頭：issue-create.mjs 只把第一個參數的 `--template` 當成印骨架。
+const EXIT_GATE_READ_ONLY = {
+  'followups.mjs': /^\s+list(?![\w-])/,
+  'issue-create.mjs': /^\s+--template(?![\w-])/,
+};
+
+/**
+ * script 要被實際執行才算（見 runs）；`cat x.mjs | head`、`git log -- x.mjs | head`、引號內的字樣不算。
  * 比對 commandView 的結果：`grep -E 'a|x.mjs|b' | grep -v grep`、`grep "a\\|x.mjs" f | cut` 的 `|` 在引號內，不是分隔（retro spay2 4799d53c#6、1d552915#3）；`bash -c '…'` 內的照常比對。
  * @param {string} command Bash tool 的完整指令
  * @param {string[]} scripts 長跑 gate 的 script 名稱
@@ -241,13 +256,26 @@ export function exitGateReason(command, scripts = []) {
   const view = commandView(command);
   if (/\bpipefail\b/.test(view)) return null;
   for (const script of scripts) {
-    // `(?<!\\)`：沒加引號的 `grep a\|x.mjs f` 裡，`\|` 也不是分隔。
-    const pattern = new RegExp(String.raw`(?:^|(?<!\\)[;&|\n(])\s*(?:\w+=\S*\s+)*(?:(?:node|bash|sh)\s+)?(?:[^\s;&|"']*\/)?${escape(script)}(?![\w.-])`
-      + String.raw`(?:[^;&|\n]|(?<=[<>])&|\|(?!${FILTER}))*?(?<filter>${FILTER})`);
-    const filter = pattern.exec(view)?.groups.filter;
-    if (filter) return { script, filter: FILTER_NAME.exec(filter)[1] };
+    const pattern = new RegExp(runs(script) + String.raw`(?<args>(?:[^;&|\n]|(?<=[<>])&|\|(?!${FILTER}))*?)(?<filter>${FILTER})`, 'g');
+    // 逐一看：前面的唯讀形式不掩蓋同一條指令後面真正的 gate。
+    for (const { groups: { args, filter } } of view.matchAll(pattern)) {
+      if (!EXIT_GATE_READ_ONLY[script]?.test(args)) return { script, filter: FILTER_NAME.exec(filter)[1] };
+    }
   }
   return null;
+}
+
+/**
+ * 串接的指令裡有 pilot-handoff.mjs（retro spay2 f5d852cf#7：drain、diff 與交接串成一個 Bash 呼叫，結果印出時已交接，交接內容漏了它）。
+ * 交接前要讀完其他指令的結果，所以另一段指令就算串接；`cd` 與單純的變數指派沒有結果要讀，不算。管線不是串接。
+ * pilot-handoff.mjs 是 setup-workflow 自己的正本，規則內建，不必多帶旗標。
+ * @param {string} command Bash tool 的完整指令
+ * @returns {boolean} 要拒絕時為 true
+ */
+export function chainedHandoff(command) {
+  const statements = commandView(command).split(/(?<!\\)(?:[;\n]|&&|\|\||(?<![<>&])&(?![>&]))/).map(text => text.trim()).filter(Boolean);
+  const handoff = new RegExp(runs('pilot-handoff.mjs'));
+  return statements.some(text => handoff.test(text)) && statements.filter(text => !/^(?:cd(?:\s|$)|\w+=\S*$)/.test(text)).length > 1;
 }
 
 /** argv 中所有 `<flag> <value>` 的 value；緊接的是另一個旗標時不算值。 */
@@ -276,6 +304,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const gate = exitGateReason(command, values(args, '--exit-gate'));
   if (gate) {
     process.stderr.write(`拒絕：${gate.script} 接 ${gate.filter}，回報的 exit code 是 ${gate.filter} 的，gate 失敗也顯示成功。改成 \`<指令> > <log> 2>&1; rc=$?; tail -n 20 <log>; exit $rc\`。\n`);
+    process.exit(2);
+  }
+  if (chainedHandoff(command)) {
+    process.stderr.write('拒絕：pilot-handoff.mjs 與其他指令串在同一個 Bash 呼叫，前面的結果印出時已經交接，交接內容會漏掉它。先跑其他指令、讀完結果，再單獨執行 pilot-handoff.mjs（前面可以有 `cd` 或變數指派）。\n');
     process.exit(2);
   }
 }

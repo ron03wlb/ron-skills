@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { backgroundJobReason, bypassReason, exitGateReason, probeFilterReason } from './claude-hook-git-bypass.mjs';
+import { backgroundJobReason, bypassReason, chainedHandoff, exitGateReason, probeFilterReason } from './claude-hook-git-bypass.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-git-bypass.mjs', import.meta.url));
 const hook = (input, args = []) => spawnSync('node', [script, ...args], { input, encoding: 'utf8' });
@@ -208,4 +208,81 @@ test('hook：--exit-gate 命中時 exit 2 並給改法，沒帶參數不攔', ()
   assert.equal(denied.status, 2);
   assert.match(denied.stderr, /rc=\$\?/);
   assert.equal(hook(input).status, 0);
+});
+
+// 真實指令：retro spay2 6d21b9cc#3。同一個 session 這條 for 迴圈通過，下一條沒包迴圈的才被拒。
+test('exitGateReason：迴圈、條件與群組內的 gate 接過濾也攔下', () => {
+  const gates = ['followups.mjs'];
+  const denied = { script: 'followups.mjs', filter: 'tail' };
+  for (const command of ['for n in 1; do node scripts/followups.mjs adopt $n b 2>&1 | tail -1; done',
+    'for n in 1\ndo\n  node scripts/followups.mjs adopt $n b | tail -1\ndone',
+    'if true; then node scripts/followups.mjs done 1 x | tail -1; fi',
+    'if false; then :; else node scripts/followups.mjs done 1 x | tail -1; fi',
+    'if node scripts/followups.mjs done 1 x | tail -1; then :; fi',
+    'while node scripts/followups.mjs done 1 x | tail -1; do :; done',
+    '{ node scripts/followups.mjs done 1 x | tail -1; }',
+    '( node scripts/followups.mjs done 1 x | tail -1 )',
+    '! node scripts/followups.mjs done 1 x | tail -1',
+  ]) assert.deepEqual(exitGateReason(command, gates), denied, command);
+  // 只是字樣：do、then 後面不是執行 gate。
+  for (const command of ['for f in scripts/followups.mjs; do cat $f | tail -1; done', 'if true; then cat scripts/followups.mjs | tail -1; fi',
+    'echo do node scripts/followups.mjs done 1 x | tail -1']) assert.equal(exitGateReason(command, gates), null, command);
+});
+
+// 真實指令：retro spay2 4a22bbe7#3（jsonl 678、838），都只印資料，拒絕訊息的理由不成立。
+test('exitGateReason：唯讀形式放行，同一支 script 的寫入形式仍攔下', () => {
+  const gates = ['followups.mjs', 'issue-create.mjs'];
+  for (const command of ['node scripts/followups.mjs list --observation | cut -c1-60', 'node scripts/followups.mjs list | tail -3',
+    'node scripts/issue-create.mjs --template | head', 'node scripts/issue-create.mjs --template --sql | head -40',
+    'for k in a; do node scripts/followups.mjs list | grep x; done']) assert.equal(exitGateReason(command, gates), null, command);
+  for (const [command, script, filter] of [['node scripts/followups.mjs done 1 x | tail -1', 'followups.mjs', 'tail'],
+    ['node scripts/followups.mjs add "#1" list | tail -1', 'followups.mjs', 'tail'],
+    ['node scripts/issue-create.mjs --title x --description-file f | head', 'issue-create.mjs', 'head'],
+    // issue-create.mjs 只認第一個參數是 --template，排在後面的 --template 不是唯讀形式。
+    ['node scripts/issue-create.mjs --title x --template | head', 'issue-create.mjs', 'head'],
+    // 前面的唯讀形式不掩蓋同一條指令後面真正的 gate。
+    ['node scripts/followups.mjs list | cut -c1-60; node scripts/followups.mjs done 1 x | tail -1', 'followups.mjs', 'tail'],
+  ]) assert.deepEqual(exitGateReason(command, gates), { script, filter }, command);
+});
+
+test('hook：以 --exit-gate 的現行參數執行，迴圈內的 gate 與唯讀形式各得其所', () => {
+  const args = ['--exit-gate', 'followups.mjs', '--exit-gate', 'issue-create.mjs'];
+  const status = command => hook(JSON.stringify({ tool_input: { command } }), args).status;
+  assert.equal(status('for n in 1; do node scripts/followups.mjs adopt $n b 2>&1 | tail -1; done'), 2);
+  assert.equal(status('node scripts/followups.mjs done 1 x | tail -1'), 2);
+  assert.equal(status('node scripts/issue-create.mjs --title x | head'), 2);
+  assert.equal(status('node scripts/followups.mjs list --observation | cut -c1-60'), 0);
+  assert.equal(status('node scripts/issue-create.mjs --template x | head'), 0);
+});
+
+// 真實指令：retro spay2 f5d852cf#7。drain、diff 與交接串在一個 Bash 呼叫，`DIFFERENT 1` 印出時已 HANDED_OFF，交接內容漏了最新結果。
+const HANDOFF_CHAIN = `cd /home/ron/code/spay2 && node scripts/pilot-status.mjs --drain --apply --reap; node scripts/candidate-product-diff.mjs d0e4a4c12 c133a9fa2 | tail -n 4 | cut -c1-250; R='接手先做：依序 stage batch-i758'; node scripts/pilot-handoff.mjs --session s --pid 1 --reason "$R"`;
+
+test('chainedHandoff：pilot-handoff.mjs 與其他指令串接時攔下', () => {
+  for (const command of [HANDOFF_CHAIN, 'node scripts/pilot-status.mjs --drain; node scripts/pilot-handoff.mjs --reason r',
+    'node scripts/pilot-status.mjs --drain && node scripts/pilot-handoff.mjs --reason r',
+    'node scripts/pilot-status.mjs --drain || node scripts/pilot-handoff.mjs --reason r',
+    'node scripts/pilot-status.mjs --drain\nnode scripts/pilot-handoff.mjs --reason r',
+    'node scripts/pilot-handoff.mjs --reason r; echo done',
+    'cd /m && git status && /m/scripts/pilot-handoff.mjs --reason r',
+  ]) assert.equal(chainedHandoff(command), true, command);
+});
+
+test('chainedHandoff：單獨執行（前面可有 cd 與變數指派）、其他指令只是提到它時不攔', () => {
+  for (const command of ['node scripts/pilot-handoff.mjs --session s --pid 1 --reason r',
+    'cd /m && node scripts/pilot-handoff.mjs --reason r', "R='a; b'; node scripts/pilot-handoff.mjs --reason \"$R\"\n",
+    "node scripts/pilot-handoff.mjs --reason 'a && b; c'",
+    'cat scripts/pilot-handoff.mjs; git status', 'git add scripts/pilot-handoff.mjs && git commit -qm x',
+    'node --test scripts/pilot-handoff.test.mjs; git status', "grep -n 'pilot-handoff.mjs' docs/a.md; git status",
+    "cat > note.md <<'EOF'\nnode scripts/pilot-handoff.mjs; git status\nEOF\ngit status",
+  ]) assert.equal(chainedHandoff(command), false, command);
+});
+
+test('hook：串接 pilot-handoff.mjs 不需要任何參數就攔下，並說明改法', () => {
+  const input = command => JSON.stringify({ tool_input: { command } });
+  const denied = hook(input(HANDOFF_CHAIN));
+  assert.equal(denied.status, 2);
+  assert.match(denied.stderr, /pilot-handoff\.mjs/);
+  assert.match(denied.stderr, /單獨/);
+  assert.equal(hook(input('node scripts/pilot-handoff.mjs --reason r')).status, 0);
 });

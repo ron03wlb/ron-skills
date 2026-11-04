@@ -1,15 +1,16 @@
 // #194：/retro-collect 判斷 covered／衝突時，手寫迴圈對每個 worktree 跑 `git diff --name-only $(merge-base …)`，再 grep 改到 pilot.md 哪些條目（1031c、1031d 各寫一次）。
 // worktree-overlap.mjs 對每個非主 checkout 的 worktree，列出相對主分支 merge-base 的未合入改動（已 commit 與工作樹）碰到的檔與條目。
+import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { env, git } from './helpers/git-fixture.mjs';
-import { realTmpdir } from './helpers/real-tmpdir.mjs';
+import { fileURLToPath } from 'node:url';
+import { realTmpdir } from './test/real-tmpdir.mjs';
+import { git, run as runIn } from './test/repo-fixture.mjs';
 
-const script = new URL('../scripts/worktree-overlap.mjs', import.meta.url).pathname;
-const pilotMd = readFileSync(new URL('../docs/agents/pilot.md', import.meta.url), 'utf8');
+const script = fileURLToPath(new URL('./worktree-overlap.mjs', import.meta.url));
+const pilotMd = '# Pilot\n\n段落。\n\n- **Probe.** 每一輪對帳。\n- **Dispatch.** 派工。\n- **Handoff.** 交接。\n';
 const PILOT = 'docs/agents/pilot.md';
 
 /**
@@ -24,6 +25,8 @@ function fixture(t) {
   mkdirSync(join(main, 'docs/agents'), { recursive: true });
   mkdirSync(join(main, 'scripts'));
   git(main, 'init', '-q', '-b', 'main');
+  git(main, 'config', 'user.name', 'Fixture');
+  git(main, 'config', 'user.email', 'fixture@example.invalid');
   writeFileSync(join(main, PILOT), pilotMd);
   writeFileSync(join(main, 'README.md'), '# app\n');
   writeFileSync(join(main, 'scripts/y.mjs'), 'export const y = 1;\n');
@@ -33,8 +36,6 @@ function fixture(t) {
   const b = join(root, 'b');
   git(main, 'worktree', 'add', '-q', '-b', 'issue/1-a', a, 'main');
   git(main, 'worktree', 'add', '-q', '-b', 'issue/2-b', b, 'main');
-  // fixture 用本 repo 真正的 pilot.md；條目改名時 replace 不會報錯，先確認兩個條目都在。
-  for (const entry of ['- **Probe.** ', '- **Handoff.** ']) assert.ok(pilotMd.includes(entry), `pilot.md 沒有 ${entry}`);
   writeFileSync(join(a, PILOT), pilotMd.replace('- **Probe.** ', '- **Probe.** 改了。').replace(/^# .*/, '# 標題也改了'));
   writeFileSync(join(a, 'README.md'), '# app\n\n說明\n');
   git(a, 'commit', '-q', '-am', '#1');
@@ -46,7 +47,7 @@ function fixture(t) {
   return { main, a, b };
 }
 
-const run = (cwd, ...args) => spawnSync('node', [script, ...args], { cwd, encoding: 'utf8', env });
+const run = (cwd, ...args) => runIn(cwd, ['node', script, ...args]);
 
 test('帶兩個檔：已 commit 的條目改動與工作樹的未追蹤檔各印一行，pilot.md 那行附 Probe', t => {
   const { main } = fixture(t);
@@ -126,4 +127,28 @@ test('--mine：自己沒有改動時不輸出；和檔案參數一起給時 exit
   assert.equal(none.status, 0, none.stderr);
   assert.equal(none.stdout, '');
   assert.equal(run(a, '--mine', PILOT).status, 2);
+});
+
+// retro spay2 6d21b9cc#4：spay2 沒有 main 這條分支，整合分支是 `feature/ron/#24846`，每輪 collect 都手寫重疊檢查。
+test('--main：沒有 main 分支的 repo 以整合分支當基準；不帶時 git merge-base 失敗，exit 1', t => {
+  const { main, a } = fixture(t);
+  git(main, 'branch', '-m', 'main', 'feature/ron/#24846');
+  const result = run(a, '--main', 'feature/ron/#24846', '--mine');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '', 'a 改的檔其他 worktree 都沒碰');
+  const listed = run(main, '--main', 'feature/ron/#24846', 'scripts/x.mjs');
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.deepEqual(listed.stdout.trim().split('\n'), ['OVERLAP_WT issue/2-b scripts/x.mjs']);
+  assert.equal(run(main, 'scripts/x.mjs').status, 1);
+});
+
+// 這支要能複製到沒有 pilot-probe.mjs 的 repo，所以只靠 lib/changed-units.mjs。
+test('只帶自己與 lib/changed-units.mjs 也能執行', t => {
+  const { main } = fixture(t);
+  const copy = join(main, '..', 'copy');
+  mkdirSync(join(copy, 'lib'), { recursive: true });
+  for (const name of ['worktree-overlap.mjs', 'lib/changed-units.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(copy, name));
+  const result = runIn(main, ['node', join(copy, 'worktree-overlap.mjs'), 'scripts/x.mjs']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), ['OVERLAP_WT issue/2-b scripts/x.mjs']);
 });
