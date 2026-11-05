@@ -83,7 +83,7 @@ test('既有檔案內容不同時列出差異並以 exit 3 停下、不覆蓋；
   assert.match(refused.stdout, /^DIFF scripts\/b\.mjs$/m);
   assert.match(refused.stdout, /-export const b = 2;/);
   assert.match(refused.stdout, /\+export const b = 1;/);
-  assert.equal(refused.stdout.trim().split('\n').pop(), 'CONFIRM_OVERWRITE scripts/b.mjs');
+  assert.equal(refused.stdout.trim().split('\n').pop(), 'CONFIRM_OVERWRITE scripts/b.mjs（a 的相依）');
   assert.equal(readFileSync(join(target, 'scripts/b.mjs'), 'utf8'), 'export const b = 2;\n');
   assert.equal(existsSync(join(target, MANIFEST)), false);
   assert.equal(run(copier, target, '--no-tests', '--yes', 'a').status, 0);
@@ -113,7 +113,35 @@ test('既有副本與清單記錄不一致（手改過）時仍 CONFIRM_OVERWRIT
   git(source, 'commit', '-qam', 'b 3');
   const result = run(copier, target, '--no-tests', 'a');
   assert.equal(result.status, 3, result.stdout);
-  assert.equal(result.stdout.trim().split('\n').pop(), 'CONFIRM_OVERWRITE scripts/b.mjs');
+  assert.equal(result.stdout.trim().split('\n').pop(), 'CONFIRM_OVERWRITE scripts/b.mjs（a 的相依）');
+});
+
+// retro spay2 48871a9c#5：傳了 consumer 清單外的 land，它的相依 orca-session-send.mjs 差點蓋掉 consumer 自己的版本，CONFIRM_OVERWRITE 卻只列路徑，要多查一輪才知道是誰帶進來的。
+test('清單外的範本帶入的相依會覆蓋本地檔時，CONFIRM_OVERWRITE 註明來源範本、exit 3、不寫入', t => {
+  const { target, copier } = fixture(t);
+  assert.equal(run(copier, target, '--no-tests', 'other').status, 0);
+  const listed = readFileSync(join(target, MANIFEST), 'utf8');
+  write(target, { 'scripts/b.mjs': '// consumer 自己的版本\n' });
+  const result = run(copier, target, '--no-tests', 'a');
+  assert.equal(result.status, 3, result.stdout);
+  assert.equal(result.stdout.trim().split('\n').pop(), 'CONFIRM_OVERWRITE scripts/b.mjs（a 的相依）');
+  assert.equal(readFileSync(join(target, 'scripts/b.mjs'), 'utf8'), '// consumer 自己的版本\n');
+  assert.equal(existsSync(join(target, 'scripts/a.mjs')), false);
+  assert.equal(readFileSync(join(target, MANIFEST), 'utf8'), listed);
+});
+
+test('CONFIRM_OVERWRITE：明列的範本不註明，同一相依被多個範本帶入時全部列出', t => {
+  const { source, target, copier } = fixture(t);
+  write(join(source, 'skills/engineering/setup-workflow/templates'), { 'c.mjs': "import { b } from './b.mjs';\n" });
+  git(source, 'add', '.');
+  git(source, 'commit', '-qm', 'c');
+  write(target, { 'scripts/b.mjs': '// 本地\n', 'scripts/other.mjs': '// 本地\n' });
+  const named = run(copier, target, '--no-tests', 'a', 'b');
+  assert.equal(named.status, 3, named.stdout);
+  assert.equal(named.stdout.trim().split('\n').pop(), 'CONFIRM_OVERWRITE scripts/b.mjs');
+  const both = run(copier, target, '--no-tests', 'a', 'c', 'other');
+  assert.equal(both.status, 3, both.stdout);
+  assert.equal(both.stdout.trim().split('\n').pop(), 'CONFIRM_OVERWRITE scripts/b.mjs（a、c 的相依） scripts/other.mjs');
 });
 
 test('內容相同的既有檔案不算覆蓋，直接記錄', t => {
