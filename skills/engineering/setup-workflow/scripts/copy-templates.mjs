@@ -8,7 +8,7 @@
 //       既有檔與清單項目不動（spay2 的 scripts/test/fake-orca.mjs 與 scripts/test/fixtures/orca/），每個被排除的檔印一行 `EXCLUDE <副本路徑>`。
 //       --staged：正本已 `git add`、還沒 commit 時用（本 repo 的副本要和正本同一個 commit，bin/check 才過）：工作樹與 index 不同才擋，清單的 commit 記現在的 HEAD。
 // 輸出每檔一行 `COPY|SAME|UPDATE|DIFF <副本路徑>`（UPDATE、DIFF 後接 unified diff；UPDATE 是 sha256 與清單記錄一致、沒手改過的舊副本，直接覆寫），最後一行：
-//   PLANNED <n>（--dry-run）、COPIED <n>、CONFIRM_OVERWRITE <路徑...>（exit 3：既有檔內容不同且與清單記錄不一致，人確認後加 --yes 重跑）、
+//   PLANNED <n>（--dry-run）、COPIED <n>、CONFIRM_OVERWRITE <路徑...>（exit 3：既有檔內容不同且與清單記錄不一致，人確認後加 --yes 重跑；不是明列的範本時路徑緊接來源，例如 `scripts/b.mjs（a、c 的相依）`）、
 //   VERIFIED <n>（--verify 全部一致；有 MISMATCH／MISSING 或沒有清單時 exit 1）。參數或旗標錯誤、正本不存在或有未提交改動時 exit 2。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -89,24 +89,29 @@ function references(file) {
   return refs;
 }
 
-const files = new Set();
+/** 每個要複製的檔 → 帶入它的明列範本（同一個相依可能被多個範本帶入）。 */
+const broughtBy = new Map();
 const skipped = new Set();
-const visit = file => {
-  if (files.has(file)) return;
+const visit = (file, root) => {
+  if (broughtBy.get(file)?.has(root)) return;
   if (excluded(file)) { skipped.add(file); return; }
   if (!existsSync(join(TEMPLATES, file)) || isDir(file)) fail(`正本不存在：templates/${file}`);
-  files.add(file);
-  if (file.endsWith('.mjs') || file.endsWith('.sh')) references(file).forEach(visit);
+  if (!broughtBy.has(file)) broughtBy.set(file, new Set());
+  broughtBy.get(file).add(root);
+  if (file.endsWith('.mjs') || file.endsWith('.sh')) references(file).forEach(ref => visit(ref, root));
 };
+const named = new Set();
 for (const name of names) {
   const file = /\.(mjs|sh)$/.test(name) ? name : `${name}.mjs`;
   if (excluded(file)) fail(`--exclude 排除了明列的正本：${file}`);
-  visit(file);
+  named.add(file);
+  visit(file, file);
   const testFile = file.replace(/\.(mjs|sh)$/, '.test.mjs');
-  if (!flags.has('--no-tests') && existsSync(join(TEMPLATES, testFile))) visit(testFile);
+  if (!flags.has('--no-tests') && existsSync(join(TEMPLATES, testFile))) visit(testFile, file);
 }
+const origin = file => (named.has(file) ? '' : `（${[...broughtBy.get(file)].map(root => root.replace(/\.mjs$/, '')).join('、')} 的相依）`);
 
-const plan = [...files].sort().map(file => {
+const plan = [...broughtBy.keys()].sort().map(file => {
   const template = relative(sourceRoot, join(TEMPLATES, file));
   const status = git('status', '--porcelain', '--', join(TEMPLATES, file)).stdout;
   // --dry-run 不寫清單，正本改動中也能預覽；pre-commit 的測試才不會和改正本的 commit 互卡。
@@ -124,7 +129,7 @@ for (const file of [...skipped].sort()) console.log(`EXCLUDE ${join('scripts', f
 const diffs = [];
 for (const { file, dest, target, state } of plan) {
   console.log(`${state} ${dest}`);
-  if (state === 'DIFF') diffs.push(dest);
+  if (state === 'DIFF') diffs.push(`${dest}${origin(file)}`);
   if (state === 'DIFF' || state === 'UPDATE') {
     process.stdout.write(spawnSync('git', ['diff', '--no-index', '--', target, join(TEMPLATES, file)], { encoding: 'utf8' }).stdout);
   }
