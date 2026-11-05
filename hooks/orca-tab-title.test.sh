@@ -14,7 +14,8 @@ cat > "$tmp/fake-orca" <<EOF
 echo "\$*" >> "$tmp/calls.log"
 case "\$*" in
   *--include-visual-layouts*) printf '{"ok":true,"result":{"visualLayouts":[{"root":{"tabs":[{"title":"其他｜不相干","panes":{"first":{"handle":"term_other"}}},{"title":"%s","panes":{"first":{"handle":"term_self"},"second":{"handle":"test_handle"}}}]}}]}}' "\${FAKE_TAB_TITLE:-}" ;;
-  *) printf '{"result":{"terminal":{"title":"%s"}}}' "\${FAKE_TITLE:-✳ 測試標題}" ;;
+  *) [ -n "\${FAKE_RECORD_ON_SHOW:-}" ] && printf '處理中｜新主題' > "\$TAB_STATE_DIR/test_handle"
+     printf '{"result":{"terminal":{"title":"%s"}}}' "\${FAKE_TITLE:-✳ 測試標題}" ;;
 esac
 EOF
 chmod +x "$tmp/fake-orca"
@@ -85,4 +86,10 @@ check UserPromptSubmit '繼續實作' '' 'sibling 無記錄、分頁標題帶狀
 export FAKE_TAB_TITLE='一般標題'
 check Stop '' "--title $issue_a 測試標題" 'sibling 無記錄、分頁標題沒有前綴：照舊改名'
 unset FAKE_TAB_TITLE
+
+# spay2 retro 2de453a3#6：背景工作讀完 terminal show 才輪到 tab-state 寫記錄，舊碼仍送出清標題，蓋掉剛設的標題
+export FAKE_RECORD_ON_SHOW=1
+check Stop '' '' '背景工作途中 tab-state 寫了記錄：不改標題'
+unset FAKE_RECORD_ON_SHOW
+rm -f "$TAB_STATE_DIR/test_handle"
 exit $fail

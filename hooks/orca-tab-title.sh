@@ -180,7 +180,8 @@ elif event == "PostToolUse":
 else:
     sys.exit(0)
 
-if tab_has_state():
+# 改名前重讀記錄：上面可能花了幾秒，tab-state 期間寫的標題不能被蓋掉（spay2 retro 2de453a3#6）
+if tab_state_owns_title() or tab_has_state():
     sys.exit(0)
 
 rename(f"{prefix} {text}".strip() if prefix else None)

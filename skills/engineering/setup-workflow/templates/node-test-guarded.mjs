@@ -12,6 +12,9 @@
 //   node --test 失敗時，依子行程紀錄（failed、code）找出失敗的檔（沒有紀錄的檔也算），各單獨重跑一次（高負載下才失敗的測試，retro spay2 92fa93fe#3）：
 //   全過時每檔印 `NODE_TEST_FLAKE_SUSPECT <path>` 到 stderr、不算失敗；cwd 有 scripts/followups.mjs 時另寫一行 followups [tooling]，每個呼叫端都記到（followups 264：
 //   原本只有 push gate 會寫，batch-merge verify 與 fix-land 的 check-contracts 只留在 log）。內容相同的未處理行已存在時它不重複寫；寫不成不影響結果。重跑仍失敗印 `NODE_TEST_RERUN <path> FAIL`，回傳第一次的 exit code。
+//   flake 行為 `NODE_TEST_FLAKE_SUSPECT <path> output=<log>`：首輪 stdout 尾段（FLAKE_OUTPUT_LIMIT）另存到 <git common dir>/node-test-flake-output/<path 轉檔名>.log（followups 430：
+//   push gate log 每輪覆寫，首輪失敗輸出隨之消失；followups 419 查不到原始失敗）。同一檔只留最新一次（路徑固定，followups 的去重不受影響），超過 FLAKE_OUTPUT_TTL_MS（14 天）的檔在下次另存時刪除；
+//   不在 git repo 時放 tmpdir()，NODE_TEST_FLAKE_OUTPUT_DIR 可改位置；寫不成時不帶 output=，不影響結果。
 //   找不出失敗的檔（Node 22 沒有紀錄、載入就失敗的單檔）時直接回傳第一次的 exit code；失敗的檔超過 FLAKE_MAX_FILES 時印 `NODE_TEST_FLAKE_SKIPPED <n> …`、不重跑，視為真實失敗。
 //   有遺失時每檔印 `NODE_TEST_LOST <path> ran=<子行程跑完數> missing=<輸出中缺的數>` 到 stderr，單獨重跑該檔，
 //   印 `NODE_TEST_RERUN <path> PASS|FAIL`；全部 PASS 時 exit 0，否則 exit 1。
@@ -21,7 +24,7 @@
 //   沒有失敗、子行程 exit 0，就印 `NODE_TEST_RECORDED <path> PASS：<說明>` 判定通過、不重跑；其餘照舊單獨重跑，重跑也以同樣規則判定。
 //   總數不等卻找不到是哪個檔時印 `NODE_TEST_COUNT_MISMATCH`，exit 1。
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -34,6 +37,9 @@ const ORPHAN_WAIT_MS = Number(process.env.NODE_TEST_GUARD_WAIT_MS ?? 120_000);
 const RERUN_TIMEOUT_MS = Number(process.env.NODE_TEST_RERUN_TIMEOUT_MS ?? 900_000);
 /** 失敗的檔多於這個數就不逐檔重跑：大範圍失敗是真的壞了，逐檔重跑只是多花時間。 */
 const FLAKE_MAX_FILES = Number(process.env.NODE_TEST_FLAKE_MAX_FILES ?? 5);
+/** flake 首輪輸出另存的上限：spec reporter 的失敗段落在輸出最後，留尾段（followups 430）。 */
+const FLAKE_OUTPUT_LIMIT = 2 * 1024 * 1024;
+const FLAKE_OUTPUT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const RESULT = /^\s*(?:✔|✖|﹣|⚠) (.*?)(?: \(\d+(?:\.\d+)?m?s\))?(?: # (?:SKIP|TODO)\b.*)?$/;
 
 /** preload 的 JSON lines → Map<file, names[]>（同一檔多行時合併）。 */
@@ -136,7 +142,7 @@ async function runOnce(options, files, { timeoutMs } = {}) {
     const failed = code === 0 ? [] : failedFiles(text, wanted);
     const lost = lostFiles(ran, output).filter(({ file }) => !failed.includes(file));
     for (const file of wanted.filter(file => !ran.has(file) && !failed.includes(file))) lost.push({ file, ran: '?', missing: '?' });
-    return { code, lost, failed, passed: file => recordedPass(text, file),
+    return { code, lost, failed, output, passed: file => recordedPass(text, file),
       mismatch: code === 0 && !lost.length && total() !== reportedTotal(output) ? `ran=${total()} reported=${reportedTotal(output)}` : null };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -150,9 +156,32 @@ export const soloOptions = options => options.filter(option => option !== '--tes
  * flake 寫進 followups 的 [tooling] 行，交 /retro-collect（retro 92fa93fe#3、followups 264）。followups.mjs 依 git common dir 寫回主 checkout，暫時 worktree 裡跑也一樣。
  * 只認 cwd 自己的 scripts/followups.mjs 與 cwd 內的檔：測試 fixture 的 cwd 沒有它，不會寫到真正的 followups。不丟錯、不輸出：不能讓記錄影響測試結果。
  */
-function recordFlake(path) {
+function recordFlake(path, saved) {
   if (path.startsWith('..') || !existsSync('scripts/followups.mjs')) return;
-  spawnSync(process.execPath, ['scripts/followups.mjs', 'add', 'node-test-guarded', '--tooling', `NODE_TEST_FLAKE_SUSPECT ${path}：首輪失敗、單獨重跑全過`], { stdio: 'ignore', timeout: 30_000 });
+  spawnSync(process.execPath, ['scripts/followups.mjs', 'add', 'node-test-guarded', '--tooling', `NODE_TEST_FLAKE_SUSPECT ${path}：首輪失敗、單獨重跑全過${saved ? `；首輪輸出 ${saved}` : ''}`], { stdio: 'ignore', timeout: 30_000 });
+}
+
+/** flake 首輪輸出的存放目錄：要活過驗收的暫時 worktree 與專屬 TMPDIR，所以放 git common dir（followups 430）。 */
+function flakeOutputDir() {
+  if (process.env.NODE_TEST_FLAKE_OUTPUT_DIR) return process.env.NODE_TEST_FLAKE_OUTPUT_DIR;
+  const common = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' });
+  return join(common.status === 0 ? common.stdout.trim() : tmpdir(), 'node-test-flake-output');
+}
+
+/** 另存 flake 首輪輸出並清掉過期的檔；傳回 log 路徑，寫不成傳回 null（不影響測試結果）。 */
+export function saveFlakeOutput(path, output, dir = flakeOutputDir(), now = Date.now()) {
+  try {
+    mkdirSync(dir, { recursive: true });
+    for (const name of readdirSync(dir)) {
+      const old = join(dir, name);
+      if (now - statSync(old).mtimeMs > FLAKE_OUTPUT_TTL_MS) rmSync(old, { force: true });
+    }
+    const file = join(dir, `${path.replace(/[^\w.-]/g, '_')}.log`);
+    writeFileSync(file, output.slice(-FLAKE_OUTPUT_LIMIT));
+    return file;
+  } catch {
+    return null;
+  }
 }
 
 /** 單獨重跑一檔；全過回 true。 */
@@ -180,8 +209,9 @@ export async function main(args) {
   for (const file of first.failed) {
     const path = relative(process.cwd(), file);
     if (await rerun(options, path)) {
-      console.error(`NODE_TEST_FLAKE_SUSPECT ${path}`);
-      recordFlake(path);
+      const saved = saveFlakeOutput(path, first.output);
+      console.error(`NODE_TEST_FLAKE_SUSPECT ${path}${saved ? ` output=${saved}` : ''}`);
+      recordFlake(path, saved);
     } else {
       console.error(`NODE_TEST_RERUN ${path} FAIL`);
       status = first.code;

@@ -187,8 +187,8 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "a2005cb75ae3873417ad1f773247b15d4f306e55",
-      "sha256": "f78b7458558e87c3ee724706f21ff11540fc55861d9f8668f313950dbb2cfb1a"
+      "commit": "200a06f11c6d57aa6e6a2527bf52244fe0f6e091",
+      "sha256": "ca37623db8aa00681c41ca82ad3842dcc7cc1f1ac4cc05fcbfbedda6084f1ac1"
     },
     "scripts/worktree-overlap.mjs": {
       "template": "skills/engineering/setup-workflow/templates/worktree-overlap.mjs",

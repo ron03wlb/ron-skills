@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
-import { forgetTitleRecord, recordTitle, recordedTitle, sameTopic, stripState, withState } from './tab-state.mjs';
+import { forgetTitleRecord, recordTitle, recordedTitle, sameTopic, setState, stripState, withState } from './tab-state.mjs';
 
 const script = fileURLToPath(new URL('./tab-state.mjs', import.meta.url));
 const SELF = 'term_self';
@@ -14,8 +14,8 @@ const SELF = 'term_self';
 // 記錄呼叫的假 Orca CLI：`terminal list` 回本分頁（title 是 Claude 的自動標題；`tabTitle` 是 --include-visual-layouts 回的實際分頁標題）。
 // `failing` 為真時每個呼叫都回錯。標題記錄放在 fixture 的 TAB_STATE_DIR，不碰家目錄。
 // `tabTitle` 有值時 rename 會改掉回報的分頁標題；`stuck` 為真時 rename 回 ok、回報的標題不變（2026-11-02 coordinator 回報改名成功，分頁實際沒變）。
-// `lagReads` 是改名後還回舊標題的讀取次數。
-function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTitle, slow = '', stuck = false, lagReads = 0, firstRenameFails = false, slowRenames = 0, renameLands = false } = {}) {
+// `lagReads` 是改名後還回舊標題的讀取次數。`overwrittenOnce` 為真時第一次 rename 回 ok、標題隨即被別的寫入者蓋回（retro 2de453a3#6：orca-tab-title hook 較晚送出的清標題）。
+function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTitle, slow = '', stuck = false, lagReads = 0, firstRenameFails = false, slowRenames = 0, renameLands = false, overwrittenOnce = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'tab-state-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const log = join(temp, 'orca.log');
@@ -48,7 +48,8 @@ else if (b === 'list' && fs.existsSync(${JSON.stringify(live)}) && process.argv.
 }
 else if (b === 'list') reply('list', { terminals: [{ handle: 'term_other', title: '別人' }, { handle: ${JSON.stringify(SELF)}, title: ${JSON.stringify(autoTitle)} }], totalCount: 2 });
 else if (b === 'rename') {
-  if (!${stuck} && fs.existsSync(${JSON.stringify(live)})) fs.writeFileSync(${JSON.stringify(pending)}, arg('--title'));
+  const overwritten = ${overwrittenOnce} && fs.readFileSync(${JSON.stringify(log)}, 'utf8').split('terminal rename').length === 2;
+  if (!${stuck} && !overwritten && fs.existsSync(${JSON.stringify(live)})) fs.writeFileSync(${JSON.stringify(pending)}, arg('--title'));
   reply('rename', { rename: { handle: arg('--terminal'), title: arg('--title') } });
 }
 `);
@@ -106,6 +107,49 @@ test('--topic 沒有值或是空字串：exit 2，不呼叫 Orca', t => {
 });
 
 // retro spay2 92fa93fe#7：Orca 回 ok 但分頁標題沒變，只看回傳就回報了沒發生的事。
+test('setState：改名送出時記錄已是新標題（hook 靠它讓路）；改名失敗還原記錄', async t => {
+  const temp = mkdtempSync(join(realTmpdir(), 'tab-state-order-'));
+  t.after(() => rmSync(temp, { recursive: true, force: true }));
+  const dir = join(temp, 'titles');
+  const previousDir = process.env.TAB_STATE_DIR;
+  process.env.TAB_STATE_DIR = dir;
+  t.after(() => { if (previousDir === undefined) delete process.env.TAB_STATE_DIR; else process.env.TAB_STATE_DIR = previousDir; });
+  const seen = join(temp, 'seen');
+  const cli = join(temp, 'orca');
+  writeFileSync(cli, `#!/bin/sh\ncp ${JSON.stringify(join(dir, SELF))} ${JSON.stringify(seen)}\nif [ -f ${JSON.stringify(join(temp, 'fail'))} ]; then echo '{"ok":false,"error":{"code":"runtime_unavailable"}}'; else echo '{"ok":true,"result":{}}'; fi\n`);
+  chmodSync(cli, 0o755);
+  assert.equal(await setState({ cli }, SELF, '處理中', '新主題'), '處理中｜新主題');
+  assert.equal(readFileSync(seen, 'utf8'), '處理中｜新主題');
+  writeFileSync(join(temp, 'fail'), '');
+  await assert.rejects(setState({ cli }, SELF, '待 Retro', '別的主題'), /runtime_unavailable/);
+  assert.equal(recordedTitle(SELF), '處理中｜新主題');
+  forgetTitleRecord(SELF);
+  await assert.rejects(setState({ cli }, SELF, '待 Retro', '別的主題'), /runtime_unavailable/);
+  assert.equal(recordedTitle(SELF), null);
+});
+
+test('改名後標題被別的寫入者蓋回：再送一次，讀回相符就是成功（retro 2de453a3#6 的假 TAB_STATE_MISMATCH）', t => {
+  const { run, calls, recorded } = fixture(t, { tabTitle: '785驗收單實作處理', overwrittenOnce: true });
+  const result = run(['處理中', '--topic', '確認 #785 實作狀態']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'TAB_STATE 處理中｜確認 #785 實作狀態');
+  assert.equal(calls().split('terminal rename').length - 1, 2);
+  assert.equal(recorded(), '處理中｜確認 #785 實作狀態');
+});
+
+test('--title：Orca 讀得到印實際標題、stderr 無聲；讀不到退回記錄時 stderr 印 TAB_TITLE_FROM_RECORD（retro 2de453a3#6：把記錄讀成改名已生效）', t => {
+  const live = fixture(t, { tabTitle: '785驗收單實作處理' });
+  live.record('處理中｜確認 #785 實作狀態');
+  const shown = live.run(['--title', SELF]);
+  assert.equal(shown.stdout.trim(), '785驗收單實作處理');
+  assert.equal(shown.stderr, '');
+  const slow = fixture(t, { tabTitle: '785驗收單實作處理', slow: 'list' });
+  slow.record('處理中｜確認 #785 實作狀態');
+  const fallback = slow.run(['--title', SELF], { TAB_STATE_LIST_BUDGET_MS: '200' });
+  assert.equal(fallback.stdout.trim(), '處理中｜確認 #785 實作狀態');
+  assert.equal(fallback.stderr.trim(), `TAB_TITLE_FROM_RECORD ${SELF}`);
+});
+
 test('改名回 ok 但讀回的標題不符：不印 TAB_STATE，印 TAB_STATE_MISMATCH 並 exit 1', t => {
   const { run } = fixture(t, { tabTitle: 'Loop issue-pilot command', stuck: true });
   const result = run(['處理中', '--topic', '[維運] 主題'], { TAB_STATE_VERIFY_RETRY_MS: '1' });
