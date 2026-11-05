@@ -5,7 +5,7 @@
 // 用法：node scripts/inflight-overlap.mjs <source-branch> <integration> [--watched <regex>]（在任一 checkout 執行）
 //   --watched：要比對 shared 的路徑（JavaScript regex，對 repo 相對路徑），預設 `^(src|sql|docs/adr)/`；依專案的產品程式目錄改寫。
 // stdout 第一行：NONE，或 INFLIGHT_OVERLAP，其後每行一筆：
-//   <branch> removes <file>：該分支刪除的 Java 類別，來源分支新增的程式碼仍引用它
+//   <branch> removes <file>：該分支刪除的 Java 類別，來源分支在 *.java 新增的行仍引用它（followups 429：scripts/issue-queue.test.mjs:965 的路徑字串讓 fix-land 回 exit 7，測試 fixture 與文件的字串不算引用）
 //   <branch> shared <file>：雙方都改了同一個 --watched 範圍內的檔案（產品程式或 ADR／SQL；不含生成頁面與共用登錄檔）
 // 比對的分支已不存在（例如剛合入並刪掉的分支，worktree 目錄還在）時在 stderr 印 `SKIP gone <branch>` 並略過，
 //   不整支失敗（否則呼叫端會在回歸通過後才因此合併失敗）；stdout 格式不變。
@@ -42,7 +42,7 @@ const exists = (cwd, branch) => spawnSync('git', ['-C', cwd, 'rev-parse', '--ver
 /** skip(branch)：分支已不存在而略過時呼叫；watched：要比對 shared 的路徑。 */
 export function overlaps(cwd, source, integration, skip = () => {}, watched = WATCHED) {
   const sourceFiles = new Set(lines(git(cwd, 'diff', '--name-only', `${integration}...${source}`)));
-  const added = lines(git(cwd, 'diff', '--unified=0', `${integration}...${source}`))
+  const added = lines(git(cwd, 'diff', '--unified=0', `${integration}...${source}`, '--', '*.java'))
     .filter(line => line.startsWith('+') && !line.startsWith('+++')).join('\n');
   const found = [];
   for (const { path, branch } of worktrees(cwd, source, integration)) {

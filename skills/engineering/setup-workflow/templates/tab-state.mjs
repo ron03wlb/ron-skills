@@ -2,7 +2,7 @@
 // 分頁狀態（GLOSSARY.md「分頁狀態」）：Orca 分頁標題最前面的 `<狀態>｜` 前綴，狀態是處理中、待 Retro、待關閉。
 // 只換目前分頁（ORCA_TERMINAL_HANDLE）標題的狀態前綴，沒有前綴就補上，其他文字不動；agent、skill、pilot script 與 claude-hook-tab-state.mjs 都用它。
 // 目前標題以 Orca 的分頁資料為準：`terminal list --include-visual-layouts` 的 tab title；`terminals[].title` 是程式自己的標題（Claude 的自動標題），不是分頁標題。
-// 每個 handle 最後設定的標題另記在本機 TAB_STATE_DIR（預設 ~/.local/state/orca-tab-titles）的 `<handle>` 檔：本腳本改名後寫入，hook 從 Bash 的
+// 每個 handle 最後設定的標題另記在本機 TAB_STATE_DIR（預設 ~/.local/state/orca-tab-titles）的 `<handle>` 檔：本腳本改名前寫入（改名失敗時還原），hook 從 Bash 的
 // `orca terminal rename` 指令擷取寫入；Orca 查不到分頁時才用它，其他會改標題的 hook 也靠它判斷標題歸本腳本管理。
 //
 // 用法：node scripts/tab-state.mjs <處理中|待 Retro|待關閉> [--topic <主題>]
@@ -13,7 +13,9 @@
 // stdout：改名成功時印 `TAB_STATE <新標題>`；讀不到分頁（舊版 Orca、連不上、太慢）無從比對，照樣算成功。
 // stderr：Orca 呼叫失敗時印 `TAB_STATE_FAILED <狀態> <原因>`。逾時時腳本自己讀回實際標題：已生效就算成功（#295：沒印 TAB_STATE 卻改成功、和完全沒改，看起來一樣），
 //   確定沒生效就再送一次（retro spay2 b1549391#4：agent 只能自己 --title 再重跑）；仍逾時才印，這時改名可能已送達，分頁實際標題要另外看。
-//   讀回的標題不符時印 `TAB_STATE_MISMATCH <應有標題> actual=<實際標題>`，不印 TAB_STATE。
+//   讀回的標題不符時再送一次、再讀回：別的寫入者可能剛蓋掉（retro 2de453a3#6：orca-tab-title hook 的背景工作在讀到記錄之前就決定要清標題，幾秒後才送出，清掉本腳本剛設的標題）。
+//   仍不符才印 `TAB_STATE_MISMATCH <應有標題> actual=<實際標題>`，不印 TAB_STATE。Orca 本身沒有讀回延遲：scratch 分頁 rename 回傳後第一次 list 就是新標題（2026-11-05 實測 3 次），加長讀回視窗沒用。
+//   --title 讀不到 Orca（`terminal list` 實測 3–8.5 秒，上限 ORCA_LIST_MS）而退回記錄時，stderr 印 `TAB_TITLE_FROM_RECORD <handle>`：這是最後設定的標題，不代表分頁實際如此（同一 retro 就把它讀成改名已生效）。
 // exit：0 已改名，或沒有 ORCA_TERMINAL_HANDLE（不輸出）、Orca 呼叫失敗（不擋 hook 與 script）；1 讀回的標題不符；2 狀態不合法、--topic 沒有值。
 // ORCA_CLI_COMMAND 沒設時用 PATH 上的 `orca`。
 import { spawn } from 'node:child_process';
@@ -128,8 +130,16 @@ export async function currentTitle(ctx, handle) {
 /** 把分頁標題換成 `state` 的前綴並記下；有 `topic` 時標題是 `<state>｜<topic>`，不讀目前標題。傳回新標題。 */
 export async function setState(ctx, handle, state, topic) {
   const title = withState(topic ?? await currentTitle(ctx, handle), state);
-  await orca(ctx, 'terminal', 'rename', '--terminal', handle, '--title', title);
+  // 先記再改名：CLI 一次呼叫要 3 秒，改名送出到生效之間，orca-tab-title hook 靠記錄才知道標題歸本腳本管（retro 2de453a3#6）。改名失敗時還原。
+  const previous = recordedTitle(handle);
   recordTitle(handle, title);
+  try {
+    await orca(ctx, 'terminal', 'rename', '--terminal', handle, '--title', title);
+  } catch (error) {
+    if (previous === null) forgetTitleRecord(handle);
+    else recordTitle(handle, previous);
+    throw error;
+  }
   return title;
 }
 
@@ -165,7 +175,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       console.error('用法：node scripts/tab-state.mjs --title <handle>');
       process.exit(2);
     }
-    console.log(await currentTitle(orcaContext(), args[1]).catch(() => recordedTitle(args[1]) ?? ''));
+    const ctx = orcaContext();
+    const live = await liveTitle(ctx, args[1]);
+    if (live !== null) { console.log(live); process.exit(0); }
+    if (recordedTitle(args[1]) !== null) console.error(`TAB_TITLE_FROM_RECORD ${args[1]}`);
+    console.log(await currentTitle(ctx, args[1]).catch(() => recordedTitle(args[1]) ?? ''));
     process.exit(0);
   }
   const at = args.indexOf('--topic');
@@ -185,7 +199,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       return settleTimeout(handle, state, topic, error);
     });
     // 讀回用自己的時間上限：上面的重送可能已用完前一個 context。
-    const actual = await titleMismatch(orcaContext(), handle, title);
+    let actual = await titleMismatch(orcaContext(), handle, title);
+    if (actual !== null) {
+      // 重送失敗就照實回報不符，不改成 TAB_STATE_FAILED：剛才讀到的標題確實不對。
+      const resent = await setState(orcaContext(), handle, state, stripState(title)).then(() => true, () => false);
+      if (resent) actual = await titleMismatch(orcaContext(), handle, title);
+    }
     if (actual !== null) {
       console.error(`TAB_STATE_MISMATCH ${title} actual=${actual}`);
       process.exit(1);

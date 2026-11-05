@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { failedFiles, lostFiles, parseRan, recordedPass, reportedTotal, soloOptions, untraced } from './node-test-guarded.mjs';
+import { failedFiles, lostFiles, parseRan, recordedPass, reportedTotal, saveFlakeOutput, soloOptions, untraced } from './node-test-guarded.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./node-test-guarded.mjs', import.meta.url));
@@ -82,9 +82,36 @@ test('第一次失敗、單獨重跑通過：exit 0，印 NODE_TEST_FLAKE_SUSPEC
   const run = fixture(t, { 'flaky.test.mjs': FLAKY, 'ok.test.mjs': OK, FAIL_ONCE: '' });
   const result = run('flaky.test.mjs', 'ok.test.mjs');
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /^NODE_TEST_FLAKE_SUSPECT flaky\.test\.mjs$/m);
+  assert.match(result.stderr, /^NODE_TEST_FLAKE_SUSPECT flaky\.test\.mjs output=\S+$/m);
   assert.doesNotMatch(result.stderr, /ok\.test\.mjs/);
   assert.equal(result.stdout.match(/^✔ ok\b/gm).length, 1, '通過的檔不重跑');
+});
+
+// followups 430：.git/spay-push-gate.log 每輪覆寫，followups 419 查不到首輪失敗的輸出。
+test('flake 的首輪失敗輸出另存，flake 行印路徑；不在 git repo 也存得到（followups 430）', { skip: NO_CHANNEL }, t => {
+  const run = fixture(t, { 'flaky.test.mjs': FLAKY, 'ok.test.mjs': OK, FAIL_ONCE: '' });
+  const result = run('flaky.test.mjs', 'ok.test.mjs');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const saved = /^NODE_TEST_FLAKE_SUSPECT flaky\.test\.mjs output=(\S+)$/m.exec(result.stderr)?.[1];
+  assert.ok(saved, result.stderr);
+  t.after(() => rmSync(saved, { force: true }));
+  assert.match(readFileSync(saved, 'utf8'), /boom/, '首輪的失敗原因要留著');
+});
+
+test('saveFlakeOutput：同一檔只留最新、尾段有上限、過期的檔刪除；寫不成傳回 null（followups 430）', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'node-test-flake-output-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = saveFlakeOutput('scripts/x.test.mjs', 'first', dir);
+  assert.equal(file, join(dir, 'scripts_x.test.mjs.log'));
+  assert.equal(saveFlakeOutput('scripts/x.test.mjs', `${'a'.repeat(3 * 1024 * 1024)}tail`, dir), file);
+  const kept = readFileSync(file, 'utf8');
+  assert.equal(kept.length, 2 * 1024 * 1024);
+  assert.ok(kept.endsWith('tail'));
+  const later = Date.now() + 15 * 24 * 60 * 60 * 1000;
+  const other = saveFlakeOutput('other.test.mjs', 'x', dir, later);
+  assert.equal(existsSync(file), false, '超過 14 天的刪除');
+  assert.equal(existsSync(other), true);
+  assert.equal(saveFlakeOutput('y.test.mjs', 'x', join(other, 'not-a-dir')), null);
 });
 
 // followups 264：flake 只有 push gate 會寫 followups；batch-merge verify、fix-land 跑 check-contracts 時只留在 log 且 exit 0。
@@ -103,8 +130,9 @@ test('flake 由 wrapper 自己寫 followups [tooling]：每個呼叫端都記到
     for (const key of ['NODE_TEST_CONTEXT', 'NODE_TEST_COUNT_FILE', 'NODE_TEST_COUNT_ROOT', 'NODE_TEST_COUNTED', 'NODE_OPTIONS']) delete env[key];
     const result = spawnSync(process.execPath, [SCRIPT, '--test-force-exit', 'flaky.test.mjs', 'ok.test.mjs'], { cwd: dir, encoding: 'utf8', env });
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /^NODE_TEST_FLAKE_SUSPECT flaky\.test\.mjs$/m);
-    assert.equal(readFileSync(join(dir, 'followups.log'), 'utf8'), 'add node-test-guarded --tooling NODE_TEST_FLAKE_SUSPECT flaky.test.mjs：首輪失敗、單獨重跑全過\n');
+    assert.match(result.stderr, /^NODE_TEST_FLAKE_SUSPECT flaky\.test\.mjs output=\S+$/m);
+    const saved = /output=(\S+)$/m.exec(result.stderr)[1];
+    assert.equal(readFileSync(join(dir, 'followups.log'), 'utf8'), `add node-test-guarded --tooling NODE_TEST_FLAKE_SUSPECT flaky.test.mjs：首輪失敗、單獨重跑全過；首輪輸出 ${saved}\n`);
   }
 });
 
@@ -141,7 +169,7 @@ test('多檔失敗：一檔重跑通過、一檔仍失敗：exit 1，只有通�
   const run = fixture(t, { 'broken.test.mjs': BROKEN, 'flaky.test.mjs': FLAKY, FAIL_ONCE: '' });
   const result = run('broken.test.mjs', 'flaky.test.mjs');
   assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(result.stderr, /^NODE_TEST_FLAKE_SUSPECT flaky\.test\.mjs$/m);
+  assert.match(result.stderr, /^NODE_TEST_FLAKE_SUSPECT flaky\.test\.mjs output=\S+$/m);
   assert.match(result.stderr, /^NODE_TEST_RERUN broken\.test\.mjs FAIL$/m);
 });
 
@@ -164,7 +192,7 @@ test('一檔失敗重跑通過、另一檔回報遺失且紀錄不完整：遺�
   const run = fixture(t, { 'flaky.test.mjs': FLAKY, 'lossy.test.mjs': LOSSY, FAIL_ONCE: '', MUTE: '', CUT: '' });
   const result = run('flaky.test.mjs', 'lossy.test.mjs');
   assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(result.stderr, /^NODE_TEST_FLAKE_SUSPECT flaky\.test\.mjs$/m);
+  assert.match(result.stderr, /^NODE_TEST_FLAKE_SUSPECT flaky\.test\.mjs output=\S+$/m);
   assert.match(result.stderr, /^NODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
 });
 

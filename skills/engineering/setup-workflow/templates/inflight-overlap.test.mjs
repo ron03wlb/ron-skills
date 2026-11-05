@@ -59,3 +59,18 @@ test('--watched <regex>：只比對符合的路徑，取代預設的 src／sql�
   assert.equal(overlap(f.repo, 'retro-t', 'main', '--watched').status, 2);
   assert.equal(overlap(f.repo, 'retro-t', 'main', '--watched', '(').status, 2);
 });
+
+// followups 429：scripts/issue-queue.test.mjs:965 的路徑字串讓 fix-land 回 exit 7，1105b 本分支 0 個 Java 變更
+const REMOVED_761 = 'spay4-bo/src/main/java/com/sit/spay4/auth/model/vo/SupplierAccountCredentialRecoveryResponse.java';
+test('removes：只比來源分支 Java 檔新增的引用；測試 fixture 字串不算，真的 Java 引用照舊列出', t => {
+  const f = fixture(t);
+  put(f.repo, REMOVED_761, 'class SupplierAccountCredentialRecoveryResponse {}\n');
+  git(f.repo, 'add', '-A'); git(f.repo, 'commit', '-qm', 'base java');
+  const card = join(f.temp, 'wt-761');
+  git(f.repo, 'worktree', 'add', '-q', '-b', 'ron.chang/feature-ron-issue-761', card, 'main');
+  git(card, 'rm', '-q', REMOVED_761); git(card, 'commit', '-qm', 'remove');
+  f.branch('retro-fixture', { 'scripts/issue-queue.test.mjs': `  "${REMOVED_761}",\n` });
+  assert.equal(overlap(f.repo, 'retro-fixture', 'main').stdout.trim(), 'NONE');
+  f.branch('retro-java', { 'spay4-bo/src/main/java/com/sit/spay4/auth/service/Use.java': 'class Use { SupplierAccountCredentialRecoveryResponse r; }\n' });
+  assert.equal(overlap(f.repo, 'retro-java', 'main').stdout.trim(), `INFLIGHT_OVERLAP\nron.chang/feature-ron-issue-761 removes ${REMOVED_761}`);
+});
