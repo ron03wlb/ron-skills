@@ -25,7 +25,7 @@
 // push 遇到伺服器端暫時失敗（commit_refs、`[remote rejected] … (failure)`）時間隔 2 分鐘（LAND_PUSH_RETRY_MS）重試 2 次，每次印 PUSH_RETRY <n>/2 <原因>；STOP push 帶出 `remote:` 行的內容。
 // PR 已開著又帶 `--title`、`--body-file` 時以 `gh pr edit` 更新，印 PR_UPDATED <pr>；更新失敗 STOP pr-edit <pr> <原因>，不合併（#300）。
 // stdout：每步一行進度（PUSHED、PR、CHECKS_PASSED、RESTAMPED <pr> <新 tip>（合入 main 沒有衝突時是 MAIN_MERGED），`--local-checks` 時是 LOCAL_CHECKS <pr> <sha> <結果行>，收尾的 UNBARE、
-//   WORKTREE_REMOVED、BRANCH_DELETED，最後 MAIN、SKILL_CHANGED <名稱>（sync-skills 換掉內容的全域 skill，每個一行）、SYNC_SKILLS）；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
+//   WORKTREE_RM_FALLBACK selector_not_found <路徑>（Orca 不認得的乾淨 worktree 改用 git worktree remove）、WORKTREE_REMOVED、BRANCH_DELETED，最後 MAIN、SKILL_CHANGED <名稱>（sync-skills 換掉內容的全域 skill，每個一行）、SYNC_SKILLS）；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
 //   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、pr-edit、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、local-checks-timeout、restamp-checks-failed、restamp-checks-timeout、merge、not-merged、worktree-rm）。
 // local-checks-timeout、restamp-checks-timeout 是檢查跑到 LAND_LOCAL_CHECKS_TIMEOUT_MS 被中止，不是檢查沒過：結果未知，在該 SHA 跑過檢查才重跑（#297）。
 // 合入之後的收尾問題（main 沒跟上、sync-skills 失敗）印 WARN，不影響 LANDED；main 沒跟上時不跑 sync-skills，印 WARN skills-not-updated <merge sha>（已安裝的 skill 還是舊版，#297）。
@@ -340,7 +340,13 @@ async function cleanup(main, branch, tree) {
     const cli = process.env.ORCA_CLI_COMMAND;
     try {
       // `orca-ide worktree create --branch` 開的 worktree 用 branch: 選擇器找不到（selector_not_found），path: 才找得到（#49）。
-      if (cli) await orca({ cli }, 'worktree', 'rm', '--worktree', `path:${tree.path}`);
+      if (cli) await orca({ cli }, 'worktree', 'rm', '--worktree', `path:${tree.path}`).catch(error => {
+        // `git worktree add` 開的 worktree Orca 不認得，path: 也是 selector_not_found（retro spay2 1bb1d94c#4：PR 已合併才 STOP）。
+        // 仍是本 repo 的 worktree 且乾淨時改用 git worktree remove；有改動照舊 STOP，不丟掉內容。
+        if (error.message !== 'selector_not_found' || !worktrees(main).some(item => item.path === tree.path) || git(tree.path, 'status', '--porcelain')) throw error;
+        git(main, 'worktree', 'remove', tree.path);
+        console.log(`WORKTREE_RM_FALLBACK selector_not_found ${tree.path}`);
+      });
       else git(main, 'worktree', 'remove', tree.path);
     } catch (error) {
       throw new Stop(`worktree-rm ${error.message}`);
