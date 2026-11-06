@@ -9,7 +9,12 @@
 // （retro spay2 b949589b#1：`check-contracts.sh | tail -15` 與 `fix-land.mjs … | tail -12` 都假綠，靠讀輸出才發現）。同一指令有 pipefail 時 exit code 正確，不攔；同一支 script 只印資料的形式（EXIT_GATE_READ_ONLY）不攔。
 // 另攔 pilot-handoff.mjs 與其他指令串接（`;`、`&&`、`||`、換行）：內建規則，不需要旗標，見 chainedHandoff。
 // 另攔要背景執行的指令（`--background-only` 指定）在前景執行：`tool_input.run_in_background` 不是 true 就拒絕（retro spay2 1677d177#1：前景 batch-land.mjs 擋住 session 10 分鐘）。
-// `--long-wait` 只看 shell `&`，攔不到前景呼叫；兩者互不取代，`--exit-gate` 也獨立判定，同一支 script 可以同時帶。
+// `--long-wait` 的 spec 所在 pipeline（以 `;`、`&&`、`||`、換行切段，不以 `|` 切）以單一 `&` 結尾也攔（retro spay2 b0225c1b#1：`… 2>&1 | head -0 &`）。
+// `--long-wait` 的 spec 前面串了其他指令（`&&`、`;`、`||`、換行；前面只有 `cd` 或變數指派不算）也拒絕，訊息「長等待指令（watcher）單獨一個背景呼叫」；
+//   actionable：先跑前面的指令，再以 run_in_background 單獨執行 watcher（retro spay2 e320267d#5：task notification 的摘要是整串的描述，看不出哪個 worker 交件）。
+// 任一拒絕時，指令含 here-doc（`<<`）或寫檔重導（`>`、`>>`、`2>`、`&>`；`2>&1`、`>&2`、`>/dev/null` 不算）就在訊息後加一行
+//   「本指令中的寫檔也未執行；寫檔另開一個呼叫。」：不另外 actionable，照拒絕訊息改法重送時把寫檔拆成另一個呼叫（retro spay2 e9234021#4）。
+// `--long-wait` 只看 shell `&` 與串接，攔不到前景呼叫；兩者互不取代，`--exit-gate` 也獨立判定，同一支 script 可以同時帶。
 // 用法：node scripts/claude-hook-git-bypass.mjs [--long-wait <spec>]… [--whole-output <spec>]… [--exit-gate <script 名稱>]… [--background-only <spec>]…
 //   spec 是「script 名稱[ 旗標]」，例如 `watch.mjs` 或 `queue.mjs --wait`：帶旗標時同段指令要有該旗標才算。不帶時只攔 git 繞過。
 // stdin 是 hook JSON（tool_input.command、tool_input.run_in_background）；命中時 exit 2，stderr 交回 agent；其他情況 exit 0 不輸出。
@@ -206,9 +211,10 @@ function specPattern(spec) {
   return escape(script) + (flag ? String.raw`[^;&|\n]*\s${escape(flag)}(?![\w-])` : '');
 }
 
-// 長等待指令之後、同一段指令內（不跨 `;`、`|`、換行）出現單獨的 `&`：排除 `&&`、`2>&1`／`>&`、`&>`、`|&`。
-// 若 `&&` 串起的整串最後以 `&` 結尾，整串都在背景，一樣攔。
-const backgrounded = specs => new RegExp(`(${specs.map(specPattern).join('|')})[^;|\\n]*?(?<![&>|<])&(?![&>])`);
+// 長等待指令之後、同一段指令內（不跨 `;`、`||`、換行）出現單獨的 `&`：排除 `&&`、`2>&1`／`>&`、`&>`、`|&`。
+// 若 `&&` 串起的整串最後以 `&` 結尾，整串都在背景，一樣攔。單一 `|` 不切段：`<spec> 2>&1 | head -0 &` 是整條 pipeline 在背景
+// （retro spay2 b0225c1b#1：原本 `|` 也切段，watcher 經 `| head -0 &` 在背景跑、不觸發 task notification，hook 放行）。
+const backgrounded = specs => new RegExp(`(${specs.map(specPattern).join('|')})(?:[^;|\\n]|(?<!\\|)\\|(?!\\|))*?(?<![&>|<])&(?![&>])`);
 
 /**
  * @param {string} command Bash tool 的完整指令
@@ -358,9 +364,47 @@ export function foregroundReason(command, specs = [], runInBackground = false) {
  * @returns {boolean} 要拒絕時為 true
  */
 export function chainedHandoff(command) {
-  const statements = gateView(command).split(/(?<!\\)(?:[;\n]|&&|\|\||(?<![<>&])&(?![>&]))/).map(text => text.trim()).filter(Boolean);
+  const parts = statements(command);
   const handoff = new RegExp(runs('pilot-handoff.mjs'));
-  return statements.some(text => handoff.test(text)) && statements.filter(text => !/^(?:cd(?:\s|$)|\w+=\S*$)/.test(text)).length > 1;
+  return parts.some(text => handoff.test(text)) && parts.filter(text => !SETUP_ONLY.test(text)).length > 1;
+}
+
+/** 切成各段指令（`;`、`&&`、`||`、單一 `&`、換行；管線不切），去掉空段。 */
+const statements = command => gateView(command).split(/(?<!\\)(?:[;\n]|&&|\|\||(?<![<>&])&(?![>&]))/).map(text => text.trim()).filter(Boolean);
+// 沒有結果要讀的段落：`cd` 與單純的變數指派。
+const SETUP_ONLY = /^(?:cd(?:\s|$)|\w+=\S*$)/;
+
+/**
+ * 長等待指令（`--long-wait`）前面串了其他指令（retro spay2 e320267d#5：`pilot-decision.mjs … && batch-watch.mjs --pilot --exit-on-finish`
+ * 當成一個背景呼叫，task notification 的摘要是整串的描述，讀起來不像 worker 交件，每次都要另外 tail 輸出才知道是誰）。
+ * 前面只有 `cd` 或變數指派不算；後面接的指令、管線不算。spec 要被實際執行才算（見 runs）。
+ * @param {string} command Bash tool 的完整指令
+ * @param {string[]} specs 長等待指令的 spec
+ * @returns {string|null} 被串接的 spec；未命中為 null
+ */
+export function chainedLongWaitReason(command, specs = []) {
+  if (!specs.length) return null;
+  const parts = statements(command);
+  for (const [i, text] of parts.entries()) {
+    const spec = specs.find(item => {
+      const [script, flag] = item.trim().split(/\s+/);
+      return new RegExp(runs(script) + (flag ? String.raw`[^;&|\n]*\s${escape(flag)}(?![\w-])` : '')).test(text);
+    });
+    if (spec && parts.slice(0, i).some(before => !SETUP_ONLY.test(before))) return spec;
+  }
+  return null;
+}
+
+// 寫檔：here-doc（`<<`，不含 `<<<`）或寫到檔案的重導（`>`、`>>`、`2>`、`&>`）；`2>&1`、`>&2` 與寫到 /dev/null 不算。比對 commandView（引號內遮蔽）。
+const WRITES_FILE = /(?:^|[^<])<<(?!<)|(?<![<>=\w])(?:\d+|&)?>>?(?!&)\s*(?!\/dev\/null(?![\w./-]))[^\s;&|<>()]/;
+
+/**
+ * 被拒的指令整個都沒執行，裡面的寫檔也是（retro spay2 e9234021#4：heredoc 寫檔＋`issue-create.mjs … | tail` 被拒，之後 `ls` 才發現檔案不存在）。
+ * @param {string} command Bash tool 的完整指令
+ * @returns {boolean} 指令含寫檔時為 true
+ */
+export function writesFile(command) {
+  return WRITES_FILE.test(commandView(command, true));
 }
 
 /** argv 中所有 `<flag> <value>` 的 value；緊接的是另一個旗標時不算值。 */
@@ -374,35 +418,38 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     command = input?.command ?? '';
     runInBackground = input?.run_in_background;
   } catch { process.exit(0); }
+  // 所有拒絕共用：指令含寫檔時補一句，寫檔也沒有執行（retro spay2 e9234021#4）。
+  const deny = message => {
+    process.stderr.write(message + (writesFile(command) ? '本指令中的寫檔也未執行；寫檔另開一個呼叫。\n' : ''));
+    process.exit(2);
+  };
   const reason = bypassReason(command);
   if (reason) {
-    process.stderr.write(`拒絕：指令以 ${reason} 繞過 git hook。整合分支 guard 與 push gate 都在 hook 內；照常執行 git，讓 hook 跑完。hook 失敗時修正原因或回報使用者。\n`);
-    process.exit(2);
+    deny(`拒絕：指令以 ${reason} 繞過 git hook。整合分支 guard 與 push gate 都在 hook 內；照常執行 git，讓 hook 跑完。hook 失敗時修正原因或回報使用者。\n`);
   }
   const args = process.argv.slice(2);
   const job = backgroundJobReason(command, values(args, '--long-wait'));
   if (job) {
-    process.stderr.write(`拒絕：以 shell \`&\` 在前景 Bash 背景化 ${job}，結束時不會觸發 task notification。去掉 \`&\`，改用 Bash tool 的 run_in_background: true 執行同一指令。\n`);
-    process.exit(2);
+    deny(`拒絕：以 shell \`&\` 在前景 Bash 背景化 ${job}，結束時不會觸發 task notification。去掉 \`&\`，改用 Bash tool 的 run_in_background: true 執行同一指令。\n`);
+  }
+  const chainedWait = chainedLongWaitReason(command, values(args, '--long-wait'));
+  if (chainedWait) {
+    deny(`拒絕：${chainedWait} 前面串了其他指令（\`&&\`／\`;\`）。長等待指令（watcher）單獨一個背景呼叫：task notification 的摘要是整個呼叫的描述，串在一起就看不出是哪個 worker 交件。先跑前面的指令，再以 Bash tool 的 run_in_background: true 單獨執行 ${chainedWait}（前面可以有 \`cd\` 或變數指派）。\n`);
   }
   const found = filteredOutput(command, values(args, '--whole-output'));
   if (found) {
     const { spec, filter } = found;
-    process.stderr.write(`拒絕：${spec} 的輸出以 ${filter} 過濾。這個輸出要整份讀：底下的縮排明細行會被濾掉，下一輪誤判為沒變。拿掉管線，直接執行。\n`);
-    process.exit(2);
+    deny(`拒絕：${spec} 的輸出以 ${filter} 過濾。這個輸出要整份讀：底下的縮排明細行會被濾掉，下一輪誤判為沒變。拿掉管線，直接執行。\n`);
   }
   const gate = exitGateReason(command, values(args, '--exit-gate'));
   if (gate) {
-    process.stderr.write(`拒絕：${gate.script} 接 ${gate.filter}，回報的 exit code 是 ${gate.filter} 的，gate 失敗也顯示成功。改成 \`<指令> > <log> 2>&1; rc=$?; tail -n 20 <log>; exit $rc\`。\n`);
-    process.exit(2);
+    deny(`拒絕：${gate.script} 接 ${gate.filter}，回報的 exit code 是 ${gate.filter} 的，gate 失敗也顯示成功。改成 \`<指令> > <log> 2>&1; rc=$?; tail -n 20 <log>; exit $rc\`。\n`);
   }
   const foreground = foregroundReason(command, values(args, '--background-only'), runInBackground);
   if (foreground) {
-    process.stderr.write(`拒絕：${foreground} 在前景執行，會把這個 session 擋到它結束（最多 600 秒），期間 worker 的結果都不會被處理。改用 Bash tool 的 run_in_background: true 執行同一指令，結束時會收到通知。\n`);
-    process.exit(2);
+    deny(`拒絕：${foreground} 在前景執行，會把這個 session 擋到它結束（最多 600 秒），期間 worker 的結果都不會被處理。改用 Bash tool 的 run_in_background: true 執行同一指令，結束時會收到通知。\n`);
   }
   if (chainedHandoff(command)) {
-    process.stderr.write('拒絕：pilot-handoff.mjs 與其他指令串在同一個 Bash 呼叫，前面的結果印出時已經交接，交接內容會漏掉它。先跑其他指令、讀完結果，再單獨執行 pilot-handoff.mjs（前面可以有 `cd` 或變數指派）。\n');
-    process.exit(2);
+    deny('拒絕：pilot-handoff.mjs 與其他指令串在同一個 Bash 呼叫，前面的結果印出時已經交接，交接內容會漏掉它。先跑其他指令、讀完結果，再單獨執行 pilot-handoff.mjs（前面可以有 `cd` 或變數指派）。\n');
   }
 }

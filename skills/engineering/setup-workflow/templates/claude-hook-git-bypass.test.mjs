@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { backgroundJobReason, bypassReason, chainedHandoff, exitGateReason, foregroundReason, probeFilterReason } from './claude-hook-git-bypass.mjs';
+import { backgroundJobReason, bypassReason, chainedHandoff, chainedLongWaitReason, exitGateReason, foregroundReason, probeFilterReason, writesFile } from './claude-hook-git-bypass.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-git-bypass.mjs', import.meta.url));
 const hook = (input, args = []) => spawnSync('node', [script, ...args], { input, encoding: 'utf8' });
@@ -436,4 +436,55 @@ test('hook：--background-only 讀 tool_input.run_in_background，且與 --exit-
   const piped = call('node scripts/batch-land.mjs x --result y | tail -3', { run_in_background: true });
   assert.equal(piped.status, 2);
   assert.match(piped.stderr, /接 tail/);
+});
+
+// 真實指令：retro spay2 b0225c1b#1（jsonl 581）。`| head -0 &` 整條 pipeline 在背景，原本 `|` 切段而漏判。
+test('backgroundJobReason：經管線後以 `&` 背景化整條 pipeline 也攔，`||` 仍切段', () => {
+  for (const command of ['node scripts/job-watch.mjs --pilot --exit-on-finish 2>&1 | head -0 &',
+    'node scripts/job-watch.mjs --pilot --exit-on-finish | tail -5 &',
+    'node scripts/pilot-decision.mjs x | tail -1; node scripts/job-watch.mjs --pilot --exit-on-finish 2>&1 | head -0 &',
+    'node scripts/job-watch.mjs | tee w.log | tail -1 & echo started',
+  ]) assert.equal(backgroundJobReason(command, LONG_WAIT), 'job-watch.mjs', command);
+  for (const command of ['node scripts/job-watch.mjs --pilot --exit-on-finish 2>&1 | tail -5', 'node scripts/job-watch.mjs |& tee log',
+    'node scripts/job-watch.mjs || sleep 5 &', 'node scripts/job-watch.mjs | tail -5; sleep 5 &',
+  ]) assert.equal(backgroundJobReason(command, LONG_WAIT), null, command);
+  const status = command => hook(JSON.stringify({ tool_input: { command } }), ARGS).status;
+  assert.equal(status('node scripts/job-watch.mjs --pilot --exit-on-finish 2>&1 | head -0 &'), 2);
+  assert.equal(status('node scripts/job-watch.mjs --pilot --exit-on-finish 2>&1 | tail -5'), 0);
+});
+
+// 真實指令：retro spay2 e320267d#5。決策記錄與 watcher 串成一個背景呼叫，task notification 的摘要看不出是哪個 worker 交件。
+test('chainedLongWaitReason：長等待指令前面串了其他指令時攔下，前面只有 cd 或變數指派時不攔', () => {
+  for (const command of ['node scripts/pilot-decision.mjs x && node scripts/job-watch.mjs --pilot --exit-on-finish',
+    'node scripts/pilot-decision.mjs x; node scripts/job-watch.mjs --pilot --exit-on-finish',
+    'node scripts/pilot-decision.mjs x | tail -1\nnode scripts/job-watch.mjs --pilot',
+    'cd /m && git status && node scripts/job-watch.mjs',
+  ]) assert.equal(chainedLongWaitReason(command, LONG_WAIT), 'job-watch.mjs', command);
+  assert.equal(chainedLongWaitReason('git status; node /m/scripts/job-queue.mjs --wait /r', LONG_WAIT), 'job-queue.mjs --wait');
+  for (const command of ['node scripts/job-watch.mjs --pilot --exit-on-finish', 'cd /x && node scripts/job-watch.mjs --pilot --exit-on-finish',
+    'cd /x; W=1 node scripts/job-watch.mjs', 'X=1; node scripts/job-watch.mjs', 'node scripts/job-watch.mjs && echo done',
+    'git status; node scripts/job-queue.mjs --wait-status /r', 'git status; cat scripts/job-watch.mjs',
+    "node scripts/pilot-decision.mjs --note 'a; node scripts/job-watch.mjs'",
+  ]) assert.equal(chainedLongWaitReason(command, LONG_WAIT), null, command);
+  assert.equal(chainedLongWaitReason('git status && node scripts/job-watch.mjs'), null);
+  const denied = hook(JSON.stringify({ tool_input: { command: 'node scripts/pilot-decision.mjs x && node scripts/job-watch.mjs --pilot --exit-on-finish' } }), ARGS);
+  assert.equal(denied.status, 2); assert.match(denied.stderr, /單獨一個背景呼叫/); assert.match(denied.stderr, /job-watch\.mjs/);
+  assert.equal(hook(JSON.stringify({ tool_input: { command: 'cd /x && node scripts/job-watch.mjs --pilot --exit-on-finish' } }), ARGS).status, 0);
+});
+
+// 真實指令：retro spay2 e9234021#4。heredoc 寫檔與 gate 接 tail 在同一呼叫，被拒後才發現檔案不存在。
+test('writesFile／hook：被拒指令含 heredoc 或寫檔重導時，訊息說明寫檔也未執行', () => {
+  const NOTE = '本指令中的寫檔也未執行；寫檔另開一個呼叫';
+  for (const command of ["cat > i1.md <<'EOF'\nbody\nEOF", 'echo x > f', 'echo x >> f', 'node a.mjs 2> err.log', 'node a.mjs &> all.log',
+    "node scripts/issue-create.mjs --body-file - <<'EOF'\nbody\nEOF"]) assert.equal(writesFile(command), true, command);
+  for (const command of ['node a.mjs 2>&1 | tail -5', 'node a.mjs >/dev/null 2>&1', 'node a.mjs > /dev/null', 'node a.mjs >&2',
+    'echo "a > b"', 'cat <<< x', 'git status']) assert.equal(writesFile(command), false, command);
+  const gate = ['--exit-gate', 'issue-create.mjs'];
+  const heredoc = "mkdir -p s/issues && cat > s/issues/i1.md <<'EOF'\nbody\nEOF\nnode scripts/issue-create.mjs --batch x --check 2>&1 | tail -20";
+  const denied = hook(JSON.stringify({ tool_input: { command: heredoc } }), gate);
+  assert.equal(denied.status, 2); assert.match(denied.stderr, /issue-create\.mjs 接 tail/); assert.ok(denied.stderr.includes(NOTE));
+  const plain = hook(JSON.stringify({ tool_input: { command: 'node scripts/issue-create.mjs --batch x --check 2>&1 | tail -20' } }), gate);
+  assert.equal(plain.status, 2); assert.ok(!plain.stderr.includes(NOTE));
+  const bypass = hook(JSON.stringify({ tool_input: { command: 'echo x > f; git commit --no-verify -m x' } }));
+  assert.equal(bypass.status, 2); assert.ok(bypass.stderr.includes(NOTE));
 });
