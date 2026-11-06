@@ -208,12 +208,19 @@ test('給裁決檔時 prompt 指向它，並限定只在 diff 改變前提時才
   assert.match(call.stdin, /Rulings: \S*rulings\.md\./);
   assert.match(call.stdin, /re-raise a ruled finding only when this diff changes the premise of its ruling/);
 });
-test('裁決檔不存在或為空判定 RULINGS_MISSING，且不呼叫 Codex', t => {
-  for (const rulings of [null, '']) {
-    const { result, call } = review(t, { rulings });
-    assert.equal(error(result), 'RULINGS_MISSING');
-    assert.equal(call, null);
-  }
+test('裁決檔不存在判定 RULINGS_MISSING，且不呼叫 Codex', t => {
+  const { result, call } = review(t, { rulings: null });
+  assert.equal(error(result), 'RULINGS_MISSING');
+  assert.equal(call, null);
+});
+// 真實形狀：#797 傳了存在但為空的 rulings.md，舊碼回 RULINGS_MISSING，讀起來像檔案不存在。
+test('裁決檔存在但為空判定 RULINGS_EMPTY（附路徑與下一步），且不呼叫 Codex', t => {
+  const { result, call } = review(t, { rulings: '' });
+  const detail = JSON.parse(result.stderr.trim());
+  assert.equal(detail.error, 'RULINGS_EMPTY');
+  assert.match(detail.rulings, /rulings\.md$/);
+  assert.match(detail.next, /寫入已裁決項目.*刪除此檔/);
+  assert.equal(call, null);
 });
 // 真實形狀：retro fc336d0c#1 在主 checkout 傳相對路徑 `.scratch/retro/plan-1106a.md`，Codex 以 worktree 解析找不到，舊碼仍回 OK、exit 0。
 test('相對路徑 spec 以 runner cwd 解析成絕對路徑放進 prompt，Codex 在 worktree 也讀得到', t => {
