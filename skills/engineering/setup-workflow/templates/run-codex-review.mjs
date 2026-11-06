@@ -4,7 +4,7 @@
 // rulings：已裁決項目（接受為已知限制或不修，各附理由）；重新審查時帶入，避免重提已裁決的 finding。
 // spec 與 rulings 以 runner 自己的 cwd 解析成絕對路徑再放進 prompt：Codex 的 cwd 是 worktree，相對路徑會對 worktree 解析而找不到
 // （retro fc336d0c#1：主 checkout 傳 `.scratch/retro/plan-1106a.md`，Spec 段整段沒審卻回 OK）。不存在或為空時判 SPEC_MISSING／RULINGS_MISSING，不呼叫 Codex。
-// review.md 寫出未完成需求（Spec）審查（如「未完成需求符合性審查」「Spec：缺少來源」）時判 SPEC_NOT_REVIEWED；反引號或「」內的引用不算。
+// review.md 寫出未完成需求（Spec）審查（如「未完成需求符合性審查」「Spec：缺少來源」）時判 SPEC_NOT_REVIEWED；反引號、「」、半形 "…" 與全形 “…” 內的引用不算。
 // 產出 <out-dir>/review.md 與 <out-dir>/codex.log；成功 exit 0，任何失敗 exit 1 並於 stderr 輸出一行 JSON。
 // baseline 先在 worktree 解析為完整 commit SHA 再交給 Codex：解析不到時 Codex 只會寫「無法開始 review」的報告，不能算 OK。
 // out-dir（或其上層）有 checkpoint `state.md`（含 `integration:` 行）時，baseline 還必須等於 HEAD 與其 `integration:` 的 merge-base：
@@ -85,9 +85,9 @@ const spec = resolve(specArg); const rulings = rulingsArg && resolve(rulingsArg)
 const missing = file => !existsSync(file) || statSync(file).size === 0;
 if (missing(spec)) fail('SPEC_MISSING', { spec });
 if (rulings && missing(rulings)) fail('RULINGS_MISSING', { rulings });
-// 報告表示 Spec 段沒審：先去掉反引號與「」內的引用，避免 diff 或 finding 引用這些字句時誤判。
+// 報告表示 Spec 段沒審：先去掉反引號、「」、半形 "…" 與全形 “…” 內的引用，避免 diff 或 finding 引用這些字句時誤判（review 1106b：`- P3 regex 對 "未完成需求符合性審查" 判定過寬`）。
 const SPEC_NOT_REVIEWED = /未完成(?:需求|Spec)(?:符合性)?審查|(?:無法|不能|未能)(?:進行|完成)(?:需求|Spec)(?:符合性)?審查|Spec[:：]\s*缺少來源/i;
-const specNotReviewed = text => text.split('\n').some(line => SPEC_NOT_REVIEWED.test(line.replace(/`[^`]*`|「[^」]*」/g, '')));
+const specNotReviewed = text => text.split('\n').some(line => SPEC_NOT_REVIEWED.test(line.replace(/`[^`]*`|「[^」]*」|"[^"]*"|“[^”]*”/g, '')));
 mkdirSync(outDir, { recursive: true });
 const report = join(outDir, 'review.md'); const logPath = join(outDir, 'codex.log');
 const own = new Set([resolve(report), resolve(logPath)]);
@@ -126,6 +126,6 @@ const log = readFileSync(logPath, 'utf8');
 const { model, 'reasoning effort': effort } = header(log);
 if (model !== expectedModel || effort !== EFFORT) fail('MODEL_MISMATCH', { expected: { model: expectedModel, effort: EFFORT }, actual: { model, effort }, log: logPath });
 if (SPAWN_FAILED.test(log)) fail('SPAWN_FAILED', { log: logPath });
-if (!existsSync(report) || statSync(report).size === 0) fail('NO_REPORT', { log: logPath });
+if (missing(report)) fail('NO_REPORT', { log: logPath });
 if (specNotReviewed(readFileSync(report, 'utf8'))) fail('SPEC_NOT_REVIEWED', { spec, report, hint: '確認 spec 路徑在 worktree 可讀後重跑' });
 process.stdout.write(JSON.stringify({ status: 'OK', model, ...(fallbackFrom && { fallbackFrom }), effort, report, log: logPath }) + '\n');

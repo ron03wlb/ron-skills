@@ -236,6 +236,13 @@ test('報告寫出未完成需求審查（retro fc336d0c#1 的真實句）判定
   const quoted = '## 需求審查（Spec）\n\n- P3：review.md 寫出「未完成需求符合性審查」時判失敗，對應 `Spec：缺少來源`。\n';
   assert.equal(review(t, { report: quoted }).result.status, 0);
 });
+// review 1106b：舊碼只去掉反引號與「」，finding 用半形或全形雙引號引用時誤判 SPEC_NOT_REVIEWED
+test('半形 "…" 與全形 “…” 內的引用不算 SPEC_NOT_REVIEWED；引號外的句子仍判定', t => {
+  for (const report of ['## 需求審查（Spec）\n\n- P3 regex 對 "未完成需求符合性審查" 判定過寬\n', '## 需求審查（Spec）\n\n- P3 regex 對 “Spec：缺少來源” 判定過寬\n']) {
+    assert.equal(review(t, { report }).result.status, 0, report);
+  }
+  assert.equal(error(review(t, { report: '- 見 "plan.md"：未完成需求符合性審查\n' }).result), 'SPEC_NOT_REVIEWED');
+});
 test('缺參數判定 USAGE', t => {
   const result = run(source, [process.execPath, join(source, 'run-codex-review.mjs'), 'abc123']);
   assert.equal(error(result), 'USAGE');
