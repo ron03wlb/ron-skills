@@ -3,7 +3,7 @@ name: issue-queue
 description: "Show the human the tracker pool by bucket with the in-progress count against the worker cap, refine Issues with the human's confirmation, and flag parent Issues whose children may have lost a detail: /issue-queue. Use only when the user runs /issue-queue or /loop /issue-queue (the loop invokes it through the Skill tool); never on your own initiative."
 ---
 
-**Repo skill first.** When the repo has `.claude/skills/issue-queue/SKILL.md`, a user-level skill shadows it under the same name: Read that file and follow it with these arguments, in place of everything below.
+**Repo skill first.** When the repo has `.claude/skills/issue-queue/SKILL.md`, a user-level skill shadows it under the same name: read that file whole with the Read tool (`allow_large`), never `cat` (a repo skill can be larger than the Bash output cap; a `cat` was saved to a file and read a second time, retro spay2 b0db621f#2, ef1e0ca7#3), and follow it with these arguments, in place of everything below.
 
 The human's view of the pool. `/issue-pilot` and `/issue-run --pool` take Issues from it unattended; `/issue-queue` shows the human what is in it, what is stuck, and what still needs a decision, and changes the tracker only when the human says so. Run it by hand or under `/loop /issue-queue`.
 
