@@ -271,7 +271,7 @@ function closeParent(n) {
   return 'DONE';
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [key, pr, sha, ...rest] = process.argv.slice(2);
   const cli = process.env.ORCA_CLI_COMMAND;
   const options = {};

@@ -459,7 +459,7 @@ function recordSync(main, sha, value) {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [key, ...rest] = process.argv.slice(2);
   const options = {};
   let bad = false;

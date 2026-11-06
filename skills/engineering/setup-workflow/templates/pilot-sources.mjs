@@ -154,7 +154,7 @@ export function checkSources(checkout, sources, { record = false } = {}) {
 }
 
 // 經由 symlink 執行時 argv[1] 不是真實路徑（macOS 的 /tmp），不先 realpath 就會安靜地什麼都不做，等於回報「都沒變」。
-if (import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const [checkout, ...args] = process.argv.slice(2);
   const sources = args.filter(arg => arg !== '--record');
   if (!checkout || !sources.length || sources.some(arg => arg.startsWith('--'))) usage(USAGE);

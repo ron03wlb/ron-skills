@@ -431,7 +431,7 @@ function freshDraft(main, key, integration, { n, branch }) {
   return { path };
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const positional = [];
   const given = {};

@@ -698,7 +698,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   return out;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const cli = process.env.ORCA_CLI_COMMAND;
   if (args[0] === '--tail') {

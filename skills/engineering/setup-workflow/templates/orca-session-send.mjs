@@ -142,7 +142,7 @@ export async function sendToSession(ctx, handle, prompt, { queue = false } = {})
   return { handle };
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const value = flag => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
   const handle = value('--terminal');

@@ -489,7 +489,7 @@ function parseArgs(argv) {
   return options.branch ? options : null;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const options = parseArgs(process.argv.slice(2));
   if (!options) {
     console.error(USAGE);

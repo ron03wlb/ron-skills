@@ -116,7 +116,7 @@ export function check(file, add, { now = new Date(), cap = machineCap() } = {}) 
   return { ok: total <= cap, total, cap };
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [command, ...rest] = process.argv.slice(2);
   const cap = machineCap();
   const valid = cap !== undefined && (command === 'report'

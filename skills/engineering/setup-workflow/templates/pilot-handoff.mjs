@@ -195,7 +195,7 @@ async function handoff(cli, paths, { session, pid, reason, heldCheck, to }, sign
   return `HANDED_OFF ${receiver}`;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const value = flag => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
   const options = { session: value('--session'), pid: value('--pid'), reason: value('--reason'), heldCheck: value('--held-check'), to: value('--to') };

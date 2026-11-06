@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 import { git, run as runIn } from './test/repo-fixture.mjs';
 
@@ -113,9 +113,10 @@ test('--mine：本機 main 在 merge-base 之後前進時，只拿自己改過�
 
   const result = run(join(a, 'docs'), '--mine');
   assert.equal(result.status, 0, result.stderr);
+  // --mine 的行尾多一個 hunk 欄位（retro spay2 e9234021#2）：兩邊都在 README.md 第 1 行後插入；x.mjs 兩邊都是未追蹤新檔，整檔算。
   assert.deepEqual(result.stdout.trim().split('\n'), [
-    'OVERLAP_WT issue/2-b README.md',
-    'OVERLAP_WT issue/2-b scripts/x.mjs',
+    'OVERLAP_WT issue/2-b README.md hunks=near 1',
+    'OVERLAP_WT issue/2-b scripts/x.mjs hunks=near 1',
   ]);
 });
 
@@ -174,4 +175,63 @@ test('TEMPLATE_COPY：給的檔是 workflow-templates.json 列出的副本時，
   // 不帶檔案時不印；清單看的是 cwd 所在 worktree，b 沒有這份清單。
   assert.doesNotMatch(run(main).stdout, /TEMPLATE_COPY/);
   assert.doesNotMatch(run(b, 'scripts/run-codex-review.mjs').stdout, /TEMPLATE_COPY/);
+});
+
+// retro spay2 e9234021#1：spay2 的 followups.mjs 頂層 import 本檔，batch-merge.test 以 `node --input-type=module -e` 載入時 argv[1] 是 undefined，
+// 舊的 main guard `pathToFileURL(process.argv[1])` 丟 ERR_INVALID_ARG_TYPE，exit 1。
+test('以 node --input-type=module -e import（argv[1] 為 undefined）時不執行 main、exit 0', t => {
+  const { main } = fixture(t);
+  const result = runIn(main, ['node', '--input-type=module', '-e', `const m = await import(${JSON.stringify(pathToFileURL(script).href)}); if (typeof m.worktreeOverlaps !== 'function') process.exit(3);`]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '');
+});
+
+// retro spay2 e9234021#2：落地前 `--mine` 只印檔名，協調者另跑 `git diff … | grep '^@@'` 才看出對方改 SKILL.md @@ -91、本方改 107 行，
+// 對方改 spay4-verify.md @@ -250、本方改 57 行，都不相鄰；scripts/workflow-doc-sync.json 是產生檔，衝突時重跑產生器即可。
+test('--mine：每行附 hunks=apart／hunks=near <本方行>，--generated 的檔標 generated；--near 調整距離', t => {
+  const { main } = fixture(t);
+  const lines = Array.from({ length: 300 }, (_, i) => `line ${i + 1}`);
+  const edit = (dir, file, ...at) => {
+    const copy = [...lines];
+    for (const n of at) copy[n - 1] = `${copy[n - 1]} 改了`;
+    writeFileSync(join(dir, file), `${copy.join('\n')}\n`);
+  };
+  for (const file of ['SKILL.md', 'verify.md', 'near.txt']) writeFileSync(join(main, file), `${lines.join('\n')}\n`);
+  writeFileSync(join(main, 'scripts/workflow-doc-sync.json'), '{"a": 1}\n');
+  git(main, 'add', '.');
+  git(main, 'commit', '-q', '-m', 'long files');
+  const mine = join(main, '..', 'mine');
+  const other = join(main, '..', 'other');
+  git(main, 'worktree', 'add', '-q', '-b', 'issue/9-mine', mine, 'main');
+  git(main, 'worktree', 'add', '-q', '-b', 'issue/8-other', other, 'main');
+  edit(other, 'SKILL.md', 91, 92, 93);
+  edit(other, 'verify.md', 250);
+  edit(other, 'near.txt', 40);
+  writeFileSync(join(other, 'scripts/workflow-doc-sync.json'), '{"a": 2}\n');
+  git(other, 'commit', '-q', '-am', 'other');
+  edit(mine, 'SKILL.md', 107);
+  edit(mine, 'verify.md', 57);
+  edit(mine, 'near.txt', 44);
+  writeFileSync(join(mine, 'scripts/workflow-doc-sync.json'), '{"a": 3}\n');
+
+  const result = run(mine, '--mine', '--generated', 'scripts/*.json');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    'OVERLAP_WT issue/8-other SKILL.md hunks=apart',
+    'OVERLAP_WT issue/8-other near.txt hunks=near 44',
+    'OVERLAP_WT issue/8-other scripts/workflow-doc-sync.json generated',
+    'OVERLAP_WT issue/8-other verify.md hunks=apart',
+  ]);
+  // 既有解析：行首仍是 OVERLAP_WT <分支> <檔案>。
+  for (const line of result.stdout.trim().split('\n')) assert.match(line, /^OVERLAP_WT issue\/8-other \S+ /);
+  // 不帶 --generated 時產生檔照樣比 hunk（同一行 → near 1）；--near 20 時 SKILL.md（相距 14 行）變 near。
+  const wide = run(mine, '--mine', '--near', '20');
+  assert.equal(wide.status, 0, wide.stderr);
+  assert.ok(wide.stdout.includes('OVERLAP_WT issue/8-other SKILL.md hunks=near 107\n'), wide.stdout);
+  assert.ok(wide.stdout.includes('OVERLAP_WT issue/8-other scripts/workflow-doc-sync.json hunks=near 1\n'), wide.stdout);
+  assert.ok(wide.stdout.includes('OVERLAP_WT issue/8-other verify.md hunks=apart\n'), wide.stdout);
+  // 不帶 --mine 時不加欄位；--near／--generated 沒有 --mine 是用法錯誤。
+  assert.equal(run(main, 'SKILL.md').stdout, 'OVERLAP_WT issue/9-mine SKILL.md\nOVERLAP_WT issue/8-other SKILL.md\n');
+  assert.equal(run(main, '--near', '3').status, 2);
+  assert.equal(run(main, '--generated', 'x').status, 2);
 });
