@@ -22,9 +22,15 @@
 //   基準預設是 main：從 pilot/integration 開的 worktree，整合分支上還沒進 main 的改動也會算進去，只看各自的改動時帶 --main pilot/integration。
 //   沒有 main 這條分支的 repo（整合分支另有名稱）一律帶 --main <整合分支>。
 //   detached HEAD 的 worktree，<分支> 寫成 `detached@<HEAD 前 7 碼>`。和主分支沒有共同祖先、或還沒有 commit 的 worktree 略過。沒有命中時不輸出。
+//   TEMPLATE_COPY <檔案> <正本路徑>
+//   給了檔案（或 --mine 的自己改動）時，cwd 所在 worktree 有 docs/agents/workflow-templates.json（copy-templates.mjs 的副本清單）就逐一比對，
+//   是清單裡的副本就在 OVERLAP_WT 之前印一行（依輸入順序），<正本路徑> 是清單的 template（ron-skills 內的路徑）。不改 exit code。
+//   看到這行：不要直接改這個檔，改 ron-skills 的正本再以 copy-templates 帶回（retro spay2 0cd3fdeb#1：計畫把副本派給子代理直接改，
+//   到 check-contracts --static 的 TEMPLATE_COPY_MISMATCH 才發現，多走兩輪 PR）。不帶檔案時不印。
 // exit：0 印完（不論有無命中）；2 用法錯誤；1 git 失敗。
 import { spawnSync } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
 
@@ -51,6 +57,20 @@ export function parseWorktrees(porcelain) {
   }));
 }
 
+const MANIFEST = 'docs/agents/workflow-templates.json';
+
+/** `files` 裡是 cwd 所在 worktree 副本清單（MANIFEST）列出的副本 → TEMPLATE_COPY 行；沒有清單或讀不懂時為空。 */
+export function templateCopies(cwd, files) {
+  const top = git(cwd, 'rev-parse', '--show-toplevel').trim();
+  let copies;
+  try {
+    copies = JSON.parse(readFileSync(join(top, MANIFEST), 'utf8')).copies ?? {};
+  } catch {
+    return [];
+  }
+  return files.filter(file => copies[file]?.template).map(file => `TEMPLATE_COPY ${file} ${copies[file].template}`);
+}
+
 /** cwd 所在 worktree 的根目錄，與它從 merge-base 起改過的檔（含工作樹）。 */
 function ownChanges(cwd, main) {
   const top = git(cwd, 'rev-parse', '--show-toplevel').trim();
@@ -71,7 +91,7 @@ export function worktreeOverlaps(cwd, files = [], { main = 'main', mine = false 
     files = own.files;
   }
   const [, ...others] = parseWorktrees(git(cwd, 'worktree', 'list', '--porcelain'));
-  const out = [];
+  const out = files.length ? templateCopies(cwd, files) : [];
   for (const tree of others) {
     if (self && tree.path && existsSync(tree.path) && realpathSync(tree.path) === self) continue;
     // 目錄已不在，或還沒有任何 commit 的 orphan worktree（HEAD 解析不到，merge-base 會 exit 128）都略過。

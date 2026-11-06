@@ -152,3 +152,26 @@ test('只帶自己與 lib/changed-units.mjs 也能執行', t => {
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(result.stdout.trim().split('\n'), ['OVERLAP_WT issue/2-b scripts/x.mjs']);
 });
+
+// retro spay2 0cd3fdeb#1：計畫把範本副本 scripts/run-codex-review.mjs 派給子代理直接改，overlap 沒有提示它是副本，
+// 到 check-contracts --static 的 TEMPLATE_COPY_MISMATCH 才發現。
+test('TEMPLATE_COPY：給的檔是 workflow-templates.json 列出的副本時，在 OVERLAP_WT 之前依輸入順序各印一行，exit 0', t => {
+  const { main, b } = fixture(t);
+  const template = 'skills/engineering/setup-workflow/templates/run-codex-review.mjs';
+  const manifest = { source: 'ron03wlb/ron-skills', copies: {
+    'scripts/run-codex-review.mjs': { template, commit: '0'.repeat(40), sha256: '0'.repeat(64) },
+    'scripts/x.mjs': { template: 'skills/engineering/setup-workflow/templates/x.mjs', commit: '0'.repeat(40), sha256: '0'.repeat(64) },
+  } };
+  writeFileSync(join(main, 'docs/agents/workflow-templates.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  const result = run(main, 'scripts/run-codex-review.mjs', PILOT, 'scripts/x.mjs');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    `TEMPLATE_COPY scripts/run-codex-review.mjs ${template}`,
+    'TEMPLATE_COPY scripts/x.mjs skills/engineering/setup-workflow/templates/x.mjs',
+    'OVERLAP_WT issue/1-a docs/agents/pilot.md **Probe.**',
+    'OVERLAP_WT issue/2-b scripts/x.mjs',
+  ]);
+  // 不帶檔案時不印；清單看的是 cwd 所在 worktree，b 沒有這份清單。
+  assert.doesNotMatch(run(main).stdout, /TEMPLATE_COPY/);
+  assert.doesNotMatch(run(b, 'scripts/run-codex-review.mjs').stdout, /TEMPLATE_COPY/);
+});

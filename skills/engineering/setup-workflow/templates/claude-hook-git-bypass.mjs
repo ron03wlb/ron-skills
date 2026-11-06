@@ -180,12 +180,17 @@ const BYPASS = [
   [/(^|[\s;&|(])git\b[^;&|]*\bcommit\b[^;&|]*\s-[a-zA-Z]*n[a-zA-Z]*(\s|$)/, 'git commit -n'],
 ];
 
+// shell 重導（`>`、`>>`、`2>`、`&>`、`>&2`、`<` 及其目標）：`git config core.hooksPath >/dev/null` 是唯讀查詢，
+// 不去掉的話 `>/dev/null` 會被當成設定值（retro spay2 0cd3fdeb#3）。要在指令開頭或空白、分隔符之後才算，
+// `core.hooksPath=/x>y` 這種黏在值上的不動；`<<`、`<<<` 不算。
+const REDIRECT = /(?<![^\s;&|(])(?:\d+|&)?(?:>>?|<(?!<))[&|]?\s*[^\s;&|()<>]*/g;
+
 /**
  * @param {string} command Bash tool 的完整指令
  * @returns {string|null} 命中的繞過方式；未命中為 null
  */
 export function bypassReason(command) {
-  const view = commandView(command);
+  const view = commandView(command).replace(REDIRECT, ' ');
   for (const [pattern, reason] of BYPASS) if (pattern.test(view)) return reason;
   return null;
 }
@@ -250,9 +255,11 @@ const runs = script => String.raw`(?:^|(?<!\\)[;&|\n(])\s*(?:(?:do|then|else|eli
 // 只印資料、不是 gate 的形式：script 之後的參數符合就不算 exit gate（retro spay2 4a22bbe7#3：`followups.mjs list | cut`、`issue-create.mjs --template | head`
 // 被拒，理由是「gate 失敗也顯示成功」，但它們不是 gate，整段多指令 Bash 卻要重送）。寫死在這裡而不是新增旗標：hook 的參數在 settings.json，只有使用者能改。
 // 寫入形式要繼續攔，所以比對開頭：issue-create.mjs 只把第一個參數的 `--template` 當成印骨架。
+// `--help`／`-h` 也只印用法（retro spay2 2dc186b1#4：`issue-create.mjs --help 2>&1 | head -5` 被拒，`--template … | head -60` 放行）；
+// 只列確認過會先處理 `--help` 的 script，不一律放行：不認得 `--help` 的 gate 可能照常整個跑完。
 const EXIT_GATE_READ_ONLY = {
-  'followups.mjs': /^\s+list(?![\w-])/,
-  'issue-create.mjs': /^\s+--template(?![\w-])/,
+  'followups.mjs': /^\s+(?:list|--help|-h)(?![\w-])/,
+  'issue-create.mjs': /^\s+(?:--template|--help|-h)(?![\w-])/,
 };
 
 const COMPOUND_CLOSERS = new Map([['for', 'done'], ['select', 'done'], ['while', 'done'], ['until', 'done'], ['if', 'fi'], ['case', 'esac'], ['{', '}']]);

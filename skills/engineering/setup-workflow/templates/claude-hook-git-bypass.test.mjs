@@ -30,6 +30,19 @@ test('bypassReason：一般 git 指令與內容裡的字樣不攔', () => {
   ]) assert.equal(bypassReason(command), null, command);
 });
 
+// 真實指令：retro spay2 0cd3fdeb#3（jsonl 698）。唯讀查詢的輸出重導不是設定值；真的寫入照攔。
+test('bypassReason：shell 重導不算 core.hooksPath 的值', () => {
+  for (const command of ['git config core.hooksPath >/dev/null', 'git config core.hooksPath >/dev/null; git add -A && git commit -qm x',
+    'git config core.hooksPath 2>/dev/null', 'git config core.hooksPath >> /tmp/log 2>&1', 'git config core.hooksPath &>/dev/null || echo none',
+    'git config --get core.hooksPath']) assert.equal(bypassReason(command), null, command);
+  for (const command of ['git config core.hooksPath /dev/null', 'git config core.hooksPath /dev/null >/dev/null 2>&1',
+    'git config core.hooksPath >/dev/null /tmp/none', 'git config core.hooksPath .none 2>&1']) assert.equal(bypassReason(command), '改寫 core.hooksPath', command);
+  const status = command => hook(JSON.stringify({ tool_input: { command } })).status;
+  assert.equal(status('git config core.hooksPath >/dev/null'), 0);
+  assert.equal(status('git config --get core.hooksPath'), 0);
+  assert.equal(status('git config core.hooksPath /dev/null'), 2);
+});
+
 // 真實指令：retro spay2 8eaa8b41#4，驗收文字與 hook 的 JSON 測試輸入都只是提到旗標，沒有執行 git commit。
 test('bypassReason：成對引號內的文字不算指令', () => {
   for (const command of [
@@ -255,6 +268,11 @@ test('hook：以 --exit-gate 的現行參數執行，迴圈內的 gate 與唯讀
   assert.equal(status('node scripts/issue-create.mjs --title x | head'), 2);
   assert.equal(status('node scripts/followups.mjs list --observation | cut -c1-60'), 0);
   assert.equal(status('node scripts/issue-create.mjs --template x | head'), 0);
+  // 真實指令：retro spay2 2dc186b1#4（jsonl 450 被拒、360 放行）。--help 只印用法；排在寫入參數後面的不算。
+  assert.equal(status('node scripts/issue-create.mjs --help 2>&1 | head -5'), 0);
+  assert.equal(status('node scripts/issue-create.mjs --template --parent 999 2>&1 | head -60'), 0);
+  assert.equal(status('node scripts/followups.mjs --help | head -5'), 0);
+  assert.equal(status('node scripts/issue-create.mjs --title x --help | head'), 2);
 });
 
 // 真實指令：retro spay2 f5d852cf#7。drain、diff 與交接串在一個 Bash 呼叫，`DIFFERENT 1` 印出時已 HANDED_OFF，交接內容漏了最新結果。
