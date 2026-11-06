@@ -72,8 +72,8 @@
     },
     "scripts/land.mjs": {
       "template": "skills/engineering/setup-workflow/templates/land.mjs",
-      "commit": "a2005cb75ae3873417ad1f773247b15d4f306e55",
-      "sha256": "fdf6c8cec868c33091a090d33679be870b8a6913ef1b5086dde84ae4c98eecb0"
+      "commit": "5d0249d267d7f7295ef393eac7ac81614fd4351f",
+      "sha256": "41851ad32c0b43d8259f3da2f36a75a87b4f52fb066f264a5ce140fa34b8f414"
     },
     "scripts/lib/changed-units.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/changed-units.mjs",
@@ -92,7 +92,7 @@
     },
     "scripts/orca-session-send.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-send.mjs",
-      "commit": "a2005cb75ae3873417ad1f773247b15d4f306e55",
+      "commit": "5d0249d267d7f7295ef393eac7ac81614fd4351f",
       "sha256": "1d21dba80395af6ece014501d7c828667ddd95b852fa9476642941f5e44340b2"
     },
     "scripts/orca-session-split.mjs": {

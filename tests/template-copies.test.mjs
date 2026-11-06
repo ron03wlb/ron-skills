@@ -1,5 +1,6 @@
 // scripts/ 裡從 setup-workflow 正本複製來的副本（清單在 docs/agents/workflow-templates.json）必須與正本逐位元組相同、
-// 與清單記錄的 sha256 一致：要改就改正本，commit 後用 setup-workflow 的 copy-templates.mjs 複製過來。
+// 與清單記錄的 sha256 一致：要改就改正本，git add 正本後用 setup-workflow 的 copy-templates.mjs --staged 複製過來，副本與正本同一個 commit。
+// 不能先 commit 正本再複製：pre-commit 跑本測試，副本還舊就擋下 commit（retro spay2 1bb1d94c#3）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -8,13 +9,14 @@ import { pilotFiles } from '../scripts/pilot-probe.mjs';
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url));
 const { copies } = JSON.parse(read('docs/agents/workflow-templates.json'));
+const RECOPY = 'node skills/engineering/setup-workflow/scripts/copy-templates.mjs . --no-tests --yes --staged <名稱>';
 
 for (const [path, entry] of Object.entries(copies)) {
   test(`${path} 與 setup-workflow 正本相同，hash 與清單一致`, () => {
     assert.ok(read(path).equals(read(entry.template)),
-      `${path} 與正本不同：改 ${entry.template}，commit 後執行 node skills/engineering/setup-workflow/scripts/copy-templates.mjs . --no-tests <名稱>`);
+      `${path} 與正本不同：改 ${entry.template}，git add 它之後執行 ${RECOPY}，再 git add 副本與清單一起 commit`);
     assert.equal(createHash('sha256').update(read(path)).digest('hex'), entry.sha256,
-      `${path} 與清單記錄的 sha256 不同：不手動 cp、不手算 sha256，正本 commit 後執行 node skills/engineering/setup-workflow/scripts/copy-templates.mjs . --no-tests <名稱>，它複製副本並更新清單（#250）`);
+      `${path} 與清單記錄的 sha256 不同：不手動 cp、不手算 sha256，git add 正本後執行 ${RECOPY}，它複製副本並更新清單（#250）`);
     assert.match(entry.commit, /^[0-9a-f]{40}$/);
   });
 }

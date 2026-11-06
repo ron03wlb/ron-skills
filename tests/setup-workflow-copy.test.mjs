@@ -331,3 +331,34 @@ test('--exclude：只排除目錄時其餘相依照帶；排除明列的正本�
   assert.match(dir.stdout, /^COPY scripts\/test\/helper\.mjs$/m);
   assert.doesNotMatch(dir.stdout, /^COPY scripts\/test\/fixtures/m);
 });
+
+test('清單的 localExceptions：目標 repo 自己的檔不帶 --exclude 也不複製、不記清單，--yes 也不蓋掉；清單保留 localExceptions', t => {
+  // retro spay2 1bb1d94c#1(a)：`copy-templates.mjs <repo> --yes …` 忘了帶 --exclude，spay2 的 scripts/test/fake-orca.mjs 與 fixtures/orca 被正本蓋掉。
+  const { target, copier } = fixture(t);
+  const localExceptions = ['scripts/test/helper.mjs', 'scripts/test/fixtures/orca'];
+  write(target, {
+    'scripts/test/helper.mjs': '// 本地版\n',
+    'scripts/test/fixtures/orca/send.json': '{"local":true}\n',
+    [MANIFEST]: `${JSON.stringify({ source: 'ron03wlb/ron-skills', localExceptions, copies: {} }, null, 2)}\n`,
+  });
+  const result = run(copier, target, '--yes', 'a');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), ['EXCLUDE scripts/test/helper.mjs', 'COPY scripts/a.mjs', 'COPY scripts/a.test.mjs', 'COPY scripts/b.mjs', 'COPY scripts/lib/pre.mjs', 'COPIED 4']);
+  assert.equal(readFileSync(join(target, 'scripts/test/helper.mjs'), 'utf8'), '// 本地版\n');
+  assert.equal(readFileSync(join(target, 'scripts/test/fixtures/orca/send.json'), 'utf8'), '{"local":true}\n');
+  const manifest = JSON.parse(readFileSync(join(target, MANIFEST), 'utf8'));
+  assert.deepEqual(manifest.localExceptions, localExceptions);
+  assert.deepEqual(Object.keys(manifest.copies), ['scripts/a.mjs', 'scripts/a.test.mjs', 'scripts/b.mjs', 'scripts/lib/pre.mjs']);
+  const named = run(copier, target, 'test/helper.mjs');
+  assert.equal(named.status, 2);
+  assert.match(named.stderr, /localExceptions/);
+});
+
+test('清單的 localExceptions 不是字串陣列時 exit 2、不寫任何檔', t => {
+  const { target, copier } = fixture(t);
+  write(target, { [MANIFEST]: `${JSON.stringify({ localExceptions: 'scripts/test/helper.mjs', copies: {} })}\n` });
+  const result = run(copier, target, 'a');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /localExceptions/);
+  assert.equal(existsSync(join(target, 'scripts')), false);
+});

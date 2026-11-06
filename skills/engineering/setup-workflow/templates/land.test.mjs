@@ -29,11 +29,12 @@ const CHECK_POLL = /^gh pr view \S+ --json headRefOid,statusCheckRollup/gm;
  * `{ head, checks }` 是 PR 的 head 還沒更新到剛 push 的 SHA），最後一筆重複使用。
  * 假 gh 的 `pr merge` 真的在 remote 上做 --no-ff 合併；假 Orca 的 `worktree rm` 照真實行為把主 checkout 設成 bare、一起刪掉本機分支。
  * branchSelectorMissing：照 `orca-ide worktree create --branch` 開的 worktree，`branch:` 選擇器回 selector_not_found，只認 `path:`（#49）。
+ * notOrcaWorktree：worktree 是 `git worktree add` 開的，Orca 不認得，任何選擇器都回 selector_not_found；`'dirty'` 時回之前先在 worktree 留一個未追蹤檔。
  * unstartedJobs：0 個 step 的 job id（帳務擋下，#132，樣本是 run 41164091250 的 job），missingJobs：jobs API 讀不到的 job id，
  * 其他 job 照有 step 的樣本；annotations 是那個 check run 的 annotations
  * （預設是 run 41164091250 的真實樣本，`'error'` 是讀不到）；visibility 是 `gh repo view --json visibility` 的值。
  */
-function fixture(t, { seed = {}, mainMovesAtMerge = null, checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false, localCheckExit = 0, unstartedJobs = [], missingJobs = [], annotations = GH_SAMPLES['check-run-annotations'], visibility = 'PUBLIC', base = 'main' } = {}) {
+function fixture(t, { seed = {}, mainMovesAtMerge = null, checks = [PASS], orcaFails = false, selfHosted = false, branchSelectorMissing = false, notOrcaWorktree = false, localCheckExit = 0, unstartedJobs = [], missingJobs = [], annotations = GH_SAMPLES['check-run-annotations'], visibility = 'PUBLIC', base = 'main' } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'land-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const sh = (cwd, ...args) => {
@@ -159,6 +160,8 @@ const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(log)}, 'orca ' + args.join(' ') + '\\n');
 if (${orcaFails}) { console.log(JSON.stringify({ ok: false, error: { code: 'runtime_unavailable' } })); process.exit(0); }
 const selector = args[args.indexOf('--worktree') + 1];
+if (${JSON.stringify(notOrcaWorktree)} === 'dirty') fs.writeFileSync(${JSON.stringify(wt)} + '/stray.txt', 'x\\n');
+if (${JSON.stringify(notOrcaWorktree)}) { console.log(JSON.stringify({ ok: false, error: { code: 'selector_not_found' } })); process.exit(0); }
 const list = execFileSync('git', ['-C', ${JSON.stringify(main)}, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' });
 const block = list.split('\\n\\n').find(b => selector.startsWith('path:') ? b.split('\\n').includes('worktree ' + selector.slice(5))
   : !${branchSelectorMissing} && b.split('\\n').includes('branch refs/heads/' + selector.replace(/^branch:/, '')));
@@ -296,6 +299,32 @@ test('Orca 的 branch: 選擇器找不到 worktree：改用 path: 移除並 LAND
   assert.equal(existsSync(wt), false);
   assert.equal(remoteHas('feature'), false);
   assert.equal(sh(main, 'rev-parse', 'HEAD'), prs()[0].mergeCommit.oid);
+});
+
+// 真實發生過的錯：worktree 是 `git worktree add` 開的、不是 Orca 開的，PR 已合併後收尾 STOP worktree-rm selector_not_found（retro spay2 1bb1d94c#4，PR #317）。
+test('Orca 不認得的 worktree（selector_not_found）：乾淨時改用 git worktree remove，接著刪分支並 LANDED', t => {
+  const { main, wt, body, sh, land, prs, remoteHas, last } = fixture(t, { notOrcaWorktree: true });
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`^WORKTREE_RM_FALLBACK selector_not_found ${wt}$`, 'm'));
+  assert.match(result.stdout, new RegExp(`^WORKTREE_REMOVED ${wt}$`, 'm'));
+  assert.match(result.stdout, /^BRANCH_DELETED local feature$/m);
+  assert.equal(last(result), `LANDED ${prs()[0].number} ${prs()[0].mergeCommit.oid}`);
+  assert.equal(existsSync(wt), false);
+  assert.equal(remoteHas('feature'), false);
+  assert.equal(sh(main, 'rev-parse', 'HEAD'), prs()[0].mergeCommit.oid);
+});
+
+test('Orca 不認得的 worktree 有未提交改動：不退回 git worktree remove，STOP worktree-rm selector_not_found、worktree 留著', t => {
+  const { wt, body, land, prs, last } = fixture(t, { notOrcaWorktree: 'dirty' });
+
+  const result = land(['feature', '--body-file', body]);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(last(result), 'STOP worktree-rm selector_not_found');
+  assert.doesNotMatch(result.stdout, /^WORKTREE_RM_FALLBACK /m);
+  assert.equal(prs()[0].state, 'MERGED');
+  assert.equal(existsSync(join(wt, 'stray.txt')), true);
 });
 
 // 真實發生過的錯：land 合入自己的分支時，收尾移除了腳本所在的 worktree，之後才去跑同目錄的 pilot-unbare.sh（#40 實作時發現）。

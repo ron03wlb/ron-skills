@@ -6,6 +6,8 @@
 //       node copy-templates.mjs <repo> --verify
 //       --exclude <路徑>（可重複；templates/ 下的檔或目錄，可帶 scripts/ 前綴）：目標 repo 有自己版本的檔，不複製、不記清單、不追它的相依，
 //       既有檔與清單項目不動（spay2 的 scripts/test/fake-orca.mjs 與 scripts/test/fixtures/orca/），每個被排除的檔印一行 `EXCLUDE <副本路徑>`。
+//       目標 repo 固定的本地例外寫在清單的 `localExceptions`（路徑字串陣列，格式同 --exclude），每次複製自動排除，不必記得帶 --exclude
+//       （retro spay2 1bb1d94c#1(a)：忘了帶就連 --yes 一起蓋掉 fake-orca）；不是字串陣列時 exit 2。
 //       --staged：正本已 `git add`、還沒 commit 時用（本 repo 的副本要和正本同一個 commit，bin/check 才過）：工作樹與 index 不同才擋，清單的 commit 記現在的 HEAD。
 // 輸出每檔一行 `COPY|SAME|UPDATE|DIFF <副本路徑>`（UPDATE、DIFF 後接 unified diff；UPDATE 是 sha256 與清單記錄一致、沒手改過的舊副本，直接覆寫），最後一行：
 //   PLANNED <n>（--dry-run）、COPIED <n>、CONFIRM_OVERWRITE <路徑...>（exit 3：既有檔內容不同且與清單記錄不一致，人確認後加 --yes 重跑；不是明列的範本時路徑緊接來源，例如 `scripts/b.mjs（a、c 的相依）`）、
@@ -25,10 +27,14 @@ const args = process.argv.slice(2).filter((arg, i, all) => {
   if (all[i - 1] === '--exclude') return false;
   if (arg !== '--exclude') return true;
   if (!all[i + 1] || all[i + 1].startsWith('--')) fail('--exclude 要接路徑');
-  excludes.push(all[i + 1].replace(/^(\.\/)?(scripts\/)?/, '').replace(/\/+$/, ''));
+  excludes.push(all[i + 1]);
   return false;
 });
-const excluded = file => excludes.some(path => file === path || file.startsWith(`${path}/`));
+/** 排除路徑一律以 templates/ 為根：去掉 ./ 與 scripts/ 前綴及結尾的 /。 */
+const templatePath = path => path.replace(/^(\.\/)?(scripts\/)?/, '').replace(/\/+$/, '');
+/** 每個排除路徑 → 來源（`--exclude` 或清單的 `localExceptions`），排除明列的正本時報錯用。 */
+const exclusions = new Map();
+const excluded = file => [...exclusions.keys()].find(path => file === path || file.startsWith(`${path}/`));
 const flags = new Set(args.filter(arg => arg.startsWith('--')));
 const [repoArg, ...names] = args.filter(arg => !arg.startsWith('--'));
 const unknown = [...flags].filter(flag => !['--dry-run', '--no-tests', '--yes', '--verify', '--staged'].includes(flag));
@@ -39,6 +45,10 @@ const repo = resolve(repoArg);
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 const manifestPath = join(repo, MANIFEST);
 const manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')) : { source: 'ron03wlb/ron-skills', copies: {} };
+const { localExceptions = [] } = manifest;
+if (!Array.isArray(localExceptions) || localExceptions.some(path => typeof path !== 'string' || !path)) fail(`${MANIFEST} 的 localExceptions 要是路徑字串陣列`);
+for (const path of localExceptions) exclusions.set(templatePath(path), `${MANIFEST} 的 localExceptions`);
+for (const path of excludes) exclusions.set(templatePath(path), '--exclude');
 
 if (flags.has('--verify')) {
   if (!existsSync(manifestPath)) { console.log(`MISSING ${MANIFEST}`); process.exit(1); }
@@ -103,7 +113,7 @@ const visit = (file, root) => {
 const named = new Set();
 for (const name of names) {
   const file = /\.(mjs|sh)$/.test(name) ? name : `${name}.mjs`;
-  if (excluded(file)) fail(`--exclude 排除了明列的正本：${file}`);
+  if (excluded(file)) fail(`${exclusions.get(excluded(file))} 排除了明列的正本：${file}`);
   named.add(file);
   visit(file, file);
   const testFile = file.replace(/\.(mjs|sh)$/, '.test.mjs');
