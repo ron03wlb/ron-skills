@@ -1,22 +1,27 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { source, run, git } from './test/repo-fixture.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 // 假 codex：記錄 argv／stdin（每次的 -m 另附加到 FAKE_ARGV.models），-m 屬於 FAKE_CAPACITY 時印容量不足並 exit 1；否則輸出 FAKE_LOG，依 FAKE_WRITES 寫檔（相對路徑落在 -C worktree），必要時寫 -o 報告，以 FAKE_EXIT 結束。
+// FAKE_CHECK_SPEC：像真 Codex 一樣以 -C worktree 解析 prompt 的 Spec 路徑，找不到時改寫 retro fc336d0c#1 的真實報告句。
 const FAKE = `#!/usr/bin/env node
 const fs = require('node:fs'); const path = require('node:path');
 const argv = process.argv.slice(2);
-fs.writeFileSync(process.env.FAKE_ARGV, JSON.stringify({ argv, stdin: fs.readFileSync(0, 'utf8') }));
+const stdin = fs.readFileSync(0, 'utf8'); fs.writeFileSync(process.env.FAKE_ARGV, JSON.stringify({ argv, stdin }));
 const model = argv[argv.indexOf('-m') + 1]; fs.appendFileSync(process.env.FAKE_ARGV + '.models', model + '\\n');
 if ((process.env.FAKE_CAPACITY || '').split(',').includes(model)) {
   process.stdout.write('ERROR: Selected model is at capacity. Please try a different model.\\n'); process.exit(1);
 }
 process.stdout.write(process.env.FAKE_LOG);
 for (const [file, content] of JSON.parse(process.env.FAKE_WRITES || '[]')) fs.writeFileSync(path.resolve(argv[argv.indexOf('-C') + 1], file), content);
-if (process.env.FAKE_REPORT) fs.writeFileSync(argv[argv.indexOf('-o') + 1], process.env.FAKE_REPORT);
+let report = process.env.FAKE_REPORT;
+const spec = /Spec: (\\S+)\\. /.exec(stdin)?.[1];
+if (process.env.FAKE_CHECK_SPEC && !fs.existsSync(path.resolve(argv[argv.indexOf('-C') + 1], spec)))
+  report = '## 規範審查（Standards）\\n\\n- 無\\n\\n## 需求審查（Spec）\\n\\n找不到 \`' + spec + '\`，因此未完成需求符合性審查，不能判定通過。\\n\\n**Standards：0 項；Spec：缺少來源。**';
+if (report) fs.writeFileSync(argv[argv.indexOf('-o') + 1], report);
 process.exit(Number(process.env.FAKE_EXIT || 0));
 `;
 const header = (model = 'gpt-6.1-sol', effort = 'high') =>
@@ -34,7 +39,7 @@ function worktree(temp) {
   return repo;
 }
 
-function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit = 0, staleReport = false, rulings, writes = [], outDir = '.scratch/issue-run-1', baseline, checkpoint, capacity = '' } = {}) {
+function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit = 0, staleReport = false, rulings, writes = [], outDir = '.scratch/issue-run-1', baseline, checkpoint, capacity = '', spec = 'spec.md', specContent = '# spec\n', checkSpec = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'codex-review-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const bin = join(temp, 'codex'); writeFileSync(bin, FAKE); chmodSync(bin, 0o755);
@@ -70,9 +75,11 @@ function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit 
     extra.push(join(temp, 'rulings.md'));
     if (rulings !== null) writeFileSync(extra[0], rulings);
   }
+  // spec 以 runner 的 cwd（temp，模擬主 checkout）為準寫入，不在 worktree 內；specContent 為 null 時不建立。
+  if (specContent !== null) { mkdirSync(dirname(join(temp, spec)), { recursive: true }); writeFileSync(join(temp, spec), specContent); }
   const fixedPoint = baseline ?? git(repo, 'rev-parse', '--short', 'HEAD');
-  const result = run(temp, [process.execPath, join(source, 'run-codex-review.mjs'), fixedPoint, 'spec.md', repo, out, ...extra],
-    { env: { CODEX_BIN: bin, FAKE_ARGV: argvFile, FAKE_LOG: log, FAKE_REPORT: report, FAKE_EXIT: String(exit), FAKE_WRITES: JSON.stringify(writes), FAKE_CAPACITY: capacity } });
+  const result = run(temp, [process.execPath, join(source, 'run-codex-review.mjs'), fixedPoint, spec, repo, out, ...extra],
+    { env: { CODEX_BIN: bin, FAKE_ARGV: argvFile, FAKE_LOG: log, FAKE_REPORT: report, FAKE_EXIT: String(exit), FAKE_WRITES: JSON.stringify(writes), FAKE_CAPACITY: capacity, FAKE_CHECK_SPEC: checkSpec ? '1' : '' } });
   const models = existsSync(`${argvFile}.models`) ? readFileSync(`${argvFile}.models`, 'utf8').trim().split('\n') : [];
   return { result, repo, temp, out, models, call: existsSync(argvFile) ? JSON.parse(readFileSync(argvFile, 'utf8')) : null };
 }
@@ -93,11 +100,11 @@ test('主模型容量不足時改用 gpt-6-astra 重跑一次並以其比對 MOD
 });
 
 test('以固定模型、effort、workspace-write（開放網路）與持久 session 呼叫 Codex，並回報 OK', t => {
-  const { result, repo, out, call } = review(t);
+  const { result, repo, temp, out, call } = review(t);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(call.argv, ['exec', '-s', 'workspace-write', '--ignore-user-config', '-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort=high',
     '-c', 'sandbox_workspace_write.network_access=true', '-C', repo, '-o', join(out, 'review.md'), '-']);
-  assert.match(call.stdin, new RegExp(`^Use the code-review skill\\. Fixed point: ${git(repo, 'rev-parse', 'HEAD')}\\. Spec: spec\\.md\\.`));
+  assert.match(call.stdin, new RegExp(`^Use the code-review skill\\. Fixed point: ${git(repo, 'rev-parse', 'HEAD')}\\. Spec: ${join(temp, 'spec.md').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.`));
   assert.match(call.stdin, /You may run fixture tests that create temporary files, but write nothing to the repository\./);
   assert.match(call.stdin, /The controller has already run the verification suites; run only the focused tests that confirm or refute a suspected finding\./);
   assert.equal(JSON.parse(result.stdout).status, 'OK');
@@ -164,6 +171,7 @@ test('worktree 不是 git repository 時判定 SNAPSHOT_FAILED，且不呼叫 Co
   const temp = mkdtempSync(join(realTmpdir(), 'codex-review-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const argvFile = join(temp, 'argv.json'); const bin = join(temp, 'codex'); writeFileSync(bin, FAKE); chmodSync(bin, 0o755);
+  writeFileSync(join(temp, 'spec.md'), '# spec\n');
   const result = run(temp, [process.execPath, join(source, 'run-codex-review.mjs'), 'abc123', 'spec.md', temp, join(temp, 'out')],
     { env: { CODEX_BIN: bin, FAKE_ARGV: argvFile, FAKE_LOG: header() } });
   assert.equal(error(result), 'SNAPSHOT_FAILED');
@@ -206,6 +214,27 @@ test('裁決檔不存在或為空判定 RULINGS_MISSING，且不呼叫 Codex', t
     assert.equal(error(result), 'RULINGS_MISSING');
     assert.equal(call, null);
   }
+});
+// 真實形狀：retro fc336d0c#1 在主 checkout 傳相對路徑 `.scratch/retro/plan-1106a.md`，Codex 以 worktree 解析找不到，舊碼仍回 OK、exit 0。
+test('相對路徑 spec 以 runner cwd 解析成絕對路徑放進 prompt，Codex 在 worktree 也讀得到', t => {
+  const { result, temp, call } = review(t, { spec: '.scratch/retro/plan-1106a.md', checkSpec: true });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(call.stdin.includes(`Spec: ${join(temp, '.scratch/retro/plan-1106a.md')}.`));
+});
+test('spec 不存在或為空判定 SPEC_MISSING（附絕對路徑），且不呼叫 Codex', t => {
+  for (const specContent of [null, '']) {
+    const { result, temp, call } = review(t, { spec: '.scratch/retro/plan-1106a.md', specContent });
+    assert.equal(error(result), 'SPEC_MISSING');
+    assert.equal(JSON.parse(result.stderr.trim()).spec, join(temp, '.scratch/retro/plan-1106a.md'));
+    assert.equal(call, null);
+  }
+});
+test('報告寫出未完成需求審查（retro fc336d0c#1 的真實句）判定 SPEC_NOT_REVIEWED；反引號或「」內的引用不算', t => {
+  const real = '## 需求審查（Spec）\n\n找不到 `.scratch/retro/plan-1106a.md`，因此未完成需求符合性審查，不能判定通過。\n';
+  assert.equal(error(review(t, { report: real }).result), 'SPEC_NOT_REVIEWED');
+  assert.equal(error(review(t, { report: '**Standards：0 項；Spec：缺少來源。**\n' }).result), 'SPEC_NOT_REVIEWED');
+  const quoted = '## 需求審查（Spec）\n\n- P3：review.md 寫出「未完成需求符合性審查」時判失敗，對應 `Spec：缺少來源`。\n';
+  assert.equal(review(t, { report: quoted }).result.status, 0);
 });
 test('缺參數判定 USAGE', t => {
   const result = run(source, [process.execPath, join(source, 'run-codex-review.mjs'), 'abc123']);
