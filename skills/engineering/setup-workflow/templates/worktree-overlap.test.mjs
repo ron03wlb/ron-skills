@@ -114,9 +114,12 @@ test('--mine：本機 main 在 merge-base 之後前進時，只拿自己改過�
   const result = run(join(a, 'docs'), '--mine');
   assert.equal(result.status, 0, result.stderr);
   // --mine 的行尾多一個 hunk 欄位（retro spay2 e9234021#2）：兩邊都在 README.md 第 1 行後插入；x.mjs 兩邊都是未追蹤新檔，整檔算。
+  // main 在 merge-base 後改了 pilot.md 的 Handoff（第 7 行），a 改了第 1、5 行：相距 2 行 → OVERLAP_MAIN near（retro spay2 31d564a6#1）。
+  const handoff = git(main, 'log', '-1', '--format=%H', 'main', '--', PILOT).trim().slice(0, 7);
   assert.deepEqual(result.stdout.trim().split('\n'), [
     'OVERLAP_WT issue/2-b README.md hunks=near 1',
     'OVERLAP_WT issue/2-b scripts/x.mjs hunks=near 1',
+    `OVERLAP_MAIN docs/agents/pilot.md ${handoff} hunks=near 5`,
   ]);
 });
 
@@ -136,7 +139,8 @@ test('--main：沒有 main 分支的 repo 以整合分支當基準；不帶時 g
   git(main, 'branch', '-m', 'main', 'feature/ron/#24846');
   const result = run(a, '--main', 'feature/ron/#24846', '--mine');
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, '', 'a 改的檔其他 worktree 都沒碰');
+  // a 改的檔其他 worktree 都沒碰；只有整合分支自己在 merge-base 後改了 pilot.md。
+  assert.match(result.stdout, /^OVERLAP_MAIN docs\/agents\/pilot\.md [0-9a-f]{7} hunks=near 5\n$/);
   const listed = run(main, '--main', 'feature/ron/#24846', 'scripts/x.mjs');
   assert.equal(listed.status, 0, listed.stderr);
   assert.deepEqual(listed.stdout.trim().split('\n'), ['OVERLAP_WT issue/2-b scripts/x.mjs']);
@@ -234,4 +238,37 @@ test('--mine：每行附 hunks=apart／hunks=near <本方行>，--generated 的�
   assert.equal(run(main, 'SKILL.md').stdout, 'OVERLAP_WT issue/9-mine SKILL.md\nOVERLAP_WT issue/8-other SKILL.md\n');
   assert.equal(run(main, '--near', '3').status, 2);
   assert.equal(run(main, '--generated', 'x').status, 2);
+});
+
+// retro spay2 31d564a6#1（jsonl 1057–1125）：`--mine --main 'feature/ron/#24846'` 只印 OVERLAP_WT，整合分支 08:42 已合入改同檔的批次，
+// coordinator 依輸出判斷可落地，fix-land 才 STOP merge-conflict。--mine 另比 merge-base..<主分支>，同一套 hunk 距離判斷。
+test('--mine：主分支在 merge-base 後改了本方檔案的相鄰行時印 OVERLAP_MAIN … hunks=near，遠處印 apart，產生檔印 generated', t => {
+  const { main } = fixture(t);
+  const lines = Array.from({ length: 100 }, (_, i) => `line ${i + 1}`);
+  const edit = (dir, file, n) => writeFileSync(join(dir, file), `${lines.map((text, i) => (i === n - 1 ? `${text} 改了` : text)).join('\n')}\n`);
+  for (const file of ['status.mjs', 'far.md']) writeFileSync(join(main, file), `${lines.join('\n')}\n`);
+  writeFileSync(join(main, 'scripts/sync.json'), '{"a": 1}\n');
+  git(main, 'add', '.');
+  git(main, 'commit', '-q', '-m', 'files');
+  const mine = join(main, '..', 'mine');
+  git(main, 'worktree', 'add', '-q', '-b', 'retro/mine', mine, 'main');
+  edit(mine, 'status.mjs', 41);
+  edit(mine, 'far.md', 10);
+  writeFileSync(join(mine, 'scripts/sync.json'), '{"a": 2}\n');
+  git(mine, 'commit', '-q', '-am', 'mine');
+  edit(main, 'status.mjs', 40);
+  edit(main, 'far.md', 90);
+  writeFileSync(join(main, 'scripts/sync.json'), '{"a": 3}\n');
+  git(main, 'commit', '-q', '-am', 'batch merged');
+  const sha = git(main, 'rev-parse', 'HEAD').trim().slice(0, 7);
+  const result = run(mine, '--mine', '--generated', 'scripts/*.json');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    `OVERLAP_MAIN far.md ${sha} hunks=apart`,
+    `OVERLAP_MAIN scripts/sync.json ${sha} generated`,
+    `OVERLAP_MAIN status.mjs ${sha} hunks=near 41`,
+  ]);
+  // 主分支還在 merge-base（沒有新 commit）時不印。
+  git(main, 'reset', '-q', '--hard', 'HEAD~1');
+  assert.equal(run(mine, '--mine').stdout, '');
 });

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { backgroundJobReason, bypassReason, chainedHandoff, chainedLongWaitReason, exitGateReason, foregroundReason, probeFilterReason, writesFile } from './claude-hook-git-bypass.mjs';
+import { backgroundJobReason, bypassReason, chainedHandoff, chainedLongWaitReason, chainedNote, exitGateReason, foregroundReason, probeFilterReason, writesFile } from './claude-hook-git-bypass.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-git-bypass.mjs', import.meta.url));
 const hook = (input, args = []) => spawnSync('node', [script, ...args], { input, encoding: 'utf8' });
@@ -487,4 +487,47 @@ test('writesFile／hook：被拒指令含 heredoc 或寫檔重導時，訊息說
   assert.equal(plain.status, 2); assert.ok(!plain.stderr.includes(NOTE));
   const bypass = hook(JSON.stringify({ tool_input: { command: 'echo x > f; git commit --no-verify -m x' } }));
   assert.equal(bypass.status, 2); assert.ok(bypass.stderr.includes(NOTE));
+});
+
+// 真實指令：retro spay2 b20cba58#3（jsonl 1077／1088）。followups.mjs 接 tail 與另一個 tail 串在一起被拒，之後沒有重送，兩段都沒執行；
+// retro spay2 3eccd274#4：heredoc 寫 reason 檔再串 pilot-handoff.mjs 被拒，試錯一次才改成 Write ＋單獨呼叫。
+test('chainedNote／hook：被拒的是串接指令時說明整個呼叫都沒執行；帶 --reason-file 時指明先 Write 再單獨執行', () => {
+  const WHOLE = '被拒的整個 Bash 呼叫都沒有執行（含串在一起的其他指令與寫檔），改寫後全部重送。';
+  const followups = "node scripts/followups.mjs add '#fix-batch-watch' --tooling 'brief 範本驗證指令不符' 2>&1 | tail -2; tail -5 /tmp/t/b30u2618x.output";
+  const gated = hook(JSON.stringify({ tool_input: { command: followups } }), ['--exit-gate', 'followups.mjs']);
+  assert.equal(gated.status, 2);
+  assert.match(gated.stderr, /followups\.mjs 接 tail/);
+  assert.ok(gated.stderr.includes(WHOLE), gated.stderr);
+  assert.ok(!gated.stderr.includes('--reason-file'), gated.stderr);
+  // 單一指令（或只多了 cd）不加。
+  const single = hook(JSON.stringify({ tool_input: { command: "cd /m && node scripts/followups.mjs add x 2>&1 | tail -2" } }), ['--exit-gate', 'followups.mjs']);
+  assert.equal(single.status, 2);
+  assert.ok(!single.stderr.includes(WHOLE), single.stderr);
+  const handoff = "cat > /tmp/s/reason.md <<'EOF'\n交接原因：context 將滿\nEOF\nnode scripts/pilot-handoff.mjs --session s1 --pid 42 --reason-file /tmp/s/reason.md";
+  const denied = hook(JSON.stringify({ tool_input: { command: handoff } }));
+  assert.equal(denied.status, 2);
+  assert.match(denied.stderr, /pilot-handoff\.mjs 與其他指令串在同一個 Bash 呼叫/);
+  assert.ok(denied.stderr.includes('本指令中的寫檔也未執行'), denied.stderr);
+  assert.ok(denied.stderr.includes(WHOLE), denied.stderr);
+  assert.ok(denied.stderr.includes('先用 Write 寫 reason 檔，再單獨執行 `pilot-handoff.mjs --reason-file /tmp/s/reason.md`'), denied.stderr);
+  assert.equal(chainedNote('node scripts/pilot-handoff.mjs --reason-file /tmp/r.md'), '');
+  assert.equal(chainedNote('X=1; cd /m && git status'), '');
+});
+
+// 真實指令：retro spay2 31d564a6#2（jsonl 696）。verify-unit.test.mjs 實測 228 秒，前景跑超過 120 秒被移到背景，管線緩衝讓輸出檔一直是空的。
+// 原本 runs 只認 `node <script>`，`node --test <其他測試檔> <script>` 攔不到。
+test('foregroundReason：node 選項與前面的其他測試檔之後的 spec 也算執行', () => {
+  const specs = ['verify-unit.test.mjs'];
+  for (const command of ['node --test scripts/verify-unit.test.mjs | head',
+    'cd /m && node --test scripts/verify-record.test.mjs scripts/verify-unit.test.mjs 2>&1 | grep -B2 -A12 "^✖" | head -60',
+    'node --test --test-name-pattern=x scripts/verify-unit.test.mjs',
+  ]) assert.equal(foregroundReason(command, specs, false), 'verify-unit.test.mjs', command);
+  for (const command of ['node --test scripts/verify-record.test.mjs', 'cat scripts/verify-unit.test.mjs | head', 'node --test scripts/verify-unit.test.mjs.bak']) {
+    assert.equal(foregroundReason(command, specs, false), null, command);
+  }
+  const denied = hook(JSON.stringify({ tool_input: { command: 'node --test scripts/verify-unit.test.mjs | head' } }), ['--background-only', 'verify-unit.test.mjs']);
+  assert.equal(denied.status, 2);
+  assert.match(denied.stderr, /verify-unit\.test\.mjs 在前景執行/);
+  assert.match(denied.stderr, /先寫進 log/);
+  assert.equal(hook(JSON.stringify({ tool_input: { command: 'node --test scripts/verify-unit.test.mjs | head', run_in_background: true } }), ['--background-only', 'verify-unit.test.mjs']).status, 0);
 });

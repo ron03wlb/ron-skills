@@ -14,6 +14,13 @@
 //   actionable：先跑前面的指令，再以 run_in_background 單獨執行 watcher（retro spay2 e320267d#5：task notification 的摘要是整串的描述，看不出哪個 worker 交件）。
 // 任一拒絕時，指令含 here-doc（`<<`）或寫檔重導（`>`、`>>`、`2>`、`&>`；`2>&1`、`>&2`、`>/dev/null` 不算）就在訊息後加一行
 //   「本指令中的寫檔也未執行；寫檔另開一個呼叫。」：不另外 actionable，照拒絕訊息改法重送時把寫檔拆成另一個呼叫（retro spay2 e9234021#4）。
+// 任一拒絕時，被拒的是串接指令（`;`、`&&`、`||`、換行切出兩段以上，`cd`／變數指派不算）就再加一行
+//   「被拒的整個 Bash 呼叫都沒有執行（含串在一起的其他指令與寫檔），改寫後全部重送。」：不另外 actionable，重送時別只重送被點名的那段
+//   （retro spay2 b20cba58#3：`followups.mjs add … | tail` 與另一個 `tail` 串在一起被拒，之後沒有重送，followups 記錄與另一段都沒執行）。
+//   串接中有一段帶 `--reason-file <路徑>` 時再加「先用 Write 寫 reason 檔，再單獨執行 `<script> --reason-file <路徑>`。」
+//   （retro spay2 3eccd274#4：heredoc 寫 reason 檔再串 pilot-handoff.mjs 被拒，試錯一次才改成 Write ＋單獨呼叫）。
+// 前景執行偵測（runs）也認 `node --test a.test.mjs b.test.mjs` 這類 node 選項與前面的其他測試檔：`--background-only verify-unit.test.mjs`
+//   才攔得到 `node --test scripts/verify-unit.test.mjs | head`（retro spay2 31d564a6#2：實測 228 秒，超過前景 120 秒被移到背景，管線緩衝讓輸出檔一直是空的）。
 // `--long-wait` 只看 shell `&` 與串接，攔不到前景呼叫；兩者互不取代，`--exit-gate` 也獨立判定，同一支 script 可以同時帶。
 // 用法：node scripts/claude-hook-git-bypass.mjs [--long-wait <spec>]… [--whole-output <spec>]… [--exit-gate <script 名稱>]… [--background-only <spec>]…
 //   spec 是「script 名稱[ 旗標]」，例如 `watch.mjs` 或 `queue.mjs --wait`：帶旗標時同段指令要有該旗標才算。不帶時只攔 git 繞過。
@@ -256,7 +263,7 @@ function filteredOutput(command, specs) {
  * 「這一段指令在執行 script」的 regex 片段：段落開頭，可接 shell 關鍵字（`do`、`then`、`{` 等，retro spay2 6d21b9cc#3：for 迴圈內的管線原本看不到）、
  * 環境變數與 node／bash／sh，可帶路徑。`(?<!\\)`：沒加引號的 `grep a\|x.mjs f` 裡，`\|` 也不是分隔。
  */
-const runs = script => String.raw`(?:^|(?<!\\)[;&|\n(])\s*(?:(?:do|then|else|elif|if|while|until|\{|!)\s+)*(?:\w+=\S*\s+)*(?:(?:node|bash|sh)\s+)?(?:[^\s;&|"']*\/)?${escape(script)}(?![\w.-])`;
+const runs = script => String.raw`(?:^|(?<!\\)[;&|\n(])\s*(?:(?:do|then|else|elif|if|while|until|\{|!)\s+)*(?:\w+=\S*\s+)*(?:node(?:\s+-[^\s;&|]+)*(?:\s+[^\s;&|"'<>-][^\s;&|"'<>]*\.test\.m?js)*\s+|(?:bash|sh)\s+)?(?:[^\s;&|"']*\/)?${escape(script)}(?![\w.-])`;
 
 // 只印資料、不是 gate 的形式：script 之後的參數符合就不算 exit gate（retro spay2 4a22bbe7#3：`followups.mjs list | cut`、`issue-create.mjs --template | head`
 // 被拒，理由是「gate 失敗也顯示成功」，但它們不是 gate，整段多指令 Bash 卻要重送）。寫死在這裡而不是新增旗標：hook 的參數在 settings.json，只有使用者能改。
@@ -407,6 +414,25 @@ export function writesFile(command) {
   return WRITES_FILE.test(commandView(command, true));
 }
 
+/**
+ * 被拒的指令是串接（兩段以上不是 `cd`／變數指派的指令）時補的說明：整個呼叫都沒執行；有一段帶 `--reason-file` 時指明先 Write 再單獨執行。
+ * @param {string} command Bash tool 的完整指令
+ * @returns {string} 要附在拒絕訊息後的文字；不是串接時為空字串
+ */
+export function chainedNote(command) {
+  const parts = statements(command).filter(text => !SETUP_ONLY.test(text));
+  if (parts.length < 2) return '';
+  let note = '被拒的整個 Bash 呼叫都沒有執行（含串在一起的其他指令與寫檔），改寫後全部重送。\n';
+  for (const text of parts) {
+    const match = /(?:^|\s)(?:[^\s;&|"']*\/)?([\w.-]+\.m?js)\b[^;&|\n]*?\s--reason-file[=\s]\s*([^\s;&|<>()]+)/.exec(text);
+    if (match) {
+      note += `先用 Write 寫 reason 檔，再單獨執行 \`${match[1]} --reason-file ${match[2]}\`（前面可以有 \`cd\`）。\n`;
+      break;
+    }
+  }
+  return note;
+}
+
 /** argv 中所有 `<flag> <value>` 的 value；緊接的是另一個旗標時不算值。 */
 const values = (args, flag) => args.flatMap((arg, i) => (arg === flag && args[i + 1] && !args[i + 1].startsWith('--') ? [args[i + 1]] : []));
 
@@ -420,7 +446,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   } catch { process.exit(0); }
   // 所有拒絕共用：指令含寫檔時補一句，寫檔也沒有執行（retro spay2 e9234021#4）。
   const deny = message => {
-    process.stderr.write(message + (writesFile(command) ? '本指令中的寫檔也未執行；寫檔另開一個呼叫。\n' : ''));
+    process.stderr.write(message + (writesFile(command) ? '本指令中的寫檔也未執行；寫檔另開一個呼叫。\n' : '') + chainedNote(command));
     process.exit(2);
   };
   const reason = bypassReason(command);
@@ -447,7 +473,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
   const foreground = foregroundReason(command, values(args, '--background-only'), runInBackground);
   if (foreground) {
-    deny(`拒絕：${foreground} 在前景執行，會把這個 session 擋到它結束（最多 600 秒），期間 worker 的結果都不會被處理。改用 Bash tool 的 run_in_background: true 執行同一指令，結束時會收到通知。\n`);
+    deny(`拒絕：${foreground} 在前景執行，會把這個 session 擋到它結束（最多 600 秒），期間 worker 的結果都不會被處理。改用 Bash tool 的 run_in_background: true 執行同一指令，結束時會收到通知；要過濾輸出時先寫進 log（\`> <log> 2>&1\`），通知後再 grep／tail（背景的管線輸出有緩衝，提早讀是空的）。\n`);
   }
   if (chainedHandoff(command)) {
     deny('拒絕：pilot-handoff.mjs 與其他指令串在同一個 Bash 呼叫，前面的結果印出時已經交接，交接內容會漏掉它。先跑其他指令、讀完結果，再單獨執行 pilot-handoff.mjs（前面可以有 `cd` 或變數指派）。\n');

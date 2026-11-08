@@ -31,6 +31,11 @@
 //     generated          檔案符合 `--generated <glob>`（可重複；`*` 不跨 `/`、`**` 跨目錄）：由工具重新產生的檔（例如 spay2 的
 //                        `scripts/workflow-doc-sync.json`），衝突時重跑產生器即可，不比 hunk。不 actionable。
 //   行號取各自與 <主分支> 的 merge-base：兩邊 merge-base 不同時，主分支中間的改動會讓行號略有位移，所以 apart／near 是近似值。
+//   OVERLAP_MAIN <檔案> <commit7> hunks=apart|near <行>|generated
+//   --mine 時另比對 <主分支> 本身：merge-base..<主分支> 之間有 commit 改到本方的檔，就在所有 OVERLAP_WT 之後依本方檔名各印一行
+//   （retro spay2 31d564a6#1：只比其他 worktree，整合分支在 merge-base 後已合入改同檔的批次，fix-land 才 STOP merge-conflict）。
+//   <commit7> 是該區間最後一個改到這個檔的 commit 前 7 碼；hunk 欄位同 OVERLAP_WT 的判斷，兩邊都以本方 merge-base 的行號比，
+//   所以這裡的 apart／near 是精確值。hunks=near 是 actionable：先 sync <主分支>（合入本分支並解衝突）再落地；apart、generated 不 actionable。
 //   TEMPLATE_COPY <檔案> <正本路徑>
 //   給了檔案（或 --mine 的自己改動）時，cwd 所在 worktree 有 docs/agents/workflow-templates.json（copy-templates.mjs 的副本清單）就逐一比對，
 //   是清單裡的副本就在 OVERLAP_WT 之前印一行（依輸入順序），<正本路徑> 是清單的 template（ron-skills 內的路徑）。不改 exit code。
@@ -104,6 +109,38 @@ export function hunkRanges(checkout, base, path) {
   return ranges.length ? ranges : [[1, Infinity]];
 }
 
+/**
+ * 主分支從 `base` 到 `to`（commit）改 `path` 的 hunk，以 base 那側的行號表示（同 hunkRanges）。
+ * 二進位（diff 沒有 `@@`）一律當整檔。
+ */
+export function commitRanges(checkout, base, to, path) {
+  const diff = git(checkout, 'diff', '-U0', '--no-color', '--no-renames', '--diff-algorithm=histogram', base, to, '--', path);
+  const ranges = [...diff.matchAll(/^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/gm)].map(([, start, count = '1']) => {
+    const [from, n] = [Number(start), Number(count)];
+    return n ? [from, from + n - 1] : [from, from];
+  });
+  return ranges.length ? ranges : [[1, Infinity]];
+}
+
+/** --mine：<主分支> 在本方 merge-base 之後改到本方檔案的 OVERLAP_MAIN 行（retro spay2 31d564a6#1）。 */
+function mainOverlaps(own, main, near, isGenerated, mineRanges) {
+  const tip = git(own.top, 'rev-parse', '--verify', `${main}^{commit}`).trim();
+  if (tip === own.base) return [];
+  const out = [];
+  for (const path of own.files) {
+    const last = git(own.top, 'log', '-1', '--format=%H', `${own.base}..${tip}`, '--', path).trim();
+    if (!last) continue;
+    const fields = ['OVERLAP_MAIN', path, last.slice(0, 7)];
+    if (isGenerated(path)) fields.push('generated');
+    else {
+      if (!mineRanges.has(path)) mineRanges.set(path, hunkRanges(own.top, own.base, path));
+      fields.push(hunkProximity(mineRanges.get(path), commitRanges(own.top, own.base, tip, path), near));
+    }
+    out.push(fields.join(' '));
+  }
+  return out;
+}
+
 /** 兩組 hunk 最近的一對相距 `near` 行以內時回 `near <本方起始行>`，否則 `apart`。 */
 export function hunkProximity(mine, theirs, near = NEAR) {
   let best = null;
@@ -166,6 +203,7 @@ export function worktreeOverlaps(cwd, files = [], { main = 'main', mine = false,
       out.push(fields.join(' '));
     }
   }
+  if (own) out.push(...mainOverlaps(own, main, near, isGenerated, mineRanges));
   return out;
 }
 
