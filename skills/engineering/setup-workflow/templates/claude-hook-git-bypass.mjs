@@ -21,6 +21,8 @@
 //   （retro spay2 3eccd274#4：heredoc 寫 reason 檔再串 pilot-handoff.mjs 被拒，試錯一次才改成 Write ＋單獨呼叫）。
 // 前景執行偵測（runs）也認 `node --test a.test.mjs b.test.mjs` 這類 node 選項與前面的其他測試檔：`--background-only verify-unit.test.mjs`
 //   才攔得到 `node --test scripts/verify-unit.test.mjs | head`（retro spay2 31d564a6#2：實測 228 秒，超過前景 120 秒被移到背景，管線緩衝讓輸出檔一直是空的）。
+// `--long-wait` 的 spec 所在段落帶 `--once` 時不算長等待（不等待、印一次就結束），`&` 背景化與串接都不攔；同一呼叫裡其他沒帶 `--once` 的
+//   長等待段落照攔（retro spay2 a5403bfb#1：`pilot-status.mjs --drain; batch-watch.mjs --once <handle>` 被誤擋，tick 本來就要求 `--once` 唯讀探查）。
 // `--long-wait` 只看 shell `&` 與串接，攔不到前景呼叫；兩者互不取代，`--exit-gate` 也獨立判定，同一支 script 可以同時帶。
 // 用法：node scripts/claude-hook-git-bypass.mjs [--long-wait <spec>]… [--whole-output <spec>]… [--exit-gate <script 名稱>]… [--background-only <spec>]…
 //   spec 是「script 名稱[ 旗標]」，例如 `watch.mjs` 或 `queue.mjs --wait`：帶旗標時同段指令要有該旗標才算。不帶時只攔 git 繞過。
@@ -221,6 +223,8 @@ function specPattern(spec) {
 // 長等待指令之後、同一段指令內（不跨 `;`、`||`、換行）出現單獨的 `&`：排除 `&&`、`2>&1`／`>&`、`&>`、`|&`。
 // 若 `&&` 串起的整串最後以 `&` 結尾，整串都在背景，一樣攔。單一 `|` 不切段：`<spec> 2>&1 | head -0 &` 是整條 pipeline 在背景
 // （retro spay2 b0225c1b#1：原本 `|` 也切段，watcher 經 `| head -0 &` 在背景跑、不觸發 task notification，hook 放行）。
+// 帶 `--once` 的段落只印一次就結束，不是長等待（retro spay2 a5403bfb#1）。
+const ONCE = /\s--once(?![\w-])/;
 const backgrounded = specs => new RegExp(`(${specs.map(specPattern).join('|')})(?:[^;|\\n]|(?<!\\|)\\|(?!\\|))*?(?<![&>|<])&(?![&>])`);
 
 /**
@@ -230,8 +234,12 @@ const backgrounded = specs => new RegExp(`(${specs.map(specPattern).join('|')})(
  */
 export function backgroundJobReason(command, specs = []) {
   if (!specs.length) return null;
-  const match = backgrounded(specs).exec(gateView(command));
-  return match ? specs.find(spec => new RegExp(`^${specPattern(spec)}`).test(match[1])) : null;
+  // 從 spec 到 `&` 之間帶 `--once` 的不算長等待，往後找下一個（retro spay2 a5403bfb#1）。
+  const pattern = new RegExp(backgrounded(specs).source, 'g');
+  for (const match of gateView(command).matchAll(pattern)) {
+    if (!ONCE.test(match[0])) return specs.find(spec => new RegExp(`^${specPattern(spec)}`).test(match[1]));
+  }
+  return null;
 }
 
 // 指令之後、同一段指令內（不跨 `;`、`&&`／`&`、換行；`2>&1` 等重導向不算）以 `|`（或 `|&`）接 grep／egrep／rg／head／tail／cut（可帶路徑，
@@ -397,7 +405,7 @@ export function chainedLongWaitReason(command, specs = []) {
       const [script, flag] = item.trim().split(/\s+/);
       return new RegExp(runs(script) + (flag ? String.raw`[^;&|\n]*\s${escape(flag)}(?![\w-])` : '')).test(text);
     });
-    if (spec && parts.slice(0, i).some(before => !SETUP_ONLY.test(before))) return spec;
+    if (spec && !ONCE.test(text) && parts.slice(0, i).some(before => !SETUP_ONLY.test(before))) return spec;
   }
   return null;
 }

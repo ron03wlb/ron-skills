@@ -472,6 +472,21 @@ test('chainedLongWaitReason：長等待指令前面串了其他指令時攔下�
   assert.equal(hook(JSON.stringify({ tool_input: { command: 'cd /x && node scripts/job-watch.mjs --pilot --exit-on-finish' } }), ARGS).status, 0);
 });
 
+// 真實指令：retro spay2 a5403bfb#1。tick 以 `--once` 唯讀探查 watcher（不等待），串在 pilot-status 後面被誤擋。
+test('chainedLongWaitReason／backgroundJobReason：帶 --once 的段落不算長等待，其他沒帶的長等待段落照攔', () => {
+  const once = 'node scripts/pilot-status.mjs --drain; node scripts/job-watch.mjs --once term_x --lines 45';
+  assert.equal(chainedLongWaitReason(once, LONG_WAIT), null);
+  assert.equal(chainedLongWaitReason('git status && node scripts/job-watch.mjs --once-more', LONG_WAIT), 'job-watch.mjs');
+  assert.equal(chainedLongWaitReason('node scripts/pilot-status.mjs --drain; node scripts/job-watch.mjs --pilot', LONG_WAIT), 'job-watch.mjs');
+  assert.equal(chainedLongWaitReason(`${once}; node scripts/job-watch.mjs --pilot`, LONG_WAIT), 'job-watch.mjs');
+  assert.equal(backgroundJobReason('node scripts/job-watch.mjs --once term_x > /tmp/o.log 2>&1 &', LONG_WAIT), null);
+  assert.equal(backgroundJobReason('node scripts/job-watch.mjs --once term_x & node scripts/job-watch.mjs --pilot &', LONG_WAIT), 'job-watch.mjs');
+  assert.equal(backgroundJobReason('node scripts/job-watch.mjs --pilot &', LONG_WAIT), 'job-watch.mjs');
+  assert.equal(hook(JSON.stringify({ tool_input: { command: once } }), ARGS).status, 0);
+  const denied = hook(JSON.stringify({ tool_input: { command: 'node scripts/pilot-status.mjs --drain; node scripts/job-watch.mjs --pilot' } }), ARGS);
+  assert.equal(denied.status, 2); assert.match(denied.stderr, /單獨一個背景呼叫/);
+});
+
 // 真實指令：retro spay2 e9234021#4。heredoc 寫檔與 gate 接 tail 在同一呼叫，被拒後才發現檔案不存在。
 test('writesFile／hook：被拒指令含 heredoc 或寫檔重導時，訊息說明寫檔也未執行', () => {
   const NOTE = '本指令中的寫檔也未執行；寫檔另開一個呼叫';

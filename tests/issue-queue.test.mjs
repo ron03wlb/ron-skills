@@ -17,12 +17,14 @@ test('issue-queue 是 /loop 可呼叫的 skill，description 限定觸發時機'
 });
 
 // spay2 retro b8698cce：user-level skill 蓋過 repo 同名 skill，`/issue-queue 694 702` 停在缺 issue-pool.mjs，repo 自己的細化流程沒跑到。
-test('repo 有自己的 issue-queue skill 時改讀那份照做，排在分桶與 /setup-workflow 之前', () => {
-  const marker = skill.indexOf('.claude/skills/issue-queue/SKILL.md');
-  assert.ok(marker > 0, '沒有指向 repo skill');
-  assert.ok(marker < skill.indexOf('/setup-workflow'));
-  assert.ok(marker < skill.indexOf('## Steps'));
-  assert.match(paragraph('.claude/skills/issue-queue/SKILL.md'), /\$ARGUMENTS|arguments/);
+// spay2 retro 61dc190f#4：散文「Repo skill first」在 context 壓縮後被略過，照 user-level 版跑了不存在的 issue-pool.mjs；改成第一個步驟的指令。
+test('第一個步驟先跑 REPO_SKILL 檢查指令，印出就改讀 repo skill，/setup-workflow 停止條件排在它之後', () => {
+  const steps = skill.slice(skill.indexOf('## Steps'));
+  const first = steps.split('\n').find(line => /^\d+\. /.test(line)) ?? '';
+  assert.match(first, /^0\. .*`test -f \.claude\/skills\/issue-queue\/SKILL\.md && echo REPO_SKILL`/);
+  assert.match(first, /arguments/);
+  assert.match(first, /stop reading this file/);
+  assert.match(paragraph('/setup-workflow'), /When step 0 printed nothing/);
 });
 
 // 分桶只讀 issue-pool.mjs，和 pilot、--pool 同一份；沒有這支就交給 /setup-workflow，不自己拼查詢。

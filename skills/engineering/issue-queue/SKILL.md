@@ -3,17 +3,17 @@ name: issue-queue
 description: "Show the human the tracker pool by bucket with the in-progress count against the worker cap, refine Issues with the human's confirmation, and flag parent Issues whose children may have lost a detail: /issue-queue. Use only when the user runs /issue-queue or /loop /issue-queue (the loop invokes it through the Skill tool); never on your own initiative."
 ---
 
-**Repo skill first.** When the repo has `.claude/skills/issue-queue/SKILL.md`, a user-level skill shadows it under the same name: read that file whole with the Read tool (`allow_large`), never `cat` (a repo skill can be larger than the Bash output cap; a `cat` was saved to a file and read a second time, retro spay2 b0db621f#2, ef1e0ca7#3), and follow it with these arguments, in place of everything below.
-
 The human's view of the pool. `/issue-pilot` and `/issue-run --pool` take Issues from it unattended; `/issue-queue` shows the human what is in it, what is stuck, and what still needs a decision, and changes the tracker only when the human says so. Run it by hand or under `/loop /issue-queue`.
 
-Project facts come from the repo adapter `docs/agents/issue-run.md`: its **Tracker** section gives the tracker commands (on GitHub, `gh` reads as below; writes through the adapter's wrapper when it names one), its **Readiness** section the ready state, its **Pilot** section (or the file it points to) the worker cap, its **Pool** section the claim timeout and category labels, and its **Issue queue** section whether parent hints are on. The buckets come only from the repo's `scripts/issue-pool.mjs`, the same list the pilot and `--pool` read. When the repo has no `scripts/issue-pool.mjs`, stop and tell the human to run `/setup-workflow`; never bucket Issues another way.
+Project facts come from the repo adapter `docs/agents/issue-run.md`: its **Tracker** section gives the tracker commands (on GitHub, `gh` reads as below; writes through the adapter's wrapper when it names one), its **Readiness** section the ready state, its **Pilot** section (or the file it points to) the worker cap, its **Pool** section the claim timeout and category labels, and its **Issue queue** section whether parent hints are on. The buckets come only from the repo's `scripts/issue-pool.mjs`, the same list the pilot and `--pool` read. When step 0 printed nothing and the repo has no `scripts/issue-pool.mjs`, stop and tell the human to run `/setup-workflow`; never bucket Issues another way.
 
 The pilot's own refinement (its Pool and Probe steps relabelling and reopening on their own) is unchanged: this skill adds a human entry beside it and never edits the pilot, `/triage`, or any other skill.
 
 Arguments, optional: `/issue-queue <n> [<n>...]` limits step 5 (Refine) to those Issues; every other step reports the whole pool as usual.
 
 ## Steps
+
+0. **Repo skill.** Run `test -f .claude/skills/issue-queue/SKILL.md && echo REPO_SKILL` as the first command of every run, a run resumed after context compaction included (a compaction summary kept only this user-level text and the agent ran a script the repo does not have, retro spay2 61dc190f#4). When it prints `REPO_SKILL`, the repo skill is the one to follow: read that file whole with the Read tool (`allow_large`; a repo skill can exceed the Bash output cap, retro spay2 b0db621f#2, ef1e0ca7#3), follow it with these arguments, and stop reading this file. Done when the command ran and, on `REPO_SKILL`, the repo file was read.
 
 1. **Pool.** Run `node scripts/issue-pool.mjs`, with `--stale-hours <h>` when the adapter's Pool section sets `Claim timeout: <h> hours` and `--categories <label>,...` when it sets `Categories: <label>,...`, and keep its output: one `<bucket> #<n> <title>` line per open Issue, then any `NO_CATEGORY <n>` lines. Done when the command exited 0; on any other exit, report its stderr and stop.
 
