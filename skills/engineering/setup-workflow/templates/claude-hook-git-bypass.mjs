@@ -225,6 +225,8 @@ function specPattern(spec) {
 // （retro spay2 b0225c1b#1：原本 `|` 也切段，watcher 經 `| head -0 &` 在背景跑、不觸發 task notification，hook 放行）。
 // 帶 `--once` 的段落只印一次就結束，不是長等待（retro spay2 a5403bfb#1）。
 const ONCE = /\s--once(?![\w-])/;
+// 從 spec 開頭到第一個 `;`、`&`、`|`、換行為止（`>&`、`&>` 的 `&` 屬於重導，不切）：執行該 watcher 的那一段。
+const SEGMENT = /^(?:[^;&|\n]|(?<=[<>])&|&(?=>))*/;
 const backgrounded = specs => new RegExp(`(${specs.map(specPattern).join('|')})(?:[^;|\\n]|(?<!\\|)\\|(?!\\|))*?(?<![&>|<])&(?![&>])`);
 
 /**
@@ -234,10 +236,15 @@ const backgrounded = specs => new RegExp(`(${specs.map(specPattern).join('|')})(
  */
 export function backgroundJobReason(command, specs = []) {
   if (!specs.length) return null;
-  // 從 spec 到 `&` 之間帶 `--once` 的不算長等待，往後找下一個（retro spay2 a5403bfb#1）。
-  const pattern = new RegExp(backgrounded(specs).source, 'g');
-  for (const match of gateView(command).matchAll(pattern)) {
-    if (!ONCE.test(match[0])) return specs.find(spec => new RegExp(`^${specPattern(spec)}`).test(match[1]));
+  // 只看執行該 watcher 的那一段（切在 `;`、`&`、`|`、換行，`2>&1` 等重導不切）帶不帶 `--once`：
+  // `watch --pilot && watch --once x &` 的 `--pilot` 段照攔（retro spay2 a5403bfb#1，codex review P2）。
+  // 每個 spec 出現處各自從該處比對，前一段因 `--once` 略過時，後面同一串的其他 watcher 仍會被檢查。
+  const view = gateView(command);
+  const sticky = new RegExp(backgrounded(specs).source, 'y');
+  for (const start of view.matchAll(new RegExp(specs.map(specPattern).join('|'), 'g'))) {
+    sticky.lastIndex = start.index;
+    const match = sticky.exec(view);
+    if (match && !ONCE.test(SEGMENT.exec(match[0])[0])) return specs.find(spec => new RegExp(`^${specPattern(spec)}`).test(match[1]));
   }
   return null;
 }

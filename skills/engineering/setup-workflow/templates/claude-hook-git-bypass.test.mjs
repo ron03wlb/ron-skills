@@ -482,6 +482,13 @@ test('chainedLongWaitReason／backgroundJobReason：帶 --once 的段落不算�
   assert.equal(backgroundJobReason('node scripts/job-watch.mjs --once term_x > /tmp/o.log 2>&1 &', LONG_WAIT), null);
   assert.equal(backgroundJobReason('node scripts/job-watch.mjs --once term_x & node scripts/job-watch.mjs --pilot &', LONG_WAIT), 'job-watch.mjs');
   assert.equal(backgroundJobReason('node scripts/job-watch.mjs --pilot &', LONG_WAIT), 'job-watch.mjs');
+  // codex review P2：`--once` 只看執行該 watcher 的那一段，同一串背景化的其他 watcher 照攔。
+  for (const command of ['node scripts/job-watch.mjs --pilot && node scripts/job-watch.mjs --once term_x &',
+    'node scripts/job-watch.mjs --once term_x && node scripts/job-watch.mjs --pilot &',
+    'node scripts/job-watch.mjs --pilot | node scripts/job-watch.mjs --once term_x &',
+  ]) assert.equal(backgroundJobReason(command, LONG_WAIT), 'job-watch.mjs', command);
+  assert.equal(backgroundJobReason('node scripts/job-watch.mjs --once term_x 2>&1 | tail -3 &', LONG_WAIT), null);
+  assert.equal(hook(JSON.stringify({ tool_input: { command: 'node scripts/job-watch.mjs --pilot && node scripts/job-watch.mjs --once term_x &' } }), ARGS).status, 2);
   assert.equal(hook(JSON.stringify({ tool_input: { command: once } }), ARGS).status, 0);
   const denied = hook(JSON.stringify({ tool_input: { command: 'node scripts/pilot-status.mjs --drain; node scripts/job-watch.mjs --pilot' } }), ARGS);
   assert.equal(denied.status, 2); assert.match(denied.stderr, /單獨一個背景呼叫/);
