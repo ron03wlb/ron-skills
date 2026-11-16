@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // 摘要某個本地日期的 agent session：Claude Code 依專案列 prompt，Codex 依 prompt 種類分組計數。
 // 用法： node day-sessions.mjs <YYYY-MM-DD> [--tz-offset 8] [--claude-root <dir>]... [--codex-root <dir>] [--max-prompts 6]
-import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
 
 const NOISE = [
@@ -170,7 +171,8 @@ export function render({ claude, codex }, { tzOffset, maxPrompts }) {
   return out.join('\n');
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// 經 ~/.claude/skills 的 symlink 執行時 argv[1] 是 symlink 路徑，import.meta.url 卻已解析成實際路徑；比對前先 realpath。
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const opts = parseArgs(process.argv.slice(2));
   const win = dayWindow(opts.date, opts.tzOffset);
   const [claude, codex] = await Promise.all([

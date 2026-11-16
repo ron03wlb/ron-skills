@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
@@ -82,4 +82,16 @@ test('缺日期參數時失敗', () => {
   const r = spawnSync(process.execPath, [script], { encoding: 'utf8' });
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /usage: day-sessions\.mjs/);
+});
+
+test('透過 symlink 執行仍會印出結果（~/.claude/skills 是 symlink）', (t) => {
+  const dir = mkdtempSync(join(realTmpdir(), 'day-sessions-link-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const link = join(dir, 'day-sessions.mjs');
+  symlinkSync(script, link);
+  const empty = join(dir, 'empty');
+  mkdirSync(empty);
+  const r = spawnSync('node', [link, '2026-10-29', '--claude-root', empty, '--codex-root', empty], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, '\n');
 });
