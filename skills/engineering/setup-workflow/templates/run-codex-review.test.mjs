@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { source, run, git } from './test/repo-fixture.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
@@ -79,7 +79,7 @@ function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit 
   if (specContent !== null) { mkdirSync(dirname(join(temp, spec)), { recursive: true }); writeFileSync(join(temp, spec), specContent); }
   const fixedPoint = baseline ?? git(repo, 'rev-parse', '--short', 'HEAD');
   const result = run(temp, [process.execPath, join(source, 'run-codex-review.mjs'), fixedPoint, spec, repo, out, ...extra],
-    { env: { CODEX_BIN: bin, FAKE_ARGV: argvFile, FAKE_LOG: log, FAKE_REPORT: report, FAKE_EXIT: String(exit), FAKE_WRITES: JSON.stringify(writes), FAKE_CAPACITY: capacity, FAKE_CHECK_SPEC: checkSpec ? '1' : '' } });
+    { env: { CODEX_BIN: bin, FAKE_ARGV: argvFile, FAKE_LOG: log, FAKE_REPORT: report, FAKE_EXIT: String(exit), FAKE_WRITES: JSON.stringify(writes), FAKE_CAPACITY: capacity, FAKE_CHECK_SPEC: checkSpec ? '1' : '', CODEX_HOME: join(temp, 'codex-home') } });
   const models = existsSync(`${argvFile}.models`) ? readFileSync(`${argvFile}.models`, 'utf8').trim().split('\n') : [];
   return { result, repo, temp, out, models, call: existsSync(argvFile) ? JSON.parse(readFileSync(argvFile, 'utf8')) : null };
 }
@@ -262,7 +262,34 @@ test('額度用完：判定 CODEX_NO_CREDITS，附改用 code-review skill 的�
   const json = JSON.parse(result.stderr.trim());
   assert.equal(json.error, 'CODEX_NO_CREDITS');
   assert.match(json.hint, /code-review/);
+  assert.match(json.hint, /等週額度重置/);
+  assert.doesNotMatch(json.hint, /補額度/);
+  assert.equal(json.quota, 'CODEX_QUOTA_UNKNOWN');
   assert.match(json.log, /codex\.log$/);
+});
+
+// 真實形狀：retro spay2 a903a2bb#2（2026-11-12 rollout：secondary used_percent 26、window 10080、resets_at 1795054725）；
+// 2026-11-16 額度用完時的 rollout 則 secondary 為 null、rate_limit_reached_type 為 workspace_member_credits_depleted。
+function quota(t, files) {
+  const home = mkdtempSync(join(realTmpdir(), 'codex-quota-')); t.after(() => rmSync(home, { recursive: true, force: true }));
+  files.forEach(([name, limits, mtime], index) => {
+    const dir = join(home, 'sessions', '2026', '11', String(12 + index)); mkdirSync(dir, { recursive: true });
+    const file = join(dir, name);
+    writeFileSync(file, JSON.stringify({ type: 'session_meta' }) + '\n' + JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', rate_limits: limits } }) + '\n');
+    utimesSync(file, mtime, mtime);
+  });
+  return run(home, [process.execPath, join(source, 'run-codex-review.mjs'), '--quota'], { env: { CODEX_HOME: home } });
+}
+const WEEKLY = { primary: null, secondary: { used_percent: 26.0, window_minutes: 10080, resets_at: 1795054725 } };
+const DEPLETED = { primary: null, secondary: null, rate_limit_reached_type: 'workspace_member_credits_depleted' };
+test('--quota：印最新週額度與最新 reached，不呼叫 Codex', t => {
+  const result = quota(t, [['rollout-a.jsonl', WEEKLY, 1000], ['rollout-b.jsonl', DEPLETED, 2000]]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'CODEX_QUOTA used_percent=26 window_minutes=10080 resets_at=2026-11-19T02:18:45.000Z reached=workspace_member_credits_depleted');
+});
+test('--quota：只有週額度時 reached=none；沒有 rollout 時 CODEX_QUOTA_UNKNOWN', t => {
+  assert.equal(quota(t, [['rollout-a.jsonl', WEEKLY, 1000]]).stdout.trim(), 'CODEX_QUOTA used_percent=26 window_minutes=10080 resets_at=2026-11-19T02:18:45.000Z reached=none');
+  assert.equal(quota(t, []).stdout.trim(), 'CODEX_QUOTA_UNKNOWN');
 });
 test('額度字句只是被引用（非行首）或 Codex 成功結束：不判 CODEX_NO_CREDITS', t => {
   assert.equal(error(review(t, { log: header() + '+ ' + NO_CREDITS, exit: 2 }).result), 'CODEX_EXIT');
