@@ -15,10 +15,18 @@
 // 帶 isApiErrorMessage／apiError 或 model `<synthetic>`，整筆略過；結構欄位缺漏時再以固定句型比對文字。
 // Stop 只看最後一次語言檢查提示（Stop hook feedback 或 PostToolUse 的 hook_blocking_error）之後的文字：提示過的段落不再重提，
 // 否則 /loop 的 coordinator 長時間沒有新的使用者輪，每次 Stop 都重抓同一句舊英文。
+// 子代理（#901）：hook 輸入帶 agent_id／agent_type，transcript_path 卻是父 session 的 transcript（2026-11-16 實測，Claude Code 2.1.325），
+// 原本子代理每次跑 Bash 都引用父段落擋下（followups 625）。帶 agent_id 時改讀 `<transcript 去掉 .jsonl>/subagents/agent-<agent_id>.jsonl`，
+// 讀不到就 exit 0 放行；任何情況都不拿父 transcript 檢查子代理的工具呼叫。
+// 已知限制：不掛 PreToolUse（#901 實測）。PreToolUse 觸發當下 transcript 多半還沒寫入本次工具前的文字段：claude -p 主 session 53 次
+// （每次前面都有文字段）只命中 14 次（26.4%；Bash 0/19、Read 3/9、Edit 5/8、Skill 0/8、Write 6/8、Agent 0/1），前 50 次 14/50 觸發提前停止；
+// 等 300 ms 重讀為 45/53（84.9%，Skill 仍 0/8）。stdin 只有 session_id、transcript_path、cwd、prompt_id、permission_mode、effort、
+// hook_event_name、tool_name、tool_input、tool_use_id（子代理另有 agent_id、agent_type），沒有 assistant 文字可用；
+// 未達 95% 門檻，所以維持 PostToolUse＋Stop 事後提示，英文進度行仍是工具執行後才被擋。
 // 命中時 exit 2，stderr 交回 agent 繼續；stop_hook_active 為 true（已因本 hook 續跑一次）、輸入不合法、
 // 讀不到 transcript 時 exit 0 不輸出，避免卡住。
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // 程式碼、路徑、網址、識別字不算語言：先移除再計數
@@ -183,6 +191,18 @@ export function locateTool(jsonl, toolUseId) {
 }
 
 const RETRY_MS = 300;
+const AGENT_ID = /^[\w-]+$/;
+
+/**
+ * 子代理自己的 transcript：父 transcript 同名目錄下的 subagents/agent-<agent_id>.jsonl（#901 實測的檔案配置）。
+ * @param {string} transcriptPath hook 輸入的 transcript_path（子代理時是父 session 的）
+ * @param {string} agentId hook 輸入的 agent_id
+ * @returns {string|null} agent_id 不是單純識別字時 null
+ */
+export function subagentTranscript(transcriptPath, agentId) {
+  if (!AGENT_ID.test(agentId)) return null;
+  return join(dirname(transcriptPath), basename(transcriptPath, '.jsonl'), 'subagents', `agent-${agentId}.jsonl`);
+}
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   let input;
@@ -190,15 +210,17 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (input?.stop_hook_active || !input?.transcript_path) process.exit(0);
   const postTool = String(input.hook_event_name ?? '').startsWith('PostToolUse');
   if (postTool && !input.tool_use_id) process.exit(0);
+  const transcript = input.agent_id ? subagentTranscript(input.transcript_path, String(input.agent_id)) : input.transcript_path;
+  if (!transcript) process.exit(0);
   let jsonl;
-  try { jsonl = readFileSync(input.transcript_path, 'utf8'); } catch { process.exit(0); }
+  try { jsonl = readFileSync(transcript, 'utf8'); } catch { process.exit(0); }
   let texts;
   if (postTool) {
     const first = locateTool(jsonl, input.tool_use_id);
     let retry = null;
     if (!first.found) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RETRY_MS);
-      try { retry = locateTool(readFileSync(input.transcript_path, 'utf8'), input.tool_use_id); } catch { /* 用第一次的結果 */ }
+      try { retry = locateTool(readFileSync(transcript, 'utf8'), input.tool_use_id); } catch { /* 用第一次的結果 */ }
     }
     texts = (retry ?? first).texts;
     const scratch = join(process.env.CLAUDE_PROJECT_DIR || input.cwd || '.', '.scratch');
@@ -206,7 +228,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       const strip = ({ texts: t, ...rest }) => ({ ...rest, texts: t.length });
       try {
         appendFileSync(join(scratch, 'language-hook.log'), `${JSON.stringify({ at: new Date().toISOString(), tool: input.tool_name ?? null,
-          id: input.tool_use_id, first: strip(first), retry: retry && strip(retry) })}\n`);
+          id: input.tool_use_id, agent: input.agent_id ? true : undefined, first: strip(first), retry: retry && strip(retry) })}\n`);
       } catch { /* 量測失敗不影響檢查 */ }
     }
   } else texts = lastTurnTexts(jsonl);

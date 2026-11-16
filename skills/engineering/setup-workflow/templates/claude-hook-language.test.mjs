@@ -234,3 +234,33 @@ test('hook PostToolUse：觸發時文字段與 tool_use 都還沒寫入，稍後
   assert.equal(log.retry.found, true);
   assert.equal(log.tool, 'Bash');
 });
+
+// #901：子代理的 hook 輸入帶 agent_id／agent_type，transcript_path 卻指向父 session 的 transcript（2026-11-16 實測，Claude Code 2.1.325）；
+// 原本子代理每次跑 Bash，PostToolUse 都引用協調者尾端的英文段（followups 625）。子代理自己的 transcript 在
+// `<transcript 去掉 .jsonl>/subagents/agent-<agent_id>.jsonl`：讀得到只檢查它，讀不到就放行，任何情況都不引用父段落。
+test('hook：子代理（agent_id）不引用父 transcript 的文字段，只檢查子代理自己的 transcript', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'claude-hook-language-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const parent = join(dir, 'sess.jsonl');
+  const parentText = "I've finished my own items: dispatching the subagent now.";
+  writeFileSync(parent, [user('/retro-collect'), assistant(parentText)].join('\n'));
+  const sub = (event = 'PostToolUse') => hook(JSON.stringify({ hook_event_name: event, tool_name: 'Bash', transcript_path: parent, tool_use_id: 'sub1',
+    session_id: 'sess', agent_id: 'a1', agent_type: 'general-purpose', stop_hook_active: false }));
+
+  for (const event of ['PostToolUse', 'Stop']) {
+    const allowed = sub(event);
+    assert.equal(allowed.status, 0, event);
+    assert.equal(allowed.stdout + allowed.stderr, '', event);
+  }
+  const subTranscript = join(dir, 'sess', 'subagents', 'agent-a1.jsonl');
+  mkdirSync(join(dir, 'sess', 'subagents'), { recursive: true });
+  writeFileSync(subTranscript, [user('跑測試'), assistant('先跑 echo。'), toolUse('sub1')].join('\n'));
+  const chinese = sub();
+  assert.equal(chinese.status, 0);
+  assert.equal(chinese.stdout + chinese.stderr, '');
+  writeFileSync(subTranscript, [user('跑測試'), assistant('Running the focused tests for the subagent now.'), toolUse('sub1')].join('\n'));
+  const english = sub();
+  assert.equal(english.status, 2);
+  assert.match(english.stderr, /Running the focused tests/);
+  assert.doesNotMatch(english.stderr, /finished my own items/);
+});
