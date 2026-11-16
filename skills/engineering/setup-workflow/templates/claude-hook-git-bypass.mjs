@@ -23,6 +23,9 @@
 //   才攔得到 `node --test scripts/verify-unit.test.mjs | head`（retro spay2 31d564a6#2：實測 228 秒，超過前景 120 秒被移到背景，管線緩衝讓輸出檔一直是空的）。
 // `--long-wait` 的 spec 所在段落帶 `--once` 時不算長等待（不等待、印一次就結束），`&` 背景化與串接都不攔；同一呼叫裡其他沒帶 `--once` 的
 //   長等待段落照攔（retro spay2 a5403bfb#1：`pilot-status.mjs --drain; batch-watch.mjs --once <handle>` 被誤擋，tick 本來就要求 `--once` 唯讀探查）。
+// `--long-wait` 只認執行該 script 的段落（node［不含 `--check`／`-c`／`--help`／`--version`］、bash／sh 或直接執行，可帶路徑）：`node --check <spec>`、
+//   grep 參數與直譯器 here-doc 字串裡的字樣不算（retro spay2 1112b followups 617，retro 1116a：`node --check scripts/x.mjs && node --check scripts/batch-watch.mjs`
+//   被當成 watcher 前面串了其他指令而誤擋）。
 // `--long-wait` 只看 shell `&` 與串接，攔不到前景呼叫；兩者互不取代，`--exit-gate` 也獨立判定，同一支 script 可以同時帶。
 // 用法：node scripts/claude-hook-git-bypass.mjs [--long-wait <spec>]… [--whole-output <spec>]… [--exit-gate <script 名稱>]… [--background-only <spec>]…
 //   spec 是「script 名稱[ 旗標]」，例如 `watch.mjs` 或 `queue.mjs --wait`：帶旗標時同段指令要有該旗標才算。不帶時只攔 git 繞過。
@@ -241,8 +244,11 @@ export function backgroundJobReason(command, specs = []) {
   // 每個 spec 出現處各自從該處比對，前一段因 `--once` 略過時，後面同一串的其他 watcher 仍會被檢查。
   const view = gateView(command);
   const sticky = new RegExp(backgrounded(specs).source, 'y');
-  for (const start of view.matchAll(new RegExp(specs.map(specPattern).join('|'), 'g'))) {
-    sticky.lastIndex = start.index;
+  // 只從「執行該 script」的位置比對（見 runsWait）：`node --check`、grep 參數裡的字樣不算（retro spay2 1112b followups 617，retro 1116a）。
+  const names = specs.map(spec => spec.trim().split(/\s+/)[0]);
+  for (const start of view.matchAll(new RegExp(names.map(runsWait).join('|'), 'g'))) {
+    // 比對結果以 script 名稱結尾；從名稱處開始比對背景化（同 specPattern 的起點）。
+    sticky.lastIndex = start.index + start[0].length - [...names].sort((a, b) => b.length - a.length).find(name => start[0].endsWith(name)).length;
     const match = sticky.exec(view);
     if (match && !ONCE.test(SEGMENT.exec(match[0])[0])) return specs.find(spec => new RegExp(`^${specPattern(spec)}`).test(match[1]));
   }
@@ -274,11 +280,18 @@ function filteredOutput(command, specs) {
   return null;
 }
 
+const NODE_OPTION = String.raw`-[^\s;&|]+`;
+// 長等待判定用：`node --check`／`-c`（只檢查語法）、`--help`、`--version` 不執行 script，不算長等待（retro spay2 1112b followups 617，retro 1116a：
+// `node --check scripts/x.mjs && node --check scripts/batch-watch.mjs` 被當成 watcher 前面串了其他指令而誤擋）。
+const WAIT_NODE_OPTION = String.raw`(?!(?:-c|--check|-h|--help|-v|--version)(?![^\s;&|]))${NODE_OPTION}`;
+/** 長等待（`--long-wait`）的 script 被 node 執行（或直接、經 bash／sh 執行）的段落：見 runs，排除不執行的 node 旗標。 */
+const runsWait = script => runs(script, WAIT_NODE_OPTION);
+
 /**
  * 「這一段指令在執行 script」的 regex 片段：段落開頭，可接 shell 關鍵字（`do`、`then`、`{` 等，retro spay2 6d21b9cc#3：for 迴圈內的管線原本看不到）、
  * 環境變數與 node／bash／sh，可帶路徑。`(?<!\\)`：沒加引號的 `grep a\|x.mjs f` 裡，`\|` 也不是分隔。
  */
-const runs = script => String.raw`(?:^|(?<!\\)[;&|\n(])\s*(?:(?:do|then|else|elif|if|while|until|\{|!)\s+)*(?:\w+=\S*\s+)*(?:node(?:\s+-[^\s;&|]+)*(?:\s+[^\s;&|"'<>-][^\s;&|"'<>]*\.test\.m?js)*\s+|(?:bash|sh)\s+)?(?:[^\s;&|"']*\/)?${escape(script)}(?![\w.-])`;
+const runs = (script, nodeOption = NODE_OPTION) => String.raw`(?:^|(?<!\\)[;&|\n(])\s*(?:(?:do|then|else|elif|if|while|until|\{|!)\s+)*(?:\w+=\S*\s+)*(?:node(?:\s+${nodeOption})*(?:\s+[^\s;&|"'<>-][^\s;&|"'<>]*\.test\.m?js)*\s+|(?:bash|sh)\s+)?(?:[^\s;&|"']*\/)?${escape(script)}(?![\w.-])`;
 
 // 只印資料、不是 gate 的形式：script 之後的參數符合就不算 exit gate（retro spay2 4a22bbe7#3：`followups.mjs list | cut`、`issue-create.mjs --template | head`
 // 被拒，理由是「gate 失敗也顯示成功」，但它們不是 gate，整段多指令 Bash 卻要重送）。寫死在這裡而不是新增旗標：hook 的參數在 settings.json，只有使用者能改。
@@ -410,7 +423,7 @@ export function chainedLongWaitReason(command, specs = []) {
   for (const [i, text] of parts.entries()) {
     const spec = specs.find(item => {
       const [script, flag] = item.trim().split(/\s+/);
-      return new RegExp(runs(script) + (flag ? String.raw`[^;&|\n]*\s${escape(flag)}(?![\w-])` : '')).test(text);
+      return new RegExp(runsWait(script) + (flag ? String.raw`[^;&|\n]*\s${escape(flag)}(?![\w-])` : '')).test(text);
     });
     if (spec && !ONCE.test(text) && parts.slice(0, i).some(before => !SETUP_ONLY.test(before))) return spec;
   }
