@@ -1,0 +1,12 @@
+diff --git a/SKILL.md b/SKILL.md
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -59,6 +59,8 @@
+ 
+ Issue both sub-agent calls together, in the foreground, and aggregate the reports they return.
+ 
++**Models.** Spawn the **Standards** sub-agent with `model: sonnet`: it matches the diff against written rules. Spawn the **Spec** sub-agent with `model: sonnet` only when the caller's arguments say `low-risk`; otherwise leave `model` unset so it runs on the session's model, since a missed requirement costs more than the tokens (spay2 grill 2026-11-16 R1-Q6: opus review sub-agents were 53M of 67M weighted tokens in worker sessions).
++
+ **Standards sub-agent prompt** should include:
+ 
+ - The full diff command and commit list.
