@@ -7,7 +7,8 @@
 // CLAUDE_PROJECT_DIR 取不到 git-common-dir 時照舊，任何主 checkout 都擋。
 // Bash 也擋（曾有 session 在主 checkout 以 sed -i 改三支追蹤檔，Edit|Write hook 擋不到）：啟發式辨識 sed -i／perl -i、`>`／`>>` 重導向與 tee 的寫入目標，
 // 依指令中的 cd 與 hook 輸入的 cwd 解析相對路徑並展開 `{a,b}`，每個目標用和 Edit|Write 同一個判斷；heredoc 內文與引號內文字不算。eval、子 shell 字串等寫法不在辨識範圍。
-// `$NAME`／`${NAME}` 先用同一條指令裡的賦值、再用 hook 的環境變數代換；解析不了的（未賦值、`$(…)`、`${X:-y}`）不算寫入目標，
+// `$NAME`／`${NAME}` 先用同一條指令裡的賦值、再用 hook 的環境變數代換；`$_` 只取同一條指令前一個指令的最後一個引數（retro 0095107d#3）；
+// 解析不了的（未賦值、`$(…)`、`${X:-y}`）不算寫入目標，
 // 否則 `cat > "$SP/x.md"` 會被接在 cwd 底下誤判成主 checkout 內的新檔（#71）。
 // 主 checkout 切分支也擋（git switch、git checkout -b 或切到其他本機分支，切回它該停的分支放行：adapter `## Detect` 宣告的整合分支，沒宣告時是預設分支）：曾有兩個 session 先後在主 checkout 開分支，
 // 一方的 commit 落到另一方的分支上，送出的是沒有新 commit 的空分支（retro 2026-10-30）。
@@ -139,7 +140,9 @@ const DECLARE = new Set(['export', 'declare', 'typeset', 'readonly', 'local']);
  * @returns {Generator<{name: string, args: string[], rawArgs: string[], redirects: string[], resolvePaths: (word: string) => string[]}>}
  */
 function* walkSegments(command, cwd) {
-  const vars = new Map();
+  // `$_` 是前一個指令的最後一個引數（`mkdir -p <dir> && cd $_`）；不查環境變數 `_`（那是啟動 hook 的程式路徑，hook 環境裡常沒有），
+  // 沒有前一個指令時解析不了（retro 0095107d#3：`cd $_` 解析不了、目錄留在主 checkout，scratchpad 裡的新檔被擋）。
+  const vars = new Map([['_', null]]);
   let dir = cwd;
   const segments = [[]];
   for (const token of tokenize(stripHeredocs(command))) {
@@ -170,8 +173,10 @@ function* walkSegments(command, cwd) {
     }
     const raw = words.slice(first);
     const [name, ...args] = raw.map(literal);
-    if (name === 'cd' && raw[1]) { dir = resolvePaths(raw[1])[0] ?? dir; continue; }
+    const lastArg = raw.length > 1 ? expandVars(expandBraces(raw.at(-1)).at(-1), scope()) : null;
+    if (name === 'cd' && raw[1]) { dir = resolvePaths(raw[1])[0] ?? dir; vars.set('_', lastArg); continue; }
     yield { name, args, rawArgs: raw.slice(1), redirects, resolvePaths };
+    vars.set('_', lastArg);
   }
 }
 

@@ -13,6 +13,7 @@ const script = fileURLToPath(new URL('./claude-hook-main-checkout.mjs', import.m
 const hook = (input, projectDir, extraEnv = {}) => {
   const env = { ...process.env, ...extraEnv };
   delete env.CLAUDE_PROJECT_DIR;
+  delete env._; // 和 Claude Code 跑 hook 時一樣沒有 `_`；測試行程的 `_` 是 node 路徑，會讓 `cd $_` 碰巧離開主 checkout
   if (projectDir) env.CLAUDE_PROJECT_DIR = projectDir;
   return spawnSync('node', [script], { input, encoding: 'utf8', env });
 };
@@ -285,5 +286,31 @@ test('hook：目標檔所在 repo 不是 CLAUDE_PROJECT_DIR 的 repo 時放行�
   ]) {
     assert.equal(result.status, 2, label);
     assert.match(result.stderr, /主 checkout 防護/, label);
+  }
+});
+
+// 真實發生過的錯（retro 0095107d#3）：`mkdir -p <scratchpad>/issues && cd $_ && cat > periodic.md <<'EOF'` 的 `$_` 解析不了，
+// 目錄留在主 checkout，periodic.md 被當成主 checkout 新檔擋下。
+test('Bash：`$_` 是同一條指令前一個指令的最後一個引數；沒有前一個指令時照原本的目錄判斷', () => {
+  const { root, main } = fixture();
+  const bash = command => hook(JSON.stringify({ tool_name: 'Bash', cwd: main, tool_input: { command } }));
+  const scratch = join(root, 'claude-1001', '-home-ron-code-spay2', '0095107d', 'scratchpad', 'issues');
+  for (const command of [
+    `mkdir -p ${scratch} && cd $_ && cat > periodic.md <<'EOF'\nbody\nEOF`,
+    `mkdir -p ${scratch} && cd "$_" && echo hi > a.md && echo hi > b.md`,
+    `mkdir -p ${join(root, 'x')}/{a,b} && cd $_ && echo hi > c.md`, // 大括號展開後的最後一個
+  ]) {
+    const allowed = bash(command);
+    assert.equal(allowed.status, 0, `${command}\n${allowed.stderr}`);
+    assert.equal(allowed.stdout + allowed.stderr, '', command);
+  }
+  for (const command of [
+    'mkdir -p docs/sub && cd $_ && echo hi > new.md',
+    `touch ${join(main, 'docs', 'a.md')} && sed -i "s/a/b/" $_`, // $_ 是主 checkout 追蹤檔
+    'cd $_ && echo hi > GLOSSARY.md', // 沒有前一個指令：解析不了，照原本的目錄（主 checkout）判斷
+  ]) {
+    const denied = bash(command);
+    assert.equal(denied.status, 2, command);
+    assert.match(denied.stderr, /主 checkout 防護/, command);
   }
 });
