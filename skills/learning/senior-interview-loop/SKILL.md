@@ -10,7 +10,7 @@ One session = one question practised to a confirmed close. **Routing, not mirror
 
 ## 0. Preflight
 
-1. Confirm the Heptabase MCP tools (`search_by_keyword`, `create_object`, `place_whiteboard_objects`, `append_to_journal`) are callable. If they are missing, stop and tell the user to connect Heptabase with `/mcp`.
+1. Confirm the Heptabase MCP tools (`search_by_keyword`, `create_object`, `place_whiteboard_objects`, `edit_journal_content`) are callable. If they are missing, stop and tell the user to connect Heptabase with `/mcp`.
 2. Locate the Growth root: the current git root if it contains `docs/agents/senior-interview-loop.md`, else `$GROWTH_ROOT`, else ask the user. Read that **adapter**: every path, Heptabase ID, title format and threshold below comes from it.
 
 Done when the adapter is read.
