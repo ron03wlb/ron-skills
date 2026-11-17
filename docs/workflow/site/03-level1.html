@@ -132,9 +132,15 @@ git branch -d issue/&lt;n&gt;-&lt;slug&gt; &amp;&amp; git push origin --delete i
 <p>它在同一個 session 照 <code>ready</code> 的順序先 <code>node scripts/issue-pool.mjs claim &lt;n&gt;</code> 認領、再照 <code>/issue-run &lt;n&gt;</code> 跑，一次一張、不開新分頁；別的 session 已認領的單略過。停下的單在 Issue 留言寫明停在哪一步、記成 <code>stopped</code>，被它擋住的單記成 <code>skipped</code>，其餘照跑；你在那張單留言回覆後，下一次醒來會接著做。不帶數字時不設上限，loop 只在你停掉時結束。每張單的 push 與結案照 adapter 的 Evidence and closing，L1 預設由你做（第 8 步）。</p>
 <p>做完的樣子：<code>.scratch/issue-run-pool/state.md</code> 每張經手的單一列（認領過的，加上沒認領就略過的 <code>skipped</code>：別的 session 已認領，或被停下的單擋住），<code>done</code> 的單有 candidate SHA，<code>stopped</code> 的單有停點留言的網址。</p>
 <h2 id="什麼時候會停">什麼時候會停</h2>
-<p><code>/issue-run</code> 只在這些情況停下來交回給你，同時把其他不受影響的 ticket 繼續做完：</p>
+<p><code>/issue-run</code> 任何模式都不在實作中途跳出選項問你。Issue 沒定的選擇由它自己<strong>裁定</strong>，記進 adapter 指定的 rulings 檔，每條標上類別：</p>
 <ul>
-<li>Issue 留了產品決策，或 spec 和程式碼矛盾。</li>
+<li><code>reversible</code>：撤回不動資料也不動契約（文件、拆後續單、補測試、內部結構）。做完告知就好。</li>
+<li><code>confirm</code>：其他 adapter 沒列為停止條件的選擇，例如對外契約、權限放寬、資料格式。它會取最貼近 Issue 文字與既有模式的選項繼續做，結案前由你確認；adapter 沒有確認 gate 時，照舊在 Issue 留言列選項並停下。</li>
+</ul>
+<p><code>tdd</code> 的測試 seam 由驗收條件推導、<code>implement</code> 遇到歧義自行解讀，兩者都記成裁定；報告的「Autonomous decisions」段列出所有 <code>confirm</code> 和會改變行為、介面或資料格式的 <code>reversible</code> 裁定，最後一行寫明怎麼確認或改。</p>
+<p>它只在這些情況停下來交回給你，同時把其他不受影響的 ticket 繼續做完：</p>
+<ul>
+<li>Issue 或某個裁定會違反仍有效的決策紀錄（已接受的 ADR 條款）。</li>
 <li>缺前置條件、帳密、資料庫或 fixture 的授權。</li>
 <li>worktree 裡有不屬於這張單的改動。</li>
 <li>合併衝突需要設計判斷。</li>

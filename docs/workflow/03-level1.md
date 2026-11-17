@@ -174,9 +174,16 @@ git branch -d issue/<n>-<slug> && git push origin --delete issue/<n>-<slug>
 
 ## 什麼時候會停
 
-`/issue-run` 只在這些情況停下來交回給你，同時把其他不受影響的 ticket 繼續做完：
+`/issue-run` 任何模式都不在實作中途跳出選項問你。Issue 沒定的選擇由它自己**裁定**，記進 adapter 指定的 rulings 檔，每條標上類別：
 
-- Issue 留了產品決策，或 spec 和程式碼矛盾。
+- `reversible`：撤回不動資料也不動契約（文件、拆後續單、補測試、內部結構）。做完告知就好。
+- `confirm`：其他 adapter 沒列為停止條件的選擇，例如對外契約、權限放寬、資料格式。它會取最貼近 Issue 文字與既有模式的選項繼續做，結案前由你確認；adapter 沒有確認 gate 時，照舊在 Issue 留言列選項並停下。
+
+`tdd` 的測試 seam 由驗收條件推導、`implement` 遇到歧義自行解讀，兩者都記成裁定；報告的「Autonomous decisions」段列出所有 `confirm` 和會改變行為、介面或資料格式的 `reversible` 裁定，最後一行寫明怎麼確認或改。
+
+它只在這些情況停下來交回給你，同時把其他不受影響的 ticket 繼續做完：
+
+- Issue 或某個裁定會違反仍有效的決策紀錄（已接受的 ADR 條款）。
 - 缺前置條件、帳密、資料庫或 fixture 的授權。
 - worktree 裡有不屬於這張單的改動。
 - 合併衝突需要設計判斷。
