@@ -7,7 +7,8 @@
 //   #238：前面有英文段的 Bash 14/14 都抓到，Skill、Edit 0/9），改看 transcript 尾端最後一個 tool_use、tool_result 或使用者輪之後的文字段。
 //   #250：Bash 也會漏，hook 觸發時連 3 秒前的文字段都還沒寫入（整則 assistant 訊息延後寫），尾端文字段是空的。所以找不到 tool_use 時
 //   等 RETRY_MS 重讀一次；專案根有 `.scratch/` 時把兩次讀到的行數、有沒有找到、尾端項目的 type 與 timestamp 附加到 `.scratch/language-hook.log`，
-//   累積後判斷寫入時機，再決定改等更久、改用 hook 輸入，或只靠 Stop。
+//   累積後判斷寫入時機，再決定改等更久、改用 hook 輸入，或只靠 Stop。這行的 `at` 是 hook 結束時間，`start` 是 hook 讀 stdin 前的時間，
+//   `waitMs` 是重讀前實際等待的毫秒數（沒重讀為 0），用來對照 transcript 寫入時間而不必回推（retro spay2 ddc8bd0e#4）。
 // - Stop（或未帶 hook_event_name）：檢查最後一個使用者輪（或本 hook 最後一次提示，見下）之後的所有文字段；PostToolUse 尚未掛上時仍有覆蓋，
 //   PostToolUse 提示過的段落不再提一次。
 // 同一條規則也擋簡體字：CJK 比例分不出繁簡，session f236b357 有三段以「这」開頭（jsonl 第 293、610、646 行）都放行（#284）。
@@ -240,6 +241,7 @@ export function subagentTranscript(transcriptPath, agentId) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const start = new Date().toISOString();
   let input;
   try { input = JSON.parse(readFileSync(0, 'utf8')); } catch { process.exit(0); }
   if (input?.stop_hook_active || !input?.transcript_path) process.exit(0);
@@ -263,9 +265,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (postTool && preToolNoticed(jsonl, input.tool_use_id)) process.exit(0);
     const first = locateTool(jsonl, input.tool_use_id);
     let retry = null;
+    let waitMs = 0;
     // PostToolUse：還沒寫入這個 tool_use 就重讀；PreToolUse：尾端沒有文字段才重讀（找到 tool_use 而沒有文字段的是平行呼叫的第二個以後）
     if (preTool ? !first.found && !first.texts.length : !first.found) {
+      const waited = Date.now();
       wait(RETRY_MS);
+      waitMs = Date.now() - waited;
       let again = null;
       try { again = readFileSync(transcript, 'utf8'); } catch { /* 用第一次的結果 */ }
       // 擋下紀錄可能在等待期間才寫入：重讀的內容也要再認一次
@@ -274,7 +279,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     }
     texts = (retry ?? first).texts;
     const strip = ({ texts: t, ...rest }) => ({ ...rest, texts: t.length });
-    log({ at: new Date().toISOString(), hook_event_name: event, tool: input.tool_name ?? null,
+    log({ at: new Date().toISOString(), start, waitMs, hook_event_name: event, tool: input.tool_name ?? null,
       id: input.tool_use_id, agent: input.agent_id ? true : undefined, first: strip(first), retry: retry && strip(retry) });
   } else texts = lastTurnTexts(jsonl);
   const english = texts.filter(isMostlyEnglish);

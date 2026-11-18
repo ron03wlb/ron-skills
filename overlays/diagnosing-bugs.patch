@@ -1,0 +1,12 @@
+diff --git a/SKILL.md b/SKILL.md
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -36,6 +36,8 @@
+ 
+ Build the right feedback loop, and the bug is 90% fixed.
+ 
++When the loop drives an interactive `claude` in tmux, every poll of the wait also reads `tmux capture-pane` and stops on a dialog (a folder `trust` prompt, `Enter to confirm`): report the stall at once instead of waiting for the result file.
++
+ ### Tighten the loop
+ 
+ Treat the loop as a product. Once you have _a_ loop, **tighten** it:

@@ -2,10 +2,10 @@ import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findHits, parseArgs, parseWorktrees } from './concurrent-edits.mjs';
+import { findHits, findTemplateCopies, parseArgs, parseWorktrees } from './concurrent-edits.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./concurrent-edits.mjs', import.meta.url));
@@ -83,4 +83,28 @@ test('CLI：沒有命中印 CLEAR 並 exit 0；--json 輸出 hits 陣列；路�
 test('CLI：沒有檔案參數 exit 2', t => {
   const { mine } = fixture(t);
   assert.equal(run(mine).status, 2);
+});
+
+test('findTemplateCopies：只取清單 copies 有 template 的檔，依輸入順序；沒有清單時為空', () => {
+  const copies = { 'scripts/b.mjs': { template: 'skills/engineering/setup-workflow/templates/b.mjs' }, 'scripts/a.mjs': { template: 'skills/engineering/setup-workflow/templates/a.mjs' } };
+  assert.deepEqual(findTemplateCopies(['scripts/a.mjs', 'x.md', 'scripts/b.mjs'], copies).map(copy => copy.file), ['scripts/a.mjs', 'scripts/b.mjs']);
+  assert.deepEqual(findTemplateCopies(['scripts/a.mjs'], undefined), []);
+});
+
+// retro spay2 ddc8bd0e#1：舊版對 workflow-templates.json 列出的副本 scripts/claude-hook-language.mjs 只印 CLEAR，
+// 之後只改正本就 commit，ron-skills pre-commit 才報 CHECK_FAIL docs-rules。
+test('CLI：檔案是 workflow-templates.json 列出的副本時，在 CLEAR／命中之前印 TEMPLATE_COPY 與下一步，不改 exit code；沒有清單不印', t => {
+  const { mine } = fixture(t);
+  const template = 'skills/engineering/setup-workflow/templates/claude-hook-language.mjs';
+  assert.doesNotMatch(run(mine, 'scripts/claude-hook-language.mjs').stdout, /TEMPLATE_COPY/);
+  mkdirSync(join(mine, 'docs', 'agents'), { recursive: true });
+  writeFileSync(join(mine, 'docs', 'agents', 'workflow-templates.json'), JSON.stringify({ copies: { 'scripts/claude-hook-language.mjs': { template } } }));
+  const result = run(mine, 'scripts/claude-hook-language.mjs', 'z.txt');
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trimEnd().split('\n');
+  assert.equal(lines[0], `TEMPLATE_COPY scripts/claude-hook-language.mjs ${template}`);
+  assert.match(lines[1], /^  下一步：改 ron-skills 正本 → .*copy-templates\.mjs <ron-skills> --no-tests --yes --staged claude-hook-language\.mjs → ron-skills commit 並 push → .*copy-templates\.mjs <本 worktree> --no-tests --yes claude-hook-language\.mjs$/);
+  assert.equal(lines[2], 'CLEAR');
+  assert.equal(lines.length, 3, result.stdout);
+  assert.deepEqual(JSON.parse(run(mine, '--json', 'scripts/claude-hook-language.mjs').stdout).templateCopies, [{ file: 'scripts/claude-hook-language.mjs', template }]);
 });

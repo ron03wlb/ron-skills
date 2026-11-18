@@ -3,10 +3,15 @@
 // 同檔有人在改就先合上或放棄自己的，不要落地重複的修改。唯讀。
 // 用法：node scripts/concurrent-edits.mjs [--base <sha>] [--json] <file>...  （cwd 在 repo 任一 worktree；--base 預設為目前 HEAD 與整合分支的 merge-base）
 // stdout 預設文字：每筆一行 `<kind> <who> <file> [<detail>]`；kind：COMMITTED（他人分支已提交）、UNCOMMITTED（他人 worktree 工作目錄）、INTEGRATION（整合分支 base 之後的 commit）。
-//   無任何命中時印 `CLEAR`。--json 印 { integration, base, hits: [{ kind, worktree, branch, file, detail }] }。
+//   無任何命中時印 `CLEAR`。--json 印 { integration, base, hits: [{ kind, worktree, branch, file, detail }], templateCopies: [{ file, template }] }。
+// 指定檔案是 repo 的 docs/agents/workflow-templates.json（copy-templates.mjs 的副本清單）列出的副本時，先依輸入順序各印一行
+//   `TEMPLATE_COPY <file> <template>` 與下一步（同 worktree-overlap.mjs；沒有清單或讀不懂時不印，不改 exit code）。看到這行不要直接改副本：
+//   改 ron-skills 正本 → 在 ron-skills 跑 copy-templates.mjs --staged 帶回它自己的副本 → ron-skills commit 並 push → 再 copy 到這個 worktree。
+//   否則 ron-skills pre-commit 報 CHECK_FAIL docs-rules、這邊 check-template-copies 報不一致（retro spay2 ddc8bd0e#1：舊版對副本只印 CLEAR）。
 // exit code：0 無命中、3 有命中、2 用法錯誤、1 git 失敗。
 import { spawnSync } from 'node:child_process';
-import { relative, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
 
 const USAGE = '用法：node scripts/concurrent-edits.mjs [--base <sha>] [--json] <file>...';
 
@@ -44,6 +49,28 @@ export function findHits({ files, self, integration, worktrees, integrationCommi
   return hits;
 }
 
+const MANIFEST = 'docs/agents/workflow-templates.json';
+const TEMPLATES = 'skills/engineering/setup-workflow/templates/';
+
+/** `files`（相對 repo 根）中是副本清單 `copies` 列出的副本 → [{ file, template }]，依輸入順序。 */
+export function findTemplateCopies(files, copies) {
+  return files.filter(file => copies?.[file]?.template).map(file => ({ file, template: copies[file].template }));
+}
+
+/** TEMPLATE_COPY 行與下一步；<x> 是 copy-templates.mjs 接受的範本名（templates/ 下的路徑）。 */
+export function templateCopyLines({ file, template }) {
+  const name = template.startsWith(TEMPLATES) ? template.slice(TEMPLATES.length) : template;
+  return [
+    `TEMPLATE_COPY ${file} ${template}`,
+    `  下一步：改 ron-skills 正本 → node skills/engineering/setup-workflow/scripts/copy-templates.mjs <ron-skills> --no-tests --yes --staged ${name}`
+      + ` → ron-skills commit 並 push → node <ron-skills>/skills/engineering/setup-workflow/scripts/copy-templates.mjs <本 worktree> --no-tests --yes ${name}`,
+  ];
+}
+
+function readCopies(top) {
+  try { return JSON.parse(readFileSync(join(top, MANIFEST), 'utf8')).copies ?? {}; } catch { return {}; }
+}
+
 export function parseArgs(args) {
   const options = { base: null, json: false, files: [] };
   for (let i = 0; i < args.length; i++) {
@@ -73,7 +100,7 @@ export function collect(cwd, options) {
       if (line.includes('\0')) { const [sha, subject] = line.split('\0'); commits.push({ sha, subject, files: [] }); } else commits.at(-1)?.files.push(line);
       return commits;
     }, []);
-  return { files, self: top, integration, base, worktrees: trees, integrationCommits };
+  return { files, self: top, integration, base, worktrees: trees, integrationCommits, templateCopies: findTemplateCopies(files, readCopies(top)) };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -82,9 +109,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     const facts = collect(process.cwd(), options);
     const hits = findHits(facts);
-    if (options.json) console.log(JSON.stringify({ integration: facts.integration, base: facts.base, hits }, null, 2));
-    else if (!hits.length) console.log('CLEAR');
-    else for (const hit of hits) console.log([hit.kind, hit.worktree ?? hit.branch, hit.file, hit.detail].filter(Boolean).join(' '));
+    if (options.json) console.log(JSON.stringify({ integration: facts.integration, base: facts.base, hits, templateCopies: facts.templateCopies }, null, 2));
+    else {
+      for (const line of facts.templateCopies.flatMap(templateCopyLines)) console.log(line);
+      if (!hits.length) console.log('CLEAR');
+      else for (const hit of hits) console.log([hit.kind, hit.worktree ?? hit.branch, hit.file, hit.detail].filter(Boolean).join(' '));
+    }
     process.exit(hits.length ? 3 : 0);
   } catch (error) { console.error(`查詢中止：${error.message}`); process.exit(1); }
 }

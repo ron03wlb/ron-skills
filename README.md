@@ -43,11 +43,12 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 
 | 補丁 | 內容 |
 | --- | --- |
-| `grilling`、`grill-me`、`grill-with-docs` | `effort: high`；`grilling` 另把「派子代理查事實」改為自己用工具查、範圍大才派，並在第一輪前列出與主題相關、還開著的 Issue；建議換掉使用者講的操作時要在題目點明，結束前列出每個決定後使用者實際看到的結果 |
+| `grilling`、`grill-me`、`grill-with-docs` | `effort: high`；`grilling` 另把「派子代理查事實」改為自己用工具查、範圍大才派，並在第一輪前列出與主題相關、還開著的 Issue；建議換掉使用者講的操作時要在題目點明，結束前列出每個決定後使用者實際看到的結果；建議答案點名 class、bean、設定 key 或 SQL 宣告形式時先查證存在並引用結果，建議兩項工作互不阻擋或 Blocked by 前先跑 repo 的開單前重疊檢查 |
 | `domain-modeling` | repo 自訂的 ADR 版面與索引編號優先；主 checkout 不能寫時，詞條與 ADR 原文寫進負責實作的 Issue，由它在 worktree 提交 |
 | `retro` | 候選開成 Issue 前，依它提到的名稱查開著的 Issue：同一件事就留言補證據不另開，只是同檔不同事就讓新單依賴它；寫入前檢查其他 session 的並行修改；adapter 有 **Retro collect** 條目時一律改為收集模式：不實作，把候選開成一張 `retro-candidates` label 的 Issue（一個 session 一張），等 `/retro-collect`；條目宣告 `Collect command:` 時改照該指令走，不開 Issue |
 | `poteto-mode` | 本機 harness：先讀上游 `docs/harness/claude-code.md` 做名稱對照；repo 規則與語言優先、無 GitHub PR（對應 candidate／整合分支）、無 cloud（Orca terminal）、Codex 只做 code review、未連結 skill 改用 Matt 對應 |
 | `code-review` | Standards 子代理固定 `model: sonnet`；Spec 子代理只在呼叫端參數帶 `low-risk` 時用 sonnet，否則沿用 session 模型（spay2 grill 2026-11-16 R1-Q6） |
+| `diagnosing-bugs` | 用 tmux 起互動 `claude` 做實驗時，等待程序每次輪詢也看 `tmux capture-pane`，停在對話框（資料夾 trust、Enter to confirm）就立即回報，不只等結果檔 |
 | `arena` | 只用在昂貴、難逆轉且多解的設計決策；兩席都是 Claude worktree 子代理，judge 是沒寫候選的全新 Claude 子代理；Eval 只用於 worker／review／stop-policy 的 skill 變更 |
 
 ## issue-run

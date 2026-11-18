@@ -234,6 +234,9 @@ test('hook PostToolUse：觸發時文字段與 tool_use 都還沒寫入，稍後
   assert.equal(log.first.found, false);
   assert.equal(log.retry.found, true);
   assert.equal(log.tool, 'Bash');
+  // retro spay2 ddc8bd0e#4：記 hook 起點與實際等待時間，不必從 `at` 回推
+  assert.ok(Date.parse(log.start) <= Date.parse(log.at), `${log.start} > ${log.at}`);
+  assert.ok(log.waitMs >= 250 && log.waitMs <= Date.parse(log.at) - Date.parse(log.start), String(log.waitMs));
 });
 
 // #901：子代理的 hook 輸入帶 agent_id／agent_type，transcript_path 卻指向父 session 的 transcript（2026-11-16 實測，Claude Code 2.1.325）；
