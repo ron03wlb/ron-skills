@@ -234,6 +234,9 @@ test('hook PostToolUse：觸發時文字段與 tool_use 都還沒寫入，稍後
   assert.equal(log.first.found, false);
   assert.equal(log.retry.found, true);
   assert.equal(log.tool, 'Bash');
+  // retro spay2 ddc8bd0e#4：記 hook 起點與實際等待時間，不必從 `at` 回推
+  assert.ok(Date.parse(log.start) <= Date.parse(log.at), `${log.start} > ${log.at}`);
+  assert.ok(log.waitMs >= 250 && log.waitMs <= Date.parse(log.at) - Date.parse(log.start), String(log.waitMs));
 });
 
 // #901：子代理的 hook 輸入帶 agent_id／agent_type，transcript_path 卻指向父 session 的 transcript（2026-11-16 實測，Claude Code 2.1.325）；
@@ -244,7 +247,7 @@ test('hook：子代理（agent_id）不引用父 transcript 的文字段，只�
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const parent = join(dir, 'sess.jsonl');
   const parentText = "I've finished my own items: dispatching the subagent now.";
-  writeFileSync(parent, [user('/retro-collect'), assistant(parentText)].join('\n'));
+  writeFileSync(parent, [user('/retro-collect'), assistant(parentText), assistant(SIMPLIFIED_LINE)].join('\n'));
   const sub = (event = 'PostToolUse') => hook(JSON.stringify({ hook_event_name: event, tool_name: 'Bash', transcript_path: parent, tool_use_id: 'sub1',
     session_id: 'sess', agent_id: 'a1', agent_type: 'general-purpose', stop_hook_active: false }));
 
@@ -259,11 +262,16 @@ test('hook：子代理（agent_id）不引用父 transcript 的文字段，只�
   const chinese = sub();
   assert.equal(chinese.status, 0);
   assert.equal(chinese.stdout + chinese.stderr, '');
+  // retro spay2 2282a2a4#6：子代理的英文是給協調者讀的，不擋；簡體字照擋，且只引用子代理自己的段落
   writeFileSync(subTranscript, [user('跑測試'), assistant('Running the focused tests for the subagent now.'), toolUse('sub1')].join('\n'));
   const english = sub();
-  assert.equal(english.status, 2);
-  assert.match(english.stderr, /Running the focused tests/);
-  assert.doesNotMatch(english.stderr, /finished my own items/);
+  assert.equal(english.status, 0);
+  assert.equal(english.stdout + english.stderr, '');
+  writeFileSync(subTranscript, [user('跑測試'), assistant('这次先跑 echo。'), toolUse('sub1')].join('\n'));
+  const simplified = sub();
+  assert.equal(simplified.status, 2);
+  assert.match(simplified.stderr, /簡體字（这）/);
+  assert.doesNotMatch(simplified.stderr, /finished my own items|沒有 worker/);
 });
 
 // #938：PreToolUse 在工具執行前檢查這次工具呼叫前的文字段，命中就 exit 2（工具不執行）。
@@ -380,11 +388,41 @@ test('hook PreToolUse：子代理讀自己的 transcript，不引用父段落', 
   const chinese = preHook(dir, subTranscript, input);
   assert.equal(chinese.status, 0);
   assert.equal(chinese.stdout + chinese.stderr, '');
-  writeFileSync(subTranscript, [user('跑測試'), assistant('Running the focused tests for the subagent now.'), toolUse('sub1')].join('\n') + '\n');
-  const english = preHook(dir, subTranscript, input);
-  assert.equal(english.status, 2);
-  assert.match(english.stderr, /Running the focused tests/);
-  assert.doesNotMatch(english.stderr, /finished my own items/);
+  writeFileSync(subTranscript, [user('跑測試'), assistant('這次先跑 echo，这輪不等。'), toolUse('sub1')].join('\n') + '\n');
+  const simplified = preHook(dir, subTranscript, input);
+  assert.equal(simplified.status, 2);
+  assert.match(simplified.stderr, /簡體字（这）/);
+  assert.doesNotMatch(simplified.stderr, /finished my own items/);
+});
+
+// retro spay2 2282a2a4#6：#988 fact-brief 子代理（agent a86d4a66381a84af3，Claude Code 2.1.327）的英文報告在 SubagentHandback 的
+// PreToolUse 被擋（子代理 jsonl 第 146–152 行），brief 要求英文卻只能改用繁中回覆。子代理不做英文檢查；主 session 同一段照擋。
+test('hook PreToolUse：子代理交件前的英文報告不擋（#988 真實輸入），主 session 照擋', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'hook-language-pre-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const parent = join(dir, '2282a2a4.jsonl');
+  writeFileSync(parent, user('/issue-queue') + '\n');
+  const subTranscript = join(dir, '2282a2a4', 'subagents', 'agent-a86d4a66381a84af3.jsonl');
+  mkdirSync(join(dir, '2282a2a4', 'subagents'), { recursive: true });
+  const report = 'The #988 body is mostly sound, but two spec points need a decision. The proposed key name does not fit the existing naming, '
+    + 'and the fresh `data.sql` seed collides with several locks on that file. Everything below is read against baseline `db251d5b0`; HEAD drift is not an issue.';
+  const handback = JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_017A6rxF395zz9GP8PeGb2HK',
+    name: 'SubagentHandback', input: { message: 'Report for #988 (baseline db251d5b0).' } }] } });
+  const enforce = JSON.stringify({ type: 'user', isMeta: true, message: { role: 'user',
+    content: '[handback-send-enforce] Your report has not been delivered. Call SubagentHandback({message: <your full report>}) now; the call ends your run.' } });
+  writeFileSync(subTranscript, [user('READ-ONLY fact-finding for #988. Reply in English.'), assistant(report), enforce, handback].join('\n') + '\n');
+  const input = { hook_event_name: 'PreToolUse', tool_name: 'SubagentHandback', tool_use_id: 'toolu_017A6rxF395zz9GP8PeGb2HK',
+    session_id: '2282a2a4', transcript_path: parent, agent_id: 'a86d4a66381a84af3', agent_type: 'general-purpose' };
+  const sub = preHook(dir, subTranscript, input);
+  assert.equal(sub.status, 0, sub.stderr);
+  assert.equal(sub.stdout + sub.stderr, '');
+  // 同一段若出現在主 session（沒有 agent_id）照擋
+  const main = { ...input, transcript_path: subTranscript };
+  delete main.agent_id;
+  delete main.agent_type;
+  const own = preHook(dir, subTranscript, main);
+  assert.equal(own.status, 2);
+  assert.match(own.stderr, /The #988 body is mostly sound/);
 });
 
 // PreToolUse exit 2 在 transcript 留下的形狀（2026-11-17 實測，session 6c87c01e jsonl 第 210 行，claude-hook-main-checkout.mjs 擋下 Edit）：

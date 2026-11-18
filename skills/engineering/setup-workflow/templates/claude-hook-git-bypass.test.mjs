@@ -1,8 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { backgroundJobReason, bypassReason, chainedHandoff, chainedLongWaitReason, chainedNote, exitGateReason, foregroundReason, probeFilterReason, writesFile } from './claude-hook-git-bypass.mjs';
+import { backgroundJobReason, bypassReason, chainedHandoff, chainedLongWaitReason, chainedNote, exitGateReason, foregroundReason, probeFilterReason, wideGrepReason, writesFile } from './claude-hook-git-bypass.mjs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-git-bypass.mjs', import.meta.url));
 const hook = (input, args = []) => spawnSync('node', [script, ...args], { input, encoding: 'utf8' });
@@ -567,4 +570,54 @@ test('foregroundReason：node 選項與前面的其他測試檔之後的 spec �
   assert.match(denied.stderr, /verify-unit\.test\.mjs 在前景執行/);
   assert.match(denied.stderr, /先寫進 log/);
   assert.equal(hook(JSON.stringify({ tool_input: { command: 'node --test scripts/verify-unit.test.mjs | head', run_in_background: true } }), ['--background-only', 'verify-unit.test.mjs']).status, 0);
+});
+
+// retro spay2 bdabcbed#1：session bdabcbed jsonl 第 231／816 行的原指令，ugrep 報 `exceeds complexity limits`、exit 2（第 233／824 行）。
+const WIDE_GREP = String.raw`grep -n -o '.\{0,120\}\(STOP_INTEGRATED\|MERGED_OPEN\).\{0,120\}' docs/agents/*.md | head; sed -n 1,40p scripts/followups.mjs | grep -E '^\s*\*|//' | head -30`;
+const WIDE_GREP_2 = String.raw`cd /w/feature-ron-retro-collect-1118b && grep -n -o '.\{0,200\}PREMERGE_REJECTED FROZEN.\{0,300\}' docs/agents/issue-pilot-branches.md | head -3; grep -n -o 'running each ${'`'}DOC_TEST <test file>${'`'}.\{0,250\}' docs/agents/issue-pilot-retro.md`;
+
+test('wideGrepReason：grep -o 前後都有寬範圍 `.{0,n}` 時攔下', () => {
+  for (const command of [WIDE_GREP, WIDE_GREP_2,
+    "grep -noE '.{0,120}x.{0,120}' a.md",
+    "grep -e '.{0,60}x.{0,60}' --only-matching a.md",
+    String.raw`grep -n -o "landed[^.]\{0,250\}HANDOFF_DUE\|HANDOFF_DUE[^.]\{0,250\}" docs/agents/issue-pilot.md`,
+    "for f in a b; do grep -o '.{0,80}x.{0,80}' $f; done",
+  ]) assert.equal(wideGrepReason(command), true, command);
+});
+
+test('wideGrepReason：沒有 -o、單邊、範圍小、固定次數、-P、GNU grep 與字串裡的字樣不攔', () => {
+  for (const command of ["grep -o 'foo' a.md", "grep -n 'foo' a.md", "grep -E 'a.{0,3}b.{0,3}' a.md",
+    String.raw`grep -n -o 'running each.\{0,250\}' a.md`, "grep -o 'x.{0,250}' a.md", "grep -oE '.{0,20}x.{0,900}' a.md",
+    String.raw`grep -o '.\{120\}x.\{200\}' a.md`, "grep -oP '.{0,120}x.{0,120}' a.md", "command grep -oE '.{0,120}x.{0,120}' a.md",
+    "/usr/bin/grep -oE '.{0,120}x.{0,120}' a.md", "grep -A3 -e '.{0,120}x.{0,120}' a.md",
+    "echo \"grep -o '.{0,120}x.{0,120}' a.md\"", "python3 - <<'EOF'\nimport os\nos.system(\"grep -o '.{0,120}x.{0,120}' a.md\")\nEOF",
+    "git grep -oE '.{0,120}x.{0,120}' a.md",
+  ]) assert.equal(wideGrepReason(command), false, command);
+});
+
+test('hook：寬範圍 grep -o 被拒；專案有 scripts/doc-excerpt.mjs 時指向它，否則指向 Python', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'git-bypass-grep-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const run = command => spawnSync('node', [script], { input: JSON.stringify({ tool_input: { command } }), encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: dir } });
+  const python = run(WIDE_GREP);
+  assert.equal(python.status, 2);
+  assert.match(python.stderr, /grep -o 的 pattern 前後都有 `\.\{0,n\}`.*exceeds complexity limits/);
+  assert.match(python.stderr, /改用 Python/);
+  assert.match(python.stderr, /被拒的整個 Bash 呼叫都沒有執行/);
+  mkdirSync(join(dir, 'scripts'));
+  writeFileSync(join(dir, 'scripts', 'doc-excerpt.mjs'), '');
+  const excerpt = run(WIDE_GREP);
+  assert.equal(excerpt.status, 2);
+  assert.match(excerpt.stderr, /改用 `node scripts\/doc-excerpt\.mjs '<詞>' <檔案>…`/);
+  assert.equal(run("grep -o 'foo' a.md").status, 0);
+  assert.equal(run("grep -E 'a.{0,3}b' a.md").status, 0);
+});
+
+// 2282a2a4#3(b)：update-issue-body.mjs 只要在 settings 加 `--exit-gate update-issue-body.mjs` 就攔，不需改 hook。
+test('hook：--exit-gate update-issue-body.mjs 攔下 `--check … | tail`', () => {
+  const command = 'node scripts/update-issue-body.mjs 1 --check x | tail';
+  const denied = hook(JSON.stringify({ tool_input: { command } }), ['--exit-gate', 'issue-create.mjs', '--exit-gate', 'update-issue-body.mjs']);
+  assert.equal(denied.status, 2);
+  assert.match(denied.stderr, /update-issue-body\.mjs 接 tail/);
+  assert.equal(hook(JSON.stringify({ tool_input: { command } }), ['--exit-gate', 'issue-create.mjs']).status, 0);
 });

@@ -19,6 +19,8 @@
 // 子代理（#901）：hook 輸入帶 agent_id／agent_type，transcript_path 卻是父 session 的 transcript（2026-11-16 實測，Claude Code 2.1.325），
 // 原本子代理每次跑 Bash 都引用父段落擋下（followups 625）。帶 agent_id 時改讀 `<transcript 去掉 .jsonl>/subagents/agent-<agent_id>.jsonl`，
 // 讀不到就 exit 0 放行；任何情況都不拿父 transcript 檢查子代理的工具呼叫。
+// 子代理不做英文檢查、只擋簡體字（retro spay2 2282a2a4#6）：子代理的文字交給協調者，不是使用者可見訊息，brief 常要求英文回覆
+//   （AGENTS.md：給 AI 讀的寫英文）；原本 #988 fact-brief 子代理的英文報告在 SubagentHandback 的 PreToolUse 被擋，只好改用繁中回覆。
 // - PreToolUse（#938）：工具執行前檢查這次工具呼叫前的文字段（同 PostToolUse 的 locateTool），命中就 exit 2，工具不執行、stderr 交回 agent。
 //   #901 實測：PreToolUse 觸發當下 transcript 多半還沒寫入本次工具前的文字段：claude -p 主 session 53 次（每次前面都有文字段）只命中 14 次
 //   （26.4%；Bash 0/19、Read 3/9、Edit 5/8、Skill 0/8、Write 6/8、Agent 0/1）；等 300 ms 重讀為 45/53（84.9%，Skill 仍 0/8）。
@@ -282,7 +284,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     log({ at: new Date().toISOString(), start, waitMs, hook_event_name: event, tool: input.tool_name ?? null,
       id: input.tool_use_id, agent: input.agent_id ? true : undefined, first: strip(first), retry: retry && strip(retry) });
   } else texts = lastTurnTexts(jsonl);
-  const english = texts.filter(isMostlyEnglish);
+  // 子代理（agent_id）只擋簡體字：英文是給協調者讀的（retro spay2 2282a2a4#6）
+  const english = input.agent_id ? [] : texts.filter(isMostlyEnglish);
   const simplified = texts.filter(text => simplifiedChars(text).length);
   const where = preTool || postTool ? '這次工具呼叫前' : '本輪';
   const blocked = preTool ? '工具未執行，改用繁體中文說明後再呼叫。' : '';

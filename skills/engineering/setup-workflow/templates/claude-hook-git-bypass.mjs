@@ -27,10 +27,14 @@
 //   grep 參數與直譯器 here-doc 字串裡的字樣不算（retro spay2 1112b followups 617，retro 1116a：`node --check scripts/x.mjs && node --check scripts/batch-watch.mjs`
 //   被當成 watcher 前面串了其他指令而誤擋）。
 // `--long-wait` 只看 shell `&` 與串接，攔不到前景呼叫；兩者互不取代，`--exit-gate` 也獨立判定，同一支 script 可以同時帶。
+// 另攔 `grep -o` 的 pattern 有兩個以上 `.\{0,<n>\}`／`.{0,<n>}`／`[^.]\{0,<n>\}` 且第二大的 n ≥ 40（前後文各取 n 字）：內建規則，不需要旗標，見 wideGrepReason。
+//   Claude Code 的 grep 是 ugrep，兩段寬範圍重複常報 `exceeds complexity limits`、exit 2（隨資料而變；單邊 1000 可，`-P` 不受影響）。訊息「grep -o 的 pattern 前後都有 `.{0,n}`」；actionable：專案有 `scripts/doc-excerpt.mjs`（以 $CLAUDE_PROJECT_DIR 判斷）時
+//   改用 `node scripts/doc-excerpt.mjs '<詞>' <檔案>…`，否則改用 Python（retro spay2 bdabcbed#1：#295 後同一錯又踩兩次，doc-excerpt.mjs 沒人導過去）。
 // 用法：node scripts/claude-hook-git-bypass.mjs [--long-wait <spec>]… [--whole-output <spec>]… [--exit-gate <script 名稱>]… [--background-only <spec>]…
 //   spec 是「script 名稱[ 旗標]」，例如 `watch.mjs` 或 `queue.mjs --wait`：帶旗標時同段指令要有該旗標才算。不帶時只攔 git 繞過。
 // stdin 是 hook JSON（tool_input.command、tool_input.run_in_background）；命中時 exit 2，stderr 交回 agent；其他情況 exit 0 不輸出。
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // 引號內會被執行的情形：shell 的 -c、eval、ssh、watch；另一支直譯器的 -c／-e；管線或 here-string 餵給 shell。
@@ -461,6 +465,101 @@ export function chainedNote(command) {
   return note;
 }
 
+// grep 前後文的範圍重複：`.` 或字元類（`[^.]`）接 `\{0,120\}`（BRE）或 `{0,120}`（ERE），取上限。固定次數 `.\{120\}x.\{200\}` 不算：
+// 對 ~/.claude/projects 全部 Bash 呼叫試跑，固定次數的 grep -o 幾十次都沒報錯。
+const REPEAT = /(?:\.|\[\^?\]?[^\]]*\])\\?\{\d*,(\d+)\\?\}/g;
+// 第二大的上限到這個值才攔：ugrep 的判定隨資料而變（同一 docs/agents/issue-pilot.md：20／900 可，40／40 比對 `STOP` 時 exit 2），
+// 20 以下實測都跑得動；誤攔的代價只是改用 doc-excerpt.mjs。
+const WIDE_MIN = 40;
+const upperBounds = text => [...text.matchAll(REPEAT)].map(([, high]) => Number(high));
+// 指令開頭可略過的關鍵字。
+const LEADING_WORD = /^(?:do|then|else|elif|if|while|until|\{|!|time)$/;
+// 短選項中接參數的字母：之後的字是參數（`-A3`、`-efoo`），不再當選項看。
+const SHORT_WITH_ARG = /[efmABCdD]/;
+
+/** 原始指令切成各段簡單指令的字（處理引號、跳脫、註解與 here-doc 內容；`$(…)` 不展開，當成字的一部分）。 */
+function simpleCommands(command) {
+  const commands = [];
+  let words = [];
+  let word = null;
+  let delimiters = [];
+  const endWord = () => { if (word !== null) words.push(word); word = null; };
+  const endCommand = () => { endWord(); if (words.length) commands.push(words); words = []; };
+  for (let i = 0; i < command.length;) {
+    const c = command[i];
+    if (c === '\\') {
+      if (command[i + 1] !== '\n') word = (word ?? '') + (command[i + 1] ?? '');
+      i += 2;
+    } else if (c === "'" || c === '"') {
+      const quoted = (c === "'" ? singleQuoted : doubleQuoted)(command, i);
+      if (!quoted) { word = (word ?? '') + command.slice(i + 1); break; }
+      word = (word ?? '') + quoted.literal;
+      i = quoted.end;
+    } else if (c === '#' && word === null) {
+      const newline = command.indexOf('\n', i);
+      i = newline < 0 ? command.length : newline;
+    } else if (command.startsWith('<<', i) && !command.startsWith('<<<', i)) {
+      endWord();
+      const match = HEREDOC.exec(command.slice(i));
+      if (match) delimiters.push(match[2]);
+      i += match ? match[0].length : 2;
+    } else if (c === '\n') {
+      endCommand();
+      i = delimiters.length ? heredocEnd(command, i + 1, delimiters) : i + 1;
+      delimiters = [];
+      if (i < 0) break;
+    } else if (/[;&|()]/.test(c)) {
+      // `2>&1`、`>&2`、`&>` 的 `&` 屬於重導，不切段
+      if (c === '&' && (/[<>]/.test(command[i - 1] ?? '') || command[i + 1] === '>')) word = (word ?? '') + c;
+      else endCommand();
+      i++;
+    } else if (/\s/.test(c)) {
+      endWord();
+      i++;
+    } else {
+      word = (word ?? '') + c;
+      i++;
+    }
+  }
+  endCommand();
+  return commands;
+}
+
+/**
+ * `grep -o` 的 pattern 有兩個以上寬範圍重複（retro spay2 bdabcbed#1：
+ * `grep -n -o '.\{0,120\}\(STOP_INTEGRATED\|MERGED_OPEN\).\{0,120\}' docs/agents/*.md` → ugrep `exceeds complexity limits`、exit 2）。
+ * 只看以 grep／egrep／ugrep 開頭的段落（`command grep`、帶路徑的 grep 是 GNU grep，不攔）；`-P` 走 PCRE 不受影響，不攔；
+ * 沒有 `-o` 或只有一個重複（單邊前後文）時 ugrep 跑得動，不攔。
+ * @param {string} command Bash tool 的完整指令
+ * @returns {boolean} 要拒絕時為 true
+ */
+export function wideGrepReason(command) {
+  for (const words of simpleCommands(command)) {
+    let at = 0;
+    while (at < words.length && (LEADING_WORD.test(words[at]) || /^\w+=/.test(words[at]))) at++;
+    if (!/^(?:e|u)?grep$/.test(words[at] ?? '')) continue;
+    let only = false;
+    let perl = false;
+    let wide = false;
+    let options = true;
+    for (const arg of words.slice(at + 1)) {
+      if (options && arg === '--') { options = false; continue; }
+      if (options && arg.startsWith('--')) {
+        if (arg === '--only-matching') only = true;
+        if (arg === '--perl-regexp') perl = true;
+        if (!arg.startsWith('--regexp=')) continue;
+      } else if (options && /^-[^-]/.test(arg)) {
+        const letters = arg.slice(1).split(SHORT_WITH_ARG)[0];
+        if (letters.includes('o')) only = true;
+        if (letters.includes('P')) perl = true;
+      }
+      if ((upperBounds(arg).sort((a, b) => b - a)[1] ?? 0) >= WIDE_MIN) wide = true;
+    }
+    if (only && wide && !perl) return true;
+  }
+  return false;
+}
+
 /** argv 中所有 `<flag> <value>` 的 value；緊接的是另一個旗標時不算值。 */
 const values = (args, flag) => args.flatMap((arg, i) => (arg === flag && args[i + 1] && !args[i + 1].startsWith('--') ? [args[i + 1]] : []));
 
@@ -480,6 +579,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const reason = bypassReason(command);
   if (reason) {
     deny(`拒絕：指令以 ${reason} 繞過 git hook。整合分支 guard 與 push gate 都在 hook 內；照常執行 git，讓 hook 跑完。hook 失敗時修正原因或回報使用者。\n`);
+  }
+  if (wideGrepReason(command)) {
+    const excerpt = existsSync(join(process.env.CLAUDE_PROJECT_DIR || '.', 'scripts', 'doc-excerpt.mjs'));
+    deny('拒絕：grep -o 的 pattern 前後都有 `.{0,n}`，Claude Code 的 grep（ugrep）會報 `exceeds complexity limits`、exit 2。'
+      + (excerpt ? "改用 `node scripts/doc-excerpt.mjs '<詞>' <檔案>…`（前後各取 60 字，`--width <n>` 調整）。\n"
+        : '改用 Python 讀檔，以 `re.finditer` 取比對處前後的字。\n'));
   }
   const args = process.argv.slice(2);
   const job = backgroundJobReason(command, values(args, '--long-wait'));
