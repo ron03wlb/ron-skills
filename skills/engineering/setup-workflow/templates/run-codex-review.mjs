@@ -28,12 +28,12 @@ import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, rea
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-const MODEL = 'gpt-6.1-sol';
+const MODEL = 'gpt-6.2-sol';
 const FALLBACK_MODEL = 'gpt-6-astra';
 const AT_CAPACITY = /^ERROR: Selected model is at capacity/m;
 // 帳務問題，重跑無用（retro spay2 86eda4c4#2：只回 CODEX_EXIT 時要讀 log 才知道）。比對行首，diff 引用這句時不算。
 const NO_CREDITS = /^ERROR: Your workspace is out of credits/m;
-const EFFORT = 'high';
+const EFFORT = 'medium';
 // 只認帶時間戳的 log 行；review diff 或 Codex 讀取的檔案引用這句時不會以時間戳開頭。
 const SPAWN_FAILED = /^[0-9TZ:.-]+ ERROR codex_core::tools::router: error=collab spawn failed/m;
 
