@@ -22,6 +22,10 @@
 //   #901 實測：PreToolUse 觸發當下 transcript 多半還沒寫入本次工具前的文字段：claude -p 主 session 53 次（每次前面都有文字段）只命中 14 次
 //   （26.4%；Bash 0/19、Read 3/9、Edit 5/8、Skill 0/8、Write 6/8、Agent 0/1）；等 300 ms 重讀為 45/53（84.9%，Skill 仍 0/8）。
 //   所以 tail 沒有文字段時等 RETRY_MS 重讀一次，仍沒有就 exit 0，交給 PostToolUse／Stop 補抓；Skill 重讀也讀不到，直接 exit 0 不等待。
+//   2026-11-18 再量（互動 TUI、auto mode）：本次工具前的文字段與 tool_use 常在 PreToolUse hook 全部結束後才寫入，不是固定延遲：
+//   hook 輪詢 3 秒，3 次有 2 次始終讀不到；`claude -p`（含 auto mode）則在 hook 開始後 16–136 ms 就寫入。
+//   `.scratch/language-hook.log` 中前面有文字段的 Bash 162 次：首讀命中 35、重讀命中 46、漏 81。所以不要拉長等待：被擋住的那一半
+//   等多久都讀不到，只拖慢每次呼叫；漏掉的由 PostToolUse／Stop 補抓，長時間工具（如 120 s 逾時的 commit + push）的提示會延到工具結束。
 //   stdin 只有 session_id、transcript_path、cwd、prompt_id、permission_mode、effort、hook_event_name、tool_name、tool_input、tool_use_id
 //   （子代理另有 agent_id、agent_type），沒有 assistant 文字可用。PreToolUse 擋下只在 transcript 留一筆 is_error 的 tool_result
 //   （`PreToolUse:<工具> hook error: [<command>]: <stderr>`，沒有 hook_blocking_error attachment），Stop 與 PostToolUse 認得它，不重提同一段。
