@@ -26,6 +26,11 @@
 // `--long-wait` 只認執行該 script 的段落（node［不含 `--check`／`-c`／`--help`／`--version`］、bash／sh 或直接執行，可帶路徑）：`node --check <spec>`、
 //   grep 參數與直譯器 here-doc 字串裡的字樣不算（retro spay2 1112b followups 617，retro 1116a：`node --check scripts/x.mjs && node --check scripts/batch-watch.mjs`
 //   被當成 watcher 前面串了其他指令而誤擋）。
+// 「執行該 script」的判定（runs）各規則共用：`--background-only`、`--exit-gate` 與 pilot-handoff.mjs 串接也不認 `node --check`／`-c`／`--help`／`--version`，
+//   路徑前綴不含 `=`（`F=scripts/x.mjs` 是變數指派，不是執行），變數指派的值不以 `(` 開頭（`ARGS=(--long-wait x.mjs …)` 是陣列）
+//   （retro spay2 db0c0090#2：子代理回報「指令字面含檔名就被擋」，重現兩筆原指令後真正原因是 `node --check scripts/batch-land.mjs`、
+//   `node --check pilot-handoff.mjs && echo ok` 與 `F="scripts/batch-la""nd.mjs"`；1119b 的 `--long-wait` 實例是 `node -e` 字串內以動態 import 載入 batch-watch 的指令，
+//   直譯器 -e 內 `import(`／`require(` 的括號被當成段落開頭；heredoc 內文與 `sed -i … <path>` 原本就不算）。
 // `--long-wait` 只看 shell `&` 與串接，攔不到前景呼叫；兩者互不取代，`--exit-gate` 也獨立判定，同一支 script 可以同時帶。
 // 另攔 `grep -o` 的 pattern 有兩個以上 `.\{0,<n>\}`／`.{0,<n>}`／`[^.]\{0,<n>\}` 且第二大的 n ≥ 40（前後文各取 n 字）：內建規則，不需要旗標，見 wideGrepReason。
 //   Claude Code 的 grep 是 ugrep，兩段寬範圍重複常報 `exceeds complexity limits`、exit 2（隨資料而變；單邊 1000 可，`-P` 不受影響）。訊息「grep -o 的 pattern 前後都有 `.{0,n}`」；actionable：專案有 `scripts/doc-excerpt.mjs`（以 $CLAUDE_PROJECT_DIR 判斷）時
@@ -129,7 +134,9 @@ function closingParen(text, start) {
 function quotedView({ literal, subs }, segment, rest, codeIsData) {
   if (/^\s*core\.hooks/i.test(literal)) return literal;
   if (RUNS_SHELL.test(segment) || FEEDS_SHELL.test(rest)) return ` ; ${commandView(literal, codeIsData)} ; `;
-  if (RUNS_CODE.test(segment)) return ` ; ${literal.replace(/['"`]/g, ' ')} ; `;
+  // `import(…)`／`require(…)` 載入模組、不執行它的 CLI：去掉括號，免得 `(` 被當成段落開頭（retro spay2 db0c0090#2：
+  // `node -e` 字串內以動態 import 載入 batch-watch 被當成執行 watcher）；`os.system('x.mjs | tail')` 照常比對。
+  if (RUNS_CODE.test(segment)) return ` ; ${literal.replace(/\b(?:import|require)\s*\(/g, 'import ').replace(/['"`]/g, ' ')} ; `;
   const ran = subs.map(sub => ` ; ${commandView(sub, codeIsData)} ; `).join('');
   return (/^[\w./=:@%+,-]+$/.test(literal) ? literal : '""') + ran;
 }
@@ -263,8 +270,12 @@ export function backgroundJobReason(command, specs = []) {
 // 中間可經 tee 等其他管線）。指令前同段出現引號（例如 `grep "status.mjs --probe | grep" docs`）視為字串，不攔。
 const FILTER = String.raw`\|&?\s*(?:\S*\/)?(?:e?grep|rg|head|tail|cut)\b`;
 const FILTER_NAME = /(e?grep|rg|head|tail|cut)\b/;
-const filtered = spec => new RegExp(String.raw`(?:^|[;&|\n(])[^;&|\n"']*?${specPattern(spec)}`
-  + String.raw`(?:[^;&|\n]|(?<=[<>])&|\|(?!${FILTER}))*?(?<filter>${FILTER})`);
+// script 要被實際執行才算（見 runs，比對 gateView；retro spay2 db0c0090#2：原本段落內任何位置出現 spec 字樣都算，`P=scripts/x.mjs --probe | head` 也攔）。
+const filtered = spec => {
+  const [script, flag] = spec.trim().split(/\s+/);
+  return new RegExp(runs(script) + (flag ? String.raw`[^;&|\n]*\s${escape(flag)}(?![\w-])` : '')
+    + String.raw`(?:[^;&|\n]|(?<=[<>])&|\|(?!${FILTER}))*?(?<filter>${FILTER})`);
+};
 
 /**
  * @param {string} command Bash tool 的完整指令
@@ -277,34 +288,42 @@ export function probeFilterReason(command, specs = []) {
 
 /** 被過濾的 spec 與過濾指令名稱；未命中為 null。 */
 function filteredOutput(command, specs) {
+  const view = specs.length ? gateView(command) : '';
   for (const spec of specs) {
-    const filter = filtered(spec).exec(command)?.groups.filter;
+    const filter = filtered(spec).exec(view)?.groups.filter;
     if (filter) return { spec, filter: FILTER_NAME.exec(filter)[1] };
   }
   return null;
 }
 
-const NODE_OPTION = String.raw`-[^\s;&|]+`;
-// 長等待判定用：`node --check`／`-c`（只檢查語法）、`--help`、`--version` 不執行 script，不算長等待（retro spay2 1112b followups 617，retro 1116a：
-// `node --check scripts/x.mjs && node --check scripts/batch-watch.mjs` 被當成 watcher 前面串了其他指令而誤擋）。
-const WAIT_NODE_OPTION = String.raw`(?!(?:-c|--check|-h|--help|-v|--version)(?![^\s;&|]))${NODE_OPTION}`;
-/** 長等待（`--long-wait`）的 script 被 node 執行（或直接、經 bash／sh 執行）的段落：見 runs，排除不執行的 node 旗標。 */
-const runsWait = script => runs(script, WAIT_NODE_OPTION);
+// `node --check`／`-c`（只檢查語法）、`--help`、`--version` 不執行 script（retro spay2 1112b followups 617，retro 1116a：
+// `node --check scripts/x.mjs && node --check scripts/batch-watch.mjs` 被當成 watcher 前面串了其他指令而誤擋；
+// retro spay2 db0c0090#2：`node --check scripts/batch-land.mjs` 被當成前景執行 batch-land.mjs）。
+const NODE_OPTION = String.raw`(?!(?:-c|--check|-h|--help|-v|--version)(?![^\s;&|]))-[^\s;&|]+`;
+/** 長等待（`--long-wait`）的 script 被 node 執行（或直接、經 bash／sh 執行）的段落：同 runs。 */
+const runsWait = script => runs(script);
 
 /**
  * 「這一段指令在執行 script」的 regex 片段：段落開頭，可接 shell 關鍵字（`do`、`then`、`{` 等，retro spay2 6d21b9cc#3：for 迴圈內的管線原本看不到）、
  * 環境變數與 node／bash／sh，可帶路徑。`(?<!\\)`：沒加引號的 `grep a\|x.mjs f` 裡，`\|` 也不是分隔。
+ * 不執行 script 的 node 旗標（NODE_OPTION）、變數指派的值（路徑前綴不含 `=`）與陣列指派（`X=(…`）不算（retro spay2 db0c0090#2）。
  */
-const runs = (script, nodeOption = NODE_OPTION) => String.raw`(?:^|(?<!\\)[;&|\n(])\s*(?:(?:do|then|else|elif|if|while|until|\{|!)\s+)*(?:\w+=\S*\s+)*(?:node(?:\s+${nodeOption})*(?:\s+[^\s;&|"'<>-][^\s;&|"'<>]*\.test\.m?js)*\s+|(?:bash|sh)\s+)?(?:[^\s;&|"']*\/)?${escape(script)}(?![\w.-])`;
+const runs = script => String.raw`(?:^|(?<!\\)[;&|\n(])\s*(?:(?:do|then|else|elif|if|while|until|\{|!)\s+)*(?:\w+=(?!\()\S*\s+)*(?:node(?:\s+${NODE_OPTION})*(?:\s+[^\s;&|"'<>-][^\s;&|"'<>]*\.test\.m?js)*\s+|(?:bash|sh)\s+)?(?:[^\s;&|"'=]*\/)?${escape(script)}(?![\w.-])`;
 
 // 只印資料、不是 gate 的形式：script 之後的參數符合就不算 exit gate（retro spay2 4a22bbe7#3：`followups.mjs list | cut`、`issue-create.mjs --template | head`
 // 被拒，理由是「gate 失敗也顯示成功」，但它們不是 gate，整段多指令 Bash 卻要重送）。寫死在這裡而不是新增旗標：hook 的參數在 settings.json，只有使用者能改。
 // 寫入形式要繼續攔，所以比對開頭：issue-create.mjs 只把第一個參數的 `--template` 當成印骨架。
 // `--help`／`-h` 也只印用法（retro spay2 2dc186b1#4：`issue-create.mjs --help 2>&1 | head -5` 被拒，`--template … | head -60` 放行）；
 // 只列確認過會先處理 `--help` 的 script，不一律放行：不認得 `--help` 的 gate 可能照常整個跑完。
+// retro spay2 05f4385f#3：`update-issue-body.mjs --help 2>&1 | head -15` 被拒；它把 `--help` 當 iid、印 USAGE 後 exit 2，不寫入。
+// 同樣確認過：fix-land.mjs（任一參數 `--help`／`-h` 先印 USAGE、exit 0）、check-contracts.sh（不是 `--static` 的參數都印用法、exit 2）。
+const HELP_ONLY = /^\s+(?:--help|-h)(?![\w-])/;
 const EXIT_GATE_READ_ONLY = {
   'followups.mjs': /^\s+(?:list|--help|-h)(?![\w-])/,
   'issue-create.mjs': /^\s+(?:--template|--help|-h)(?![\w-])/,
+  'update-issue-body.mjs': HELP_ONLY,
+  'fix-land.mjs': HELP_ONLY,
+  'check-contracts.sh': HELP_ONLY,
 };
 
 const COMPOUND_CLOSERS = new Map([['for', 'done'], ['select', 'done'], ['while', 'done'], ['until', 'done'], ['if', 'fi'], ['case', 'esac'], ['{', '}']]);
