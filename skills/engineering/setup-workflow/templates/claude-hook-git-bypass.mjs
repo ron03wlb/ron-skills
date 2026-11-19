@@ -8,6 +8,7 @@
 // 另攔長跑 gate（`--exit-gate` 指定）以管線接 grep／head／tail／cut：Bash 回報的 exit code 是管線最後一支的，gate 失敗也通知 exit 0
 // （retro spay2 b949589b#1：`check-contracts.sh | tail -15` 與 `fix-land.mjs … | tail -12` 都假綠，靠讀輸出才發現）。同一指令有 pipefail 時 exit code 正確，不攔；同一支 script 只印資料的形式（EXIT_GATE_READ_ONLY）不攔。
 // 另攔 pilot-handoff.mjs 與其他指令串接（`;`、`&&`、`||`、換行）：內建規則，不需要旗標，見 chainedHandoff。
+//   第一個參數是 `--review`／`--review-done`（唯讀列清單、記回顧點，不交接）的段落不算交接，可與其他指令串接（retro spay2 687eb996#4、a1d68426#4）。
 // 另攔要背景執行的指令（`--background-only` 指定）在前景執行：`tool_input.run_in_background` 不是 true 就拒絕（retro spay2 1677d177#1：前景 batch-land.mjs 擋住 session 10 分鐘）。
 // `--long-wait` 的 spec 所在 pipeline（以 `;`、`&&`、`||`、換行切段，不以 `|` 切）以單一 `&` 結尾也攔（retro spay2 b0225c1b#1：`… 2>&1 | head -0 &`）。
 // `--long-wait` 的 spec 前面串了其他指令（`&&`、`;`、`||`、換行；前面只有 `cd` 或變數指派不算）也拒絕，訊息「長等待指令（watcher）單獨一個背景呼叫」；
@@ -418,12 +419,13 @@ export function foregroundReason(command, specs = [], runInBackground = false) {
  * 串接的指令裡有 pilot-handoff.mjs（retro spay2 f5d852cf#7：drain、diff 與交接串成一個 Bash 呼叫，結果印出時已交接，交接內容漏了它）。
  * 交接前要讀完其他指令的結果，所以另一段指令就算串接；`cd` 與單純的變數指派沒有結果要讀，不算。管線不是串接。
  * pilot-handoff.mjs 是 setup-workflow 自己的正本，規則內建，不必多帶旗標。
+ * 第一個參數是 `--review`／`--review-done` 時只列或記回顧點、不交接，不算（retro spay2 687eb996#4、a1d68426#4：`pilot-handoff.mjs --review; echo ===; …` 被拒、多重送一次）。
  * @param {string} command Bash tool 的完整指令
  * @returns {boolean} 要拒絕時為 true
  */
 export function chainedHandoff(command) {
   const parts = statements(command);
-  const handoff = new RegExp(runs('pilot-handoff.mjs'));
+  const handoff = new RegExp(runs('pilot-handoff.mjs') + String.raw`(?!\s+--review(?:-done)?(?![\w-]))`);
   return parts.some(text => handoff.test(text)) && parts.filter(text => !SETUP_ONLY.test(text)).length > 1;
 }
 

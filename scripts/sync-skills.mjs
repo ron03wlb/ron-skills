@@ -231,17 +231,22 @@ function syncHooks() {
   }
 }
 
-/** 本 repo 的 pre-commit 連到 git 的 hooks 目錄：手動 ln 的那一步每個 clone 都要記得，漏了也看不出來（#300）。已有的不動，自己的 hook 留著並提示。 */
+/**
+ * 本 repo 的 pre-commit 與 commit-msg 連到 git 的 hooks 目錄：手動 ln 的那一步每個 clone 都要記得，漏了也看不出來（#300）。已有的不動，自己的 hook 留著並提示。
+ * commit-msg 擋主旨後第二行非空（retro spay2 ff00a288#2）；本 repo 沒設 core.hooksPath，所以同樣靠連結啟用。
+ */
 function linkPreCommit() {
   const hooks = process.env.GIT_HOOKS_DIR || git(ROOT, ['rev-parse', '--path-format=absolute', '--git-path', 'hooks']);
-  const from = join(mainCheckout(), '.githooks/pre-commit');
-  if (!hooks || !existsSync(from)) return;
-  const path = join(hooks, 'pre-commit');
-  if (isLink(path) && existsSync(path) && realpathSync(path) === realpathSync(from)) return;
-  if (isLink(path) || existsSync(path)) { warn(`SKIP ${path}（已有別的 hook，不覆蓋；要 bin/check 把關就自己併入 .githooks/pre-commit）`); return; }
-  mkdirSync(hooks, { recursive: true });
-  symlinkSync(relative(hooks, from), path);
-  warn(`GIT_HOOK_LINKED ${path}`);
+  for (const name of ['pre-commit', 'commit-msg']) {
+    const from = join(mainCheckout(), '.githooks', name);
+    if (!hooks || !existsSync(from)) continue;
+    const path = join(hooks, name);
+    if (isLink(path) && existsSync(path) && realpathSync(path) === realpathSync(from)) continue;
+    if (isLink(path) || existsSync(path)) { warn(`SKIP ${path}（已有別的 hook，不覆蓋；要本 repo 把關就自己併入 .githooks/${name}）`); continue; }
+    mkdirSync(hooks, { recursive: true });
+    symlinkSync(relative(hooks, from), path);
+    warn(`GIT_HOOK_LINKED ${path}`);
+  }
 }
 
 /** 和 mv 一樣：暫存目錄與 BUILD 在不同檔案系統時改成複製再刪除。 */

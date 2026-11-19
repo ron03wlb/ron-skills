@@ -12,6 +12,11 @@
 // 輸出每檔一行 `COPY|SAME|UPDATE|DIFF <副本路徑>`（UPDATE、DIFF 後接 unified diff；UPDATE 是 sha256 與清單記錄一致、沒手改過的舊副本，直接覆寫），最後一行：
 //   PLANNED <n>（--dry-run）、COPIED <n>、CONFIRM_OVERWRITE <路徑...>（exit 3：既有檔內容不同且與清單記錄不一致，人確認後加 --yes 重跑；不是明列的範本時路徑緊接來源，例如 `scripts/b.mjs（a、c 的相依）`）、
 //   VERIFIED <n>（--verify 全部一致；有 MISMATCH／MISSING 或沒有清單時 exit 1）。參數或旗標錯誤、正本不存在或有未提交改動時 exit 2。
+// `正本不存在：templates/<檔>` 是相依時接 `（templates/<引用檔>:<行>）`（retro spay2 ff00a288#1(b)：只寫缺的檔名，要自己 grep 是誰引用的）；
+//   actionable：改掉該行的引用，或在範本加 `// copy-templates: requires` 宣告真正的相依。
+// 目標 repo 就是 ron-skills 本身（目標裡有 skills/engineering/setup-workflow/scripts/copy-templates.mjs）時，只處理清單已列的副本，
+//   其餘每檔印 `SKIP_UNLISTED <templates/ 下的檔名>`、不複製也不記清單（不可動手，資訊；retro spay2 ff00a288#4：recopy 為 ron-skills
+//   沒追蹤的範本建了 scripts/claude-hook-git-bypass.mjs 與清單項，要手動 rm 還原）。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
@@ -67,6 +72,22 @@ const git = (...rest) => spawnSync('git', ['-C', TEMPLATES, ...rest], { encoding
 const sourceRoot = git('rev-parse', '--show-toplevel').stdout.trim();
 
 const isDir = path => existsSync(join(TEMPLATES, path)) && statSync(join(TEMPLATES, path)).isDirectory();
+/** 目標是 ron-skills 本身（含其他 worktree）：本 repo 只追蹤清單已列的副本（retro spay2 ff00a288#4）。 */
+const selfTarget = existsSync(join(repo, relative(sourceRoot, fileURLToPath(import.meta.url))));
+/** text 中 index 所在的行號（1 起）。 */
+const lineAt = (text, index) => text.slice(0, index).split('\n').length;
+/**
+ * 動態 import 只認程式碼：註解行（`//`、`*`、`/*` 開頭）與同一行前面有未閉合 `"`／`` ` `` 字串的出現不算
+ * （retro spay2 ff00a288#1(a)：claude-hook-git-bypass 的註解與測試 fixture 字串含 `import('./scripts/batch-watch.mjs')`，recopy 失敗兩次）。
+ * 測試真的要動態載入的檔照常用 import，fixture 字串裡要帶的檔改寫 `// copy-templates: requires` 宣告。
+ */
+const inCode = (text, index) => {
+  const start = text.lastIndexOf('\n', index - 1) + 1;
+  const before = text.slice(start, index);
+  if (/^\s*(?:\/\/|\/\*|\*)/.test(before)) return false;
+  const plain = before.replace(/\\./g, '');
+  return ['"', '`'].every(quote => plain.split(quote).length % 2 === 1);
+};
 
 /**
  * 檔案引用的同目錄相對檔，以及它讀取的整個 fixtures 目錄。
@@ -79,22 +100,24 @@ const isDir = path => existsSync(join(TEMPLATES, path)) && statSync(join(TEMPLAT
  */
 function references(file) {
   const text = readFileSync(join(TEMPLATES, file), 'utf8');
+  /** 引用 → { path, at }：at 是 `<引用檔>:<行>`，正本不存在時印出。 */
+  const ref = (name, index) => ({ path: join(dirname(file), name), at: `${file}:${lineAt(text, index)}` });
   const required = [...text.matchAll(/^(?:\/\/|#) copy-templates: requires (.+)$/gm)]
-    .flatMap(m => m[1].trim().split(/\s+/)).map(name => join(dirname(file), name));
-  if (file.endsWith('.sh')) return [...required, ...[...text.matchAll(/"\$\(dirname "\$0"\)\/([\w.-]+)"/g)].map(m => join(dirname(file), m[1]))];
+    .flatMap(m => m[1].trim().split(/\s+/).map(name => ref(name, m.index)));
+  if (file.endsWith('.sh')) return [...required, ...[...text.matchAll(/"\$\(dirname "\$0"\)\/([\w.-]+)"/g)].map(m => ref(m[1], m.index))];
   const patterns = [
-    /^\s*(?:(?:import|export)\b[^'"`;]*?\bfrom|\}\s*from|import)\s*'(\.\/[^']+)'/gm,
-    /\bimport\(\s*'(\.\/[^']+)'\s*\)/g,
-    /new URL\(\s*'(\.\/[^']+)'/g,
+    [/^\s*(?:(?:import|export)\b[^'"`;]*?\bfrom|\}\s*from|import)\s*'(\.\/[^']+)'/gm],
+    [/\bimport\(\s*'(\.\/[^']+)'\s*\)/g, inCode],
+    [/new URL\(\s*'(\.\/[^']+)'/g],
   ];
-  const refs = [...required, ...patterns.flatMap(pattern => [...text.matchAll(pattern)].map(m => join(dirname(file), m[1])))];
+  const refs = [...required, ...patterns.flatMap(([pattern, keep]) => [...text.matchAll(pattern)].filter(m => !keep || keep(text, m.index)).map(m => ref(m[1], m.index)))];
   const dirs = [
-    ...[...text.matchAll(/'(fixtures\/[^'/]+)'/g)].map(m => m[1]),
-    ...[...text.matchAll(/new URL\(\s*`\.\/((?:[^`$/]+\/)*fixtures\/[^`$/]+)\//g)].map(m => m[1]),
+    ...[...text.matchAll(/'(fixtures\/[^'/]+)'/g)].map(m => [m[1], m.index]),
+    ...[...text.matchAll(/new URL\(\s*`\.\/((?:[^`$/]+\/)*fixtures\/[^`$/]+)\//g)].map(m => [m[1], m.index]),
   ];
-  for (const dir of new Set(dirs)) {
+  for (const [dir, index] of new Map(dirs)) {
     const base = join(dirname(file), dir);
-    refs.push(...readdirSync(join(TEMPLATES, base), { recursive: true }).map(name => join(base, String(name))).filter(path => !isDir(path)));
+    refs.push(...readdirSync(join(TEMPLATES, base), { recursive: true }).map(name => join(base, String(name))).filter(path => !isDir(path)).map(path => ({ path, at: `${file}:${lineAt(text, index)}` })));
   }
   return refs;
 }
@@ -102,13 +125,13 @@ function references(file) {
 /** 每個要複製的檔 → 帶入它的明列範本（同一個相依可能被多個範本帶入）。 */
 const broughtBy = new Map();
 const skipped = new Set();
-const visit = (file, root) => {
+const visit = (file, root, at) => {
   if (broughtBy.get(file)?.has(root)) return;
   if (excluded(file)) { skipped.add(file); return; }
-  if (!existsSync(join(TEMPLATES, file)) || isDir(file)) fail(`正本不存在：templates/${file}`);
+  if (!existsSync(join(TEMPLATES, file)) || isDir(file)) fail(`正本不存在：templates/${file}${at ? `（templates/${at}）` : ''}`);
   if (!broughtBy.has(file)) broughtBy.set(file, new Set());
   broughtBy.get(file).add(root);
-  if (file.endsWith('.mjs') || file.endsWith('.sh')) references(file).forEach(ref => visit(ref, root));
+  if (file.endsWith('.mjs') || file.endsWith('.sh')) references(file).forEach(({ path, at: from }) => visit(path, root, from));
 };
 const named = new Set();
 for (const name of names) {
@@ -121,7 +144,8 @@ for (const name of names) {
 }
 const origin = file => (named.has(file) ? '' : `（${[...broughtBy.get(file)].map(root => root.replace(/\.mjs$/, '')).join('、')} 的相依）`);
 
-const plan = [...broughtBy.keys()].sort().map(file => {
+const unlisted = selfTarget ? [...broughtBy.keys()].filter(file => !manifest.copies[join('scripts', file)]).sort() : [];
+const plan = [...broughtBy.keys()].filter(file => !unlisted.includes(file)).sort().map(file => {
   const template = relative(sourceRoot, join(TEMPLATES, file));
   const status = git('status', '--porcelain', '--', join(TEMPLATES, file)).stdout;
   // --dry-run 不寫清單，正本改動中也能預覽；pre-commit 的測試才不會和改正本的 commit 互卡。
@@ -136,6 +160,7 @@ const plan = [...broughtBy.keys()].sort().map(file => {
 });
 
 for (const file of [...skipped].sort()) console.log(`EXCLUDE ${join('scripts', file)}`);
+for (const file of unlisted) console.log(`SKIP_UNLISTED ${file}`);
 const diffs = [];
 for (const { file, dest, target, state } of plan) {
   console.log(`${state} ${dest}`);

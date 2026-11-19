@@ -301,6 +301,18 @@ test('chainedHandoff：單獨執行（前面可有 cd 與變數指派）、其�
   ]) assert.equal(chainedHandoff(command), false, command);
 });
 
+// retro spay2 687eb996#4、a1d68426#4：唯讀的 `--review`／`--review-done` 不交接，串接也不會讓交接內容漏東西；真交接串接照攔。
+test('chainedHandoff：--review／--review-done 串接放行，真交接串接仍攔', () => {
+  for (const command of ['node scripts/pilot-handoff.mjs --review; echo ===; node scripts/pilot-status.mjs --decisions',
+    'node scripts/periodic-acceptance.mjs tick; echo rc=$?; echo ---; node scripts/pilot-handoff.mjs --review',
+    'node scripts/pilot-handoff.mjs --review-done --through 120 && node scripts/pilot-status.mjs --decisions',
+  ]) assert.equal(chainedHandoff(command), false, command);
+  for (const command of ['node scripts/pilot-handoff.mjs --review; echo ===; node scripts/pilot-handoff.mjs --session x --pid y --reason z',
+    'node scripts/pilot-status.mjs --decisions; node scripts/pilot-handoff.mjs --session x --pid y --reason z',
+    'node scripts/pilot-handoff.mjs --reviewer x; echo ok',
+  ]) assert.equal(chainedHandoff(command), true, command);
+});
+
 test('hook：串接 pilot-handoff.mjs 不需要任何參數就攔下，並說明改法', () => {
   const input = command => JSON.stringify({ tool_input: { command } });
   const denied = hook(input(HANDOFF_CHAIN));

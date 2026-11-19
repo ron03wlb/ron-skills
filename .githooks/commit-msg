@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# commit 訊息第二行非空就擋（retro spay2 ff00a288#2：46134ee 主旨後漏空行，整段內文成了主旨）；主旨過長只印 advisory。規則見 scripts/check-commit-message.mjs。
+# 啟用：bin/sync-skills 會建連結（同 pre-commit，#300）；手動是 ln -s ../../.githooks/commit-msg .git/hooks/commit-msg
+set -euo pipefail
+exec node "$(git rev-parse --show-toplevel)/scripts/check-commit-message.mjs" "$1"

@@ -166,6 +166,9 @@ test('同步時連結 git 的 pre-commit hook；已有的不覆蓋；--check 不
   assert.match(linked.stderr, new RegExp(`^GIT_HOOK_LINKED ${join(hooks, 'pre-commit')}$`, 'm'));
   assert.ok(lstatSync(join(hooks, 'pre-commit')).isSymbolicLink());
   assert.match(readFileSync(join(hooks, 'pre-commit'), 'utf8'), /bin\/check/, '連結要指到真的 hook');
+  // retro spay2 ff00a288#2：commit-msg 一起連，本 repo 沒設 core.hooksPath
+  assert.match(linked.stderr, new RegExp(`^GIT_HOOK_LINKED ${join(hooks, 'commit-msg')}$`, 'm'));
+  assert.match(readFileSync(join(hooks, 'commit-msg'), 'utf8'), /check-commit-message\.mjs/);
 
   rmSync(join(hooks, 'pre-commit'));
   writeFileSync(join(hooks, 'pre-commit'), '#!/bin/sh\n# 使用者自己的 hook\n');

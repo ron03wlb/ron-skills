@@ -277,6 +277,42 @@ test('#281：開頭的 `// copy-templates: requires <檔名>...` 宣告一定要
   assert.match(missing.stderr, /正本不存在：templates\/missing\.mjs/);
 });
 
+// retro spay2 ff00a288#1：92bb39d^ 的 claude-hook-git-bypass.test.mjs 第 665（註解）、667、672（fixture 字串）行含字面動態 import，recopy exit 2 印 batch-watch。
+test('動態 import 只認程式碼：註解行與字串裡的 import(\'./…\') 不算相依；正本不存在時附引用檔:行', t => {
+  const { source, target, copier } = fixture(t);
+  const templates = join(source, 'skills/engineering/setup-workflow/templates');
+  write(templates, {
+    'g.mjs': [
+      "// 原本 `node -e \"import('./scripts/batch-watch.mjs')…\"`，",
+      ' * JSDoc：await import(\'./scripts/gone-doc.mjs\')',
+      "const GB = \"cd /m; python3 - <<'EOF'\\np='scripts/batch-watch.mjs'\\nEOF\\nnode --check scripts/batch-watch.mjs && node -e \\\"import('./scripts/batch-watch.mjs').then(m=>console.log(typeof m.lastSummary))\\\"\";",
+      "  for (const command of [`node -e \"import('./scripts/batch-watch.mjs').then(m=>m)\" && echo ok`]) run(command);",
+      "const mod = await import('./b.mjs');",
+      '',
+    ].join('\n'),
+    'h.mjs': "export const h = 1;\nconst later = () => import('./gone.mjs');\n",
+  });
+  git(source, 'add', '.');
+  git(source, 'commit', '-qm', 'dynamic import');
+  const result = run(copier, target, '--dry-run', 'g');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), ['COPY scripts/b.mjs', 'COPY scripts/g.mjs', 'PLANNED 2']);
+  const missing = run(copier, target, '--dry-run', 'h');
+  assert.equal(missing.status, 2);
+  assert.equal(missing.stderr.trim(), 'copy-templates: 正本不存在：templates/gone.mjs（templates/h.mjs:2）');
+});
+
+// retro spay2 ff00a288#4：對 ron-skills 本身 recopy 時建了它沒追蹤的 scripts/claude-hook-git-bypass.mjs 與清單項。
+test('目標是 ron-skills 本身時只處理清單已列的副本，其餘印 SKIP_UNLISTED、不複製也不記清單', t => {
+  const { source, copier } = fixture(t);
+  write(source, { [MANIFEST]: `${JSON.stringify({ source: 'ron03wlb/ron-skills', copies: { 'scripts/b.mjs': { template: 'x', commit: 'y', sha256: 'z' } } }, null, 2)}\n` });
+  const result = run(copier, source, '--no-tests', '--yes', 'a');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n').filter(line => !/^[-+@ ]|^diff |^index /.test(line)), ['SKIP_UNLISTED a.mjs', 'SKIP_UNLISTED lib/pre.mjs', 'COPY scripts/b.mjs', 'COPIED 1']);
+  assert.equal(existsSync(join(source, 'scripts/a.mjs')), false);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(source, MANIFEST), 'utf8')).copies), ['scripts/b.mjs']);
+});
+
 test('#281：真正的 pilot-close 帶上 pilot-counterpart 與 pilot-unbare.sh，不帶只支援 GitHub 的 gh-tracker', () => {
   const temp = mkdtempSync(join(realTmpdir(), 'setup-workflow-copy-close-'));
   try {
