@@ -662,7 +662,7 @@ test('exitGateReason：update-issue-body.mjs／fix-land.mjs／check-contracts.sh
   assert.equal(hook(JSON.stringify({ tool_input: { command: 'node scripts/update-issue-body.mjs 1 --append f --since t | tail' } }), PROJECT_ARGS).status, 2);
 });
 
-// 動態 import 字樣以拼接產生：copy-templates 會把字面 `import('./…')` 當成範本相依
+// 動態 import 字樣以拼接產生：copy-templates 會把字面的動態 import 相對路徑當成範本相依
 const DYN_IMPORT = 'imp' + 'ort';
 // retro spay2 db0c0090#2（1119b GB 子代理實例）：python heredoc 編輯 batch-watch.mjs 後 `node -e` 字串內以動態 import 載入 batch-watch，
 // -e 內 `import(` 的括號被當成段落開頭，判成 watcher 前面串了其他指令（舊碼 rc=2）。--whole-output 同樣只認被執行的 script。
