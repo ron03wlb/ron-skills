@@ -97,6 +97,8 @@ A gate is open until its `resolved` mark; never delete one. A repo that copied t
 
 The standing orders: a heading line, then a numbered list, one constraint per item (`<n>. <constraint>`). Orders keep their numbers, so removing one leaves a gap. An item overriding an adapter default names who overrode it and when, in parentheses at its start.
 
+Add an order through the adapter's preferences command when it names one (it takes the next number and refuses an order already listed word for word); hand-append only without one.
+
 ## `.scratch/pilot/status.md`
 
 Regenerated from the store and git at each drain, never edited by hand (`pilot-probe --status` writes it): a heading `# pilot status（<time>，coordinator <session name>）`, where the name comes from the `coordinator` file's `pid` line (`(none)` without one), a blank line, then bullets in this order:
