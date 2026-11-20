@@ -2,14 +2,18 @@
 // 從 docs/workflow/*.md 產出帶左側側邊欄的靜態站 docs/workflow/site/（#8）。
 // Markdown 是唯一來源：README.md 為首頁，NN-*.md 依檔名排序為章節；章內的 PNG 預覽若有同名互動 HTML（diagrams/<name>.html）
 // 就改以 iframe 內嵌。輸出不含時間戳與環境資訊，重產必須零 diff；`--check` 在 OS 暫存目錄重產並與 site/ 比對，有差異即以 1 退出。
+// `--check --tree=<tree>`：來源與 site/ 都從 git tree 的 docs/workflow/ 讀（pre-commit 傳要 commit 的 index tree，工作區沒 stage 的修改不影響，#329-4）。
 // 只用 Node 內建模組；Markdown 只支援本資料夾用到的子集（標題、段落、表格、清單、程式碼區塊、引言、連結、圖片、粗斜體、行內程式碼）。
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
-export const DEFAULT_SOURCE = resolve(scriptDir, '..', 'docs', 'workflow');
+const REPO_ROOT = resolve(scriptDir, '..');
+const SOURCE_PATH = 'docs/workflow';
+export const DEFAULT_SOURCE = resolve(REPO_ROOT, SOURCE_PATH);
 export const SITE_DIR = 'site';
 export const BUILD_COMMAND = 'node scripts/build-workflow-site.mjs';
 export const SITE_NAME = 'ron-skills 交付流程';
@@ -324,26 +328,42 @@ export function diffSite(files, siteDir) {
   return [...changed].sort();
 }
 
+/** 把 git tree 裡的 docs/workflow/ 解到 dir，回傳解出的來源目錄。 */
+function extractTree(tree, dir) {
+  mkdirSync(dir, { recursive: true });
+  const archive = spawnSync('git', ['-C', REPO_ROOT, 'archive', '--format=tar', tree, '--', SOURCE_PATH], { maxBuffer: 1 << 30 });
+  if (archive.status !== 0) throw new Error(`git archive ${tree} 失敗：${String(archive.stderr).trim()}`);
+  const untar = spawnSync('tar', ['-xf', '-', '-C', dir], { input: archive.stdout });
+  if (untar.status !== 0) throw new Error(`tar 解開 ${tree} 失敗：${String(untar.stderr).trim()}`);
+  return join(dir, SOURCE_PATH);
+}
+
 export function main(argv = process.argv.slice(2)) {
   const check = argv.includes('--check');
   const sourceArg = argv.find((arg) => arg.startsWith('--source='));
-  const sourceDir = sourceArg ? resolve(sourceArg.slice('--source='.length)) : DEFAULT_SOURCE;
-  const siteDir = join(sourceDir, SITE_DIR);
-  const files = buildSite(sourceDir);
-  if (!check) {
-    writeSite(files, siteDir);
-    process.stdout.write(`已產出 ${Object.keys(files).length} 個檔案到 ${relative(process.cwd(), siteDir) || '.'}\n`);
-    return 0;
+  const treeArg = argv.find((arg) => arg.startsWith('--tree='));
+  if (treeArg && (!check || sourceArg)) {
+    process.stderr.write('--tree 只能搭配 --check，且不能與 --source 併用。\n');
+    return 2;
   }
-  const tmp = mkdtempSync(join(tmpdir(), 'workflow-site-'));
+  const tmp = check ? mkdtempSync(join(tmpdir(), 'workflow-site-')) : null;
   try {
-    writeSite(files, tmp); // 確認寫檔路徑可行；比對仍以記憶體內容為準。
+    const sourceDir = treeArg ? extractTree(treeArg.slice('--tree='.length), join(tmp, 'tree'))
+      : sourceArg ? resolve(sourceArg.slice('--source='.length)) : DEFAULT_SOURCE;
+    const siteDir = join(sourceDir, SITE_DIR);
+    const files = buildSite(sourceDir);
+    if (!check) {
+      writeSite(files, siteDir);
+      process.stdout.write(`已產出 ${Object.keys(files).length} 個檔案到 ${relative(process.cwd(), siteDir) || '.'}\n`);
+      return 0;
+    }
+    writeSite(files, join(tmp, 'build')); // 確認寫檔路徑可行；比對仍以記憶體內容為準。
     const changed = diffSite(files, siteDir);
     if (!changed.length) { process.stdout.write('docs/workflow/site 與 Markdown 同步。\n'); return 0; }
     process.stderr.write(`docs/workflow/site 與 Markdown 不同步（請執行 ${BUILD_COMMAND} 重產，不要手改 HTML）：\n${changed.map((name) => `  ${name}`).join('\n')}\n`);
     return 1;
   } finally {
-    rmSync(tmp, { recursive: true, force: true });
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
   }
 }
 

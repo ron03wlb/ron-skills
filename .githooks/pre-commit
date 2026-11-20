@@ -7,6 +7,8 @@ cd "$(git rev-parse --show-toplevel)"
 index_tree=$(git write-tree)
 # hook 帶入的 GIT_DIR、GIT_INDEX_FILE 等會被 bin/check 裡測試的 git 繼承，`git init` 就把主 checkout 設成 bare（#25）；清掉 git 自己列出的 repo 區域變數（連帶清掉 `git -c` 帶入的設定）。
 unset $(git rev-parse --local-env-vars)
+# 讀檔的守門（流程站的兩道）要比對要 commit 的樹，不是工作區：別的 session 留著沒 stage 的 docs/workflow/ 修改會擋下無關的 commit（#329-4）。
+export CHECK_INDEX_TREE=$index_tree
 # bin/check 剛通過同一棵樹就不再跑（#297）；scripts/check-stamp.mjs 只讀本 worktree 的記錄。
 if [[ -f scripts/check-stamp.mjs ]] && node scripts/check-stamp.mjs fresh "$index_tree"; then exit 0; fi
 # 成功時不吵；失敗時 CHECK_FAIL 在 stdout，必須印出來，否則 commit 只有 exit 1、沒有任何訊息（retro spay2 b949589b#3）。

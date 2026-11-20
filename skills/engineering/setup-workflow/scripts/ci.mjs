@@ -8,7 +8,7 @@
 //   `CI_KEPT <檔...>`、`CI_SKIPPED local` 或 `GAP ci <原因>`（既有 CI 檔都沒呼叫入口，人決定怎麼補）。
 // exit 0；沒有單一檢查入口、不是 git repo 或旗標錯誤時 exit 2，不寫檔。
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { CI_FILES, codeHost } from '../templates/lib/hosts.mjs';
@@ -113,4 +113,5 @@ function main(args) {
   return 0;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) process.exit(main(process.argv.slice(2)));
+// 經 ~/.claude/skills 的 symlink 執行時 argv[1] 是 symlink 路徑，import.meta.url 卻已解析成實際路徑；比對前先 realpath（#329）。
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) process.exit(main(process.argv.slice(2)));

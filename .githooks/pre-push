@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# 擋直接更新遠端 main（含刪除）：spay2 的 session 曾 `cd ~/code/ron-skills; … git push origin main`，ca1a40a 沒有 PR 就進了 main（#306-1）。
+# Claude hook 只在 ron-skills 這個 project 的 session 生效，別的 project 的 session 擋不到；git hook 跟著 clone，誰 push 都會跑。
+# scripts/land.mjs 與 scripts/pilot-*.mjs 只 push 分支，合併用 gh pr merge，不會走到這裡。
+# 啟用：bin/sync-skills 會建連結（同 pre-commit，#300）；手動是 ln -s ../../.githooks/pre-push .git/hooks/pre-push
+# 只讀 stdin、不跑任何 git 子程序，所以不必像 pre-commit 那樣 unset git 帶入的區域變數。
+set -euo pipefail
+# stdin 每行：<local ref> <local sha> <remote ref> <remote sha>；刪除時 local ref 是 (delete)、local sha 全 0。
+blocked=0
+while read -r local_ref local_sha remote_ref _; do
+  [[ "$remote_ref" == refs/heads/main ]] || continue
+  if [[ "$local_sha" =~ ^0+$ ]]; then action='刪除'; else action="更新（${local_ref} ${local_sha:0:12}）"; fi
+  echo "PUSH_MAIN_BLOCKED $1 ${remote_ref}：不直接${action}遠端 main。開分支 commit，再用 node scripts/land.mjs <分支> --title … --body-file … 落地（PR、等 CI、gh 合併）。" >&2
+  blocked=1
+done
+exit "$blocked"
