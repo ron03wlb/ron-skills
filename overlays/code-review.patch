@@ -1,11 +1,13 @@
 diff --git a/SKILL.md b/SKILL.md
 --- a/SKILL.md
 +++ b/SKILL.md
-@@ -59,6 +59,8 @@
+@@ -59,6 +59,10 @@
  
  Issue both sub-agent calls together, in the foreground, and aggregate the reports they return.
  
 +**Models.** Spawn the **Standards** sub-agent with `model: sonnet`: it matches the diff against written rules. Spawn the **Spec** sub-agent with `model: sonnet` only when the caller's arguments say `low-risk`; otherwise leave `model` unset so it runs on the session's model, since a missed requirement costs more than the tokens (spay2 grill 2026-11-16 R1-Q6: opus review sub-agents were 53M of 67M weighted tokens in worker sessions).
++
++**Commit trailers.** Add to the Standards brief: "Skip commit trailers such as `Co-Authored-By`: they name the calling session's model, not yours, and the repo's own checks cover them." (spay2 retro 1e05a1e4#3: a sonnet Standards sub-agent flagged `Co-Authored-By: Claude Opus` as the wrong attribution.)
 +
  **Standards sub-agent prompt** should include:
  
