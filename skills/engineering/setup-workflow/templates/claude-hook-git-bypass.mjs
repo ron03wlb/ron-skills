@@ -36,6 +36,9 @@
 // 另攔 `grep -o` 的 pattern 有兩個以上 `.\{0,<n>\}`／`.{0,<n>}`／`[^.]\{0,<n>\}` 且第二大的 n ≥ 40（前後文各取 n 字）：內建規則，不需要旗標，見 wideGrepReason。
 //   Claude Code 的 grep 是 ugrep，兩段寬範圍重複常報 `exceeds complexity limits`、exit 2（隨資料而變；單邊 1000 可，`-P` 不受影響）。訊息「grep -o 的 pattern 前後都有 `.{0,n}`」；actionable：專案有 `scripts/doc-excerpt.mjs`（以 $CLAUDE_PROJECT_DIR 判斷）時
 //   改用 `node scripts/doc-excerpt.mjs '<詞>' <檔案>…`，否則改用 Python（retro spay2 bdabcbed#1：#295 後同一錯又踩兩次，doc-excerpt.mjs 沒人導過去）。
+// 另攔 `while`／`until` 迴圈裡的 `pgrep -f`（內建規則，見 selfMatchLoopReason）：訊息「while／until 迴圈裡的 `pgrep -f` 會比對到執行這個迴圈的 shell 本身」；
+//   actionable：改用 run_in_background 的完成通知，或取 pid 後 `while kill -0 <pid>`（retro spay2 1a01bf03#1：#961 worker 卡 2 小時）。
+// `--background-only` 另有內建項目 BUILTIN_BACKGROUND_ONLY（`orca-session-send.mjs --when-idle`，retro spay2 1a01bf03#8），訊息同 `--background-only`。
 // 用法：node scripts/claude-hook-git-bypass.mjs [--long-wait <spec>]… [--whole-output <spec>]… [--exit-gate <script 名稱>]… [--background-only <spec>]…
 //   spec 是「script 名稱[ 旗標]」，例如 `watch.mjs` 或 `queue.mjs --wait`：帶旗標時同段指令要有該旗標才算。不帶時只攔 git 繞過。
 // stdin 是 hook JSON（tool_input.command、tool_input.run_in_background）；命中時 exit 2，stderr 交回 agent；其他情況 exit 0 不輸出。
@@ -319,8 +322,9 @@ const runs = script => String.raw`(?:^|(?<!\\)[;&|\n(])\s*(?:(?:do|then|else|eli
 // retro spay2 05f4385f#3：`update-issue-body.mjs --help 2>&1 | head -15` 被拒；它把 `--help` 當 iid、印 USAGE 後 exit 2，不寫入。
 // 同樣確認過：fix-land.mjs（任一參數 `--help`／`-h` 先印 USAGE、exit 0）、check-contracts.sh（不是 `--static` 的參數都印用法、exit 2）。
 const HELP_ONLY = /^\s+(?:--help|-h)(?![\w-])/;
+// followups.mjs 不帶參數只印用法（exit 2、不寫入）也放行（retro spay2 2df91b24#3：`node scripts/followups.mjs 2>&1 | head -20` 查用法被拒，整個呼叫重送）。
 const EXIT_GATE_READ_ONLY = {
-  'followups.mjs': /^\s+(?:list|--help|-h)(?![\w-])/,
+  'followups.mjs': /^(?:\s+(?:list|--help|-h)(?![\w-])|(?:\s+\d?>&\d)*\s*$)/,
   'issue-create.mjs': /^\s+(?:--template|--help|-h)(?![\w-])/,
   'update-issue-body.mjs': HELP_ONLY,
   'fix-land.mjs': HELP_ONLY,
@@ -398,6 +402,10 @@ export function exitGateReason(command, scripts = []) {
   }
   return null;
 }
+
+// 內建的 `--background-only`（不需要旗標；hook 的參數在 settings.json，只有使用者能改）：
+// `orca-session-send.mjs --when-idle` 等到 worker 閒置才送，前景呼叫會把 session 擋到上限（retro spay2 1a01bf03#8：前景跑滿 300 秒才被移到背景）。
+export const BUILTIN_BACKGROUND_ONLY = ['orca-session-send.mjs --when-idle'];
 
 /**
  * 要背景執行的指令在前景執行。script 要被實際執行才算（見 runs），註解、字串與直譯器 here-doc 的內容不算。
@@ -581,6 +589,33 @@ export function wideGrepReason(command) {
   return false;
 }
 
+// pgrep 帶 -f（可與其他短選項合寫，例 `-af`）或 --full。
+const PGREP_FULL = /(?:^|[\s(`!])pgrep(?:\s+-[^\s]*)*?\s+(?:-[a-zA-Z]*f[a-zA-Z]*|--full)(?![\w-])/;
+const LOOP_OPENERS = new Set(['while', 'until', 'for', 'select']);
+
+/**
+ * `while`／`until` 迴圈（條件或內文）裡的 `pgrep -f`：pattern 也出現在執行這個迴圈的 shell 自己的命令列，pgrep 永遠找得到它，迴圈不會結束
+ * （retro spay2 1a01bf03#1：`until ! pgrep -f "impacted-tests.mjs c1e9348e3" >/dev/null; do sleep 30; done` 讓 #961 的 worker 卡 2 小時，
+ * 真正的程序早已結束，只剩 Claude 的 `bash -c` 自己相符）。迴圈外單獨的 `pgrep -af foo` 只查一次，不攔；`for` 迴圈不攔。
+ * @param {string} command Bash tool 的完整指令
+ * @returns {boolean} 要拒絕時為 true
+ */
+export function selfMatchLoopReason(command) {
+  const loops = [];
+  for (const words of simpleCommands(command)) {
+    let at = 0;
+    for (; at < words.length; at++) {
+      const word = words[at];
+      if (LOOP_OPENERS.has(word)) loops.push(word);
+      else if (word === 'done') loops.pop();
+      else if (!LEADING_WORD.test(word)) break;
+    }
+    const inWait = loops.some(word => word === 'while' || word === 'until');
+    if (inWait && PGREP_FULL.test(words.join(' '))) return true;
+  }
+  return false;
+}
+
 /** argv 中所有 `<flag> <value>` 的 value；緊接的是另一個旗標時不算值。 */
 const values = (args, flag) => args.flatMap((arg, i) => (arg === flag && args[i + 1] && !args[i + 1].startsWith('--') ? [args[i + 1]] : []));
 
@@ -607,6 +642,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       + (excerpt ? "改用 `node scripts/doc-excerpt.mjs '<詞>' <檔案>…`（前後各取 60 字，`--width <n>` 調整）。\n"
         : '改用 Python 讀檔，以 `re.finditer` 取比對處前後的字。\n'));
   }
+  if (selfMatchLoopReason(command)) {
+    deny('拒絕：while／until 迴圈裡的 `pgrep -f` 會比對到執行這個迴圈的 shell 本身（它的命令列含同一段 pattern），迴圈永遠不會結束。'
+      + '等自己啟動的長指令：改用 Bash tool 的 run_in_background: true，等完成通知；等既有程序：先取 pid，改用 `while kill -0 <pid> 2>/dev/null; do sleep 30; done`。\n');
+  }
   const args = process.argv.slice(2);
   const job = backgroundJobReason(command, values(args, '--long-wait'));
   if (job) {
@@ -625,7 +664,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (gate) {
     deny(`拒絕：${gate.script} 接 ${gate.filter}，回報的 exit code 是 ${gate.filter} 的，gate 失敗也顯示成功。改成 \`<指令> > <log> 2>&1; rc=$?; tail -n 20 <log>; exit $rc\`。\n`);
   }
-  const foreground = foregroundReason(command, values(args, '--background-only'), runInBackground);
+  const foreground = foregroundReason(command, [...values(args, '--background-only'), ...BUILTIN_BACKGROUND_ONLY], runInBackground);
   if (foreground) {
     deny(`拒絕：${foreground} 在前景執行，會把這個 session 擋到它結束（最多 600 秒），期間 worker 的結果都不會被處理。改用 Bash tool 的 run_in_background: true 執行同一指令，結束時會收到通知；要過濾輸出時先寫進 log（\`> <log> 2>&1\`），通知後再 grep／tail（背景的管線輸出有緩衝，提早讀是空的）。\n`);
   }
