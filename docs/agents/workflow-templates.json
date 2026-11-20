@@ -42,8 +42,8 @@
     },
     "scripts/claude-hook-main-checkout.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-main-checkout.mjs",
-      "commit": "d82a3ecd0534db1e03fe5ed0abf6d1025d556470",
-      "sha256": "a4f6cbc82e34c8627d6f7709fce703b858fb062e05feb3a6b69f02b66a9c06e3"
+      "commit": "18445356b0e22d38101073fbb4e16360c1e0f3d9",
+      "sha256": "e5d3e09ce4f1a9ed9d40aa0f1d6fe5f2d921d53827b106b0a1610e417fab253f"
     },
     "scripts/claude-hook-tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-tab-state.mjs",
@@ -57,8 +57,8 @@
     },
     "scripts/claude-hook-zsh-equals.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-zsh-equals.mjs",
-      "commit": "5c138eef43cfcbe045652d2c70e65478041e4ade",
-      "sha256": "302012dcbd11998c01787ebb3045b84da7297bb1d01fba8557a48567b59a3f47"
+      "commit": "18445356b0e22d38101073fbb4e16360c1e0f3d9",
+      "sha256": "427269e3fc04821cc2a0cb22cd3539bb9cb77e2d0c49d35a3a52a8c4927bb55d"
     },
     "scripts/doc-excerpt.mjs": {
       "template": "skills/engineering/setup-workflow/templates/doc-excerpt.mjs",
@@ -104,6 +104,11 @@
       "template": "skills/engineering/setup-workflow/templates/lib/protected-paths.mjs",
       "commit": "8fdf4ebaa2ba088d50ec5d77ef09897f423ed2c8",
       "sha256": "fd5447454d48ac3ae652404b8d7a41fd2a62cd096fd57ed697cfe21175eedff0"
+    },
+    "scripts/lib/shell-quote.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/lib/shell-quote.mjs",
+      "commit": "18445356b0e22d38101073fbb4e16360c1e0f3d9",
+      "sha256": "3e5db11b40e187cbbb728d34d2493725658693dbefc6fe5274dfa0fa98002192"
     },
     "scripts/orca-session-send.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-send.mjs",

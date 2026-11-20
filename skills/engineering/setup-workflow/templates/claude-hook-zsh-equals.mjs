@@ -21,6 +21,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { doubleQuoteEnd } from './lib/shell-quote.mjs';
 
 /** 萬用字元出現在這些字裡會被 zsh 當檔名展開而 NOMATCH：`--opt=` 的值，或像分支名稱的字。 */
 const GLOB_WORD = /^(--[\w-]+=|(issue|pilot|retro|origin)\/)/;
@@ -165,10 +166,24 @@ function scan(command) {
     }
     if (c === '\\') { word += command.slice(i, i + 2); wordStart = false; i += 2; continue; }
     if (c === "'" || c === '"') {
-      // 引號裡的字不展開；`"$(…)"` 這類巢狀的內容少見，整段當字串略過。
-      let j = i + 1;
-      while (j < command.length && command[j] !== c) j += c === '"' && command[j] === '\\' ? 2 : 1;
-      if (c === '"' && PIPESTATUS.test(command.slice(i, j))) pipestatus = true;
+      // 引號裡的字不展開；雙引號裡的 `$( … )`、反引號是新的命令替換，引號狀態重設，內容另外遞迴掃描（#360）。
+      let j;
+      if (c === "'") {
+        j = command.indexOf("'", i + 1);
+        if (j < 0) j = command.length;
+      } else {
+        const quoted = doubleQuoteEnd(command, i);
+        j = quoted.end;
+        if (PIPESTATUS.test(command.slice(i, j))) pipestatus = true;
+        for (const inner of quoted.commands) {
+          const sub = scan(inner);
+          found.push(...sub.equals);
+          nomatch.push(...sub.nomatch);
+          forGlobs.push(...sub.forGlobs);
+          argGlobs.push(...sub.argGlobs);
+          if (sub.pipestatus) pipestatus = true;
+        }
+      }
       word += command.slice(i, j + 1);
       wordStart = false;
       i = j + 1;

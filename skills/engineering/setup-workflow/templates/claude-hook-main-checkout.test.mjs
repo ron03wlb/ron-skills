@@ -314,3 +314,23 @@ test('Bash：`$_` 是同一條指令前一個指令的最後一個引數；沒�
     assert.match(denied.stderr, /主 checkout 防護/, command);
   }
 });
+
+// #360（#330 第 5 項）：雙引號裡的 `$( … )` 重設引號狀態，內層 `"/x?created=>=…"` 的 `>` 不再被當成重導向（2026-11-20 在 main 重現）。
+test('Bash：雙引號裡的 $( … ) 依 shell 規則重設引號狀態；命令替換之後的重導向照常判斷', () => {
+  const { main } = fixture();
+  const bash = command => hook(JSON.stringify({ tool_name: 'Bash', cwd: main, tool_input: { command } }));
+  for (const command of [
+    'echo "x $(gh api "/x?created=>=2026-10-01" -q .n)"',
+    'echo "a $(printf "%s" "$(echo "b > c")") d"',
+    'echo "`echo "> e"`"',
+  ]) {
+    const allowed = bash(command);
+    assert.equal(allowed.status, 0, `${command}\n${allowed.stderr}`);
+    assert.equal(allowed.stdout + allowed.stderr, '', command);
+  }
+  for (const [command, file] of [['echo "$(echo hi)" > foo.txt', 'foo\\.txt'], ['echo "$(gh api "/x?a=>=1")" >> docs/a.md', 'docs\\/a\\.md']]) {
+    const denied = bash(command);
+    assert.equal(denied.status, 2, command);
+    assert.match(denied.stderr, new RegExp(`${file} 在主 checkout 內`), command);
+  }
+});

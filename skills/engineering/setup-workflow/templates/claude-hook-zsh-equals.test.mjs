@@ -217,3 +217,17 @@ for (const [name, command] of [['EQUALS', 'echo ===='], ['NOMATCH', 'grep --incl
     assert.equal(run({ tool_name: 'Bash', tool_input: { command } }, '/bin/zsh').status, 2);
   });
 }
+
+// #360（#324 第 3 項）：雙引號裡的 `$( … )` 重設引號狀態，jq 程式字串裡的 `"` 不再被當成外層雙引號的結尾，`=\(.bucket)` 不算 EQUALS 字。
+test('雙引號裡的 $( … ) 依 shell 規則重設引號狀態；命令替換裡沒加引號的 = 字照擋', () => {
+  const jq = `echo "PR: $(jq -r '[.[]|"\\(.name)=\\(.bucket)"]|join(" ")' <<<"$s")"`;
+  assert.deepEqual(equalsWords(jq), []);
+  const allowed = bash(jq);
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.equal(allowed.stderr, '');
+  assert.deepEqual(equalsWords('echo "a $(echo "b $(printf "%s" "=x")") c"'), []);
+  assert.deepEqual(equalsWords('echo "n=$((1 + 2))" ===='), ['====']);
+  assert.deepEqual(equalsWords('echo "$(echo ===)"'), ['===']);
+  assert.deepEqual(equalsWords('echo "`echo ==`"'), ['==']);
+  assert.equal(bash('echo ====').status, 2);
+});
