@@ -22,7 +22,9 @@ macOS, WSL2, Linux（母單 #82 決策 R1-Q1；原生 Windows 不支援）。本
 
 就緒狀態是 `ready-for-agent` label（[triage-labels.md](triage-labels.md)）。沒有 preflight。還沒就緒時用 `/triage <n>` 補齊。
 
-跨 repo 對應單指向 GitLab 或 GitHub Enterprise 專案時，本文寫 issue 網址，不寫裸的 `<owner>/<repo>#<m>`：裸 ref 一律當成 github.com，要到 Close 才 `STOP <n> counterpart`（#289、#291 的 `spay/spay2#692`，#295）。`/triage` 標 `ready-for-agent` 前看 `pilot-counterpart.mjs` 的輸出。
+跨 repo 對應單指向 GitLab 或 GitHub Enterprise 專案時，本文寫 issue 網址，不寫裸的 `<owner>/<repo>#<m>`：裸 ref 一律當成 github.com，要到 Close 才 `STOP <n> counterpart`（#289、#291 的 `spay/spay2#692`，#295）。已知不在 github.com 的對應專案宣告在下一行（spay2 在自架 GitLab，專案網址 http://192.168.200.202/spay/spay2），`pilot-counterpart.mjs --adapter docs/agents/issue-run.md` 對命中的裸 ref 多印 `COUNTERPART_BARE`，Probe 對 ready 單與開著的 batch 成員印 `COUNTERPART_BARE <n> <ref>`（處理見 [pilot-exceptions.md](pilot-exceptions.md) 的 **Probe lines.**，#304）。`/triage` 標 `ready-for-agent` 前帶 `--adapter` 看 `pilot-counterpart.mjs` 的輸出。
+
+Counterpart projects: `spay/spay2`
 
 驗收與做法用到的每份輸入（原始碼、樣本、憑證、checkout）都要能從本 repo、tracker 或公開來源取得。只存在於其他專案的 checkout 或某台機器本地路徑的，Issue 維持 `needs-info`，triage notes 寫明缺的是什麼、去哪裡拿；這是 `/triage` 標 `ready-for-agent` 前的判斷，不是 preflight 指令（#56 的驗收要逐檔比對只在別台機器上的 spay2，worker 開工就 `STOP prerequisite missing`，#116）。
 
