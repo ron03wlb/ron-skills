@@ -7,7 +7,7 @@
 // 這支看的是所有 worktree、不讀 `.scratch/pilot/`，呼叫者也不是 coordinator。條目判斷與 Probe 的 OVERLAP（#176）共用
 // lib/changed-units.mjs 的 changedUnits（`to` 給 null 時比工作樹），不另寫一份；只靠它，所以可以複製到沒有 pilot 腳本的 repo。
 //
-// 用法：node scripts/worktree-overlap.mjs [--main <分支>] [--mine [--near <N>] [--generated <glob>]… | <檔案>…]（cwd 在 repo 任一 worktree 的任一目錄；檔案一律是 repo 根的相對路徑，
+// 用法：node scripts/worktree-overlap.mjs [--main <分支>] [--mine [--near <N>] [--generated <glob>]… [--max-files <N>] | <檔案>…]（cwd 在 repo 任一 worktree 的任一目錄；檔案一律是 repo 根的相對路徑，
 //   不隨 cwd 的子目錄改變，每個 worktree 才能用同一組 pathspec）
 //   --mine：檔案清單改取 cwd 所在 worktree 自己從 merge-base（同一個 <主分支>）起的改動（含未 commit、未追蹤的新檔），
 //   不列 cwd 所在的 worktree；自己沒有改動時不輸出。retro 合入前重查並行改動用：`git diff --name-only main HEAD` 在本機 main
@@ -36,21 +36,33 @@
 //   （retro spay2 31d564a6#1：只比其他 worktree，整合分支在 merge-base 後已合入改同檔的批次，fix-land 才 STOP merge-conflict）。
 //   <commit7> 是該區間最後一個改到這個檔的 commit 前 7 碼；hunk 欄位同 OVERLAP_WT 的判斷，兩邊都以本方 merge-base 的行號比，
 //   所以這裡的 apart／near 是精確值。hunks=near 是 actionable：先 sync <主分支>（合入本分支並解衝突）再落地；apart、generated 不 actionable。
+//   OVERLAP_BASE_BEHIND <主分支> <N> --main <建議分支>
+//   --mine 不帶 --main、自己的改動檔數超過上限（預設 200，`--max-files <N>` 調整）時，不比對任何 worktree，只印這一行、exit 3
+//   （#365：investing 的 develop 領先 main 263 個 commit，每個檔對約 20 個 worktree 算 hunk，300 秒跑不完；帶 --main develop 0.09 秒）。
+//   <N> 是 merge-base(HEAD, <主分支>)..HEAD 的 commit 數。<建議分支> 是本機與 remote-tracking 分支中、和 HEAD 的 merge-base 到 HEAD
+//   最少 commit 的那一條（不含 <主分支>、自己的分支、其他 linked worktree 檢出的分支與這兩者的 remote-tracking 分身、`*/HEAD`，也不含已包含 HEAD 的分支：拿它當基準，
+//   本方的 commit 會整個消失；同數取名稱排序第一個，本機分支排在 `origin/…` 之前），比 <主分支> 近才建議，否則印 `-`。
+//   看到這行：帶 `--main <建議分支>`（或自己知道的整合分支）重跑；印 `-` 時基準沒有更近的分支，改動本來就這麼多，
+//   帶 `--main <主分支>` 照常比對（或調高 --max-files）。帶了 --main 或在上限內時行為不變。
 //   TEMPLATE_COPY <檔案> <正本路徑>
 //   給了檔案（或 --mine 的自己改動）時，cwd 所在 worktree 有 docs/agents/workflow-templates.json（copy-templates.mjs 的副本清單）就逐一比對，
 //   是清單裡的副本就在 OVERLAP_WT 之前印一行（依輸入順序），<正本路徑> 是清單的 template（ron-skills 內的路徑）。不改 exit code。
 //   看到這行：不要直接改這個檔，改 ron-skills 的正本再以 copy-templates 帶回（retro spay2 0cd3fdeb#1：計畫把副本派給子代理直接改，
 //   到 check-contracts --static 的 TEMPLATE_COPY_MISMATCH 才發現，多走兩輪 PR）。不帶檔案時不印。
-// exit：0 印完（不論有無命中）；2 用法錯誤；1 git 失敗。
+// exit：0 印完（不論有無命中）；2 用法錯誤；1 git 失敗；3 印了 OVERLAP_BASE_BEHIND。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
 
-const USAGE = '用法：node scripts/worktree-overlap.mjs [--main <分支>] [--mine [--near <N>] [--generated <glob>]… | <檔案>…]';
+const USAGE = '用法：node scripts/worktree-overlap.mjs [--main <分支>] [--mine [--near <N>] [--generated <glob>]… [--max-files <N>] | <檔案>…]\n'
+  + '  --mine 不帶 --main、自己的改動檔超過 --max-files（預設 200）時只印 OVERLAP_BASE_BEHIND <主分支> <N> --main <建議分支>，exit 3';
 // git 三方合併只在兩邊 hunk 重疊或相接（相距 0～1 行）時衝突；預設 5 行留一點餘裕，又不把隔了一段的改動也報成 near。
 const NEAR = 5;
+// investing 落後 263 個 commit 時改動檔數以千計；一般 worktree 的改動在幾十個以內，200 留足餘裕。
+const MAX_FILES = 200;
+export const BEHIND = 'OVERLAP_BASE_BEHIND';
 
 /** 清掉繼承的 GIT_DIR 等再跑 git（從 hook 呼叫時會讀到別的 repo，同 pilot-probe.mjs）。 */
 function spawnGit(cwd, ...args) {
@@ -92,6 +104,33 @@ function ownChanges(cwd, main) {
   const top = git(cwd, 'rev-parse', '--show-toplevel').trim();
   const base = git(top, 'merge-base', 'HEAD', main).trim();
   return { top, base, files: [...changedUnits(top, base, null, { adjacent: false }).keys()] };
+}
+
+/**
+ * --mine 的基準落後：`OVERLAP_BASE_BEHIND <main> <N> --main <建議分支>`（#365）。
+ * 建議分支：本機與 remote-tracking 分支中 merge-base(HEAD, 它)..HEAD 最少、但不是 0（已含 HEAD）的一條，
+ * 排除 `main`、HEAD 自己的分支、`checkedOut`（其他 linked worktree 檢出的分支）、後兩者的 remote-tracking 分身與 `<remote>/HEAD`；
+ * 不比 `main` 近時為 `-`。
+ */
+export function baseBehind(top, base, main, checkedOut = []) {
+  const count = from => Number(git(top, 'rev-list', '--count', `${from}..HEAD`).trim());
+  const behind = count(base);
+  const own = spawnGit(top, 'symbolic-ref', '-q', '--short', 'HEAD').stdout?.trim();
+  const skip = new Set([main, own, ...checkedOut]);
+  let best = null;
+  // 本機分支在前、remote-tracking 在後，各自依名稱排序：同數時本機的 develop 勝過 origin/develop。
+  // remote-tracking 略過 `<remote>/HEAD`，也略過自己與其他 worktree 分支的分身（origin/issue/…）：推過之後它離 HEAD 很近，
+  // 當基準會藏掉本方改動。origin/<主分支> 不略過：本機主分支過期時它仍可能比較近。
+  const refs = prefix => git(top, 'for-each-ref', '--format=%(refname:short)', prefix).split('\n').filter(Boolean).sort();
+  const twin = ref => [own, ...checkedOut].includes(ref.slice(ref.indexOf('/') + 1));
+  const remotes = refs('refs/remotes/').filter(ref => ref.includes('/') && !ref.endsWith('/HEAD') && !twin(ref));
+  for (const branch of [...refs('refs/heads/').filter(ref => !skip.has(ref)), ...remotes]) {
+    const fork = spawnGit(top, 'merge-base', 'HEAD', branch);
+    if (fork.status !== 0) continue;
+    const n = count(fork.stdout.trim());
+    if (n > 0 && n < behind && (!best || n < best.n)) best = { branch, n };
+  }
+  return `${BEHIND} ${main} ${behind} --main ${best?.branch ?? '-'}`;
 }
 
 /**
@@ -172,7 +211,7 @@ export function globRegExp(glob) {
  * 每個非主 checkout worktree 的 OVERLAP_WT 行。`files` 是 repo 相對路徑，空陣列表示全部。
  * `mine` 時 `files` 改成 cwd 所在 worktree 自己的改動，並跳過那個 worktree。
  */
-export function worktreeOverlaps(cwd, files = [], { main = 'main', mine = false, near = NEAR, generated = [] } = {}) {
+export function worktreeOverlaps(cwd, files = [], { main = 'main', mine = false, near = NEAR, generated = [], maxFiles = null } = {}) {
   let self = null;
   let own = null;
   const isGenerated = path => generated.some(glob => globRegExp(glob).test(path));
@@ -183,10 +222,16 @@ export function worktreeOverlaps(cwd, files = [], { main = 'main', mine = false,
     self = realpathSync(own.top);
     files = own.files;
   }
+  const isSelf = tree => Boolean(self && tree.path && existsSync(tree.path) && realpathSync(tree.path) === self);
   const [, ...others] = parseWorktrees(git(cwd, 'worktree', 'list', '--porcelain'));
+  // `maxFiles` 是 null 時不檢查（呼叫者帶了 --main）；超過時在比對任何 worktree 之前就回傳（#365）。
+  if (own && maxFiles !== null && own.files.length > maxFiles) {
+    const checkedOut = others.filter(tree => tree.branch && !isSelf(tree)).map(tree => tree.branch);
+    return [baseBehind(own.top, own.base, main, checkedOut)];
+  }
   const out = files.length ? templateCopies(cwd, files) : [];
   for (const tree of others) {
-    if (self && tree.path && existsSync(tree.path) && realpathSync(tree.path) === self) continue;
+    if (isSelf(tree)) continue;
     // 目錄已不在，或還沒有任何 commit 的 orphan worktree（HEAD 解析不到，merge-base 會 exit 128）都略過。
     if (!tree.path || !existsSync(tree.path) || spawnGit(tree.path, 'rev-parse', '--verify', '-q', 'HEAD').status !== 0) continue;
     const base = spawnGit(tree.path, 'merge-base', 'HEAD', main);
@@ -211,13 +256,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const args = process.argv.slice(2);
   const files = [];
   let main = 'main';
+  let mainGiven = false;
+  let maxFiles = MAX_FILES;
+  let maxFilesGiven = false;
   let mine = false;
   let near = NEAR;
   let nearGiven = false;
   const generated = [];
   let bad = false;
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--main' && args[i + 1] && !args[i + 1].startsWith('--')) main = args[++i];
+    if (args[i] === '--main' && args[i + 1] && !args[i + 1].startsWith('--')) { main = args[++i]; mainGiven = true; }
+    else if (args[i] === '--max-files' && /^\d+$/.test(args[i + 1] ?? '')) { maxFiles = Number(args[++i]); maxFilesGiven = true; }
     else if (args[i] === '--mine') mine = true;
     else if (args[i] === '--near' && /^\d+$/.test(args[i + 1] ?? '')) { near = Number(args[++i]); nearGiven = true; }
     else if (args[i] === '--generated' && args[i + 1] && !args[i + 1].startsWith('--')) generated.push(args[++i]);
@@ -225,13 +274,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     else if (args[i].startsWith('--')) bad = true;
     else files.push(args[i]);
   }
-  // --near、--generated 只影響 --mine 的 hunk 欄位，不帶 --mine 時給了等於沒作用，當用法錯誤。
-  if (bad || (mine && files.length) || (!mine && (nearGiven || generated.length))) {
+  // --near、--generated 只影響 --mine 的 hunk 欄位，--max-files 只影響 --mine 的基準檢查，不帶 --mine 時給了等於沒作用，當用法錯誤。
+  if (bad || (mine && files.length) || (!mine && (nearGiven || generated.length || maxFilesGiven))) {
     console.error(USAGE);
     process.exit(2);
   }
   try {
-    for (const line of worktreeOverlaps(process.cwd(), files, { main, mine, near, generated })) console.log(line);
+    const lines = worktreeOverlaps(process.cwd(), files, { main, mine, near, generated, maxFiles: mainGiven ? null : maxFiles });
+    for (const line of lines) console.log(line);
+    if (lines[0]?.startsWith(`${BEHIND} `)) process.exit(3);
   } catch (error) {
     console.error(error.message);
     process.exit(1);

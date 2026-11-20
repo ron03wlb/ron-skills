@@ -272,3 +272,110 @@ test('--mine：主分支在 merge-base 後改了本方檔案的相鄰行時印 O
   git(main, 'reset', '-q', '--hard', 'HEAD~1');
   assert.equal(run(mine, '--mine').stdout, '');
 });
+
+// #365（#336 第 2 項）：investing 的 develop 領先 main 263 個 commit，`--mine` 不帶 --main 時每個改動檔都對約 20 個 worktree
+// 算 hunk，300 秒跑不完（帶 `--main develop` 只要 0.09 秒）。
+/**
+ * main 只有一個 commit；develop 以 fast-import 疊了 300 個 commit，第 i 個改 develop/<i % files>.txt（預設 files 300，各加一個檔）；worktree `feat`（issue/9-feat）從 develop 開，
+ * 自己改了 develop/0.txt；另一個 worktree `other`（issue/8-other）從 develop 開、也改了 develop/0.txt。
+ */
+function behindFixture(t, { files = 300 } = {}) {
+  const root = mkdtempSync(join(realTmpdir(), 'worktree-overlap-behind-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const main = join(root, 'main');
+  mkdirSync(main);
+  git(main, 'init', '-q', '-b', 'main');
+  git(main, 'config', 'user.name', 'Fixture');
+  git(main, 'config', 'user.email', 'fixture@example.invalid');
+  writeFileSync(join(main, 'README.md'), '# app\n');
+  git(main, 'add', '.');
+  git(main, 'commit', '-q', '-m', 'base');
+  const commits = 300;
+  let stream = '';
+  for (let i = 0; i < commits; i++) {
+    const body = `line ${i % files}\n${i}\n`;
+    const message = `c${i}`;
+    stream += `commit refs/heads/develop\ncommitter Fixture <fixture@example.invalid> ${1700000000 + i} +0000\ndata ${message.length}\n${message}\n`;
+    if (i === 0) stream += 'from refs/heads/main\n';
+    stream += `M 100644 inline develop/${i % files}.txt\ndata ${Buffer.byteLength(body)}\n${body}\n`;
+  }
+  const imported = runIn(main, ['git', 'fast-import', '--quiet'], { input: stream });
+  assert.equal(imported.status, 0, imported.stderr);
+  const feat = join(root, 'feat');
+  const other = join(root, 'other');
+  git(main, 'worktree', 'add', '-q', '-b', 'issue/9-feat', feat, 'develop');
+  git(main, 'worktree', 'add', '-q', '-b', 'issue/8-other', other, 'develop');
+  writeFileSync(join(feat, 'develop/0.txt'), 'feat\n');
+  git(feat, 'commit', '-q', '-am', '#9');
+  writeFileSync(join(other, 'develop/0.txt'), 'other\n');
+  return { main, feat, other, commits };
+}
+
+test('--mine 不帶 --main、改動檔數超過上限：比對 worktree 前印 OVERLAP_BASE_BEHIND <main> <N> --main <建議分支>，exit 3', t => {
+  const { feat, commits } = behindFixture(t);
+  const result = run(feat, '--mine');
+  assert.equal(result.status, 3, result.stderr);
+  // N 是 merge-base(HEAD, main)..HEAD 的 commit 數：develop 的 300 個加 feat 自己的 1 個；只印這一行，沒有算任何 hunk。
+  assert.equal(result.stdout, `OVERLAP_BASE_BEHIND main ${commits + 1} --main develop\n`);
+});
+
+test('同一 repo 帶 --main <整合分支> 照常輸出；--max-files 不帶 --mine 是用法錯誤', t => {
+  const { feat } = behindFixture(t);
+  const explicit = run(feat, '--mine', '--main', 'develop');
+  assert.equal(explicit.status, 0, explicit.stderr);
+  assert.equal(explicit.stdout, 'OVERLAP_WT issue/8-other develop/0.txt hunks=near 1\n');
+  // 帶了 --main 就不檢查，上限設 0 也照常比對。
+  assert.equal(run(feat, '--mine', '--main', 'develop', '--max-files', '0').stdout, explicit.stdout);
+  assert.equal(run(feat, '--max-files', '10').status, 2);
+});
+
+test('落後 300 個 commit 但改動檔數在上限內：不觸發，照常比對；--max-files 調低到檔數以下才觸發', t => {
+  const { feat, commits } = behindFixture(t, { files: 5 });
+  const within = run(feat, '--mine');
+  assert.equal(within.status, 0, within.stderr);
+  // 基準是 main 時 other 的改動也是 develop/0～4.txt 這 5 個檔，都和 feat 的改動重疊。
+  assert.deepEqual(within.stdout.trim().split('\n').map(line => line.split(' ').slice(0, 3).join(' ')),
+    [0, 1, 2, 3, 4].map(i => `OVERLAP_WT issue/8-other develop/${i}.txt`));
+  const lowered = run(feat, '--mine', '--max-files', '4');
+  assert.equal(lowered.status, 3, lowered.stderr);
+  assert.equal(lowered.stdout, `OVERLAP_BASE_BEHIND main ${commits + 1} --main develop\n`);
+});
+
+test('沒有比 main 更近的分支時建議欄印 -', t => {
+  const { main, feat } = behindFixture(t);
+  git(main, 'branch', '-D', 'develop');
+  const result = run(feat, '--mine', '--max-files', '10');
+  assert.equal(result.status, 3, result.stderr);
+  assert.equal(result.stdout, 'OVERLAP_BASE_BEHIND main 301 --main -\n');
+});
+
+test('建議分支：已含 HEAD 的分支（如合入了本方的 stage 分支）不建議；沒有本機 develop 時建議 remote-tracking 的 origin/develop', t => {
+  const { main, feat, commits } = behindFixture(t);
+  // pilot/stage-9 含 feat 的 HEAD：merge-base 就是 HEAD，拿它當基準本方 commit 會整個消失。
+  git(main, 'branch', 'pilot/stage-9', 'issue/9-feat');
+  const develop = git(main, 'rev-parse', 'develop');
+  git(main, 'update-ref', 'refs/remotes/origin/develop', develop);
+  git(main, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/develop');
+  const both = run(feat, '--mine');
+  assert.equal(both.status, 3, both.stderr);
+  assert.equal(both.stdout, `OVERLAP_BASE_BEHIND main ${commits + 1} --main develop\n`);
+  git(main, 'branch', '-D', 'develop');
+  const remote = run(feat, '--mine');
+  assert.equal(remote.status, 3, remote.stderr);
+  assert.equal(remote.stdout, `OVERLAP_BASE_BEHIND main ${commits + 1} --main origin/develop\n`);
+});
+
+test('建議分支：自己與其他 worktree 分支的 remote-tracking 分身（origin/issue/…）也不建議', t => {
+  const { main, feat, other, commits } = behindFixture(t);
+  // feat 推過一次後又多了 2 個 commit：origin/issue/9-feat 離 HEAD 只有 2 個 commit，比 develop 的 3 個近，但拿它當基準會藏掉本方改動。
+  git(main, 'update-ref', 'refs/remotes/origin/issue/9-feat', git(feat, 'rev-parse', 'HEAD'));
+  for (const n of [1, 2]) {
+    writeFileSync(join(feat, `develop/${n}.txt`), `feat ${n}\n`);
+    git(feat, 'commit', '-q', '-am', `#9 ${n}`);
+  }
+  git(other, 'commit', '-q', '-am', '#8');
+  git(main, 'update-ref', 'refs/remotes/origin/issue/8-other', git(other, 'rev-parse', 'HEAD'));
+  const result = run(feat, '--mine');
+  assert.equal(result.status, 3, result.stderr);
+  assert.equal(result.stdout, `OVERLAP_BASE_BEHIND main ${commits + 3} --main develop\n`);
+});
