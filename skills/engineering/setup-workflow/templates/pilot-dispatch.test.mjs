@@ -28,7 +28,9 @@ const git = (cwd, ...args) => {
 // 每次呼叫都把 stdin 讀光並記下讀到幾個位元組：Orca CLI 會吃掉 stdin，`while read` 迴圈因此只派到第一個成員。
 // `waitHangs` 為真時 `terminal wait` 永遠不回。
 // `claims[<n>]` 是那張 Issue 原有的留言（排在 comments.json 之前）；沒給時是一則這個 session（SESSION）的認領留言。
-function fixture(t, { modes = {}, waitHangs = false, guard, claims = {} } = {}) {
+// `tracker` 為真時也把 dispatch 與相依複製到暫存的 scripts/，旁邊放 gh-tracker.mjs 與指向 acme/app 的 docs/agents/issue-run.md；
+// 假 gh 的 `issue edit <n> --remove-assignee=@me` 從 assignees.json 拿掉 me（每張 Issue 起始都指派給 me），`editFails` 列的 Issue 改成失敗。
+function fixture(t, { modes = {}, waitHangs = false, guard, claims = {}, tracker = false, editFails = [] } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-dispatch-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
@@ -101,18 +103,29 @@ const args = process.argv.slice(2); const arg = k => args[args.indexOf(k) + 1];
 fs.appendFileSync(${JSON.stringify(join(temp, 'gh.log'))}, args.join(' ') + '\\n');
 const comments = JSON.parse(fs.readFileSync(${JSON.stringify(comments)}, 'utf8'));
 const claims = ${JSON.stringify(claims)}[args[2]] ?? [${JSON.stringify(MINE)}];
-if (args[0] === 'issue' && args[1] === 'view') console.log(JSON.stringify({ title: 'Fixture ' + args[2], comments: [...claims, ...comments.filter(c => c.issue === args[2]).map(({ body }) => body)].map(body => ({ body })) }));
+const assignees = ${JSON.stringify(join(temp, 'assignees.json'))};
+if (args[0] === 'issue' && args[1] === 'edit') {
+  if (${JSON.stringify(editFails)}.includes(args[2])) { console.error('HTTP 502'); process.exit(1); }
+  const now = fs.existsSync(assignees) ? JSON.parse(fs.readFileSync(assignees, 'utf8')) : {};
+  if (args.includes('--remove-assignee=@me')) now[args[2]] = (now[args[2]] ?? ['me']).filter(a => a !== 'me');
+  fs.writeFileSync(assignees, JSON.stringify(now));
+}
+else if (args[0] === 'issue' && args[1] === 'view') console.log(JSON.stringify({ title: 'Fixture ' + args[2], comments: [...claims, ...comments.filter(c => c.issue === args[2]).map(({ body }) => body)].map(body => ({ body })) }));
 else if (args[0] === 'issue' && args[1] === 'comment') fs.writeFileSync(${JSON.stringify(comments)}, JSON.stringify([...comments, { issue: args[2], body: arg('--body') }]));
 else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
 `);
   chmodSync(join(bin, 'gh'), 0o755);
   let dispatchScript = script;
-  if (guard !== undefined) {
+  if (guard !== undefined || tracker) {
     const scripts = join(temp, 'scripts');
     mkdirSync(join(scripts, 'lib'), { recursive: true });
-    for (const name of ['pilot-dispatch.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'orca-session-send.mjs', 'orca-worktree-create.mjs', 'pilot-probe.mjs', 'pilot-capacity.mjs', 'pilot-counterpart.mjs', 'lib/changed-units.mjs', 'lib/pilot-store.mjs', 'tab-state.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
-    writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
-    chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
+    for (const name of ['pilot-dispatch.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'orca-session-send.mjs', 'orca-worktree-create.mjs', 'pilot-probe.mjs', 'pilot-capacity.mjs', 'pilot-counterpart.mjs', 'lib/changed-units.mjs', 'lib/pilot-store.mjs', 'tab-state.mjs', 'gh-tracker.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+    if (guard !== undefined) {
+      writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
+      chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
+    }
+    mkdirSync(join(temp, 'docs/agents'), { recursive: true });
+    writeFileSync(join(temp, 'docs/agents/issue-run.md'), '# adapter\n\n## Tracker\n\nhttps://github.com/acme/app\n');
     dispatchScript = join(scripts, 'pilot-dispatch.mjs');
   }
   const dispatch = (args, extra = {}) => spawnSync('node', [dispatchScript, ...args], {
@@ -126,7 +139,8 @@ else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
   const posted = () => JSON.parse(readFileSync(comments, 'utf8'));
   const ghCalls = () => (existsSync(join(temp, 'gh.log')) ? readFileSync(join(temp, 'gh.log'), 'utf8') : '');
   const comment = (issue, body) => writeFileSync(comments, JSON.stringify([...posted(), { issue, body }]));
-  return { temp, repo, root, log, cli, dispatch, checkpoint, calls, sent, open, posted, ghCalls, comment };
+  const assigned = n => (existsSync(join(temp, 'assignees.json')) ? JSON.parse(readFileSync(join(temp, 'assignees.json'), 'utf8'))[n] : undefined) ?? ['me'];
+  return { temp, repo, root, log, cli, dispatch, checkpoint, calls, sent, open, posted, ghCalls, comment, assigned };
 }
 
 const lines = result => result.stdout.trim().split('\n');
@@ -154,9 +168,88 @@ test('--capacity：帳本合計加上這批人數超過上限時 STOP capacity�
   assert.equal(calls(), '');
   const ok = dispatch(['23', '23:pilot-probe', '--capacity'], capped);
   assert.equal(ok.status, 0, ok.stdout + ok.stderr);
-  assert.deepEqual(lines(ok), ['CAPACITY ok 4/4', 'DISPATCHED 23 term_23']);
+  assert.deepEqual(lines(ok), ['CAPACITY ok 4/4', 'DISPATCHED 23 term_23', 'REPORTED repo 1 4/4']);
   const uncapped = dispatch(['133', '133:pilot-dispatch'], { ...capped, PILOT_MACHINE_WORKER_CAP: '1' });
   assert.equal(uncapped.status, 0, uncapped.stdout + uncapped.stderr);
+  assert.deepEqual(lines(uncapped), ['DISPATCHED 133 term_133']);
+});
+
+// #353：帳本只在 Probe 寫入時，同一輪連續兩次 dispatch 的第二次看不到第一次的成員。
+// 帶 --capacity 派出成員後，以帳本本 repo（主 checkout 目錄名）的現值加上這次派出的人數改寫那一列，印 REPORTED。
+test('--capacity：派出後把本 repo 的帳本列加上派出人數，第二次 dispatch 的合計含第一次的成員；沒帶旗標不寫帳本', t => {
+  const { temp, dispatch } = fixture(t, { modes: { 47: 'fail' } });
+  const ledger = join(temp, 'pilot-workers.tsv');
+  writeFileSync(ledger, `acme\t1\t${new Date().toISOString()}\nrepo\t1\t${new Date().toISOString()}\n`);
+  const capped = { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '5' };
+  const first = dispatch(['23-47', '23:pilot-probe', '47:fail', '--capacity'], capped);
+  assert.equal(first.status, 4, first.stdout + first.stderr);
+  assert.deepEqual(lines(first), ['CAPACITY ok 4/5', 'DISPATCHED 23 term_23', 'STOP 47 create orca worktree create：invalid_argument', 'REPORTED repo 2 3/5']);
+  assert.match(readFileSync(ledger, 'utf8'), /^repo\t2\t/m);
+  const second = dispatch(['46', '46:pilot-dispatch', '--capacity'], capped);
+  assert.equal(second.status, 0, second.stdout + second.stderr);
+  assert.deepEqual(lines(second), ['CAPACITY ok 4/5', 'DISPATCHED 46 term_46', 'REPORTED repo 3 4/5']);
+  const before = readFileSync(ledger, 'utf8');
+  const plain = dispatch(['48', '48:plain']);
+  assert.deepEqual(lines(plain), ['DISPATCHED 48 term_48']);
+  assert.equal(readFileSync(ledger, 'utf8'), before);
+});
+
+// 本 repo 開著的 batch checkpoint：batch-1-2-3 有三個 running 列，closed 的 batch 殘留的 running 列不算。
+function repoBatches(repo) {
+  mkdirSync(join(repo, '.scratch/pilot'), { recursive: true });
+  const head = '| Issue | branch | worktree | handle | started | stuck-after | state | candidate |\n|---|---|---|---|---|---|---|---|\n';
+  const row = (n, state) => `| ${n} | issue/${n}-x | /w/issue-${n} | term_${n} | 2026-11-20T10:00:00+08:00 | 90m | ${state} | |\n`;
+  writeFileSync(join(repo, '.scratch/pilot/batch-1-2-3.md'), `# batch 1-2-3\ncurrent: dispatched 2026-11-20T10:00:00+08:00\nintegration: pilot/integration @ abc1234\n\n${head}${row(1, 'running')}${row(2, 'running')}${row(3, 'running')}${row(4, 'done')}`);
+  writeFileSync(join(repo, '.scratch/pilot/batch-9.md'), `# batch 9\ncurrent: closed 2026-11-19T10:00:00+08:00\nintegration: pilot/integration @ abc1234\n\n${head}${row(9, 'running')}`);
+}
+
+// #353（#323 第 1 項）：--capacity 只比全機帳本，investing 已有 3 個 running 再派仍印 CAPACITY ok。
+test('--repo-cap：本 repo running 列加本批成員超過上限時 STOP capacity repo，不建 worktree、不寫 checkpoint；不超過照常派出', t => {
+  const { repo, dispatch, calls, assigned } = fixture(t, { tracker: true });
+  repoBatches(repo);
+  const over = dispatch(['46', '46:pilot-dispatch', '--repo-cap', '3']);
+  assert.equal(over.status, 4, over.stdout + over.stderr);
+  assert.deepEqual(lines(over), ['STOP capacity repo 4/3', 'RELEASED 46']);
+  assert.equal(calls(), '');
+  assert.equal(existsSync(join(repo, '.scratch/pilot/batch-46.md')), false);
+  assert.deepEqual(assigned('46'), []);
+  const ok = dispatch(['46', '46:pilot-dispatch', '--repo-cap', '4']);
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.deepEqual(lines(ok), ['CAPACITY ok repo 4/4', 'DISPATCHED 46 term_46']);
+  // 本批成員自己的 running 列（重跑）不重複計：running 是 1、2、剛派出的 46，加上這次的 3 共 4。
+  const rerun = dispatch(['1-2-3', '3:x', '--repo-cap', '4']);
+  assert.equal(lines(rerun)[0], 'CAPACITY ok repo 4/4');
+  for (const bad of [['--repo-cap'], ['--repo-cap', '0'], ['--repo-cap', 'x'], ['--repo-cap', '2', '--repo-cap', '3']]) {
+    assert.equal(dispatch(['46', '46:pilot-dispatch', ...bad]).status, 2, bad.join(' '));
+  }
+  assert.equal(dispatch(['46', '--fresh', '46:pilot-dispatch', '--repo-cap', '3']).status, 2);
+});
+
+// #353：STOP capacity 時 Issue 仍指派給自己，別台機器要等它變成 stale；只放掉最近認領屬本 session 的成員。
+test('STOP capacity：放掉本 session 認領的成員並印 RELEASED，別人的認領不動；放掉失敗只警告，exit 仍 4', t => {
+  const { temp, dispatch, ghCalls, assigned } = fixture(t, { tracker: true, claims: { 133: [MINE, '認領：other-box／their-session'] }, editFails: ['134'] });
+  const ledger = join(temp, 'pilot-workers.tsv');
+  writeFileSync(ledger, `acme\t3\t${new Date().toISOString()}\n`);
+  const result = dispatch(['23-133-134', '23:a', '133:b', '134:c', '--capacity'], { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '4' });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['STOP capacity 6/4', 'RELEASED 23']);
+  assert.match(result.stderr, /^WARN release 134 edit /m);
+  assert.deepEqual(assigned('23'), []);
+  assert.deepEqual(assigned('133'), ['me']);
+  assert.doesNotMatch(ghCalls(), /^issue edit 133 /m);
+  assert.match(ghCalls(), /^issue edit 23 --remove-assignee=@me --repo github\.com\/acme\/app$/m);
+});
+
+// #353（#323 第 2 項）：舊流程留下的 `<workspaces>/issue-<n>` 分支不同名，以分支名找不到，Orca 去重成 `issue-<n>-2`。
+test('<workspaces>/issue-<n> 已是別的分支的 worktree：STOP worktree-branch，不呼叫 create、不建 -2', t => {
+  const { repo, root, dispatch, calls } = fixture(t);
+  mkdirSync(root, { recursive: true });
+  git(repo, 'worktree', 'add', '-q', '-b', 'issue-46', join(root, 'issue-46'), 'pilot/integration');
+  const result = dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['DISPATCHED 23 term_23', `STOP 46 worktree-branch ${join(root, 'issue-46')} issue-46`]);
+  assert.doesNotMatch(calls(), /^worktree create .*--issue 46 /m);
+  assert.equal(existsSync(join(root, 'issue-46-2')), false);
 });
 
 // 派工前讀 Issue 最近一則認領留言（格式同 issue-pool.mjs claim），不是這個 session 的就不派（#165）。
