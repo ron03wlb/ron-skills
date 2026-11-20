@@ -93,7 +93,8 @@ test('ADAPTER.md 的 Tab state 段自己寫明標題格式、改名時機、⏸ 
   assert.match(tab, /orca worktree set --worktree path:<path> --display-name "<issue> <topic>" --issue <n>/);
   assert.match(tab, /--linear-issue/);
   assert.match(tab, /approval wait/);
-  // 只換前綴（含 hook 的自動切換）會留下階段，離開處理中要用 --topic 重設（#248 review）。
-  assert.ok(tab.includes('tab-state.mjs <state> --topic'), '缺離開處理中時以 --topic 重設標題');
-  assert.match(tab, /hook makes itself, replaces only the prefix/);
+  // hook 的自動切換只換前綴、會留下階段（#248 review）；CLI 不帶 --topic 離開處理中時拿掉主題後的段與 ⏸（#362）。
+  assert.ok(tab.includes('tab-state.mjs <state> --topic'), '缺以 --topic 重設整個標題');
+  assert.match(tab, /hook makes itself replaces only the prefix/);
+  assert.match(tab, /for any other state it keeps just `<state>｜<topic>`/);
 });
