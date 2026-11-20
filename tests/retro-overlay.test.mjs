@@ -118,6 +118,10 @@ test('retro overlay 拿掉 disable-model-invocation，description 限定只在�
   assert.ok(started, 'overlay 沒有 Started by a skill 段落');
   assert.match(started, /implement nothing/);
   assert.match(started, /NORMAL/);
+  // 順序：Declared collect 先說 NORMAL 照常實作、步驟 7 一定跑，要在那兩句就指向例外（#327 review）。
+  const declared = skill.split('\n\n').find(paragraph => paragraph.includes('**Declared collect.**'));
+  assert.match(declared, /`NORMAL`: [^.]*unless \*\*Started by a skill\*\* below applies/);
+  assert.match(declared, /Step 7 runs once on either route \(except under \*\*Started by a skill\*\*\)/);
   // 防遞迴：收集者自己的 retro 單帶標記，coordinator 的 Retro trigger 不算它。
   const collect = skill.split('\n\n').find(paragraph => paragraph.includes('**Collect mode.**'));
   assert.match(collect, /`From: retro-collect` line when this session ran `\/retro-collect`/);

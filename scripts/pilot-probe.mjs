@@ -364,7 +364,7 @@ export function counterpartLines(issues, repo, batched = new Set(), projects = n
  * 依號碼印 `HUMAN_NO_GATE <n> <摘要>`；摘要取本文第一行 `… prerequisite：` 冒號之後的文字，沒有這行就取標題。
  */
 export function humanNoGateLines(issues, repo, gates = []) {
-  const gated = new Set(gates.flatMap(({ issue }) => [...String(issue).matchAll(/(?<![\w/.-])#(\d+)\b/g)].map(([, n]) => Number(n))));
+  const gated = new Set(gates.flatMap(({ issue }) => refs(String(issue))));
   return pool(issues, { repo }).filter(({ bucket, issue }) => bucket === 'human' && !gated.has(issue.number))
     .map(({ issue }) => issue).sort((a, b) => a.number - b.number)
     .map(issue => `HUMAN_NO_GATE ${issue.number} ${(issue.body ?? '').match(/^.*\bprerequisite\s*[：:]\s*(\S.*?)\s*$/im)?.[1] ?? issue.title ?? ''}`.trimEnd());

@@ -1,5 +1,5 @@
 diff --git a/SKILL.md b/SKILL.md
-index 12149ac..c199e7e 100644
+index 12149ac..e1d0af4 100644
 --- a/SKILL.md
 +++ b/SKILL.md
 @@ -1,7 +1,6 @@
@@ -7,7 +7,7 @@ index 12149ac..c199e7e 100644
  name: retro
 -description: "Conduct a retrospective on a coding session."
 -disable-model-invocation: true
-+description: "Conduct a retrospective on a coding session. Use only when the user runs /retro, or when issue-pilot (after HANDED_OFF) or issue-run (a worker after its DONE result) says to; never on your own initiative."
++description: "Conduct a retrospective on a coding session. Use only when the user runs /retro, or when issue-pilot (after HANDED_OFF) or issue-run (a worker about to report DONE) says to; never on your own initiative."
  ---
  
  The user has asked for a **retrospective**. You are suggesting improvements to the coding agent's **environment** to improve future runs.
@@ -15,7 +15,7 @@ index 12149ac..c199e7e 100644
  
  4. Present these candidates to the user, in order of severity.
  
-+   **Declared collect.** The **Retro collect** entry that **Collect mode** below reads may declare `Roster command:`, `Collect command:`, and `Close command:` lines, for a project that keeps its candidates outside the tracker; with only some of them, stop and name what is missing, since candidates written one way would be read another. With all three, the collect command picks the route and this session opens no `retro-candidates` Issue: replace `<session>` in it with `$CLAUDE_CODE_SESSION_ID`, run it, and read the first line of its output. `COLLECT <file>`: after presenting the candidates, write them to `<file>` in the format the entry states (the numbered items of **Collect mode** when it states none), tell the user the path, implement nothing, and skip steps 5 and 6. `NORMAL`: this session does not collect, so continue as below and implement. On any other first line or a nonzero exit, report it and stop. Step 7 runs once on either route, even when the command's later lines also remind you of it. When the repo has `scripts/adapter-line.mjs`, find the entry with `node scripts/adapter-line.mjs "Retro collect"` and read the adapter itself only when it prints `ADAPTER_LINE_NOT_FOUND` (retro spay2 d7ba0654#3: a grep over the adapters returned 17 KB of long lines without the entry).
++   **Declared collect.** The **Retro collect** entry that **Collect mode** below reads may declare `Roster command:`, `Collect command:`, and `Close command:` lines, for a project that keeps its candidates outside the tracker; with only some of them, stop and name what is missing, since candidates written one way would be read another. With all three, the collect command picks the route and this session opens no `retro-candidates` Issue: replace `<session>` in it with `$CLAUDE_CODE_SESSION_ID`, run it, and read the first line of its output. `COLLECT <file>`: after presenting the candidates, write them to `<file>` in the format the entry states (the numbered items of **Collect mode** when it states none), tell the user the path, implement nothing, and skip steps 5 and 6. `NORMAL`: this session does not collect, so continue as below and implement, unless **Started by a skill** below applies. On any other first line or a nonzero exit, report it and stop. Step 7 runs once on either route (except under **Started by a skill**), even when the command's later lines also remind you of it. When the repo has `scripts/adapter-line.mjs`, find the entry with `node scripts/adapter-line.mjs "Retro collect"` and read the adapter itself only when it prints `ADAPTER_LINE_NOT_FOUND` (retro spay2 d7ba0654#3: a grep over the adapters returned 17 KB of long lines without the entry).
 +
 +   **Started by a skill.** When the Skill tool ran this retro on an `issue-pilot` or `issue-run` instruction and this session would implement (no **Retro collect** entry, or the collect command printed `NORMAL`), present the candidates, implement nothing, skip steps 5, 6 and 7, and leave the tab as it is: no human is at the screen to pick what to adopt (#327).
 +
