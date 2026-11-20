@@ -24,16 +24,20 @@
 //   Bare guard：同目錄有 pilot-unbare.sh（setup-workflow 正本，`<checkout> <時機>`，還原時印 UNBARE）時先跑它（時機 probe），沒有就略過。
 // stdout 每行一項，沒事的項目不印（全部正常且沒有 batch 時只印池子那一行）：
 //   主 checkout：UNBARE <checkout>（Bare guard 剛還原 core.bare）｜NOT_MAIN <分支>｜HOLD｜DIRTY <git status --short 的一行>
-//   adapter：ADAPTER_AHEAD <檔案> [<名稱>[,<名稱>…]]（整合分支上的 adapter 比主分支新：docs/agents/issue-run.md，以及它 `## Pilot` 段連到的同目錄 .md；
-//            `.md` 的改動都在 `- **<名稱>.**` 條目裡時附改動的條目名稱，依名稱排序、以 `,` 分隔，名稱本身可能有空格（不能有 `,`）；刪掉或改名的條目也列（取改動前的名稱）；
-//            有條目以外的改動或不是 `.md` 時省略名稱欄，表示要讀整份）
+//   adapter：ADAPTER_AHEAD <檔案> [<名稱>[,<名稱>…]] ｜ git -C <主 checkout> show <整合分支>:<檔案>（整合分支上的 adapter 比主分支新：
+//            docs/agents/issue-run.md 只在 `## Pilot` 段變動時算（#357：Review、Permissions 段的改動不影響 coordinator），不附名稱、只讀那一段；
+//            它 `## Pilot` 段連到的同目錄 .md 整份都算，改動都在 `- **<名稱>.**` 條目裡時附改動的條目名稱，依名稱排序、以 `,` 分隔，名稱本身可能有空格
+//            （不能有 `,` 或 `｜`）；刪掉或改名的條目也列（取改動前的名稱）；有條目以外的改動或不是 `.md` 時省略名稱欄，表示要讀整份。
+//            ` ｜ ` 之後是讀整合分支那份的指令，不讀整份 diff）
 //   開著的列：REQUEST <requests.md 原文>｜GATE <id> <Issue> <question 或段落標題>｜GATE_MALFORMED <id> <把 resolved 寫進別的欄位的那一行>
 //   Issue 依賴：DEPS_PROSE <n> #<m>（開著的 `ready-for-agent` Issue 內文以「依賴」或先後寫法（「排在 #m 之後」「以 #m 為 blocker」「等 #m 合入」）帶出 #m，#m 還開著，blocked_by 卻沒有它；Pool 只讀 blocked_by）｜
 //               DEPS_PROSE <n> last new #<m> [#<k>…]（內文寫「最後做」卻沒號碼，#m… 比 blocked_by 最新一張（空時比自己）還新、開著、不在 blocked_by，
 //                 retro-candidates、母單與已在等 #n 的單不算；要等哪些由 coordinator 判斷）｜DEPS_PROSE <n> last ok（同上但沒有這種新單，不必處理）｜
 //               DEPS_PROSE_FAILED <錯誤>（在主 checkout 跑 gh 失敗，其他檢查照跑；同一次查詢的 PARENT_* 也不印）
-//   池子（#240，每次都印一行）：POOL_EMPTY（沒有 ready 單）｜POOL_READY <n>...（ready 桶的單，照同目錄 issue-pool.mjs 的 pool() 分桶與排序，
-//               略過已在開著的 batch checkpoint（current 不是 closed）成員列裡的 Issue）｜POOL_FAILED <錯誤>（同一次查詢 gh 失敗，與 DEPS_PROSE_FAILED 同一個錯誤）
+//   池子（#240，每次都印一行）：POOL_READY <n>...（ready 桶的單，照同目錄 issue-pool.mjs 的 pool() 分桶與排序，
+//               略過已在開著的 batch checkpoint（current 不是 closed）成員列裡的 Issue）｜POOL_TRIAGE <n>...（沒有 ready 單、但有 needs-triage 桶的單，
+//               同樣略過 batch 成員、照 pool() 的順序；#357：coordinator 要先 triage，不是閒置）｜POOL_EMPTY（兩者都沒有）｜
+//               POOL_FAILED <錯誤>（同一次查詢 gh 失敗，與 DEPS_PROSE_FAILED 同一個錯誤）
 //   裸對應單（#304）：COUNTERPART_BARE <n> <owner>/<repo>#<m>（主分支的 adapter 有 `Counterpart projects:` 行時，ready 桶與開著的 batch 成員裡
 //               本文以 github.com 寫法（裸 ref 或 github.com 網址）寫了宣告專案的對應單：那個專案不在 github.com，Close 會 STOP counterpart；
 //               判斷同 pilot-counterpart.mjs 的 --adapter，依號碼、同一張單照本文順序；沒有宣告、gh 失敗時不印）
@@ -44,6 +48,9 @@
 //                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）
 //   batch：dispatched 的 batch 沒有 running 成員時（這一輪剛讀到 DONE／STOP 的照結果算；moved（含 `moved batch-<n>`）的成員已移到別的 batch，不算）：
 //          每個成員都 done 印 STAGEABLE <key>；有 done 也有 stop、parked 印 MOVE <key> <不是 done 的成員…>（先用 pilot-batch 移走）；
+//          不是 done 的成員裡有 batch key 那張時（pilot-batch move 會 STOP same-batch，#357）改印 MOVE <key> <done 的成員…>；
+//          開著的 batch 裡 stop 的成員（這一輪剛讀到 STOP 的也算）的 Issue 有 blocked_by、而且每張都已關閉時印 UNBLOCKED <key> <n>
+//          （#357；gh 失敗或成員的 Issue 已關閉時不印）；
 //          沒有 done 印 PARKED <key> <n…>（#163：只剩 stop 的 batch 照跑 pilot-land 只得到 STOP member）；
 //          current 是 `staged <sha>` 的 batch，最後一行 regression 不是這個 staged SHA 的 exit 0 時印 RESTAGE <key> regression-failed <code 或 none>
 //          （#191：Regression 沒過、batch 停在 staged，probe 卻什麼都不印；none 是沒有 regression 行、SHA 是先前那次 stage 的，或 SHA 後面沒緊接 exit <code>）；
@@ -114,12 +121,15 @@ export function checkoutState(checkout, main = 'main') {
 /** 下一批在整合分支上 stage，主 checkout 的 adapter 卻是主分支的版本。 */
 const ADAPTER = 'docs/agents/issue-run.md';
 
+/** adapter 的 `## Pilot` 段（標題之後到下一個 `## ` 標題或檔尾）；沒有這一段時是空字串。coordinator 只讀這一段與它連到的檔（#357）。 */
+export const pilotSection = text => text.match(/^## Pilot[ \t]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1] ?? '';
+
 /**
  * adapter 的 `## Pilot` 段連到的同目錄 `.md`（Pilot 段指向自己的檔案時，那份也是 adapter，見 issue-pilot SKILL 的 Sources）。
  * 其他目錄的連結（skill、契約）與其他段落的連結都不算。
  */
 export function pilotFiles(text) {
-  const section = text.match(/^## Pilot[ \t]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1] ?? '';
+  const section = pilotSection(text);
   const dir = ADAPTER.slice(0, ADAPTER.lastIndexOf('/') + 1);
   return [...new Set([...section.matchAll(/\]\((?:\.\/)?([^)/#\s]+\.md)(?:#[^)\s]*)?\)/g)].map(m => `${dir}${m[1]}`))];
 }
@@ -143,6 +153,7 @@ function show(checkout, ref, path) {
  * 兩邊都改過（歷史分岔）時分不出誰新，也不印。整合分支刪掉的檔讀不到，不印。沒有整合分支或主分支時不比。
  * 比的檔案是 adapter 本身，加上兩邊任一版 adapter 的 Pilot 段連到的檔案（新連上的檔只在整合分支那邊）。
  * 改動都在條目裡時附條目名稱（同 OVERLAP 的 changedUnits，不算相鄰的條目），讓 coordinator 只讀那幾條、不讀整份 diff（#144）。
+ * adapter 本身只在 `## Pilot` 段變動時算、不附名稱；每行在 ` ｜ ` 之後附讀整合分支那份的 `git -C <checkout> show` 指令（#357：investing 用整檔 diff 讀，51 KB）。
  */
 export function adapterAhead(checkout, { integration = 'pilot/integration', main = 'main' } = {}) {
   const [ahead, base] = [`refs/heads/${integration}`, `refs/heads/${main}`];
@@ -151,6 +162,8 @@ export function adapterAhead(checkout, { integration = 'pilot/integration', main
   return files.filter(path => {
     const blob = rev(checkout, `${ahead}:${path}`);
     if (!blob || blob === rev(checkout, `${base}:${path}`)) return false;
+    // adapter 本身只看 Pilot 段：Review、Permissions 等段落的改動不影響 coordinator（#357）。
+    if (path === ADAPTER && pilotSection(show(checkout, ahead, path)) === pilotSection(show(checkout, base, path))) return false;
     const touched = git(checkout, 'log', '-1', '--format=%H', base, '--', path);
     if (touched.status !== 0) throw new Error(`git log ${main} -- ${path} exit ${touched.status}：${touched.stderr.trim()}`);
     const last = touched.stdout.trim();
@@ -159,8 +172,9 @@ export function adapterAhead(checkout, { integration = 'pilot/integration', main
     if (ancestor.status > 1) throw new Error(`git merge-base --is-ancestor exit ${ancestor.status}：${ancestor.stderr.trim()}`);
     return ancestor.status === 0;
   }).map(path => {
-    const unit = changedUnits(checkout, base, ahead, { paths: [path], adjacent: false }).get(path);
-    return unit && !unit.whole && unit.entries.size ? `ADAPTER_AHEAD ${path} ${[...unit.entries].sort().join(',')}` : `ADAPTER_AHEAD ${path}`;
+    const unit = path === ADAPTER ? undefined : changedUnits(checkout, base, ahead, { paths: [path], adjacent: false }).get(path);
+    const names = unit && !unit.whole && unit.entries.size ? ` ${[...unit.entries].sort().join(',')}` : '';
+    return `ADAPTER_AHEAD ${path}${names} ｜ git -C ${checkout} show ${integration}:${path}`;
   });
 }
 
@@ -320,12 +334,15 @@ function applyParentFixes(checkout, fixes) {
 }
 
 /**
- * 池子摘要（#240）：ready 桶裡不在 `batched`（開著的 batch checkpoint 的成員）的 Issue，照 issue-pool 的排序印 `POOL_READY <n>...`，
- * 一張都沒有時 `POOL_EMPTY`。分桶與排序只用 issue-pool.mjs 的 pool()，不另寫一份。
+ * 池子摘要（#240）：ready 桶裡不在 `batched`（開著的 batch checkpoint 的成員）的 Issue，照 issue-pool 的排序印 `POOL_READY <n>...`；
+ * 一張都沒有時印 needs-triage 桶的 `POOL_TRIAGE <n>...`（#357），也沒有才 `POOL_EMPTY`。分桶與排序只用 issue-pool.mjs 的 pool()，不另寫一份。
  */
 export function poolLine(issues, repo, batched = new Set()) {
-  const ready = pool(issues, { repo }).filter(({ issue, bucket }) => bucket === 'ready' && !batched.has(String(issue.number))).map(({ issue }) => issue.number);
-  return ready.length ? `POOL_READY ${ready.join(' ')}` : 'POOL_EMPTY';
+  const rows = pool(issues, { repo }).filter(({ issue }) => !batched.has(String(issue.number)));
+  const bucket = name => rows.filter(row => row.bucket === name).map(({ issue }) => issue.number);
+  const [ready, triage] = [bucket('ready'), bucket('needs-triage')];
+  if (ready.length) return `POOL_READY ${ready.join(' ')}`;
+  return triage.length ? `POOL_TRIAGE ${triage.join(' ')}` : 'POOL_EMPTY';
 }
 
 /**
@@ -355,9 +372,9 @@ export function trackerLines(checkout, batched = new Set(), projects = new Set()
       ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
     }
     const { lines, fixes } = parentFixes(issues, repo);
-    return { lines: [...depsProse(issues, repo), ...counterpartLines(issues, repo, batched, projects), ...lines, poolLine(issues, repo, batched)], fixes };
+    return { lines: [...depsProse(issues, repo), ...counterpartLines(issues, repo, batched, projects), ...lines, poolLine(issues, repo, batched)], fixes, issues };
   } catch (error) {
-    return { lines: [`DEPS_PROSE_FAILED ${error.message}`, `POOL_FAILED ${error.message}`], fixes: [] };
+    return { lines: [`DEPS_PROSE_FAILED ${error.message}`, `POOL_FAILED ${error.message}`], fixes: [], issues: [] };
   }
 }
 
@@ -461,17 +478,38 @@ export function applyResults(file, key, results) {
   return misses;
 }
 
+/** 成員這一輪的 state：還記成 running 的列以這一輪剛讀到的 DONE／STOP（`results`）為準。 */
+const stateNow = (m, results) => (m.state === 'running' && results.find(r => r.n === m.n)?.state) || m.state;
+
 /**
  * dispatched batch 的 stage 判斷（#163）。`active` 是沒有 moved 的成員，`results` 是這一輪剛讀到的 DONE／STOP（還記成 running 的列以它為準）。
  * 還有 running 時不印；每個成員都 done 印 STAGEABLE；有 done 也有其他狀態（stop、parked）印 MOVE <key> <其他成員…>，先移走它們才 stage；
+ * 其他成員裡有 batch key 那張時改列 done 的成員（pilot-batch 不能把 key 移出自己的 batch，#357）；
  * 沒有 done 印 PARKED <key> <n…>（pilot-land 對它只會 STOP member）。
  */
 export function stageLines(key, active, results) {
-  const states = active.map(m => ({ n: m.n, state: (m.state === 'running' && results.find(r => r.n === m.n)?.state) || m.state }));
+  const states = active.map(m => ({ n: m.n, state: stateNow(m, results) }));
   if (!states.length || states.some(m => m.state === 'running')) return [];
   const others = states.filter(m => m.state !== 'done').map(m => m.n);
   if (!others.length) return [`STAGEABLE ${key}`];
-  return others.length < states.length ? [`MOVE ${key} ${others.join(' ')}`] : [`PARKED ${key} ${others.join(' ')}`];
+  if (others.length === states.length) return [`PARKED ${key} ${others.join(' ')}`];
+  // pilot-batch.mjs 不能把 batch key 那張移出自己的 batch（same-batch，#357）：它沒 done 時改列可以移走的 done 成員。
+  const movable = others.includes(key) ? states.filter(m => m.state === 'done').map(m => m.n) : others;
+  return [`MOVE ${key} ${movable.join(' ')}`];
+}
+
+/**
+ * stop 成員的 blocker 全關了（#357）：開著的 batch 裡 stop 的成員（這一輪剛讀到 STOP 的也算），它的 Issue 有 blocked_by、而且每張（不分 repo）都已關閉時
+ * 印 `UNBLOCKED <key> <n>`，依成員列的順序。`issues` 是 tracker 上開著的 Issue（GraphQL 節點）；gh 失敗時是空的，不印。
+ */
+export function unblockedLines(key, active, results, issues) {
+  const byNumber = new Map(issues.map(issue => [String(issue.number), issue]));
+  return active.filter(m => stateNow(m, results) === 'stop')
+    .filter(m => {
+      const blockers = byNumber.get(m.n)?.blockedBy?.nodes ?? [];
+      return blockers.length && blockers.every(({ state }) => state === 'CLOSED');
+    })
+    .map(m => `UNBLOCKED ${key} ${m.n}`);
 }
 
 /**
@@ -681,6 +719,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     }
     if (apply && results.length) out.push(...applyResults(join(pilot, file), key, results));
     if (/^dispatched\b/.test(current)) out.push(...stageLines(key, active, results));
+    if (!/^closed\b/.test(current)) out.push(...unblockedLines(key, active, results, tracker.issues));
     out.push(...restageLines(key, current, regression, regressionExit));
     if (/^(merged|pushed)\b/.test(current)) landing.push({ key, sha, regression, regressionExit, merged: /^merged\b/.test(current) });
   }
