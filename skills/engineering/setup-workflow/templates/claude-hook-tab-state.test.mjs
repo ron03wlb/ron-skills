@@ -243,3 +243,17 @@ test('PostToolUse：只認作為指令開頭的 terminal rename，引號裡提�
     assert.equal(recorded(), '處理中｜#126 分頁狀態｜實作｜hook', command);
   }
 });
+
+// #327：worker 在 DONE 之後的同一輪跑 /retro，retro 最後一步已把分頁切成待關閉；
+// Stop 時最後一段文字仍以 DONE 結果行收尾（coordinator 的 watcher 讀它），worker-done 不能再把分頁降回待 Retro。
+test('Stop：分頁已是待關閉（retro 已跑完）時，DONE 結果行與 LANDED 都不降回待 Retro', t => {
+  const { record, recorded, hook, say, calls } = fixture(t);
+  record('待關閉｜#327 自動 retro');
+  say(`retro：開了 #900。\n\nDONE 327 ${SHA}`);
+  const result = hook({ hook_event_name: 'Stop', stop_hook_active: false });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(recorded(), '待關閉｜#327 自動 retro');
+  assert.equal(hook(bash('node scripts/land.mjs issue/327-x --title x --body-file b.md', `LANDED 130 ${SHA}\n`)).status, 0);
+  assert.equal(recorded(), '待關閉｜#327 自動 retro');
+  assert.doesNotMatch(calls(), /rename/);
+});

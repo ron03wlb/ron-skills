@@ -41,6 +41,8 @@
 //   裸對應單（#304）：COUNTERPART_BARE <n> <owner>/<repo>#<m>（主分支的 adapter 有 `Counterpart projects:` 行時，ready 桶與開著的 batch 成員裡
 //               本文以 github.com 寫法（裸 ref 或 github.com 網址）寫了宣告專案的對應單：那個專案不在 github.com，Close 會 STOP counterpart；
 //               判斷同 pilot-counterpart.mjs 的 --adapter，依號碼、同一張單照本文順序；沒有宣告、gh 失敗時不印）
+//   等人的單（#327）：HUMAN_NO_GATE <n> <摘要>（`ready-for-human` 的單（pool() 的 human 桶）在 gates.md 沒有 Issue 欄是 #n 的開著的 gate：
+//               coordinator 開 gate 問人；摘要是本文 `… prerequisite：` 那行冒號之後的文字，沒有這行時是標題；依號碼，gh 失敗時不印）
 //   母單（#164）：PARENT_LABEL <n>（開著、或已關閉卻有開著子單的母單，沒有 `parent` label 或還掛 triage label）｜
 //               PARENT_REOPEN <n>（開著的子單的母單 #n 在同一個 repo、已關閉）；各依號碼、每張一次
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
@@ -358,10 +360,21 @@ export function counterpartLines(issues, repo, batched = new Set(), projects = n
 }
 
 /**
- * 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE、COUNTERPART_BARE、PARENT_* 與池子摘要行（同一次查詢），以及 PARENT_* 對應的 tracker 寫入（不在這裡寫）；
- * gh 失敗時只有 DEPS_PROSE_FAILED 與 POOL_FAILED 兩行，不中斷其他檢查。
+ * 等人的單沒人問（#327 第 2 項）：pool() 的 human 桶（`ready-for-human`）裡，`gates`（openGates 的結果）沒有一個開著的 gate 的 Issue 欄是 `#<n>` 的，
+ * 依號碼印 `HUMAN_NO_GATE <n> <摘要>`；摘要取本文第一行 `… prerequisite：` 冒號之後的文字，沒有這行就取標題。
  */
-export function trackerLines(checkout, batched = new Set(), projects = new Set()) {
+export function humanNoGateLines(issues, repo, gates = []) {
+  const gated = new Set(gates.flatMap(({ issue }) => [...String(issue).matchAll(/(?<![\w/.-])#(\d+)\b/g)].map(([, n]) => Number(n))));
+  return pool(issues, { repo }).filter(({ bucket, issue }) => bucket === 'human' && !gated.has(issue.number))
+    .map(({ issue }) => issue).sort((a, b) => a.number - b.number)
+    .map(issue => `HUMAN_NO_GATE ${issue.number} ${(issue.body ?? '').match(/^.*\bprerequisite\s*[：:]\s*(\S.*?)\s*$/im)?.[1] ?? issue.title ?? ''}`.trimEnd());
+}
+
+/**
+ * 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE、COUNTERPART_BARE、HUMAN_NO_GATE、PARENT_* 與池子摘要行（同一次查詢），以及 PARENT_* 對應的 tracker 寫入（不在這裡寫）；
+ * `gates` 是 gates.md 開著的 gate（openGates）。gh 失敗時只有 DEPS_PROSE_FAILED 與 POOL_FAILED 兩行，不中斷其他檢查。
+ */
+export function trackerLines(checkout, batched = new Set(), projects = new Set(), gates = []) {
   try {
     const repo = gh(checkout, 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim();
     const [owner, name] = repo.split('/');
@@ -372,7 +385,7 @@ export function trackerLines(checkout, batched = new Set(), projects = new Set()
       ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
     }
     const { lines, fixes } = parentFixes(issues, repo);
-    return { lines: [...depsProse(issues, repo), ...counterpartLines(issues, repo, batched, projects), ...lines, poolLine(issues, repo, batched)], fixes, issues };
+    return { lines: [...depsProse(issues, repo), ...counterpartLines(issues, repo, batched, projects), ...humanNoGateLines(issues, repo, gates), ...lines, poolLine(issues, repo, batched)], fixes, issues };
   } catch (error) {
     return { lines: [`DEPS_PROSE_FAILED ${error.message}`, `POOL_FAILED ${error.message}`], fixes: [], issues: [] };
   }
@@ -697,7 +710,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     .filter(({ current }) => !/^closed\b/.test(current)).flatMap(({ members }) => members.map(({ n }) => n)));
   // 對應專案的宣告取主分支的 adapter（主 checkout 平常就在主分支；整合分支上較新的版本由 ADAPTER_AHEAD 提醒）。
   const projects = declaredProjects(show(checkout, `refs/heads/${main}`, ADAPTER));
-  const tracker = trackerLines(checkout, batched, projects);
+  const tracker = trackerLines(checkout, batched, projects, openGates(readStore(pilot, 'gates.md')));
   const out = [...checkoutState(checkout, main), ...adapterAhead(checkout, { integration, main }), ...openRows(pilot), ...tracker.lines];
   if (apply) out.push(...applyParentFixes(checkout, tracker.fixes));
   const landing = [];

@@ -94,3 +94,31 @@ test('retro overlay：條目宣告 Collect command 時照它的第一行走路�
   assert.match(declared, /`Roster command:`[^.]*`Close command:`[^.]*stop/, '只宣告一部分會寫一邊讀另一邊，要停下');
   assert.doesNotMatch(declared, /retro-collect\.mjs|--role/, 'overlay 不寫死專案的腳本名');
 });
+
+// #327：retro 是 disable-model-invocation，coordinator 交接後、worker DONE 後都沒辦法以 Skill tool 跑，
+// 分頁停在「待 Retro」等 Operator 一個個打 /retro（investing session cf6ac0fd：26 個分頁）。拿掉之後 description 要限定觸發時機。
+test('retro overlay 拿掉 disable-model-invocation，description 限定只在使用者輸入或 issue-pilot／issue-run 指示時跑', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'retro-overlay-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(upstream, dir, { recursive: true });
+  const applied = spawnSync('git', ['apply', patch], { cwd: dir, encoding: 'utf8', env });
+  assert.equal(applied.status, 0, applied.stderr);
+
+  const frontmatter = readFileSync(join(dir, 'SKILL.md'), 'utf8').split('\n---\n')[0];
+  assert.doesNotMatch(frontmatter, /disable-model-invocation/);
+  const description = frontmatter.match(/^description:\s*(.*)$/m)?.[1] ?? '';
+  assert.match(description, /Use only when the user runs \/retro/);
+  assert.match(description, /issue-pilot/);
+  assert.match(description, /issue-run/);
+  assert.match(description, /never on your own initiative/);
+
+  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
+  // 由 Skill tool 啟動時沒有人在畫面前挑採用項：會實作的路線只列候選。
+  const started = skill.split('\n\n').find(paragraph => paragraph.includes('**Started by a skill.**'));
+  assert.ok(started, 'overlay 沒有 Started by a skill 段落');
+  assert.match(started, /implement nothing/);
+  assert.match(started, /NORMAL/);
+  // 防遞迴：收集者自己的 retro 單帶標記，coordinator 的 Retro trigger 不算它。
+  const collect = skill.split('\n\n').find(paragraph => paragraph.includes('**Collect mode.**'));
+  assert.match(collect, /`From: retro-collect` line when this session ran `\/retro-collect`/);
+});
