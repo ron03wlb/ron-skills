@@ -23,11 +23,23 @@ const ago = minutes => new Date(NOW.getTime() - minutes * 60000).toISOString();
 
 test('report 只改寫自己那一列，其他 repo 的列原樣保留；沒有帳本時建出來', t => {
   const file = ledger(t);
-  assert.deepEqual(report(file, 'ron-skills', 2, { now: NOW, cap: 4 }), { total: 2, cap: 4 });
+  assert.deepEqual(report(file, 'ron-skills', 2, { now: NOW, cap: 4 }), { running: 2, total: 2, cap: 4 });
   assert.equal(readFileSync(file, 'utf8'), `ron-skills\t2\t${NOW.toISOString()}\n`);
   writeFileSync(file, `${readFileSync(file, 'utf8')}investing\t1\t${ago(5)}\n`);
-  assert.deepEqual(report(file, 'ron-skills', 3, { now: NOW, cap: 4 }), { total: 4, cap: 4 });
+  assert.deepEqual(report(file, 'ron-skills', 3, { now: NOW, cap: 4 }), { running: 3, total: 4, cap: 4 });
   assert.equal(readFileSync(file, 'utf8'), `ron-skills\t3\t${NOW.toISOString()}\ninvesting\t1\t${ago(5)}\n`);
+});
+
+// #353：dispatch 派出後以 add 把派出人數加進自己那一列；超過 2 小時沒更新的舊值不算。
+test('report 帶 add：寫入自己那一列的現值加上人數，舊列（超過 2 小時）以 0 起算', t => {
+  const file = ledger(t);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `ron-skills\t2\t${ago(5)}\ninvesting\t1\t${ago(5)}\n`);
+  assert.deepEqual(report(file, 'ron-skills', 1, { now: NOW, cap: 4, add: true }), { running: 3, total: 4, cap: 4 });
+  assert.equal(readFileSync(file, 'utf8'), `ron-skills\t3\t${NOW.toISOString()}\ninvesting\t1\t${ago(5)}\n`);
+  writeFileSync(file, `ron-skills\t2\t${ago(180)}\n`);
+  assert.deepEqual(report(file, 'ron-skills', 1, { now: NOW, cap: 4, add: true }), { running: 1, total: 1, cap: 4 });
+  assert.deepEqual(report(file, 'new-repo', 2, { now: NOW, cap: 4, add: true }), { running: 2, total: 3, cap: 4 });
 });
 
 test('合計不算超過 2 小時沒更新的列與壞掉的列', t => {
@@ -95,6 +107,6 @@ test('持有者被殺留下的鎖超過 30 秒就拿掉重來', t => {
   mkdirSync(`${file}.lock`, { recursive: true });
   const old = new Date(Date.now() - 60000);
   utimesSync(`${file}.lock`, old, old);
-  assert.deepEqual(report(file, 'a', 1, { cap: 4 }), { total: 1, cap: 4 });
+  assert.deepEqual(report(file, 'a', 1, { cap: 4 }), { running: 1, total: 1, cap: 4 });
   assert.equal(existsSync(`${file}.lock`), false);
 });

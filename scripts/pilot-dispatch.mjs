@@ -13,6 +13,8 @@
 // worktree 已存在（重跑）時，開新分頁前先關掉 worktree 裡每個 terminal，同 --fresh；那一列還是 running、它的分頁也還開著時
 // 印 `STOP <n> running <handle>`，不關分頁、不改寫成員列（只看這次 key 的 checkpoint）；列不出分頁時 `STOP <n> terminal-close …`，成員列也不動。
 // worktree 有沒有建好只看目錄存在、`git worktree list` 裡有這個分支，不信 create 回傳的 ok（曾經建好卻回 "ok": false）。
+// create 之前（#353）：`git worktree list` 裡已有目錄名是 `issue-<n>`、分支卻不是成員分支的 worktree（舊流程留下的），交給 Orca 只會去重出 `issue-<n>-2`：
+// 印 `STOP <n> worktree-branch <路徑> <分支>`（detached 時分支寫 `(detached)`），不呼叫 create、不開分頁，成員列記 stop。--fresh 不 create，不受影響。
 // 所有子行程的 stdin 都接 /dev/null：Orca CLI 會吃掉 stdin，`while read` 迴圈因此只派到第一個成員。
 // 總時間有上限（比照 pilot-handoff.mjs）：Bash 工具最多等 600 秒，被殺就來不及寫 checkpoint，所以預算到了（timeout）或收到 SIGTERM、SIGINT（signal <名稱>）
 // 都中止進行中的步驟，進行中與還沒派的成員都 STOP 並寫進 checkpoint。預設預算 510 秒，加上收尾的 git 與寫檔，在 540 秒內結束。
@@ -30,7 +32,7 @@
 //   prior 已在、分支又有了 commit 就是第二次重派：印 `STOP refresh-twice <n>`，由 coordinator 開 gate；gate 選了再重派時帶 --again，另存成 `-prior2`（依序編號）。
 //   認領不在這裡做：coordinator 照 Dispatch 先跑 claim；這裡只在動手前同樣檢查認領，不是這個 session 的就 `STOP <n> not-claimed`，什麼都不動。
 //   沒帶 --note（#227）時只寫 `<主 checkout>/.scratch/pilot/fresh-<n>.md` 草稿、印 `NOTE_DRAFT <path>`，不派工：唯讀（只有 gh 讀 Issue 標題），
-//   不檢查認領、不需要 ORCA_CLI_COMMAND，不改名分支、不開關分頁、不留言；帶派工才用的 --again、--allow-overlap、--capacity、--stuck-after 是用法錯誤（exit 2）。
+//   不檢查認領、不需要 ORCA_CLI_COMMAND，不改名分支、不開關分頁、不留言；帶派工才用的 --again、--allow-overlap、--capacity、--repo-cap、--stuck-after 是用法錯誤（exit 2）。
 //   草稿已在時覆寫，但它的「怎麼整併」已經有內容（coordinator 補過、漏帶 --note 重跑）時印 `STOP <n> draft-filled <path>`，不動它。內容：原 Issue 號碼與標題；
 //   prior 分支與 SHA（batch-<key>.md 那列的 candidate，空的取分支 tip）與 `git merge-base <分支> <整合分支>`；成員（prior SHA）與整合分支
 //   自 merge-base 以來共同改過的檔，各附兩邊的 `git diff --stat` 那一行，`.md` 再附兩邊改到的 `- **<名稱>.**` 條目（pilot-probe 的 changedUnits；有條目外的改動時另註明），不印完整 diff；
@@ -44,32 +46,43 @@
 // 全機上限（#178）：帶 --capacity 時，動手前先以同目錄 pilot-capacity.mjs 的 check 合計全機帳本、加上這次要派的人數（--fresh 是 1）：
 //   超過 $PILOT_MACHINE_WORKER_CAP 就只印 `STOP capacity <合計>/<上限>`、exit 4，不寫 checkpoint、不建 worktree、不開分頁；沒超過先印 `CAPACITY ok <合計>/<上限>`。
 //   沒帶時不讀帳本。帳本的本 repo 那一列由 pilot-probe.mjs --capacity 每輪更新，所以派工前要先跑過這一輪的 probe。
+//   有成員 DISPATCHED 時（#353），最後以帳本本 repo 那一列的現值加上派出人數改寫那一列（pilot-capacity 的 report，讀寫在同一把鎖裡），
+//   印 `REPORTED <repo> <running> <合計>/<上限>`：同一輪連續兩次 dispatch，第二次的合計就含第一次的成員。<repo> 是主 checkout 的目錄名，
+//   Probe 的 `--capacity <repo>` 要用同一個名稱。寫不進帳本時 stderr 印 `WARN capacity-report <原因>`，exit 不變。
+// 單一 repo 上限（#353）：帶 --repo-cap <n> 時，動手前先數本 repo `.scratch/pilot/` 開著（current 不是 closed）的 batch checkpoint 的 running 列
+//   （這次要派的成員自己的列不算，免得重跑時重複計），加上這次要派的人數：超過 <n> 就只印 `STOP capacity repo <合計>/<n>`、exit 4，什麼都不動；
+//   沒超過先印 `CAPACITY ok repo <合計>/<n>`。只讀 checkpoint（pilot-probe.mjs 的 parseBatch）。兩個旗標都帶時先比 repo、再比全機。
+// 放掉認領（#353）：印 `STOP capacity …`（全機或 repo）之後，逐一讀成員最近一則認領留言，屬這個 session 的就以同目錄 gh-tracker.mjs
+//   `edit <n> --remove-assignee @me` 放掉指派、印 `RELEASED <n>`；別人的認領不動。讀不到留言時 stderr 印 `WARN release <n> claim-check …`（或 `timeout`，認領者不明，不放），
+//   放掉失敗時印 `WARN release <n> edit <原因>`；exit 都仍是 4。
 //
-// 用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--integration <分支>] [--stuck-after <分鐘>m]（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
-//       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--integration <分支>] [--stuck-after <分鐘>m]
+// 用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--repo-cap <n>] [--integration <分支>] [--stuck-after <分鐘>m]（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
+//       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--repo-cap <n>] [--integration <分支>] [--stuck-after <分鐘>m]
 //       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--integration <分支>]（草稿，不需要 ORCA_CLI_COMMAND）
 //   --integration worktree 的 base 與表頭的整合分支，預設 pilot/integration；--stuck-after 成員行的 stuck-after，預設 90m。
-// stdout：每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
+// stdout：容量行（CAPACITY ok repo …、CAPACITY ok …，或 STOP capacity repo …、STOP capacity … 接 RELEASED <n>）、最後的 REPORTED <repo> …（見上）；
+//   stderr 另有 WARN release …、WARN capacity-report …。每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、worktree-branch、create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
 //   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop；running、overlap 的 STOP 不改寫那一列），STOP 原因只在 stdout。
 //   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
 // exit：0 全部派出（草稿：寫好）；4 有成員 STOP；2 用法錯誤（含草稿帶了派工旗標）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { claimedBy, defaultSession } from './issue-pool.mjs';
 import { orca, sendToSession } from './orca-session-send.mjs';
 import { closeIfAllMoved } from './lib/pilot-store.mjs';
-import { changedUnits, memberOverlaps } from './pilot-probe.mjs';
-import { check as capacityCheck, ledgerPath, machineCap } from './pilot-capacity.mjs';
+import { changedUnits, memberOverlaps, parseBatch } from './pilot-probe.mjs';
+import { check as capacityCheck, ledgerPath, machineCap, report as capacityReport } from './pilot-capacity.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
 
-const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--integration <分支>] [--stuck-after <分鐘>m]（需要 ORCA_CLI_COMMAND）\n'
-  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--integration <分支>] [--stuck-after <分鐘>m]\n'
+const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--repo-cap <n>] [--integration <分支>] [--stuck-after <分鐘>m]（需要 ORCA_CLI_COMMAND）\n'
+  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--repo-cap <n>] [--integration <分支>] [--stuck-after <分鐘>m]\n'
   + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--integration <分支>]（只寫 fresh-<n>.md 草稿、不派工）';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const WORKTREE_CREATE = fileURLToPath(new URL('./orca-worktree-create.mjs', import.meta.url));
+const TRACKER = fileURLToPath(new URL('./gh-tracker.mjs', import.meta.url));
 const BUDGET_MS = Number(process.env.PILOT_DISPATCH_BUDGET_MS || 510000);
 const DEADLINE = Date.now() + BUDGET_MS;
 
@@ -92,6 +105,39 @@ function worktreeOf(main, branch) {
   return result.stdout.split(/\n\n+/)
     .map(block => ({ path: block.match(/^worktree (.*)$/m)?.[1], branch: block.match(/^branch refs\/heads\/(.*)$/m)?.[1] }))
     .find(w => w.branch === branch && w.path && existsSync(w.path))?.path;
+}
+
+/** `git worktree list` 裡目錄名是 `name`、目錄也存在的 worktree `{ path, branch }`（detached 時 branch 是 undefined）；主 checkout 不算。 */
+function worktreeNamed(main, name) {
+  const result = run('git', ['-C', main, 'worktree', 'list', '--porcelain']);
+  if (result.status !== 0) return undefined;
+  return result.stdout.split(/\n\n+/).slice(1)
+    .map(block => ({ path: block.match(/^worktree (.*)$/m)?.[1], branch: block.match(/^branch refs\/heads\/(.*)$/m)?.[1] }))
+    .find(w => w.path && basename(w.path) === name && existsSync(w.path));
+}
+
+/** 本 repo 開著（current 不是 closed）的 batch checkpoint 裡 running 的列數；`skip` 裡的 Issue（這次要派的成員）不算。只讀。 */
+function repoRunning(main, skip) {
+  const pilot = join(main, '.scratch/pilot');
+  if (!existsSync(pilot)) return 0;
+  return readdirSync(pilot).filter(file => /^batch-.+\.md$/.test(file))
+    .map(file => parseBatch(readFileSync(join(pilot, file), 'utf8')))
+    .filter(({ current }) => !/^closed\b/.test(current))
+    .flatMap(({ members }) => members)
+    .filter(({ n, state }) => state === 'running' && !skip.has(n)).length;
+}
+
+/** STOP capacity 之後放掉這個 session 認領的成員（#353）：放掉的印 `RELEASED <n>`，讀不到留言或放掉失敗時 stderr 印 WARN；別人的認領不動。 */
+function releaseClaims(members) {
+  for (const { n } of members) {
+    const stop = claimStop(n);
+    if (stop === 'not-claimed') continue;
+    if (stop) { console.error(`WARN release ${n} ${stop}`); continue; }
+    const left = DEADLINE - Date.now();
+    const edited = left > 0 ? run('node', [TRACKER, 'edit', n, '--remove-assignee', '@me'], { timeout: Math.min(60000, left) }) : { status: null, stderr: 'timeout' };
+    if (edited.status === 0) console.log(`RELEASED ${n}`);
+    else console.error(`WARN release ${n} edit ${(edited.stderr ?? '').trim().replace(/\s*\n\s*/g, ' ') || `exit ${edited.status ?? edited.error?.code}`}`);
+  }
 }
 
 /** 本地時區的 ISO 時間到秒（同 `date -Iseconds`），例如 2026-10-30T17:31:36+08:00。 */
@@ -219,6 +265,8 @@ async function dispatchMember(cli, main, checkpoint, integration, { n, branch },
   const overlap = !allowOverlap && overlapStop(main, n, branch, integration);
   if (overlap) return { worktree: existed, stop: overlap, keep: !overlap.startsWith('overlap-check ') };
   if (!existed) {
+    const taken = worktreeNamed(main, `issue-${n}`);
+    if (taken) return { stop: `worktree-branch ${taken.path} ${taken.branch ?? '(detached)'}` };
     try {
       created = await spawnText('node', [WORKTREE_CREATE, '--name', `issue-${n}`, '--base-branch', integration, '--branch', branch, '--issue', n],
         { cwd: main, env: { ...process.env, ORCA_BIN: cli }, signal });
@@ -441,18 +489,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (args[i] === '--again') { bad ||= 'again' in given; given.again = true; continue; }
     if (args[i] === '--allow-overlap') { bad ||= 'allowOverlap' in given; given.allowOverlap = true; continue; }
     if (args[i] === '--capacity') { bad ||= 'capacity' in given; given.capacity = true; continue; }
-    const name = { '--integration': 'integration', '--stuck-after': 'stuckAfter', '--fresh': 'fresh', '--note': 'note' }[args[i]];
+    const name = { '--integration': 'integration', '--stuck-after': 'stuckAfter', '--fresh': 'fresh', '--note': 'note', '--repo-cap': 'repoCap' }[args[i]];
     const value = args[++i];
     if (!name || !value || value.startsWith('--') || name in given) bad = true;
     else given[name] = value;
   }
   const options = { integration: 'pilot/integration', stuckAfter: '90m', ...given };
-  if (!/^\d+m$/.test(options.stuckAfter)) bad = true;
+  if (!/^\d+m$/.test(options.stuckAfter) || ('repoCap' in given && !/^[1-9]\d*$/.test(given.repoCap))) bad = true;
   const [key, ...specs] = positional;
   const fresh = 'fresh' in given;
   // --fresh 只帶一個成員；沒帶 --note 是草稿（#227），不能再帶派工才用的旗標；--note 與 --again 只跟 --fresh 一起用。
   const draft = fresh && !('note' in given);
-  if (draft ? given.again || given.allowOverlap || given.capacity || 'stuckAfter' in given : 'note' in given && !existsSync(given.note)) bad = true;
+  if (draft ? given.again || given.allowOverlap || given.capacity || 'repoCap' in given || 'stuckAfter' in given : 'note' in given && !existsSync(given.note)) bad = true;
   if (fresh ? specs.length : 'note' in given || given.again) bad = true;
   const members = (fresh ? [given.fresh] : specs).map(spec => spec.match(/^(\d+):([a-z0-9][a-z0-9-]*)$/)).map(m => m && { n: m[1], branch: `issue/${m[1]}-${m[2]}` });
   const cli = process.env.ORCA_CLI_COMMAND;
@@ -476,14 +524,33 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       clearTimeout(budget);
       process.exit(written.stop ? 4 : 0);
     }
+    const stopCapacity = line => {
+      console.log(line);
+      releaseClaims(members);
+      clearTimeout(budget);
+      process.exit(4);
+    };
+    if ('repoCap' in given) {
+      const total = repoRunning(main, new Set(members.map(({ n }) => n))) + members.length;
+      const repoCap = Number(given.repoCap);
+      if (total > repoCap) stopCapacity(`STOP capacity repo ${total}/${repoCap}`);
+      console.log(`CAPACITY ok repo ${total}/${repoCap}`);
+    }
     if (given.capacity) {
       const { ok, total, cap } = capacityCheck(ledgerPath(), members.length);
-      console.log(ok ? `CAPACITY ok ${total}/${cap}` : `STOP capacity ${total}/${cap}`);
-      if (!ok) {
-        clearTimeout(budget);
-        process.exit(4);
-      }
+      if (!ok) stopCapacity(`STOP capacity ${total}/${cap}`);
+      console.log(`CAPACITY ok ${total}/${cap}`);
     }
+    // 派出後把派出人數加進帳本本 repo 那一列（#353）；寫不進去只警告。
+    const reportDispatched = count => {
+      if (!given.capacity || !count) return;
+      try {
+        const { running, total, cap } = capacityReport(ledgerPath(), basename(main), count, { add: true });
+        console.log(`REPORTED ${basename(main)} ${running} ${total}/${cap}`);
+      } catch (error) {
+        console.error(`WARN capacity-report ${error.message}`);
+      }
+    };
     if (fresh) {
       const [member] = members;
       const started = now();
@@ -497,19 +564,23 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const result = await dispatchMember(cli, main, ready.checkpoint, options.integration, member, controller.signal, true);
       writeRow(ready.checkpoint, member.n, [member.branch, result.worktree ?? ready.worktree, result.handle ?? '', started, options.stuckAfter, result.stop ? 'stop' : 'running']);
       console.log(result.stop ? `STOP ${member.n} ${result.stop}` : `DISPATCHED ${member.n} ${result.handle}\nPRIOR ${member.n} ${ready.prior} ${ready.sha}`);
+      reportDispatched(result.stop ? 0 : 1);
       clearTimeout(budget);
       process.exit(result.stop ? 4 : 0);
     }
     const checkpoint = join(main, `.scratch/pilot/batch-${key}.md`);
     writeHeader(main, checkpoint, key, options.integration);
     let stopped = false;
+    let dispatched = 0;
     for (const member of members) {
       const started = now();
       const result = await dispatchMember(cli, main, checkpoint, options.integration, member, controller.signal, Boolean(given.allowOverlap));
       stopped ||= Boolean(result.stop);
       if (!result.keep) writeRow(checkpoint, member.n, [member.branch, result.worktree ?? '', result.handle ?? '', started, options.stuckAfter, result.stop ? 'stop' : 'running']);
       console.log(result.stop ? `STOP ${member.n} ${result.stop}` : `DISPATCHED ${member.n} ${result.handle}`);
+      if (!result.stop) dispatched++;
     }
+    reportDispatched(dispatched);
     clearTimeout(budget);
     process.exit(stopped ? 4 : 0);
   } catch (error) {

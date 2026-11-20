@@ -9,6 +9,7 @@
 //   讀、改、寫整段持有 `<帳本>.lock` 目錄鎖（mkdir），兩個 coordinator 同時 report 也不會蓋掉對方的列；鎖超過 30 秒沒放（持有者被殺）視為遺留、拿掉重來，
 //   等 10 秒還拿不到就失敗（exit 1）。
 // 上限：$PILOT_MACHINE_WORKER_CAP，沒設時 4。
+// 匯出的 report 另有 `add` 選項（#353，pilot-dispatch.mjs 派出後用）：寫入的是那一列的現值（2 小時內更新過才算）加上人數，讀寫在同一把鎖裡。
 //
 // 用法：node scripts/pilot-capacity.mjs report <repo> <running>
 //       node scripts/pilot-capacity.mjs check <新增人數>
@@ -89,13 +90,17 @@ export function machineTotal(rows, now = new Date()) {
     .reduce((sum, row) => sum + row.running, 0);
 }
 
-/** 改寫 <repo> 那一列（沒有就加在最後），其他列原樣保留；傳回改寫後的 `{ total, cap }`。 */
-export function report(file, repo, running, { now = new Date(), cap = machineCap() } = {}) {
+/**
+ * 改寫 <repo> 那一列（沒有就加在最後），其他列原樣保留；傳回改寫後的 `{ running, total, cap }`。
+ * `add` 為真時寫入的是那一列的現值（2 小時內更新過才算，否則 0）加上 `running`，讀與寫在同一把鎖裡（#353：dispatch 派出後加上派出人數）。
+ */
+export function report(file, repo, running, { now = new Date(), cap = machineCap(), add = false } = {}) {
   if (cap === undefined) throw new Error('上限不是正整數（$PILOT_MACHINE_WORKER_CAP）');
   if (!validRepo(repo)) throw new Error(`repo 名稱不能空、不能有 tab 或換行：${JSON.stringify(repo)}`);
   mkdirSync(dirname(file), { recursive: true });
   const rows = withLock(file, () => {
     const before = readLedger(file);
+    if (add) running += machineTotal(before.filter(row => row.repo === repo), now);
     const mine = `${repo}\t${running}\t${now.toISOString()}`;
     const lines = before.some(row => row.repo === repo) ? before.map(row => (row.repo === repo ? mine : row.line)) : [...before.map(row => row.line), mine];
     const temp = `${file}.${process.pid}.tmp`;
@@ -107,7 +112,7 @@ export function report(file, repo, running, { now = new Date(), cap = machineCap
     }
     return readLedger(file);
   });
-  return { total: machineTotal(rows, now), cap };
+  return { running, total: machineTotal(rows, now), cap };
 }
 
 /** 派工前檢查：`{ ok, total, cap }`，total 已含新增人數。 */
