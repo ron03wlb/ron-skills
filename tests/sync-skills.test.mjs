@@ -169,6 +169,14 @@ test('同步時連結 git 的 pre-commit hook；已有的不覆蓋；--check 不
   // retro spay2 ff00a288#2：commit-msg 一起連，本 repo 沒設 core.hooksPath
   assert.match(linked.stderr, new RegExp(`^GIT_HOOK_LINKED ${join(hooks, 'commit-msg')}$`, 'm'));
   assert.match(readFileSync(join(hooks, 'commit-msg'), 'utf8'), /check-commit-message\.mjs/);
+  // #306-1：pre-push 擋直接 push 到 main。連結指向主 checkout 的 .githooks；在還沒合入的 worktree 跑時主 checkout 沒有這個檔，sync 照設計略過。
+  const mainRoot = join(spawnSync('git', ['-C', root, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', env }).stdout.trim(), '..');
+  if (existsSync(join(mainRoot, '.githooks/pre-push'))) {
+    assert.match(linked.stderr, new RegExp(`^GIT_HOOK_LINKED ${join(hooks, 'pre-push')}$`, 'm'));
+    assert.match(readFileSync(join(hooks, 'pre-push'), 'utf8'), /PUSH_MAIN_BLOCKED/);
+  } else {
+    assert.equal(existsSync(join(hooks, 'pre-push')), false);
+  }
 
   rmSync(join(hooks, 'pre-commit'));
   writeFileSync(join(hooks, 'pre-commit'), '#!/bin/sh\n# 使用者自己的 hook\n');

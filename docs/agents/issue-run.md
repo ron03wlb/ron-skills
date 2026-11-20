@@ -12,6 +12,8 @@ macOS, WSL2, Linux（母單 #82 決策 R1-Q1；原生 Windows 不支援）。本
 
 寫入目標是 https://github.com/ron03wlb/ron-skills ：`scripts/gh-tracker.mjs` 從這一段讀主機與 repo，段裡的 GitHub 專案網址只能指向這一個專案（多一個或少了它都 exit 2，#244）。
 
+開單或排 `blocked-by` 前的重疊檢查（grilling、`/retro` 的 Tracker duplicates 說的「adapter 指名的 pre-creation overlap check」）：`node scripts/worktree-overlap.mjs <檔案>…` 找正在改這些檔的 worktree，`gh issue list --state open --search "<檔名> in:title,body"` 找開著的單；印 `TEMPLATE_COPY <副本> <正本>` 時要改的是 `skills/engineering/setup-workflow/templates/` 的正本，正本也要一起查（#383）。
+
 ## Delivery
 
 程式碼 host 是 `github`（`github.com`，`origin` 為 `ron03wlb/ron-skills`），CLI 是 `gh`，和 tracker 同一個 host。PR 的開、讀、等 CI、合併照 [HOSTS.md](../../skills/engineering/setup-workflow/HOSTS.md) 的 GitHub 欄（`gh pr create`、`gh pr view`、`gh pr checks --watch`、`gh pr merge --merge --match-head-commit <sha>`），平常不手打：交付指令是 `node scripts/land.mjs <branch> --body-file <file> --check-command 'bin/check --upstream'`，步驟與結果行見 [Evidence and closing](#evidence-and-closing)。CI 設定在 `.github/workflows/checks.yml`，跑 `bin/check --upstream`。
@@ -61,7 +63,7 @@ candidate 是分支 tip。acceptance 是在 candidate SHA、工作樹乾淨時�
 - `RESTAMPED <pr> <sha>`（進度行，不是最後一行）：PR 和 `main` 衝突、衝突檔只有戳記檔（`scripts/restamp.mjs` 的 `STAMP_FILES`：`scripts/workflow-doc-sync.json`、`docs/agents/workflow-templates.json`），它已把 `origin/main` 合入分支、取目標分支版本重產站台並 restamp、commit、在新 tip 跑過 `--check-command` 並重新 push，接著照常等 CI、合併（衝突在等 CI 之前判斷，只等一輪；等 CI 期間 `main` 又前進而合併被拒時同樣合入、再驗一輪，合入沒有衝突時印 `MAIN_MERGED` 而不是 `RESTAMPED`；Bash 逾時被中斷時重跑同一條指令，分支已含 `origin/main` 就不再 restamp）；證據留言的 candidate SHA 補上這個新 tip（#173）。
 - `STOP merge <pr> conflict <檔案…>`：還有戳記檔以外的衝突，已 `merge --abort`，分支停在原來的 tip；停下回報人。`STOP restamp-checks-failed <sha> exit <code> <log>`：restamp 後的檢查沒過，合併 commit 只留在本機分支、沒有 push；停下回報人，不要直接重跑（重跑會把這個沒過檢查的 commit 推上去，只剩 CI 把關）。`STOP restamp-checks-timeout <sha> <log>`：檢查跑到 `LAND_LOCAL_CHECKS_TIMEOUT_MS`（預設 420 秒）被中止，結果未知，不是沒過：在該 SHA 的 worktree 跑過 `--check-command`，通過才重跑 land 指令（重跑不會再驗這個 commit，直接 push），沒過就停下回報人（#297）。`STOP local-checks-timeout <sha> <log>` 同樣是結果未知：把 `LAND_LOCAL_CHECKS_TIMEOUT_MS` 調大後重跑。
 - `STOP checks-timeout`：重跑同一條指令。
-- `WARN main-not-synced <原因>` 接 `WARN skills-not-updated <merge sha>`（進度行）：PR 已合入，但主 checkout 沒跟上，也沒跑 `bin/sync-skills`，已安裝的 skill 還是舊版。原因是 `快轉會刪掉被保護的路徑 <檔…>` 或提到 `Protected paths:` 時不要自己快轉：那些檔在 adapter 的 `Protected paths:` 宣告裡（[ADAPTER.md](../../skills/engineering/issue-run/ADAPTER.md) 的 Delivery 段），把檔案和這行交給人（#303）；其他原因時，主 checkout 清乾淨後自己 `git merge --ff-only origin/main` 再跑 `bin/sync-skills`（#297）。
+- `WARN main-not-synced <原因>` 接 `WARN skills-not-updated <merge sha>`（進度行）：PR 已合入，但主 checkout 沒跟上，也沒跑 `bin/sync-skills`，已安裝的 skill 還是舊版。原因是 `快轉會刪掉被保護的路徑 <檔…>` 或提到 `Protected paths:` 時不要自己快轉：那些檔在 adapter 的 `Protected paths:` 宣告裡（[ADAPTER.md](../../skills/engineering/issue-run/ADAPTER.md) 的 Delivery 段），把檔案和這行交給人（#303）；其他原因時，主 checkout 清乾淨後自己 `git merge --ff-only origin/main` 再跑 `bin/sync-skills`（#297）；本機 `main` 有別的 session 還沒 push 的 commit、和 `origin/main` 分岔時，快轉一定失敗：不要 reset、rebase 主 checkout，回報那幾個 commit（`git log --oneline origin/main..main`），由提交它們的 session rebase 後落地（#306）。
 - `STOP worktree-rm`：PR 已經合入，只剩收尾沒做完；照常留言、關單，再回報人處理 worktree。
 - 其他 `STOP <原因>`（如 `ci-failed`、`merge`）或 exit 1：停下回報人，不硬合。
 

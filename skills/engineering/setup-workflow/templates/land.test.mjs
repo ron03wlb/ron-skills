@@ -177,10 +177,10 @@ console.log(JSON.stringify({ ok: true, result: {} }));
   const body = join(temp, 'body.md');
   writeFileSync(body, '## Summary\n');
 
-  // 期限放寬：高負載下 2 秒內輪詢不完四次，就變成 STOP checks-timeout（#297：load 62 時 commit 被這條擋下，load 77 重現 3/6）。只有測逾時的案例帶短期限。
+  // 預設逾時 10 秒：測試忘了覆寫時最多等 10 秒就失敗（曾經因預設 60 秒讓一個測試跑到 71 秒才失敗）。目前沒有測試需要等超過 10 秒才轉綠；若新測試要輪詢很多次，才明確帶較長的 LAND_CHECKS_TIMEOUT_MS 並註明原因。高負載下輪詢次數不變，只是每次變慢（#297：load 62 時 2 秒不夠，所以不能太短）。逾時案例各自帶更短期限。
   const land = (args, cwd = wt, extraEnv = {}) => spawnSync('node', [selfHosted ? join(wt, 'scripts/land.mjs') : script, ...args], {
     cwd, encoding: 'utf8', timeout: 120000,
-    env: { ...env, ...IDENTITY, PATH: `${bin}:${env.PATH}`, ORCA_CLI_COMMAND: join(bin, 'orca'), LAND_CHECKS_POLL_MS: '1', LAND_CHECKS_TIMEOUT_MS: '60000', ...extraEnv },
+    env: { ...env, ...IDENTITY, PATH: `${bin}:${env.PATH}`, ORCA_CLI_COMMAND: join(bin, 'orca'), LAND_CHECKS_POLL_MS: '1', LAND_CHECKS_TIMEOUT_MS: '10000', ...extraEnv },
   });
   const calls = () => readFileSync(log, 'utf8');
   const prs = () => JSON.parse(readFileSync(state, 'utf8')).prs;

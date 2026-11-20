@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // docs/workflow/ 是給人讀的交付流程，內容轉述自下列 skill 與 adapter 範本；規範改了而沒人對照，兩邊會默默說法不一（#8，R3-Q5）。
 // scripts/workflow-doc-sync.json 記錄最後一次對照時各來源的 sha256；任一來源不同（含新增、移除）就失敗。
-// 用法：node scripts/check-workflow-sync.mjs [--restamp]
-//   --restamp  對照並同步 docs/workflow/（或確認不需改）之後，重寫記錄
+// 用法：node scripts/check-workflow-sync.mjs [--restamp | --tree=<tree>]
+//   --restamp      對照並同步 docs/workflow/（或確認不需改）之後，重寫記錄
+//   --tree=<tree>  來源與記錄都從 git tree 讀，不讀工作區（pre-commit 傳要 commit 的 index tree，工作區沒 stage 的修改不影響，#329-4）
 // stdout：每個未對照的來源一行 `WORKFLOW_SYNC_STALE <來源>`；exit 0 已同步、1 有未對照的來源。
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -19,14 +21,26 @@ const SOURCES = [
   'skills/engineering/issue-run/ADAPTER.md',
 ];
 
-const current = Object.fromEntries(SOURCES.map(path => [path, createHash('sha256').update(readFileSync(join(root, path))).digest('hex')]));
+const tree = process.argv.find(arg => arg.startsWith('--tree='))?.slice('--tree='.length);
+if (tree && process.argv.includes('--restamp')) {
+  console.error('--tree 不能與 --restamp 併用。');
+  process.exit(2);
+}
+function read(path) {
+  if (!tree) return readFileSync(join(root, path));
+  const result = spawnSync('git', ['-C', root, 'cat-file', 'blob', `${tree}:${path}`], { maxBuffer: 1 << 30 });
+  if (result.status !== 0) throw new Error(`git cat-file ${tree}:${path} 失敗：${String(result.stderr).trim()}`);
+  return result.stdout;
+}
+
+const current = Object.fromEntries(SOURCES.map(path => [path, createHash('sha256').update(read(path)).digest('hex')]));
 if (process.argv.includes('--restamp')) {
   writeFileSync(join(root, STAMP), `${JSON.stringify({ sources: current }, null, 2)}\n`);
   console.log(`已重寫 ${STAMP}（${SOURCES.length} 個來源）。`);
   process.exit(0);
 }
 let recorded = {};
-try { recorded = JSON.parse(readFileSync(join(root, STAMP), 'utf8')).sources ?? {}; } catch { /* 沒有記錄視為全部未對照 */ }
+try { recorded = JSON.parse(read(STAMP).toString('utf8')).sources ?? {}; } catch { /* 沒有記錄視為全部未對照 */ }
 const stale = [...new Set([...Object.keys(recorded), ...SOURCES])].filter(path => recorded[path] !== current[path]).sort();
 if (stale.length) {
   console.log(`${stale.map(path => `WORKFLOW_SYNC_STALE ${path}`).join('\n')}\n`
