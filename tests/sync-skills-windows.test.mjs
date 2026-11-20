@@ -128,6 +128,31 @@ test('--check 回報 Windows 連結缺少、指錯或被實體目錄占用，不
   assert.equal(mklinks().length, 1);
 });
 
+// #389-2：從 windows-skills.txt 移除的項目，同步不刪 Windows 端的連結（清單外一律不碰），之前也沒有任何管道會發現。
+// 「移除過的項目」以指向本 repo、但不在清單上的 Windows 連結表示：連結名不是任何 skill 名，日後清單加項目也不會撞到。
+test('--check 對指向本 repo、但不在清單上的 Windows 連結印 WIN_ORPHAN；其他來源與清單上的不印；同步也不刪', t => {
+  const { win, run } = setup(t);
+  const mainRoot = dirname(resolve(root, commonDir));
+  const removed = toWin(join(mainRoot, 'skills/engineering/issue-pilot'));
+  const fromWorktree = toWin(join(root, 'skills/engineering/issue-run'));
+  const external = '\\??\\C:\\Workspace\\open_source\\skills\\skills\\engineering\\ask-matt';
+  symlinkSync(removed, join(win, 'removed-main'));
+  symlinkSync(fromWorktree, join(win, 'removed-worktree'));
+  symlinkSync(external, join(win, 'ask-matt'));
+  assert.equal(run([]).status, 0);
+
+  const result = run(['--check']);
+  assert.equal(result.status, 0, result.stderr);
+  const orphans = result.stderr.split('\n').filter(line => line.startsWith('WIN_ORPHAN'));
+  assert.deepEqual(orphans.map(line => line.replace(/（.*$/, '')).sort(), [
+    `WIN_ORPHAN ${join(win, 'removed-main')} -> ${removed}`,
+    `WIN_ORPHAN ${join(win, 'removed-worktree')} -> ${fromWorktree}`,
+  ]);
+  assert.doesNotMatch(result.stderr, /ask-matt|session-handoff/);
+  assert.equal(readlinkSync(join(win, 'removed-main')), removed);
+  assert.equal(readlinkSync(join(win, 'ask-matt')), external);
+});
+
 // 實測：沒開開發人員模式、不是系統管理員時 mklink /D 回「沒有足夠的權限」。
 test('mklink 失敗時印 WIN_LINK_FAILED 並 exit 1，WSL 目標仍照常同步', t => {
   const { tmp, win, run } = setup(t);

@@ -10,6 +10,10 @@ cd "$(dirname "$0")/.."
 unset $(git rev-parse --local-env-vars)
 # 這次檢查的樹：通過時記下，pre-commit 遇到同一棵樹不再跑（scripts/check-stamp.mjs，#297）。取不到不影響檢查。
 stamp_tree=$(node scripts/check-stamp.mjs tree 2>/dev/null) || stamp_tree=
+# pre-commit 帶入要 commit 的樹（CHECK_INDEX_TREE）時，流程站兩道守門讀那棵樹而不是工作區（#329-4）；CI 與手動跑沒有它，照舊讀工作區。
+# 兩棵樹不同時這次沒有完整檢查工作樹，不記 stamp，否則之後 commit 工作樹會被當成已通過而跳過。
+index_tree=${CHECK_INDEX_TREE:-}
+[[ -z $index_tree || $index_tree == "$stamp_tree" ]] || stamp_tree=
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 # 失敗時最後一行印 `CHECK_FAIL <步驟> [<失敗的測試>｜…]`，和成功時的 CHECK_PASS 對稱：失敗的測試名稱從各組的 log 抽 `✖` 行，
@@ -43,14 +47,16 @@ node scripts/check-links.mjs
 node scripts/check-claude-settings.mjs
 # coordinator 自己跑、會寫外部系統的腳本都要有放行規則，缺了就只能交給人跑（#131）；本 repo 讓 coordinator 自己 push，所以帶 --push（#244）。
 node scripts/check-coordinator-permissions.mjs --push
-node scripts/build-workflow-site.mjs --check
+node scripts/build-workflow-site.mjs --check ${index_tree:+--tree=$index_tree}
 node scripts/check-workflow-strings.mjs
 node scripts/check-workflow-secrets.mjs
-node scripts/check-workflow-sync.mjs
+node scripts/check-workflow-sync.mjs ${index_tree:+--tree=$index_tree}
 # 本 repo 與 setup-workflow 的 templates/ 都要在 macOS 與 Linux 上跑（#86）；從 repo 根掃，templates/ 也在範圍內。
 node scripts/check-portability.mjs
 # 會 spawn git 的正本測試要 import 隔離模組，否則在 git hook 裡跑時 fixture 會改到真正的 repo（#295：漏了 8 支，#291 才補上）。tests/ 不在範圍內：開頭已清掉 GIT_*（#301）。
 node scripts/check-test-git-isolation.mjs skills/engineering/setup-workflow/templates
+# skill script 的 main guard 要先 realpath argv[1]，否則經 ~/.claude/skills 的 symlink 執行時靜靜 exit 0（4a8c831 修 day-sessions.mjs，#329 ci.mjs 又踩一次）。templates/ 另由 tests/template-main-guard.test.mjs 管。
+node scripts/check-main-guard.mjs
 # 只讀文件與清單的規則不到兩秒，在整條測試之前先跑：副本與 sha256（#267：第四次踩到）、pilot.md 大小、docs/agents 的裸 gh 寫入與 allow 規則清單（#274：改 adapter 文字等一分鐘才報，
 # 本機只跑 check-coordinator-permissions.mjs 看不到 allow 清單那條，開了 PR #280 才在 CI 失敗）。通過時不印（整組測試裡會再跑一次），失敗時印 node 的 failing tests 段。
 step=docs-rules
