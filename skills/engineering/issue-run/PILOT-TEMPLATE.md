@@ -1,7 +1,7 @@
 <!--
 Skeleton for a repo's docs/agents/pilot.md when /setup-workflow installs the resident pilot (#281).
 Copy it to docs/agents/pilot.md, replace every {{placeholder}}, drop the bracketed [optional: …] sentences that do not apply, and delete this comment.
-  {{repo}}            repo name, also the --capacity key (e.g. mec-wiki)
+  {{repo}}            repo name, also the --capacity key: the main checkout's directory name, which pilot-dispatch reports under (e.g. mec-wiki)
   {{owner/repo}}      the Tracker section's GitHub project (e.g. ron03wlb/mec-wiki)
   {{main}}            the default branch, as origin/HEAD names it (main, master, …)
   {{check}}           the single check entry (e.g. bin/check)
@@ -26,7 +26,7 @@ Project settings for the user-level `/issue-pilot` coordinator (`/loop /issue-pi
 
 - **Gates.** Open with `node scripts/pilot-gate.mjs <main checkout> open --title <text> --issue <#n or -> --question <text> --options <text> --default <text> --parked <text>`, resolve with `resolve G<n> --how <text>`, list with `list`. A gate is how every product question reaches the human.
 
-- **Defaults for `preferences.md`.** At most {{worker cap}} workers from this repo at once, and the machine-wide total stays within `$PILOT_MACHINE_WORKER_CAP`, shared with other repos' coordinators through the ledger the Probe's `--capacity {{repo}}` writes and Dispatch's `--capacity` checks. At most {{batch size}} Issues per batch. Only the coordinator merges into a batch and the integration branch. Push, the PR and the merge into `{{main}}` are the human's (Push gate). Hand off after 2 merged batches or after a compaction.
+- **Defaults for `preferences.md`.** At most {{worker cap}} workers from this repo at once (Dispatch's `--repo-cap`), and the machine-wide total stays within `$PILOT_MACHINE_WORKER_CAP`, shared with other repos' coordinators through the ledger the Probe's `--capacity {{repo}}` writes and Dispatch's `--capacity` checks and raises by the members it dispatched. At most {{batch size}} Issues per batch. Only the coordinator merges into a batch and the integration branch. Push, the PR and the merge into `{{main}}` are the human's (Push gate). Hand off after 2 merged batches or after a compaction.
 
 - **Integration branch.** Local `pilot/integration`, made from `{{main}}` by `/setup-workflow`. It moves only in the stage worktree. To make it contain `origin/{{main}}` (after a branch landed straight into `{{main}}`, or on `land.mjs`'s `STOP behind-main`), run `node scripts/pilot-land.mjs sync-main --main {{main}} --check-command '{{check}}'` in the main checkout with Bash `timeout: 600000`: it fast-forwards when it can, otherwise merges `origin/{{main}}` on `pilot/stage-sync-main` and runs the regression first.
 
@@ -38,7 +38,7 @@ Project settings for the user-level `/issue-pilot` coordinator (`/loop /issue-pi
 
 - **Brief check.** No command: a worker's brief is `/issue-run <n> --worker <checkpoint>` plus the Issue body.
 
-- **Dispatch.** First claim each member in the main checkout with `node scripts/issue-pool.mjs claim <n>`; dispatch only on `CLAIMED <n>` (or `CLAIMED <n> takeover <session>`), and leave a member claimed by another session out of the batch. Then, after this tick's Probe, run in the main checkout with Bash `timeout: 600000` `node scripts/pilot-dispatch.mjs <key> <n>:<slug>... --capacity` (members in number order). It prints `DISPATCHED <n> <handle>` or `STOP <n> <cause>` per member, and only `STOP capacity <total>/<cap>` when the machine is full (leave the batch for the next tick and release the claims with `node scripts/gh-tracker.mjs edit <n> --remove-assignee @me`).
+- **Dispatch.** First claim each member in the main checkout with `node scripts/issue-pool.mjs claim <n>`; dispatch only on `CLAIMED <n>` (or `CLAIMED <n> takeover <session>`), and leave a member claimed by another session out of the batch. Then, after this tick's Probe, run in the main checkout with Bash `timeout: 600000` `node scripts/pilot-dispatch.mjs <key> <n>:<slug>... --capacity --repo-cap {{worker cap}}` (members in number order). It prints `DISPATCHED <n> <handle>` or `STOP <n> <cause>` per member, then `REPORTED {{repo}} <running> <total>/<cap>` once it added the dispatched members to the ledger, so a second dispatch in the same tick counts them; when this repo or the machine is full it prints only `STOP capacity repo <total>/<cap>` or `STOP capacity <total>/<cap>` and `RELEASED <n>` for each claim of this session it released: leave the batch for the next tick, and release by hand with `node scripts/gh-tracker.mjs edit <n> --remove-assignee @me` only a member it printed `WARN release <n> edit …` for (on `WARN release <n> claim-check …`, rerun the claim first to see whose claim it is). `STOP <n> worktree-branch <path> <branch>` means an older flow left worktree `issue-<n>` on another branch: rename that branch (create it there first when the worktree is detached) to `issue/<n>-<slug>` and dispatch again; the worker continues from that branch.
 
 - **Watch.** `node scripts/pilot-probe.mjs --tail <handle>` (the screen's last 40 lines; `--lines <n>` changes it): a last line `DONE <n> <sha>` or `STOP <n> <cause>` means finished; `status: exited` without one means stuck. Stuck-after is the default 90 minutes.
 
