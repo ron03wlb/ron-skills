@@ -478,6 +478,9 @@ export function applyResults(file, key, results) {
   return misses;
 }
 
+/** 成員這一輪的 state：還記成 running 的列以這一輪剛讀到的 DONE／STOP（`results`）為準。 */
+const stateNow = (m, results) => (m.state === 'running' && results.find(r => r.n === m.n)?.state) || m.state;
+
 /**
  * dispatched batch 的 stage 判斷（#163）。`active` 是沒有 moved 的成員，`results` 是這一輪剛讀到的 DONE／STOP（還記成 running 的列以它為準）。
  * 還有 running 時不印；每個成員都 done 印 STAGEABLE；有 done 也有其他狀態（stop、parked）印 MOVE <key> <其他成員…>，先移走它們才 stage；
@@ -485,7 +488,7 @@ export function applyResults(file, key, results) {
  * 沒有 done 印 PARKED <key> <n…>（pilot-land 對它只會 STOP member）。
  */
 export function stageLines(key, active, results) {
-  const states = active.map(m => ({ n: m.n, state: (m.state === 'running' && results.find(r => r.n === m.n)?.state) || m.state }));
+  const states = active.map(m => ({ n: m.n, state: stateNow(m, results) }));
   if (!states.length || states.some(m => m.state === 'running')) return [];
   const others = states.filter(m => m.state !== 'done').map(m => m.n);
   if (!others.length) return [`STAGEABLE ${key}`];
@@ -501,7 +504,7 @@ export function stageLines(key, active, results) {
  */
 export function unblockedLines(key, active, results, issues) {
   const byNumber = new Map(issues.map(issue => [String(issue.number), issue]));
-  return active.filter(m => ((m.state === 'running' && results.find(r => r.n === m.n)?.state) || m.state) === 'stop')
+  return active.filter(m => stateNow(m, results) === 'stop')
     .filter(m => {
       const blockers = byNumber.get(m.n)?.blockedBy?.nodes ?? [];
       return blockers.length && blockers.every(({ state }) => state === 'CLOSED');
