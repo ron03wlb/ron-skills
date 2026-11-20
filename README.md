@@ -11,7 +11,7 @@
 | 層 | 位置 | 內容 | 誰改 |
 | --- | --- | --- | --- |
 | Matt 原版 | `~/code/skills`（`main`，只追上游） | 工程方法：`tdd`、`code-review`、`implement-spec`… | 只 `git pull` |
-| pstack 原版 | `~/code/pstack`（`backnotprop/pstack` mirror，`main`） | 編排與原則：`poteto-mode` 的 Autopilot／Orchestrate playbook、`principle-*`、`show-me-your-work`、`ketchup` | 只 `git pull` |
+| pstack 原版 | `~/code/pstack`（`backnotprop/pstack` mirror，`main`） | 編排與原則：`poteto-mode` 的 Autopilot playbook、`principle-*`、`show-me-your-work`、`ketchup` | 只 `git pull` |
 | 個人層 | 本 repo | `issue-run`／`issue-pilot` 編排、`explain`、`overlays/` 補丁 | 自己 |
 | 專案 adapter | 各 repo 的 `docs/agents/issue-run.md` | tracker、gate、驗證、交付指令 | 各專案 |
 
