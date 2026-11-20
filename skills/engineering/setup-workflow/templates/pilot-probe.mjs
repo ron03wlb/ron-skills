@@ -34,6 +34,9 @@
 //               DEPS_PROSE_FAILED <錯誤>（在主 checkout 跑 gh 失敗，其他檢查照跑；同一次查詢的 PARENT_* 也不印）
 //   池子（#240，每次都印一行）：POOL_EMPTY（沒有 ready 單）｜POOL_READY <n>...（ready 桶的單，照同目錄 issue-pool.mjs 的 pool() 分桶與排序，
 //               略過已在開著的 batch checkpoint（current 不是 closed）成員列裡的 Issue）｜POOL_FAILED <錯誤>（同一次查詢 gh 失敗，與 DEPS_PROSE_FAILED 同一個錯誤）
+//   裸對應單（#304）：COUNTERPART_BARE <n> <owner>/<repo>#<m>（主分支的 adapter 有 `Counterpart projects:` 行時，ready 桶與開著的 batch 成員裡
+//               本文以 github.com 寫法（裸 ref 或 github.com 網址）寫了宣告專案的對應單：那個專案不在 github.com，Close 會 STOP counterpart；
+//               判斷同 pilot-counterpart.mjs 的 --adapter，依號碼、同一張單照本文順序；沒有宣告、gh 失敗時不印）
 //   母單（#164）：PARENT_LABEL <n>（開著、或已關閉卻有開著子單的母單，沒有 `parent` label 或還掛 triage label）｜
 //               PARENT_REOPEN <n>（開著的子單的母單 #n 在同一個 repo、已關閉）；各依號碼、每張一次
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
@@ -69,6 +72,7 @@ import { gateLines, isOpenRequest, now, openGates, parksAllPush, tableCells } fr
 import { orca } from './orca-session-send.mjs';
 import { ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 import { POOL_FIELDS, pool } from './issue-pool.mjs';
+import { counterparts, declaredProjects } from './pilot-counterpart.mjs';
 
 // 池子摘要要的欄位取 issue-pool 的 POOL_FIELDS（#240）；同名的 blockedBy 在 GraphQL 裡合併成一份選取。
 const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
@@ -325,10 +329,22 @@ export function poolLine(issues, repo, batched = new Set()) {
 }
 
 /**
- * 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE、PARENT_* 與池子摘要行（同一次查詢），以及 PARENT_* 對應的 tracker 寫入（不在這裡寫）；
+ * 派工前的裸對應單（#304）：ready 桶或 `batched`（開著的 batch checkpoint 的成員）裡的 Issue，本文的 github.com 對應單命中 adapter 宣告的
+ * 對應專案（`projects`，pilot-counterpart.mjs 的 declaredProjects）時印 `COUNTERPART_BARE <n> <ref>`，依號碼；`projects` 空的時候不印。
+ */
+export function counterpartLines(issues, repo, batched = new Set(), projects = new Set()) {
+  if (!projects.size) return [];
+  const ready = new Set(pool(issues, { repo }).filter(({ bucket }) => bucket === 'ready').map(({ issue }) => issue.number));
+  return issues.filter(issue => ready.has(issue.number) || batched.has(String(issue.number)))
+    .sort((a, b) => a.number - b.number)
+    .flatMap(issue => counterparts(issue.body, projects).filter(({ bare }) => bare).map(({ ref }) => `COUNTERPART_BARE ${issue.number} ${ref}`));
+}
+
+/**
+ * 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE、COUNTERPART_BARE、PARENT_* 與池子摘要行（同一次查詢），以及 PARENT_* 對應的 tracker 寫入（不在這裡寫）；
  * gh 失敗時只有 DEPS_PROSE_FAILED 與 POOL_FAILED 兩行，不中斷其他檢查。
  */
-export function trackerLines(checkout, batched = new Set()) {
+export function trackerLines(checkout, batched = new Set(), projects = new Set()) {
   try {
     const repo = gh(checkout, 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim();
     const [owner, name] = repo.split('/');
@@ -339,7 +355,7 @@ export function trackerLines(checkout, batched = new Set()) {
       ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
     }
     const { lines, fixes } = parentFixes(issues, repo);
-    return { lines: [...depsProse(issues, repo), ...lines, poolLine(issues, repo, batched)], fixes };
+    return { lines: [...depsProse(issues, repo), ...counterpartLines(issues, repo, batched, projects), ...lines, poolLine(issues, repo, batched)], fixes };
   } catch (error) {
     return { lines: [`DEPS_PROSE_FAILED ${error.message}`, `POOL_FAILED ${error.message}`], fixes: [] };
   }
@@ -641,7 +657,9 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   // 開著的 batch checkpoint 的成員：Pool 不再挑它們，池子摘要也略過。
   const batched = new Set(batchFiles(pilot).map(file => parseBatch(readFileSync(join(pilot, file), 'utf8')))
     .filter(({ current }) => !/^closed\b/.test(current)).flatMap(({ members }) => members.map(({ n }) => n)));
-  const tracker = trackerLines(checkout, batched);
+  // 對應專案的宣告取主分支的 adapter（主 checkout 平常就在主分支；整合分支上較新的版本由 ADAPTER_AHEAD 提醒）。
+  const projects = declaredProjects(show(checkout, `refs/heads/${main}`, ADAPTER));
+  const tracker = trackerLines(checkout, batched, projects);
   const out = [...checkoutState(checkout, main), ...adapterAhead(checkout, { integration, main }), ...openRows(pilot), ...tracker.lines];
   if (apply) out.push(...applyParentFixes(checkout, tracker.fixes));
   const landing = [];

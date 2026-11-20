@@ -113,7 +113,7 @@ ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? 
   if (guard !== undefined || world !== undefined || tracker !== undefined) {
     const scripts = join(temp, 'scripts');
     mkdirSync(join(scripts, 'lib'), { recursive: true });
-    const names = ['pilot-probe.mjs', 'pilot-capacity.mjs', 'orca-session-send.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'lib/pilot-store.mjs', 'lib/changed-units.mjs', ...(tracker === undefined ? [] : ['gh-tracker.mjs'])];
+    const names = ['pilot-probe.mjs', 'pilot-capacity.mjs', 'pilot-counterpart.mjs', 'orca-session-send.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'lib/pilot-store.mjs', 'lib/changed-units.mjs', ...(tracker === undefined ? [] : ['gh-tracker.mjs'])];
     for (const name of names) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
     if (guard !== undefined) {
       writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
@@ -1161,6 +1161,36 @@ test('有 ready 單時印 POOL_READY <n>...：照 issue-pool 的排序，略過�
   assert.deepEqual(poolOutput(result), ['POOL_READY 9 8 10']);
   batch('8-9-10', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 8, state: 'stop' }, { n: 9, state: 'parked after #8' }, { n: 10 }]);
   assert.deepEqual(poolOutput(probe()), ['POOL_EMPTY']);
+});
+
+// #304：adapter 宣告不在 github.com 的對應專案時，裸 ref 一律當成 github.com，要到 Close 才 STOP counterpart；Probe 在派工前就印出來。
+test('adapter 宣告 Counterpart projects 時，ready 單與開著的 batch 成員的裸對應單 ref 印 COUNTERPART_BARE <n> <ref>', t => {
+  const { probe, batch, repo, git } = fixture(t, { screens: { term_7: { status: 'running', tail: ['❯'] } }, issues: [
+    issue(7, 'app 對應單：acme/app#70', { labels: ['enhancement'] }),
+    issue(8, 'app 對應單：acme/app#80；web 對應單：acme/web#81'),
+    issue(9, 'app 對應單：http://192.168.200.202/acme/app/-/issues/90'),
+    issue(10, 'app 對應單：acme/app#100', { labels: ['needs-triage'] }),
+  ] });
+  batch('7', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 7 }]);
+  const before = lines(probe());
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  writeFileSync(join(repo, 'docs/agents/issue-run.md'), '# adapter\n\n## Readiness\n\nCounterpart projects: `acme/app`\n');
+  git('add', 'docs');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'adapter');
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result).filter(line => !before.includes(line)), ['COUNTERPART_BARE 7 acme/app#70', 'COUNTERPART_BARE 8 acme/app#80']);
+});
+
+test('adapter 沒有宣告 Counterpart projects 時不印 COUNTERPART_BARE', t => {
+  const { probe, repo, git } = fixture(t, { issues: [issue(8, 'app 對應單：acme/app#80')] });
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  writeFileSync(join(repo, 'docs/agents/issue-run.md'), '# adapter\n');
+  git('add', 'docs');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'adapter');
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(rest(result).trim(), '');
 });
 
 // #164：母單的 parent label 與重開原本是 Probe 條目尾端要 coordinator 手動做的散文，好幾輪都沒做。

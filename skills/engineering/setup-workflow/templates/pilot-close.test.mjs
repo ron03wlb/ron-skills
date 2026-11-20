@@ -21,8 +21,9 @@ function git(cwd, ...args) {
  * origin（bare）＋ 主 checkout（`main` 分支已合入成員分支並 push）＋ 複製到 scripts/ 的正本（旁邊放什麼都不做的 pilot-unbare.sh）。
  * 成員 worktree 已經移除（terminal、worktree 步驟 SKIP），成員分支也 push 過。假 gh 以號碼記 Issue 狀態，每次呼叫記一行參數。
  * `protectedFile`：base 多一個 private/a.txt，成員把它刪掉；傳函式時改由它在成員分支上改動（會接著 commit）。
+ * `adapter`：base 帶的 docs/agents/issue-run.md 內容（#303：保護路徑由 adapter 宣告）。
  */
-function fixture(t, { main = 'main', tracker = false, protectedFile = false } = {}) {
+function fixture(t, { main = 'main', tracker = false, protectedFile = false, adapter = null } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-close-template-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const origin = join(temp, 'origin.git');
@@ -34,6 +35,10 @@ function fixture(t, { main = 'main', tracker = false, protectedFile = false } = 
   if (protectedFile) {
     mkdirSync(join(repo, 'private'));
     writeFileSync(join(repo, 'private/a.txt'), 'only copy\n');
+  }
+  if (adapter !== null) {
+    mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+    writeFileSync(join(repo, 'docs/agents/issue-run.md'), adapter);
   }
   git(repo, 'add', '.');
   git(repo, 'commit', '-qm', 'base');
@@ -55,7 +60,7 @@ function fixture(t, { main = 'main', tracker = false, protectedFile = false } = 
 
   const scripts = join(repo, 'scripts');
   mkdirSync(join(scripts, 'lib'), { recursive: true });
-  for (const name of ['pilot-close.mjs', 'pilot-counterpart.mjs', 'lib/hosts.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+  for (const name of ['pilot-close.mjs', 'pilot-counterpart.mjs', 'lib/hosts.mjs', 'lib/protected-paths.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
   writeFileSync(join(scripts, 'pilot-unbare.sh'), '#!/bin/sh\nexit 0\n');
   chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
   const log = join(temp, 'calls.log');
@@ -147,9 +152,13 @@ test('--protect-path：快轉會刪掉被保護的路徑時 STOP，主分支與�
   assert.equal(f.issue().state, 'OPEN');
 });
 
-/** 快轉會讓 private/a.txt 消失時一律 STOP，主分支與檔案都不動。 */
+/**
+ * 快轉會讓 private/a.txt 消失時一律 STOP，主分支與檔案都不動。
+ * paths 是 --protect-path 的值；`{ adapter }` 開頭時改由 adapter 宣告（#303），其餘仍當 --protect-path。
+ */
 function assertProtected(t, change, ...paths) {
-  const f = fixture(t, { protectedFile: change });
+  const adapter = typeof paths[0] === 'object' ? paths.shift().adapter : null;
+  const f = fixture(t, { protectedFile: change, adapter });
   const before = git(f.repo, 'rev-parse', 'main');
   const result = f.close('--repo', 'acme/app', ...paths.flatMap(path => ['--protect-path', path]));
   assert.equal(result.status, 4, result.stdout + result.stderr);
@@ -193,6 +202,49 @@ test('--protect-path：沒有被保護的路徑會被刪時照常快轉', t => {
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(git(f.repo, 'rev-parse', 'main'), f.sha);
   assert.equal(f.issue().state, 'CLOSED');
+});
+
+// #303：每個入口都要記得帶 --protect-path，實際上沒有防護；改由 adapter（主 checkout 的 docs/agents/issue-run.md）的 `Protected paths:` 行宣告。
+const DECLARED = '# adapter\n\n## Delivery\n\nProtected paths: `private` `notes/local.md`\n';
+
+test('adapter 宣告 Protected paths：不帶 --protect-path 也 STOP，主分支與檔案不動', t => {
+  assertProtected(t, true, { adapter: DECLARED });
+  assertProtected(t, true, { adapter: '- Protected paths: `private`（只在主 checkout 有工作副本）\n' });
+});
+
+test('adapter 宣告的路徑：改名、換類型一樣算消失', t => {
+  assertProtected(t, repo => git(repo, 'mv', 'private/a.txt', 'private/b.txt'), { adapter: DECLARED });
+  assertProtected(t, repo => {
+    rmSync(join(repo, 'private/a.txt'));
+    symlinkSync('../x.txt', join(repo, 'private/a.txt'));
+    git(repo, 'add', 'private/a.txt');
+  }, { adapter: DECLARED });
+});
+
+test('--protect-path 與 adapter 宣告合併：兩邊各自有效', t => {
+  assertProtected(t, true, { adapter: 'Protected paths: `other`\n' }, 'private');
+  assertProtected(t, true, { adapter: DECLARED }, 'other');
+});
+
+test('adapter 有 Protected paths: 行卻沒有任何路徑：不快轉，STOP 說明宣告寫錯', t => {
+  const f = fixture(t, { protectedFile: true, adapter: 'Protected paths: private\n' });
+  const before = git(f.repo, 'rev-parse', 'main');
+  const result = f.close('--repo', 'acme/app');
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(lines(result)[0], /^STOP 12 main .*Protected paths/);
+  assert.equal(git(f.repo, 'rev-parse', 'main'), before);
+});
+
+test('adapter 沒宣告（只在文字裡提到）或宣告的路徑沒被刪：輸出與沒有 adapter 時相同', t => {
+  const expected = ['DONE 12 main', 'DONE 12 evidence', 'SKIP 12 counterpart', 'DONE 12 close', 'SKIP 12 terminal',
+    'SKIP 12 worktree', 'DONE 12 branch', 'DONE 12 remote', 'SKIP 12 parent', 'CLOSED 12'];
+  for (const adapter of [null, '# adapter\n\n見 `Protected paths:` 條目；這行不是宣告。\n', 'Protected paths: `other` `more`\n']) {
+    const f = fixture(t, { protectedFile: true, adapter });
+    const result = f.close('--repo', 'acme/app');
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.deepEqual(lines(result), expected, String(adapter));
+    assert.equal(git(f.repo, 'rev-parse', 'main'), f.sha);
+  }
 });
 
 test('沒有 --repo、--repo 格式不對或 --main 不是分支名稱：用法錯誤 exit 2，什麼都不動', t => {

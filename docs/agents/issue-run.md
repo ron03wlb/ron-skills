@@ -22,7 +22,9 @@ macOS, WSL2, Linux（母單 #82 決策 R1-Q1；原生 Windows 不支援）。本
 
 就緒狀態是 `ready-for-agent` label（[triage-labels.md](triage-labels.md)）。沒有 preflight。還沒就緒時用 `/triage <n>` 補齊。
 
-跨 repo 對應單指向 GitLab 或 GitHub Enterprise 專案時，本文寫 issue 網址，不寫裸的 `<owner>/<repo>#<m>`：裸 ref 一律當成 github.com，要到 Close 才 `STOP <n> counterpart`（#289、#291 的 `spay/spay2#692`，#295）。`/triage` 標 `ready-for-agent` 前看 `pilot-counterpart.mjs` 的輸出。
+跨 repo 對應單指向 GitLab 或 GitHub Enterprise 專案時，本文寫 issue 網址，不寫裸的 `<owner>/<repo>#<m>`：裸 ref 一律當成 github.com，要到 Close 才 `STOP <n> counterpart`（#289、#291 的 `spay/spay2#692`，#295）。已知不在 github.com 的對應專案宣告在下一行（spay2 在自架 GitLab，專案網址 http://192.168.200.202/spay/spay2），`pilot-counterpart.mjs --adapter docs/agents/issue-run.md` 對命中的裸 ref 多印 `COUNTERPART_BARE`，Probe 對 ready 單與開著的 batch 成員印 `COUNTERPART_BARE <n> <ref>`（處理見 [pilot-exceptions.md](pilot-exceptions.md) 的 **Probe lines.**，#304）。`/triage` 標 `ready-for-agent` 前帶 `--adapter` 看 `pilot-counterpart.mjs` 的輸出。
+
+Counterpart projects: `spay/spay2`
 
 驗收與做法用到的每份輸入（原始碼、樣本、憑證、checkout）都要能從本 repo、tracker 或公開來源取得。只存在於其他專案的 checkout 或某台機器本地路徑的，Issue 維持 `needs-info`，triage notes 寫明缺的是什麼、去哪裡拿；這是 `/triage` 標 `ready-for-agent` 前的判斷，不是 preflight 指令（#56 的驗收要逐檔比對只在別台機器上的 spay2，worker 開工就 `STOP prerequisite missing`，#116）。
 
@@ -59,7 +61,7 @@ candidate 是分支 tip。acceptance 是在 candidate SHA、工作樹乾淨時�
 - `RESTAMPED <pr> <sha>`（進度行，不是最後一行）：PR 和 `main` 衝突、衝突檔只有戳記檔（`scripts/restamp.mjs` 的 `STAMP_FILES`：`scripts/workflow-doc-sync.json`、`docs/agents/workflow-templates.json`），它已把 `origin/main` 合入分支、取目標分支版本重產站台並 restamp、commit、在新 tip 跑過 `--check-command` 並重新 push，接著照常等 CI、合併（衝突在等 CI 之前判斷，只等一輪；等 CI 期間 `main` 又前進而合併被拒時同樣合入、再驗一輪，合入沒有衝突時印 `MAIN_MERGED` 而不是 `RESTAMPED`；Bash 逾時被中斷時重跑同一條指令，分支已含 `origin/main` 就不再 restamp）；證據留言的 candidate SHA 補上這個新 tip（#173）。
 - `STOP merge <pr> conflict <檔案…>`：還有戳記檔以外的衝突，已 `merge --abort`，分支停在原來的 tip；停下回報人。`STOP restamp-checks-failed <sha> exit <code> <log>`：restamp 後的檢查沒過，合併 commit 只留在本機分支、沒有 push；停下回報人，不要直接重跑（重跑會把這個沒過檢查的 commit 推上去，只剩 CI 把關）。`STOP restamp-checks-timeout <sha> <log>`：檢查跑到 `LAND_LOCAL_CHECKS_TIMEOUT_MS`（預設 420 秒）被中止，結果未知，不是沒過：在該 SHA 的 worktree 跑過 `--check-command`，通過才重跑 land 指令（重跑不會再驗這個 commit，直接 push），沒過就停下回報人（#297）。`STOP local-checks-timeout <sha> <log>` 同樣是結果未知：把 `LAND_LOCAL_CHECKS_TIMEOUT_MS` 調大後重跑。
 - `STOP checks-timeout`：重跑同一條指令。
-- `WARN main-not-synced <原因>` 接 `WARN skills-not-updated <merge sha>`（進度行）：PR 已合入，但主 checkout 沒跟上，也沒跑 `bin/sync-skills`，已安裝的 skill 還是舊版；主 checkout 清乾淨後自己 `git merge --ff-only origin/main` 再跑 `bin/sync-skills`（#297）。
+- `WARN main-not-synced <原因>` 接 `WARN skills-not-updated <merge sha>`（進度行）：PR 已合入，但主 checkout 沒跟上，也沒跑 `bin/sync-skills`，已安裝的 skill 還是舊版。原因是 `快轉會刪掉被保護的路徑 <檔…>` 或提到 `Protected paths:` 時不要自己快轉：那些檔在 adapter 的 `Protected paths:` 宣告裡（[ADAPTER.md](../../skills/engineering/issue-run/ADAPTER.md) 的 Delivery 段），把檔案和這行交給人（#303）；其他原因時，主 checkout 清乾淨後自己 `git merge --ff-only origin/main` 再跑 `bin/sync-skills`（#297）。
 - `STOP worktree-rm`：PR 已經合入，只剩收尾沒做完；照常留言、關單，再回報人處理 worktree。
 - 其他 `STOP <原因>`（如 `ci-failed`、`merge`）或 exit 1：停下回報人，不硬合。
 
