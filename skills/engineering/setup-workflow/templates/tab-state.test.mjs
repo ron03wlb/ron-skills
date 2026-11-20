@@ -69,13 +69,41 @@ test('換狀態前綴：以 Orca 實際分頁標題為準，不用過期的記�
   assert.equal(recorded(), '待 Retro｜新主題');
 });
 
-test('換狀態前綴：只換最前面的狀態，其他文字不動，並記下新標題', t => {
+test('換成處理中：只換最前面的狀態，其他文字不動，並記下新標題', t => {
   const { record, recorded, run, calls } = fixture(t);
-  record('處理中｜#21 雙池採集｜實作｜補 TPEx 舊版格式');
-  const result = run(['待 Retro']);
+  record('待 Retro｜#21 雙池採集｜實作｜補 TPEx 舊版格式');
+  const result = run(['處理中']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(calls(), /^terminal rename --terminal term_self --title 待 Retro｜#21 雙池採集｜實作｜補 TPEx 舊版格式 --json$/m);
-  assert.equal(recorded(), '待 Retro｜#21 雙池採集｜實作｜補 TPEx 舊版格式');
+  assert.match(calls(), /^terminal rename --terminal term_self --title 處理中｜#21 雙池採集｜實作｜補 TPEx 舊版格式 --json$/m);
+  assert.equal(recorded(), '處理中｜#21 雙池採集｜實作｜補 TPEx 舊版格式');
+});
+
+// #334：`待 Retro` 不帶 --topic 只換前綴，`處理中｜…｜規劃｜grilling` 的階段、動作與 ⏸ 殘留；#325 第 7 項：離開處理中要拿掉 ⏸。
+test('離開處理中、沒帶 --topic：只留 <狀態>｜<主題>，拿掉主題後的｜段與 ⏸', t => {
+  for (const [from, state, want] of [
+    ['處理中｜Map#282 時機 v2｜規劃｜grilling', '待 Retro', '待 Retro｜Map#282 時機 v2'],
+    ['處理中｜Map#282 時機 v2｜實作｜等核准 ⏸', '待 Retro', '待 Retro｜Map#282 時機 v2'],
+    ['處理中｜#21 雙池採集 ⏸', '待 Retro', '待 Retro｜#21 雙池採集'],
+    ['處理中｜[維運] issue-pilot coordinator｜交接 ⏸', '待 Retro', '待 Retro｜[維運] issue-pilot coordinator'],
+    ['待 Retro｜#21 雙池採集｜已合入 PR #130', '待關閉', '待關閉｜#21 雙池採集'],
+    ['處理中｜#21 雙池採集', '待 Retro', '待 Retro｜#21 雙池採集'],
+    ['處理中｜[研究] A | B', '待關閉', '待關閉｜[研究] A | B'],
+  ]) {
+    const { record, recorded, run } = fixture(t);
+    record(from);
+    const result = run([state]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), `TAB_STATE ${want}`, from);
+    assert.equal(recorded(), want, from);
+  }
+});
+
+test('離開處理中但帶 --topic：照 --topic 設整個標題，不拿掉｜段', t => {
+  const { record, recorded, run } = fixture(t);
+  record('處理中｜#21 雙池採集｜收尾｜land');
+  const result = run(['待 Retro', '--topic', '#21 雙池採集｜已合入 PR #130']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(recorded(), '待 Retro｜#21 雙池採集｜已合入 PR #130');
 });
 
 test('沒有前綴就補上：沒有記錄時以 Orca 的自動標題為目前標題', t => {
@@ -150,12 +178,38 @@ test('--title：Orca 讀得到印實際標題、stderr 無聲；讀不到退回�
   assert.equal(fallback.stderr.trim(), `TAB_TITLE_FROM_RECORD ${SELF}`);
 });
 
-test('改名回 ok 但讀回的標題不符：不印 TAB_STATE，印 TAB_STATE_MISMATCH 並 exit 1', t => {
+// #336 第 1 項：MISMATCH 分不出 rename 沒生效、讀回延遲或別的寫入者蓋回，附上 rename 回傳與 Orca 該分頁那一列。
+test('改名回 ok 但讀回一直是舊標題：不印 TAB_STATE，印 TAB_STATE_MISMATCH 與 rename 回傳、分頁列，exit 1', t => {
   const { run } = fixture(t, { tabTitle: 'Loop issue-pilot command', stuck: true });
-  const result = run(['處理中', '--topic', '[維運] 主題'], { TAB_STATE_VERIFY_RETRY_MS: '1' });
+  const result = run(['處理中', '--topic', '[維運] 主題'], { TAB_STATE_VERIFY_RETRY_MS: '1', TAB_STATE_VERIFY_MS: '50' });
   assert.equal(result.status, 1, result.stderr);
   assert.equal(result.stdout, '');
-  assert.equal(result.stderr.trim(), 'TAB_STATE_MISMATCH 處理中｜[維運] 主題 actual=Loop issue-pilot command');
+  const [mismatch, rename, tab, ...rest] = result.stderr.trim().split('\n');
+  assert.equal(mismatch, 'TAB_STATE_MISMATCH 處理中｜[維運] 主題 actual=Loop issue-pilot command');
+  assert.match(rename, /^TAB_STATE_RENAME \{/);
+  assert.deepEqual(JSON.parse(rename.slice('TAB_STATE_RENAME '.length)).rename.title, '處理中｜[維運] 主題');
+  assert.match(tab, /^TAB_STATE_TAB \{/);
+  const row = JSON.parse(tab.slice('TAB_STATE_TAB '.length));
+  assert.equal(row.title, 'Loop issue-pilot command');
+  assert.match(JSON.stringify(row.panes), /"handle":"term_self"/);
+  assert.deepEqual(rest, []);
+});
+
+// #362 review：讀回窗口長過共用的 TAB_STATE_BUDGET_MS 時，後段讀取被中止、讀不到分頁，舊寫法把它當成沒有不符而印 TAB_STATE。
+test('讀回窗口比共用時間上限長：上限到了仍照實印 TAB_STATE_MISMATCH', t => {
+  const { run } = fixture(t, { tabTitle: '舊標題', stuck: true });
+  const result = run(['處理中', '--topic', '主題'], { TAB_STATE_BUDGET_MS: '1500', TAB_STATE_VERIFY_MS: '3000', TAB_STATE_VERIFY_RETRY_MS: '50' });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /^TAB_STATE_MISMATCH 處理中｜主題 actual=舊標題$/m);
+});
+
+// #332 第 4 項：investing 高負載時 rename 生效得比 3 次 × 400 ms 晚，舊版印 MISMATCH、實際已改名。
+test('讀回前幾次是舊標題、之後新標題：在 TAB_STATE_VERIFY_MS 內輪詢到就印 TAB_STATE，不重送', t => {
+  const { run, calls } = fixture(t, { tabTitle: '舊標題', lagReads: 8 });
+  const result = run(['處理中', '--topic', '主題'], { TAB_STATE_VERIFY_RETRY_MS: '1', TAB_STATE_VERIFY_MS: '20000' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'TAB_STATE 處理中｜主題');
+  assert.equal(calls().split('terminal rename').length - 1, 1);
 });
 
 test('改名後讀回的標題相符：照常印 TAB_STATE、exit 0', t => {
