@@ -19,7 +19,7 @@
 
 ```bash
 bin/sync-skills --check   # 只檢查 overlay 能否套用在目前的 Matt 版本，並提示上游新增的 skill
-bin/sync-skills           # 重建 ~/.claude/skills 與 ~/.agents/skills 的連結，並把 hooks/ 連到 ~/.claude/hooks
+bin/sync-skills           # 重建 ~/.claude/skills 與 ~/.agents/skills 的連結，並把 hooks/ 連到 ~/.claude/hooks；在 WSL 裡另建 windows-skills.txt 的 Windows 連結
 bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來源（在專案目錄執行會含專案 skill）
 ```
 
@@ -27,6 +27,7 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 
 - `matt-skills.txt`：要連結的 Matt skill 清單（相對 `skills/`）；`-<path>` 表示刻意不連結。`--check` 列出的 `NEW` 行，二選一加入清單。
 - `pstack-skills.txt`：pstack 白名單，同樣格式；`# pin:` 記錄驗證過的上游 SHA，HEAD 不同時只警告。不連結的理由只有三種：與 Matt 或本 repo 的流程重疊（`tdd`、`teach`、`reflect`／`recall`／`correct` 已併入 `retro` 與 `issue-run`、`swarm` 由專案的分區掃描涵蓋）、與 repo 規範衝突（`no-comments` 的刪註解策略、`technical-writing` 的英文句式規則），或 Cursor 專屬。pstack 的方法沒有一個需要兩家以上模型，Claude 即可，Codex 只做 code review；`arena` 以 overlay 接本機 worktree 與 Claude judge，`poteto-mode` 的 Eval playbook 經由它執行。`create-formal-verification-skill`／`maintain-formal-verification-skill` 用於金流與並發屬性的形式驗證（TLA+ 等），`statechart` 是前者讀 TLA+ 結果的依賴，一併連結。
+- `windows-skills.txt`：要連到 **Windows** `~/.claude/skills`（`C:\Users\<you>\.claude\skills`）的本 repo skill（相對 `skills/`，兩層 `<類別>/<名稱>`），給 Windows 上的 Claude Code，例如 Orca bot；它們只讀 Windows 的 `~/.claude/skills`，看不到 WSL 那份。在 WSL 裡執行時，sync-skills 透過 interop 以 `cmd.exe /c mklink /D` 建 Windows 原生 symlink，指向**主 checkout** 的 `\\wsl.localhost\<distro>\…`（從 worktree 執行也一樣；WSL 沒開時 Windows 端讀不到）。從 `/mnt/c` 用 `ln -s` 建的是 WSL 專用 symlink，Windows 打不開；junction 不能指向 UNC 路徑。建 symlink 要開啟 Windows 開發人員模式（設定 → 系統 → 開發人員專用），或在系統管理員權限下執行，否則印 `WIN_LINK_FAILED` 並 exit 1（WSL 目標照常同步）。只新增或更新清單上的項目，Windows 端其他連結與實體目錄（`learned/` 等）一律不碰，從清單拿掉的項目也不會自動刪除。`--check` 以 `WIN_MISSING`／`WIN_WRONG`／`WIN_NOT_LINK` 回報狀態（只提示，不影響 exit）；不在 WSL、沒有 `/mnt/c`，或設了 `SKILL_DIRS` 而沒設 `WIN_SKILL_DIR` 時印一行 `WIN_SKIP` 略過。`WIN_SKILL_DIR` 可改 Windows 目標的 WSL 路徑，設成空字串就不碰 Windows。
 - `bin/check`：唯一的檢查入口，依序跑 `bin/sync-skills --check`、連結檢查、流程站三道守門、`tests/` 與 setup-workflow 正本的測試；`bin/check --upstream` 改對 Matt 與 pstack 上游最新 main 檢查（與 CI 相同）。
 - 流程站（`docs/workflow/`，產出在 `site/`）：`bin/check` 跑三道守門。`node scripts/build-workflow-site.mjs --check` 擋手改 HTML 或忘了重產；`node scripts/check-workflow-strings.mjs` 擋 spay2 專屬字串（專案名、`192.168.`、`feature/ron/#`，只放行 spay2 公開站網址）；`node scripts/check-workflow-sync.mjs` 在 `issue-run`／`issue-pilot`／`retro-collect`／`setup-workflow` 的 `SKILL.md` 或 `ADAPTER.md` 變動時失敗，對照 `docs/workflow/` 後執行 `--restamp`。
 - setup-workflow 的 script 正本（`skills/engineering/setup-workflow/templates/`）：其他專案導入用的通用 script 與測試，來自 spay2、已去除專案字樣。本 repo 從正本複製的副本列在 `docs/agents/workflow-templates.json`（正本路徑、ron-skills commit、sha256），`tests/template-copies.test.mjs` 檢查每個副本與正本逐位元組相同、hash 與清單一致：要改就改正本，`git add` 正本後用 `node skills/engineering/setup-workflow/scripts/copy-templates.mjs . --no-tests --yes --staged <名稱>` 複製過來，副本、清單與正本同一個 commit。本 repo 不複製正本的測試，正本測試已由 `bin/check` 直接跑。
@@ -90,3 +91,7 @@ pilot 已達標，2026-10-21 起是唯一編排：`deliver-batch`、`deliver-spe
 ## daily-summary
 
 `/daily-summary [YYYY-MM-DD]`：把 Personal Life vault 某天的 Daily 整理進「🌙 晚間回顧」。推進與可解決的問題從晨間意圖、工作目標、工作紀錄、當天 agent session（`scripts/day-sessions.mjs` 摘要）與 vault commit 起草；情緒、肯定自己、感恩、擔憂這類只有本人知道的欄位一次問完。確認後只改晚間回顧段，可選擇把未完成的工作目標，連同使用者要求的待辦（例如 `ready-for-human` Issue 的驗收步驟），寫進下一個工作日（週五→週一）的工作目標；使用者要求時只 commit 這些筆記與其引用的圖片，vault 的 pre-commit 擋帳密。段落結構以 `.obsidian/daily-notes.json` 指向的 template 為準；在 vault 內執行，或設定 `PERSONAL_LIFE_ROOT`。
+
+## session-handoff
+
+Orca bot 專用：owner 開新 Home chat 前（或對話變長、一段工作告一段落時，bot 可自行觸發），把對話中仍在進行的狀態落地到 bot 自己的 `MEMORY.md` 與 items，並在 `memory/session-handoff.md` 寫一份固定位置的快照，新 chat 從那裡接續；`orca bot new-chat` 一律由 owner 執行。透過 `windows-skills.txt` 連到 Windows `~/.claude/skills`，5 個 bot 一處安裝即全有。設計與散佈紀錄見同目錄的 `PROPOSAL.md`。

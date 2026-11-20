@@ -1,0 +1,3 @@
+# 連到 Windows ~/.claude/skills 的本 repo skill（相對 skills/，兩層 <類別>/<名稱>）：給 Windows 上的 Claude Code（Orca bot）。
+# 連結是 Windows 原生 symlink，指向主 checkout 的 \\wsl.localhost\<distro>\…；Windows 端已有、不在清單上的項目一律不碰。
+productivity/session-handoff
