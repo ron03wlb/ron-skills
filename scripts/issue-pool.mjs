@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 把開著的 Issue 逐張分桶，pilot 的 Pool 從 ready 桶依序挑；tracker 支援 GitHub（gh）與 GitLab（glab，含自架），本機 Markdown tracker 不支援。
-// 用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...]
-//       node scripts/issue-pool.mjs claim <n> [--repo <專案>] [--session <id>] [--take-stale]
+// 用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] [--integration <分支>]
+//       node scripts/issue-pool.mjs claim <n> [--repo <專案>] [--session <id>] [--take-stale] [--integration <分支>]
 //       node scripts/issue-pool.mjs children <母單> [--repo <專案>] [--ask-prefix <前綴>]...
 //       node scripts/issue-pool.mjs open-work <n> [--repo <專案>]
 // open-work 列出這張單已經在進行的工作，給 `/issue-run` 的 Gate 用（#300：#286 沒指派、沒留言，PR #288 卻已開了 15 小時）：`OPEN_PR <n> <pr> <分支> <網址>` 是開著、會關掉它的 PR，
@@ -12,13 +12,16 @@
 // （最近 100 則系統紀錄內）；`blocks` 連結是 GitLab Premium 以上才有，Free 版沒有 blocked 桶。
 // 一張只歸一個桶，依序取第一個符合的：parent（有 sub-issue；GitLab 是有子項目）、human（`ready-for-human`，指派給人不算認領）、
 // retro-candidates（`retro-candidates` label：retro 的候選清單，等 `/retro-collect`；被 `/retro-collect` 認領、指派之後也歸這裡，不混進 claimed、stale，#270）、
+// landed（只在帶 --integration 時：已指派，且最近一則認領留言之後有 `DONE <n> <sha>` 結果行，或已落地在整合分支（landedOn）；已做完、等合入 main，不算進行中，#352）、
 // stale（已指派，超過 --stale-hours（預設 24）沒有新留言或新指派）、claimed（已指派）、
 // in-review（有開著的 PR 以 closing reference 指向這張單：單獨跑的 /issue-run 做完、沒留指派也沒留認領的單，不能再派一次，#284；只看 GitHub，GitLab 沒有這個桶）、blocked（有開著的 blocked_by）、
 // needs-info、needs-triage、ready（`ready-for-agent`）、unlabeled。所以 ready 桶就是池子。過期的認領只歸到 stale，不自動釋放。
 // 輸出順序：ready 桶先印，依 `retro` label 的先（retro 判定太複雜、交給 worker 的單）、`priority` label 的先、直接或間接 block 最多開著的單的先（關鍵路徑）、號碼小的先；
 // 其餘依上面的桶順序、桶內號碼小的先。
-// stdout：每張一行 `<桶> #<n> <標題>`；之後對開著、有 triage 狀態 label（TRIAGE_STATES）卻沒有分類 label 的單各印一行 `NO_CATEGORY <n>`（號碼小的先），
-// 母單（有 sub-issue 或 `parent` label）與 `retro-candidates` 不算。分類 label 預設是 DEFAULT_CATEGORIES（triage 的 `bug`、`enhancement`），
+// stdout：每張一行 `<桶> #<n> <標題>`；blocked 桶在號碼與標題之間多寫狀態與開著的 blocker：`blocked #<n> <triage 狀態 label|unlabeled> by #<m>,<owner>/<repo>#<k> <標題>`，
+// 帶 --integration 時已落地在整合分支的本 repo blocker 後面接 ` (landed <分支>)`（#352）。之後 ready 桶本文有 `… prerequisite：<內容>` 一行、內容不是「無」的，
+// 依 ready 的順序各印一行 `PREREQ <n> <內容>`（先查環境或開 gate 再派）；最後對開著、有 triage 狀態 label（TRIAGE_STATES）卻沒有分類 label 的單印一行
+// `NO_CATEGORY <n> <n>...`（號碼升冪，沒有時不印），母單（有 sub-issue 或 `parent` label）與 `retro-candidates` 不算。分類 label 預設是 DEFAULT_CATEGORIES（triage 的 `bug`、`enhancement`），
 // adapter 用的 label 不同時以 `--categories` 覆寫（逗號分隔）。exit 0。gh 或 glab 失敗時 stderr 印原因、exit 1；用法錯誤或本機 Markdown tracker 時 exit 2。
 // claim 是 session 開始處理一張 Issue 前的認領：先留「認領：<機器>／<session>」（整則留言只有這一行；session 預設
 // $CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE），再指派給自己（HOSTS.md 的 Assign yourself），印 `CLAIMED <n>`。同一個帳號會在好幾台機器上跑，
@@ -32,6 +35,9 @@
 //   STOP 之前先印 `STALE_CLAIM <n> <機器>／<session> <最後寫入的 ISO 時間>`；帶 `--take-stale` 時改以這個 session 認領，成功印 `CLAIMED <n> stale <session>`。
 //   transcript 沒寫入不代表 session 結束（可能在等人回覆），所以只有不等人的流程（/retro-collect）才帶 --take-stale（#212：#201 的認領者認領一分鐘後被中斷）。
 // 被擋時印 `STOP <n> claimed <機器>／<session>`（沒有認領留言、或最近一則認領的作者已不在指派名單時，是指派者登入名），exit 4。
+// 帶 --integration 時先看是否已落地：整合分支有這張的落地 commit（landedOn），或已指派且最近一則認領留言之後有 `DONE <n> <sha>`，就印 `LANDED <n> <sha>`、
+// exit 4，不留言也不指派（#352：#145 的 commit 早已在 develop，claim 照樣認領，worker 白跑），交給收尾。
+// --integration 的分支查不到時同 gh 失敗，exit 1。
 // children 是母單（Map）視圖，只支援 GitHub（tracker 是 GitLab 時 exit 2）：一次 `gh api graphql` 取回母單的 subIssues（GitHub 每張母單最多 100 張子單），
 // 依 GitHub 的子單順序每張印一行 `<ask|child> #<n> <open|closed> labels:<a,b|-> blocked-by:<#m|<owner>/<repo>#m,...|-> <標題>`，blocked-by 只列開著的。
 // 開著的子單最後一則留言的本文（略過開頭的引言行與空行，即 AI 聲明）以任一個 --ask-prefix 開頭時印 `ask`（agent 提問、還沒人回），否則 `child`；
@@ -43,17 +49,18 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { codeHost, projectInDoc, trackerKind } from './lib/hosts.mjs';
 
-const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] | claim <n> [--repo <專案>] [--session <id>] [--take-stale] | children <母單> [--repo <專案>] [--ask-prefix <前綴>]... | open-work <n> [--repo <專案>]';
+const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] [--integration <分支>] | claim <n> [--repo <專案>] [--session <id>] [--take-stale] [--integration <分支>] | children <母單> [--repo <專案>] [--ask-prefix <前綴>]... | open-work <n> [--repo <專案>]';
 /** pool() 與 children 共用的 label、blocked-by 欄位片段。 */
 const LABEL_FIELDS = 'labels(first:50){nodes{name}}';
 const BLOCKED_BY_FIELDS = 'blockedBy(first:50){nodes{number state repository{nameWithOwner}}}';
-/** pool() 分桶與排序要的 GitHub Issue 欄位；pilot-probe 的查詢也引用這一段，bucketOf 多要欄位時只改這裡（#240）。 */
-export const POOL_FIELDS = `number title ${LABEL_FIELDS} assignees(first:20){nodes{login}} subIssuesSummary{total} ${BLOCKED_BY_FIELDS} blocking(first:50){nodes{number state repository{nameWithOwner}}} comments(last:1){nodes{createdAt}} timelineItems(last:1,itemTypes:[ASSIGNED_EVENT]){nodes{... on AssignedEvent{createdAt}}} closedByPullRequestsReferences(first:10,includeClosedPrs:false){nodes{state}}`;
+/** pool() 分桶與排序要的 GitHub Issue 欄位；pilot-probe 的查詢也引用這一段，bucketOf 多要欄位時只改這裡（#240）。
+ * body 給 PREREQ，最後 10 則留言的內文給 landed 桶找 `DONE` 結果行（#352）。 */
+export const POOL_FIELDS = `number title body ${LABEL_FIELDS} assignees(first:20){nodes{login}} subIssuesSummary{total} ${BLOCKED_BY_FIELDS} blocking(first:50){nodes{number state repository{nameWithOwner}}} comments(last:10){nodes{createdAt body}} timelineItems(last:1,itemTypes:[ASSIGNED_EVENT]){nodes{... on AssignedEvent{createdAt}}} closedByPullRequestsReferences(first:10,includeClosedPrs:false){nodes{state}}`;
 const QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS}}}}}`;
 const OPEN_WORK_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){closedByPullRequestsReferences(first:20,includeClosedPrs:false){nodes{number state url headRefName}}}}}`;
 const CHILDREN_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number subIssues(first:100){nodes{number title state ${LABEL_FIELDS} ${BLOCKED_BY_FIELDS} comments(last:1){nodes{body}}}}}}}`;
 // GitLab 的 Issue 是 work item：label、指派、子項目、相依與留言都在 widgets 裡；notes 分成留言（comments）與系統紀錄（activity，指派紀錄在這裡）。
-const GITLAB_QUERY = `query($fullPath:ID!,$cursor:String){project(fullPath:$fullPath){workItems(types:[ISSUE],state:opened,first:50,after:$cursor){pageInfo{hasNextPage endCursor} nodes{iid title widgets{__typename ... on WorkItemWidgetLabels{labels(first:50){nodes{title}}} ... on WorkItemWidgetAssignees{assignees(first:20){nodes{username}}} ... on WorkItemWidgetHierarchy{hasChildren} ... on WorkItemWidgetLinkedItems{linkedItems(first:50){nodes{linkType workItem{iid state namespace{fullPath}}}}} ... on WorkItemWidgetNotes{comments:notes(filter:ONLY_COMMENTS,last:1){nodes{createdAt}} activity:notes(filter:ONLY_ACTIVITY,last:100){nodes{createdAt body}}}}}}}}`;
+const GITLAB_QUERY = `query($fullPath:ID!,$cursor:String){project(fullPath:$fullPath){workItems(types:[ISSUE],state:opened,first:50,after:$cursor){pageInfo{hasNextPage endCursor} nodes{iid title widgets{__typename ... on WorkItemWidgetLabels{labels(first:50){nodes{title}}} ... on WorkItemWidgetAssignees{assignees(first:20){nodes{username}}} ... on WorkItemWidgetHierarchy{hasChildren} ... on WorkItemWidgetLinkedItems{linkedItems(first:50){nodes{linkType workItem{iid state namespace{fullPath}}}}} ... on WorkItemWidgetNotes{comments:notes(filter:ONLY_COMMENTS,last:10){nodes{createdAt body}} activity:notes(filter:ONLY_ACTIVITY,last:100){nodes{createdAt body}}} ... on WorkItemWidgetDescription{description}}}}}}`;
 
 class CliError extends Error {}
 class UsageError extends Error {}
@@ -76,7 +83,7 @@ export function fromWorkItem({ iid, title, widgets }) {
     .map(({ workItem }) => ({ number: Number(workItem.iid), state: workItem.state, repository: { nameWithOwner: workItem.namespace?.fullPath } }));
   const notes = widget('Notes');
   return {
-    number: Number(iid), title,
+    number: Number(iid), title, body: widget('Description').description ?? '',
     labels: { nodes: (widget('Labels').labels?.nodes ?? []).map(({ title: name }) => ({ name })) },
     assignees: { nodes: (widget('Assignees').assignees?.nodes ?? []).map(({ username }) => ({ login: username })) },
     subIssuesSummary: { total: widget('Hierarchy').hasChildren ? 1 : 0 },
@@ -182,13 +189,59 @@ const lastActivity = issue => Math.max(0, ...[...issue.comments.nodes, ...issue.
 
 const labelsOf = issue => new Set(issue.labels.nodes.map(({ name }) => name));
 
-/** 每張 Issue 歸到一個桶，優先序見檔頭。 */
-export function bucketOf(issue, { staleHours = 24, now = Date.now() } = {}) {
+/** 本文第一行 `… prerequisite：<內容>` 的內容（去掉頭尾空白），沒有這行時 undefined；PREREQ 與 pilot-probe 的 HUMAN_NO_GATE 共用（#352）。 */
+export const prerequisiteOf = body => (body ?? '').match(/^.*\bprerequisite\s*[：:]\s*(?:[*_]+\s*)?(\S.*?)\s*$/im)?.[1];
+/** prerequisite 寫「無」（或 none，後面可接標點或括號說明）表示不用等人；`**Operator prerequisite：** 無` 的粗體記號由 prerequisiteOf 略過。 */
+const NO_PREREQUISITE = /^(?:無|none)(?:$|[\s。.,，、;；（(])/i;
+
+/** 留言（依時間先後）裡，最近一則認領留言之後（沒有認領留言時是全部）最新一行 `DONE <n> <sha>` 的 sha；沒有時 undefined。
+ * 認領之前的 DONE 不算：之後又被認領，表示要重做。 */
+export function doneSha(comments, n) {
+  const start = comments.findLastIndex(({ body }) => claimerOf({ body: body ?? '' }));
+  const pattern = new RegExp(`^\\s*DONE ${n}\\s+(\\S+)`, 'gm');
+  for (const { body } of comments.slice(start + 1).reverse()) {
+    const sha = [...(body ?? '').matchAll(pattern)].at(-1)?.[1];
+    if (sha) return sha;
+  }
+  return undefined;
+}
+
+/** merge commit 主旨裡被合進來的分支：`Merge branch 'a'`、`Merge branches 'a' and 'b'`、`Merge remote-tracking branch 'origin/a'`、`Merge pull request #1 from owner/a`。 */
+function mergedBranches(subject) {
+  const pr = subject.match(/^Merge pull request #\d+ from [^/\s]+\/(\S+)/);
+  if (pr) return [pr[1]];
+  const merge = subject.match(/^Merge (?:remote-tracking )?branch(?:es)? (.*?)(?: into \S+)?$/);
+  return merge ? [...merge[1].matchAll(/'([^']+)'/g)].map(([, branch]) => branch) : [];
+}
+
+/** 整合分支的 commit，新的先，每個是 [sha, 主旨]；查不到這個分支時丟 CliError。 */
+function integrationLog(integration) {
+  const result = spawnSync('git', ['log', '--format=%H%x09%s', integration, '--'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+  if (result.status !== 0) throw new CliError(`git log ${integration} 失敗：${(result.stderr || result.error?.message || '').trim()}`);
+  return result.stdout.split('\n').filter(Boolean).map(line => line.split('\t'));
+}
+
+/** 「這張單是否已落地在整合分支」，pool 的 landed 桶與 blocked 行、claim 的 LANDED 共用，Probe 也可以引用（#352）：回傳 n => 落地的 sha｜undefined。
+ * 落地是整合分支的歷史裡（新的先）有主旨含 `(#<n>)` 的 commit，或有 merge commit 的主旨把最後一段以 `<n>-` 開頭的分支合進來。
+ * 只看主旨、不看分支 tip 是不是整合分支的祖先：剛開、還沒有 commit 的分支 tip 本來就是祖先。`log` 可注入，測試或別的來源用。 */
+export function landedOn(integration, log = integrationLog) {
+  const commits = log(integration);
+  return n => commits.find(([, subject]) => subject.includes(`(#${n})`) || mergedBranches(subject).some(branch => branchOfIssue(branch, n)))?.[0];
+}
+
+/** 已落地的 sha：整合分支上的落地（landed 是 landedOn 的結果），或已指派且最近一則認領之後有 `DONE` 結果行；pool 的 landed 桶與 claim 的 LANDED 共用。 */
+const landedSha = (n, { assigned, comments }, landed) => landed(n) ?? (assigned ? doneSha(comments, n) : undefined);
+
+/** 每張 Issue 歸到一個桶，優先序見檔頭；landed 是 landedOn 的結果，沒給時沒有 landed 桶。 */
+export function bucketOf(issue, { staleHours = 24, now = Date.now(), landed } = {}) {
   const labels = labelsOf(issue);
   if (issue.subIssuesSummary.total > 0) return 'parent';
   if (labels.has('ready-for-human')) return 'human';
   if (labels.has('retro-candidates')) return 'retro-candidates';
-  if (issue.assignees.nodes.length) return now - lastActivity(issue) > staleHours * 3600_000 ? 'stale' : 'claimed';
+  if (issue.assignees.nodes.length) {
+    if (landed && landedSha(issue.number, { assigned: true, comments: issue.comments.nodes }, landed)) return 'landed';
+    return now - lastActivity(issue) > staleHours * 3600_000 ? 'stale' : 'claimed';
+  }
   // `includeClosedPrs:false` 仍會回已合併的 PR（#281 的 PR #282 回 MERGED），所以要看 state。
   if (openNodes(issue.closedByPullRequestsReferences).length) return 'in-review';
   if (openNodes(issue.blockedBy).length) return 'blocked';
@@ -198,7 +251,7 @@ export function bucketOf(issue, { staleHours = 24, now = Date.now() } = {}) {
   return 'unlabeled';
 }
 
-const BUCKETS = ['ready', 'parent', 'human', 'retro-candidates', 'stale', 'claimed', 'in-review', 'blocked', 'needs-info', 'needs-triage', 'unlabeled'];
+const BUCKETS = ['ready', 'parent', 'human', 'retro-candidates', 'landed', 'stale', 'claimed', 'in-review', 'blocked', 'needs-info', 'needs-triage', 'unlabeled'];
 
 /** 直接或間接被這張 block、而且還開著的 Issue 數；沿本 repo 列表裡的 blocking 邊走，別的 repo 或不在列表裡的開著的單只算一張。 */
 function blockingCount(issue, byNumber, repo) {
@@ -228,6 +281,28 @@ export function pool(issues, { repo, ...options }) {
   return rows.sort((a, b) => rank(a) - rank(b)
     || (a.bucket === 'ready' && (b.retro - a.retro || b.priority - a.priority || b.blocks - a.blocks))
     || a.issue.number - b.issue.number);
+}
+
+/** blocked 行號碼與標題之間的一段（格式見檔頭）。 */
+function blockedDetail(issue, { repo, landed, integration }) {
+  const labels = labelsOf(issue);
+  const state = TRIAGE_STATES.find(name => labels.has(name)) ?? 'unlabeled';
+  const blockers = openNodes(issue.blockedBy).map(({ number, repository: { nameWithOwner } }) => nameWithOwner !== repo ? `${nameWithOwner}#${number}`
+    : `#${number}${landed?.(number) ? ` (landed ${integration})` : ''}`);
+  return `${state} by ${blockers.join(',')}`;
+}
+
+/** stdout 的全部行（格式見檔頭）：分桶行、PREREQ、NO_CATEGORY。landed、integration 只在帶 --integration 時給。 */
+export function poolLines(issues, { repo, categories = DEFAULT_CATEGORIES, landed, integration, ...options }) {
+  const rows = pool(issues, { repo, landed, ...options });
+  const lines = rows.map(({ issue, bucket }) => `${bucket} #${issue.number} ${bucket === 'blocked' ? `${blockedDetail(issue, { repo, landed, integration })} ` : ''}${issue.title}`);
+  for (const { issue } of rows.filter(({ bucket }) => bucket === 'ready')) {
+    const prerequisite = prerequisiteOf(issue.body);
+    if (prerequisite && !NO_PREREQUISITE.test(prerequisite)) lines.push(`PREREQ ${issue.number} ${prerequisite}`);
+  }
+  const missing = missingCategory(issues, categories);
+  if (missing.length) lines.push(`NO_CATEGORY ${missing.join(' ')}`);
+  return lines;
 }
 
 /** triage 的五個狀態 label 與兩個分類 label 預設值（Matt 的 `/triage`：每張一個分類加一個狀態）。 */
@@ -293,11 +368,13 @@ export function claimedBy(comments, session) {
   return Boolean(claimer) && (claimer === claimerName(session) || Boolean(takeoverSession(claimer, session)));
 }
 
-function claim(n, tracker, session, takeStale) {
+function claim(n, tracker, session, takeStale, landed) {
   const read = () => tracker.view(n);
   const stop = claimer => { console.log(`STOP ${n} claimed ${claimer}`); return 4; };
   const mine = claimerName(session);
   const before = read();
+  const sha = landed && landedSha(n, { assigned: before.assignees.length > 0, comments: before.comments }, landed);
+  if (sha) { console.log(`LANDED ${n} ${sha}`); return 4; }
   const last = before.comments.filter(claimerOf).at(-1);
   let blocker;
   if (before.assignees.length) {
@@ -376,7 +453,7 @@ function openWork(n, tracker) {
 }
 
 function main(argv) {
-  let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, session = defaultSession(), takeStale = false;
+  let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, session = defaultSession(), takeStale = false, integration;
   const askPrefixes = [];
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
@@ -385,6 +462,7 @@ function main(argv) {
     else if (argv[i] === '--categories' && argv[i + 1]) categories = argv[++i].split(',').filter(Boolean);
     else if (argv[i] === '--session' && argv[i + 1]) session = argv[++i];
     else if (argv[i] === '--take-stale') takeStale = true;
+    else if (argv[i] === '--integration' && argv[i + 1]) integration = argv[++i];
     else if (argv[i] === '--ask-prefix' && argv[i + 1]) askPrefixes.push(argv[++i]);
     else if (!argv[i].startsWith('-')) positional.push(argv[i]);
     else { console.error(USAGE); return 2; }
@@ -393,13 +471,13 @@ function main(argv) {
   if (command !== undefined && !(['claim', 'children', 'open-work'].includes(command) && /^\d+$/.test(n ?? '') && positional.length === 2)) { console.error(USAGE); return 2; }
   try {
     const tracker = trackerOf(repo);
-    if (command === 'claim') return claim(n, tracker, session, takeStale);
+    const landed = integration && ['claim', undefined].includes(command) ? landedOn(integration) : undefined;
+    if (command === 'claim') return claim(n, tracker, session, takeStale, landed);
     if (command === 'children') return children(n, tracker, askPrefixes);
     if (command === 'open-work') return openWork(n, tracker);
     repo = tracker.repo();
     const issues = tracker.issues(repo);
-    for (const { issue, bucket } of pool(issues, { repo, staleHours })) console.log(`${bucket} #${issue.number} ${issue.title}`);
-    for (const number of missingCategory(issues, categories)) console.log(`NO_CATEGORY ${number}`);
+    for (const line of poolLines(issues, { repo, staleHours, categories, landed, integration })) console.log(line);
     return 0;
   } catch (error) {
     if (!(error instanceof CliError) && !(error instanceof UsageError)) throw error;

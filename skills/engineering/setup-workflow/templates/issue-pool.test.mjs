@@ -17,20 +17,20 @@ const NODE = SAMPLE.data.repository.issues.nodes[0];
 const VIEW = fixture('issue-view');
 const hoursAgo = hours => new Date(Date.now() - hours * 3600_000).toISOString();
 
-/** 一張開著的 Issue：沒指定的欄位是空的（沒 label、沒指派、沒相依、沒留言）。 */
-function issue(number, { labels = [], assignees = [], subIssues = 0, blockedBy = [], blocking = [], commentAt, assignedAt, prs = [] } = {}) {
+/** 一張開著的 Issue：沒指定的欄位是空的（沒 label、沒指派、沒相依、沒留言）。comments 是 [內文, 建立時間]，給了就取代 commentAt。 */
+function issue(number, { labels = [], assignees = [], subIssues = 0, blockedBy = [], blocking = [], commentAt, assignedAt, prs = [], body = '', comments } = {}) {
   // 數字是本 repo 的開著的單；`<owner>/<repo>#<n>` 是別的 repo 的。
   const nodes = list => list.map(ref => {
     const [, repo = 'acme/app', n] = String(ref).match(/^(?:(.+)#)?(\d+)$/);
     return { number: Number(n), state: 'OPEN', repository: { nameWithOwner: repo } };
   });
   return mergeSample(NODE, {
-    number, title: `標題 ${number}`,
+    number, title: `標題 ${number}`, body,
     labels: { nodes: labels.map(name => ({ name })) },
     assignees: { nodes: assignees.map(login => ({ login })) },
     subIssuesSummary: { total: subIssues },
     blockedBy: { nodes: nodes(blockedBy) }, blocking: { nodes: nodes(blocking) },
-    comments: { nodes: commentAt ? [{ createdAt: commentAt }] : [] },
+    comments: { nodes: comments ? comments.map(([text, createdAt]) => ({ body: text, createdAt })) : commentAt ? [{ createdAt: commentAt, body: '' }] : [] },
     timelineItems: { nodes: assignedAt ? [{ createdAt: assignedAt }] : [] },
     closedByPullRequestsReferences: { nodes: prs.map(state => ({ state })) },
   }, 'issue');
@@ -111,8 +111,8 @@ test('標 ready-for-agent、沒被 block、不是母單、沒被認領的 Issue 
 });
 
 const BUCKET_CASES = [
-  ['blocked', '有開著的 blocked_by', issue(7, { labels: ['bug', 'ready-for-agent'], blockedBy: [3] })],
-  ['blocked', '掛 retro 也照樣被開著的 blocked_by 擋住', issue(7, { labels: ['enhancement', 'ready-for-agent', 'retro'], blockedBy: [3] })],
+  ['blocked', '有開著的 blocked_by', issue(7, { labels: ['bug', 'ready-for-agent'], blockedBy: [3] }), 'ready-for-agent by #3 '],
+  ['blocked', '掛 retro 也照樣被開著的 blocked_by 擋住', issue(7, { labels: ['enhancement', 'ready-for-agent', 'retro'], blockedBy: [3] }), 'ready-for-agent by #3 '],
   ['parent', '有 sub-issue 的母單，即使標了 ready-for-agent', issue(7, { labels: ['ready-for-agent'], subIssues: 2 })],
   ['needs-triage', '標 needs-triage', issue(7, { labels: ['bug', 'needs-triage'] })],
   ['needs-info', '標 needs-info', issue(7, { labels: ['bug', 'needs-info'] })],
@@ -126,11 +126,12 @@ const BUCKET_CASES = [
   ['retro-candidates', '標 retro-candidates、認領超過 24 小時沒有新留言', issue(7, { labels: ['retro-candidates'], assignees: ['ron'], assignedAt: hoursAgo(30), commentAt: hoursAgo(25) })],
   ['human', '標 ready-for-human、指派給人很久沒留言（不是 agent 的認領）', issue(7, { labels: ['enhancement', 'ready-for-human'], assignees: ['ron'], assignedAt: hoursAgo(72) })],
 ];
-for (const [bucket, why, fixture] of BUCKET_CASES) {
+// blocked 行在號碼與標題之間多了狀態與 blocker（#352），第四欄就是這一段。
+for (const [bucket, why, fixture, detail = ''] of BUCKET_CASES) {
   test(`${why}的 Issue 歸到 ${bucket}`, () => {
     const result = fakeGh({ issues: [fixture] }).run();
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, `${bucket} #7 標題 7\n`);
+    assert.equal(result.stdout, `${bucket} #7 ${detail}標題 7\n`);
   });
 }
 
@@ -197,7 +198,7 @@ test('ready 桶先印，其餘依桶的順序、桶內依號碼', () => {
     issue(11, { labels: ['bug', 'ready-for-agent'], blocking: [2] }),
     issue(1, { labels: ['bug', 'needs-triage'] }),
   ] }).run();
-  assert.equal(result.stdout, 'ready #11 標題 11\nblocked #2 標題 2\nneeds-triage #1 標題 1\nneeds-triage #12 標題 12\n');
+  assert.equal(result.stdout, 'ready #11 標題 11\nblocked #2 ready-for-agent by #11 標題 2\nneeds-triage #1 標題 1\nneeds-triage #12 標題 12\n');
 });
 
 const noCategory = issues => fakeGh({ issues }).run().stdout.split('\n').filter(line => line.startsWith('NO_CATEGORY '));
@@ -218,7 +219,8 @@ test('NO_CATEGORY 不印：已有分類、沒有 triage 狀態、母單（sub-is
   ]), []);
 });
 
-test('NO_CATEGORY 涵蓋每個 triage 狀態與每個桶，依號碼排序', () => {
+// #352（investing#199 第 2 項）：每張一行時 `| tail` 只看得到 NO_CATEGORY，擠掉 ready 行，所以彙總成一行。
+test('NO_CATEGORY 涵蓋每個 triage 狀態與每個桶，彙總成一行、號碼升冪', () => {
   assert.deepEqual(noCategory([
     issue(9, { labels: ['wontfix'] }),
     issue(3, { labels: ['needs-triage'] }),
@@ -226,12 +228,112 @@ test('NO_CATEGORY 涵蓋每個 triage 狀態與每個桶，依號碼排序', () 
     issue(4, { labels: ['needs-info'] }),
     issue(8, { labels: ['ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(1) }),
     issue(6, { labels: ['ready-for-agent'], blockedBy: [3] }),
-  ]), ['NO_CATEGORY 3', 'NO_CATEGORY 4', 'NO_CATEGORY 5', 'NO_CATEGORY 6', 'NO_CATEGORY 8', 'NO_CATEGORY 9']);
+  ]), ['NO_CATEGORY 3 4 5 6 8 9']);
 });
 
 test('分類 label 可以用 --categories 覆寫（adapter 的分類 label 不是 bug、enhancement 時）', () => {
   const { run } = fakeGh({ issues: [issue(7, { labels: ['ready-for-agent', 'type:feature'] }), issue(8, { labels: ['ready-for-agent', 'bug'] })] });
   assert.equal(run('--categories', 'type:feature,type:bug').stdout, 'ready #7 標題 7\nready #8 標題 8\nNO_CATEGORY 8\n');
+});
+
+// #352（#324 第 1 項，investing#190）：#133 本文寫 `Operator prerequisite：開跑前由 Operator 確認`，照列 ready，到 worker preflight 才停。
+test('ready 單本文的 Operator prerequisite 不是「無」時另印 PREREQ <n> <內容>；寫「無」、不在 ready 桶的不印', () => {
+  const result = fakeGh({ issues: [
+    issue(133, { labels: ['enhancement', 'ready-for-agent'], body: '## 背景\n\n保留期。\n\nOperator prerequisite：開跑前由 Operator 確認（保留期只能用一次）\n' }),
+    issue(134, { labels: ['enhancement', 'ready-for-agent'], body: 'Operator prerequisite：無' }),
+    issue(135, { labels: ['enhancement', 'ready-for-agent'], blockedBy: [3], body: 'Operator prerequisite：要先開 gate' }),
+    issue(136, { labels: ['enhancement', 'ready-for-agent'] }),
+    issue(137, { labels: ['enhancement', 'ready-for-agent'], body: 'Operator prerequisite：無（不需 Operator）' }),
+    issue(138, { labels: ['enhancement', 'ready-for-agent'], body: '**Operator prerequisite：** 無' }),
+  ] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #133 標題 133\nready #134 標題 134\nready #136 標題 136\nready #137 標題 137\nready #138 標題 138\nblocked #135 ready-for-agent by #3 標題 135\n'
+    + 'PREREQ 133 開跑前由 Operator 確認（保留期只能用一次）\n');
+});
+
+/** 在 fakeGh 的暫存 repo 做出整合分支 pilot/integration：main 一個起始 commit；subjects 依序 commit 在整合分支上；
+ * merged 的分支各從 main 開、commit 一次再 `merge --no-ff` 進整合分支（git 預設主旨 `Merge branch '<分支>' into pilot/integration`）；
+ * fresh 的分支開在整合分支的 tip、沒有自己的 commit；unmerged 的分支從 main 開、有自己的 commit、沒合入。回傳 rev-parse。 */
+function integrationBranch(repo, { subjects = [], merged = [], fresh = [], unmerged = [] } = {}) {
+  const g = (...args) => git(repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args);
+  g('commit', '-q', '--allow-empty', '-m', 'init');
+  g('checkout', '-q', '-b', 'pilot/integration');
+  for (const subject of subjects) g('commit', '-q', '--allow-empty', '-m', subject);
+  for (const branch of [...merged, ...unmerged]) {
+    g('checkout', '-q', '-b', branch, 'main');
+    g('commit', '-q', '--allow-empty', '-m', `work on ${branch}`);
+    g('checkout', '-q', 'pilot/integration');
+    if (merged.includes(branch)) g('merge', '-q', '--no-ff', '--no-edit', branch);
+  }
+  for (const branch of fresh) g('branch', branch, 'pilot/integration');
+  g('checkout', '-q', 'main');
+  return ref => git(repo, 'rev-parse', ref);
+}
+
+// #352（#330 第 1 項，investing#330）：blocked 行看不出狀態與 blocker，blocker 已在 develop 也看不出來；investing retro 1120b 的 #434…#438 都是 needs-triage。
+test('blocked 行附狀態 label 與開著的 blocker；沒有狀態 label 時寫 unlabeled，別的 repo 的 blocker 寫全名', () => {
+  const result = fakeGh({ issues: [
+    issue(247, { labels: ['enhancement', 'needs-triage'], blockedBy: [151, 'other/repo#9'] }),
+    issue(248, { labels: ['enhancement'], blockedBy: [151] }),
+  ] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'blocked #247 needs-triage by #151,other/repo#9 標題 247\nblocked #248 unlabeled by #151 標題 248\n');
+});
+
+test('--integration：blocker 在整合分支有 (#<m>) commit 時標 (landed <整合分支>)；(#1510) 不算 #151', () => {
+  const f = fakeGh({ issues: [
+    issue(247, { labels: ['enhancement', 'needs-triage'], blockedBy: [151, 152] }),
+    issue(249, { labels: ['enhancement', 'ready-for-agent'], blockedBy: [151, 1510] }),
+  ] });
+  integrationBranch(f.repo, { subjects: ['加報價來源 (#152)', '別張 (#1510)'] });
+  const result = f.run('--integration', 'pilot/integration');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'blocked #247 needs-triage by #151,#152 (landed pilot/integration) 標題 247\n'
+    + 'blocked #249 ready-for-agent by #151,#1510 (landed pilot/integration) 標題 249\n');
+});
+
+// #352（#332 第 1 項，investing#269）：已合入 develop、只等 main 的單列成 claimed／stale，照字面釋放會重做；/issue-queue 報「進行中 4／上限 3」。
+const LANDED_ISSUES = [
+  // 最近一則認領之後有 DONE 結果行。
+  issue(229, { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(30),
+    comments: [['認領：box／s1', hoursAgo(30)], ['**worker 結果**\n\nDONE 229 1a4726f', hoursAgo(29)]] }),
+  // DONE 在最近一則認領之前：之後又被認領重做，不算。
+  issue(230, { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(1),
+    comments: [['DONE 230 aaf0927', hoursAgo(40)], ['認領：box／s2', hoursAgo(1)]] }),
+  // 分支已合入整合分支。
+  issue(231, { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(2) }),
+  // 分支剛開、沒有自己的 commit（它的 tip 當然是整合分支的祖先），不算。
+  issue(232, { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(2) }),
+  // 分支有自己的 commit 但沒合入，不算。
+  issue(233, { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(30) }),
+];
+const landedFixture = () => {
+  const f = fakeGh({ issues: LANDED_ISSUES });
+  integrationBranch(f.repo, { merged: ['issue/231-landed'], fresh: ['issue/232-fresh'], unmerged: ['issue/233-wip'] });
+  return f;
+};
+
+test('--integration：已指派、最近認領之後有 DONE 結果行，或分支已合入整合分支的歸 landed，排在 stale、claimed 之前', () => {
+  const result = landedFixture().run('--integration', 'pilot/integration');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'landed #229 標題 229\nlanded #231 標題 231\nstale #233 標題 233\nclaimed #230 標題 230\nclaimed #232 標題 232\n');
+});
+
+test('沒帶 --integration 時不判斷落地：沒有 landed 桶、blocked 行不標 landed，其餘逐行同以前', () => {
+  const f = fakeGh({ issues: [...LANDED_ISSUES, issue(247, { labels: ['enhancement', 'needs-triage'], blockedBy: [151] })] });
+  integrationBranch(f.repo, { subjects: ['加報價來源 (#151)'], merged: ['issue/231-landed'] });
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'stale #229 標題 229\nstale #233 標題 233\nclaimed #230 標題 230\nclaimed #231 標題 231\nclaimed #232 標題 232\n'
+    + 'blocked #247 needs-triage by #151 標題 247\n');
+});
+
+test('--integration 指向不存在的分支時 stderr 印原因、exit 1', () => {
+  const f = fakeGh({ issues: [issue(7, { labels: ['enhancement', 'ready-for-agent'] })] });
+  integrationBranch(f.repo);
+  const result = f.run('--integration', 'no/such-branch');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /no\/such-branch/);
 });
 
 const HOST = (await import('node:os')).hostname();
@@ -403,6 +505,43 @@ test('claim --take-stale：本機認領者已無活動時改以這個 session �
   ]);
 });
 
+// #352（#328 第 1 項，investing#240）：#145 的 commit 早已進 develop，Issue 仍開著，claim 照樣認領，worker 花 8 分鐘查證後回 DONE。
+test('claim --integration：整合分支有 (#<n>) commit 時印 LANDED <n> <sha>、exit 4，不留認領也不指派', () => {
+  const f = fakeGh({ views: [view()] });
+  const sha = integrationBranch(f.repo, { subjects: ['加 X (#145)', '別張 (#1450)'] });
+  const result = f.run('claim', '145', '--session', 'sess-1', '--integration', 'pilot/integration');
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, `LANDED 145 ${sha('pilot/integration~1')}\n`);
+  assert.deepEqual(writes(f.calls()), []);
+});
+
+test('claim --integration：分支已合入整合分支時印 LANDED <n> <合入的 merge commit>', () => {
+  const f = fakeGh({ views: [view()] });
+  const sha = integrationBranch(f.repo, { merged: ['issue/146-x'] });
+  const result = f.run('claim', '146', '--session', 'sess-1', '--integration', 'pilot/integration');
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, `LANDED 146 ${sha('pilot/integration')}\n`);
+  assert.deepEqual(writes(f.calls()), []);
+});
+
+test('claim --integration：已指派、最近認領之後有 DONE 結果行時印 LANDED <n> <DONE 的 sha>，不改 Issue', () => {
+  const f = fakeGh({ views: [view({ assignees: ['ron'], comments: [['ron', `認領：${HOST}／sess-1`], ['ron', '**worker 結果**\n\nDONE 7 10aee61']] })] });
+  integrationBranch(f.repo);
+  const result = f.run('claim', '7', '--session', 'sess-1', '--integration', 'pilot/integration');
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, 'LANDED 7 10aee61\n');
+  assert.deepEqual(writes(f.calls()), []);
+});
+
+test('claim 沒帶 --integration 時不查落地：整合分支有 (#<n>) commit、留言有 DONE 也照常認領', () => {
+  const mine = `認領：${HOST}／sess-1`;
+  const f = fakeGh({ views: [view({ assignees: ['ron'], comments: [['ron', mine], ['ron', 'DONE 7 10aee61']] }), view({ assignees: ['ron'], comments: [['ron', mine], ['ron', 'DONE 7 10aee61'], ['ron', mine]] })] });
+  integrationBranch(f.repo, { subjects: ['加 X (#7)'] });
+  const result = f.run('claim', '7', '--session', 'sess-1');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'CLAIMED 7\n');
+});
+
 const LIVE_CASES = [
   ['本機認領者 1 小時內還有寫入 transcript', `${HOST}／${DEAD}`, { [DEAD]: [0.5, INTERRUPTED] }],
   ['找不到本機認領者的 transcript（例如 session 是 terminal handle）', `${HOST}／term_1`, { [DEAD]: [3, INTERRUPTED] }],
@@ -513,7 +652,7 @@ const GL_NOTES = glabFixture('notes');
 
 /** 一張 GitLab work item：參數同 issue()，children 是有沒有子項目；blockedBy、blocking 的數字是同專案 acme/app 開著的單。
  * widgets 是不同型別的陣列，逐個依 __typename 對樣本的同型 widget 合併。 */
-function workItem(number, { labels = [], assignees = [], children = false, blockedBy = [], blocking = [], commentAt, activity = [] } = {}) {
+function workItem(number, { labels = [], assignees = [], children = false, blockedBy = [], blocking = [], commentAt, activity = [], description = '' } = {}) {
   const link = linkType => ref => {
     const [, path = 'acme/app', n, state = 'OPEN'] = String(ref).match(/^(?:(.+)#)?(\d+)(?::(\w+))?$/);
     return { linkType, workItem: { iid: n, state, namespace: { fullPath: path } } };
@@ -526,7 +665,8 @@ function workItem(number, { labels = [], assignees = [], children = false, block
       widget('WorkItemWidgetAssignees', { assignees: { nodes: assignees.map(username => ({ username })) } }),
       widget('WorkItemWidgetHierarchy', { hasChildren: children }),
       widget('WorkItemWidgetLinkedItems', { linkedItems: { nodes: [...blockedBy.map(link('is_blocked_by')), ...blocking.map(link('blocks'))] } }),
-      widget('WorkItemWidgetNotes', { comments: { nodes: commentAt ? [{ createdAt: commentAt }] : [] }, activity: { nodes: activity.map(([body, createdAt]) => ({ body, createdAt })) } }),
+      widget('WorkItemWidgetNotes', { comments: { nodes: commentAt ? [{ createdAt: commentAt, body: '' }] : [] }, activity: { nodes: activity.map(([body, createdAt]) => ({ body, createdAt })) } }),
+      widget('WorkItemWidgetDescription', { description }),
     ],
   };
 }
@@ -582,13 +722,13 @@ else if (endpoint) process.stdout.write(JSON.stringify(read('samples.json').proj
 }
 
 // 每個桶各一個 GitLab fixture：子項目（hierarchy）是母單，is_blocked_by 開著的單是 blocked，認領時限看最近的留言或指派紀錄。
-for (const [bucket, options] of [
+for (const [bucket, options, detail = ''] of [
   ['parent', { labels: ['enhancement', 'ready-for-agent'], children: true }],
   ['human', { labels: ['enhancement', 'ready-for-human'] }],
   ['stale', { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'], commentAt: hoursAgo(30), activity: [['assigned to @ron', hoursAgo(30)]] }],
   ['claimed', { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'], commentAt: hoursAgo(30), activity: [['assigned to @ron', hoursAgo(1)]] }],
   ['retro-candidates', { labels: ['retro-candidates'] }],
-  ['blocked', { labels: ['enhancement', 'ready-for-agent'], blockedBy: [5] }],
+  ['blocked', { labels: ['enhancement', 'ready-for-agent'], blockedBy: [5] }, 'ready-for-agent by #5 '],
   ['needs-info', { labels: ['enhancement', 'needs-info'] }],
   ['needs-triage', { labels: ['enhancement', 'needs-triage'] }],
   ['ready', { labels: ['enhancement', 'ready-for-agent'], blockedBy: ['5:CLOSED'] }],
@@ -598,9 +738,16 @@ for (const [bucket, options] of [
     const { run } = fakeGlab({ items: [workItem(7, options)] });
     const result = run();
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, `${bucket} #7 標題 7\n`);
+    assert.equal(result.stdout, `${bucket} #7 ${detail}標題 7\n`);
   });
 }
+
+test('GitLab：ready 單的 description 寫了 Operator prerequisite 時印 PREREQ', () => {
+  const { run } = fakeGlab({ items: [workItem(7, { labels: ['enhancement', 'ready-for-agent'], description: 'Operator prerequisite：先申請憑證' })] });
+  const result = run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #7 標題 7\nPREREQ 7 先申請憑證\n');
+});
 
 test('GitLab：系統紀錄裡只有指派算認領後的動靜，改 label 這類紀錄不算', () => {
   const { run } = fakeGlab({ items: [workItem(7, { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'],
@@ -616,7 +763,7 @@ test('GitLab：ready 依 blocks 連結排序（關鍵路徑），列表以 glab 
   ] });
   const result = run();
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, 'ready #8 標題 8\nready #4 標題 4\nblocked #20 標題 20\n');
+  assert.equal(result.stdout, 'ready #8 標題 8\nready #4 標題 4\nblocked #20 ready-for-agent by #8 標題 20\n');
   const [project, graphql] = calls();
   assert.deepEqual(project, ['api', 'projects/:id']);
   assert.deepEqual(graphql.slice(0, 4), ['api', 'graphql', '-f', 'fullPath=acme/app']);
