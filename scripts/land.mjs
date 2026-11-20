@@ -29,6 +29,8 @@
 //   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、pr-edit、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、local-checks-timeout、restamp-checks-failed、restamp-checks-timeout、merge、not-merged、worktree-rm）。
 // local-checks-timeout、restamp-checks-timeout 是檢查跑到 LAND_LOCAL_CHECKS_TIMEOUT_MS 被中止，不是檢查沒過：結果未知，在該 SHA 跑過檢查才重跑（#297）。
 // 合入之後的收尾問題（main 沒跟上、sync-skills 失敗）印 WARN，不影響 LANDED；main 沒跟上時不跑 sync-skills，印 WARN skills-not-updated <merge sha>（已安裝的 skill 還是舊版，#297）。
+// 主 checkout 的 adapter（docs/agents/issue-run.md）以 `Protected paths:` 行宣告保護路徑時，快轉會讓它們底下的追蹤檔消失（刪除、改名、換類型）就不快轉，
+//   印 WARN main-not-synced 快轉會刪掉被保護的路徑 <檔…>，交給人處理（PR 已合入，照樣 LANDED）；判斷與 pilot-close.mjs 共用 lib/protected-paths.mjs（#303）。
 // exit：0 已合入；4 STOP；2 用法錯誤；1 其他失敗。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -37,6 +39,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { orca } from './orca-session-send.mjs';
+import { protectedReason, readDeclaredPaths, vanishingFiles } from './lib/protected-paths.mjs';
 
 const USAGE = '用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--check-command <command>] [--body-file <file>] [--title <title>] [--main <branch>]';
 
@@ -319,11 +322,17 @@ async function mergeMainAndRestamp(main, branch, tree, number, command) {
   }
 }
 
-/** 主 checkout 在 main 而且乾淨才 --ff-only；否則回傳原因（WARN，不擋）。 */
+/** 主 checkout 在 main、乾淨、快轉不會刪掉 adapter 宣告的保護路徑才 --ff-only；否則回傳原因（WARN，不擋）。 */
 function syncMain(main) {
   const current = run('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], main).stdout.trim();
   if (current !== BASE) return `主 checkout 在 ${current || 'detached HEAD'}`;
   if (git(main, 'status', '--porcelain')) return '主 checkout 有未提交的改動';
+  try {
+    const reason = protectedReason(vanishingFiles(main, BASE, `origin/${BASE}`, readDeclaredPaths(main)));
+    if (reason) return reason;
+  } catch (error) {
+    return error.message;
+  }
   const result = run('git', ['merge', '--ff-only', `origin/${BASE}`], main);
   return result.status === 0 ? null : `ff 失敗：${result.stderr.trim()}`;
 }

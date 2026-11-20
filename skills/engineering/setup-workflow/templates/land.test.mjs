@@ -1,7 +1,7 @@
 import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { mergeSample } from './test/fake-orca.mjs';
@@ -59,7 +59,7 @@ function fixture(t, { seed = {}, mainMovesAtMerge = null, checks = [PASS], orcaF
   // selfHosted：repo 自己帶 land.mjs 等腳本，從要被移除的 worktree 裡執行（land 合入自己的分支就是這樣）。
   if (selfHosted) {
     mkdirSync(join(main, 'scripts'));
-    for (const name of ['land.mjs', 'orca-session-send.mjs']) cpSync(new URL(`./${name}`, import.meta.url).pathname, join(main, 'scripts', name));
+    for (const name of ['land.mjs', 'orca-session-send.mjs', 'lib/protected-paths.mjs']) cpSync(new URL(`./${name}`, import.meta.url).pathname, join(main, 'scripts', name));
     sh(main, 'add', 'scripts');
   }
   // 假 bin/check：記下參數、所在 SHA 與工作樹是否乾淨，印 CHECK_PASS 行後以 localCheckExit 結束（--local-checks 用）。
@@ -668,6 +668,62 @@ test('main 沒跟上時不跑 sync-skills：WARN skills-not-updated <merge sha>�
   assert.match(result.stdout, new RegExp(`^WARN skills-not-updated ${pr.mergeCommit.oid}$`, 'm'));
   assert.doesNotMatch(result.stdout, /SYNC_SKILLS|WARN sync-skills/);
   assert.equal(last(result), `LANDED ${pr.number} ${pr.mergeCommit.oid}`);
+});
+
+// #303：syncMain 的 --ff-only 只看分支與工作樹乾淨，快轉會刪掉只在主 checkout 有工作副本的私人檔（#286 在 pilot-close 補的同一個洞）。
+const PROTECTED_SEED = { 'docs/agents/issue-run.md': '# adapter\n\nProtected paths: `private`\n', 'private/a.txt': 'only copy\n', 'bin/sync-skills': '#!/bin/sh\necho ran\n' };
+
+/** adapter 宣告 private、feature 用 change 讓 private/a.txt 消失：PR 照常合入，主 checkout 不快轉、檔案還在，WARN 說明是哪個路徑。 */
+function assertLandProtected(t, change) {
+  const f = fixture(t, { seed: PROTECTED_SEED });
+  const before = f.sh(f.main, 'rev-parse', 'HEAD');
+  change(f);
+  f.sh(f.wt, 'commit', '-q', '-m', 'feature: private 消失');
+  const result = f.land(['feature', '--body-file', f.body]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [pr] = f.prs();
+  assert.equal(f.last(result), `LANDED ${pr.number} ${pr.mergeCommit.oid}`);
+  assert.match(result.stdout, /^WARN main-not-synced 快轉會刪掉被保護的路徑 private\/a\.txt/m);
+  assert.match(result.stdout, new RegExp(`^WARN skills-not-updated ${pr.mergeCommit.oid}$`, 'm'));
+  assert.doesNotMatch(result.stdout, /^MAIN |SYNC_SKILLS/m);
+  assert.equal(f.sh(f.main, 'rev-parse', 'HEAD'), before);
+  assert.equal(readFileSync(join(f.main, 'private/a.txt'), 'utf8'), 'only copy\n');
+}
+
+test('adapter 宣告 Protected paths、快轉會刪掉它底下的追蹤檔：已合入照樣 LANDED，主 checkout 不快轉，WARN 說明路徑', t => {
+  assertLandProtected(t, f => f.sh(f.wt, 'rm', '-q', 'private/a.txt'));
+});
+
+test('adapter 宣告的路徑被改名或換成 symlink：一樣算消失，不快轉', t => {
+  assertLandProtected(t, f => f.sh(f.wt, 'mv', 'private/a.txt', 'private/b.txt'));
+  assertLandProtected(t, f => {
+    rmSync(join(f.wt, 'private/a.txt'));
+    symlinkSync('../a.txt', join(f.wt, 'private/a.txt'));
+    f.sh(f.wt, 'add', 'private/a.txt');
+  });
+});
+
+test('adapter 的 Protected paths: 行沒有路徑：不快轉，WARN 說明宣告寫錯，照樣 LANDED', t => {
+  const f = fixture(t, { seed: { 'docs/agents/issue-run.md': 'Protected paths: private\n' } });
+  const before = f.sh(f.main, 'rev-parse', 'HEAD');
+  const result = f.land(['feature', '--body-file', f.body]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [pr] = f.prs();
+  assert.equal(f.last(result), `LANDED ${pr.number} ${pr.mergeCommit.oid}`);
+  assert.match(result.stdout, /^WARN main-not-synced .*Protected paths: 行沒有路徑/m);
+  assert.equal(f.sh(f.main, 'rev-parse', 'HEAD'), before);
+});
+
+test('adapter 沒宣告 Protected paths：刪掉私人檔照舊快轉，輸出與現在相同', t => {
+  const f = fixture(t, { seed: { 'docs/agents/issue-run.md': '# adapter\n\n見 `Protected paths:`。\n', 'private/a.txt': 'only copy\n' } });
+  f.sh(f.wt, 'rm', '-q', 'private/a.txt');
+  f.sh(f.wt, 'commit', '-q', '-m', 'feature: 刪 private');
+  const result = f.land(['feature', '--body-file', f.body]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [pr] = f.prs();
+  assert.match(result.stdout, new RegExp(`^MAIN ${pr.mergeCommit.oid}$`, 'm'));
+  assert.doesNotMatch(result.stdout, /WARN/);
+  assert.equal(existsSync(join(f.main, 'private/a.txt')), false);
 });
 
 test('等 CI 期間 main 前進而合併被拒（--local-checks）：合入、restamp，改附新 tip 的本機檢查結果，不等 CI', t => {
