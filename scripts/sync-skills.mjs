@@ -8,12 +8,18 @@
 // 環境變數：MATT_SKILLS（預設 ~/code/skills）、PSTACK_SKILLS（預設 ~/code/pstack）、
 //           SKILL_DIRS（預設 ~/.claude/skills 與 ~/.agents/skills）、
 //           HOOK_DIR（預設 ~/.claude/hooks）
-// 清單檔：matt-skills.txt（相對 skills/，兩層 <類別>/<名稱>）、pstack-skills.txt（相對 skills/，一層 <名稱>）。
+//           WIN_SKILL_DIR（Windows 目標的 WSL 路徑；預設在 WSL 裡取 %USERPROFILE%\.claude\skills；設成空字串、或有設 SKILL_DIRS 而沒設它時不碰 Windows）
+// 清單檔：matt-skills.txt（相對 skills/，兩層 <類別>/<名稱>）、pstack-skills.txt（相對 skills/，一層 <名稱>）、
+//         windows-skills.txt（本 repo 的 skills/，兩層 <類別>/<名稱>；連到 Windows ~/.claude/skills，給 Windows 上的 Claude Code，例如 Orca bot）。
+// Windows 目標：透過 interop 以 `cmd.exe /c mklink /D` 建 Windows 原生 symlink，指向主 checkout 的 `\\wsl.localhost\<distro>\…`。
+//   從 /mnt/c 用 ln -s 建的是 WSL 專用 symlink，Windows 打不開；junction 不能指向 UNC。建立 symlink 要開發人員模式或系統管理員權限。
+//   只新增或更新清單上的項目；不在清單上的項目一律不碰（也不刪）。
 // 清單內 `# pin: <SHA>` 註明驗證過的上游版本；checkout 的 HEAD 不同時只警告。
 // stdout：--list 每個 skill 一行；--check 成功時 `CHECK_OK <n> skills`；同步成功時先印內容有變的 overlay `SKILL_CHANGED <名稱>`（已安裝的全域行為變了，retro spay2 b949589b#2），再印 `SYNCED <n> skills → <dirs>`。
-// stderr：MISSING、DUPLICATE、OVERLAY_FAILED（exit 1），NEW、SKIP、WARN、DANGLING <連結> -> <目標>、EXTERNAL <連結> -> <真實路徑>（只提示）。exit 0 成功、1 有任何 exit 1 的行或檢查失敗。
+// stderr：MISSING、DUPLICATE、OVERLAY_FAILED、WIN_LINK_FAILED（exit 1），NEW、SKIP、WARN、DANGLING <連結> -> <目標>、EXTERNAL <連結> -> <真實路徑>（只提示）。exit 0 成功、1 有任何 exit 1 的行或檢查失敗。
+//   Windows 目標：WIN_SKIP <原因>（不在 WSL 等，略過）；--check 回報 WIN_MISSING、WIN_WRONG <連結> -> <目前目標>（應為 …）、WIN_NOT_LINK（只提示，這台機器的狀態）；同步時建立或更新印 WIN_LINKED <連結> -> <目標>。
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir, release, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -24,6 +30,7 @@ const MATT = process.env.MATT_SKILLS || join(HOME, 'code/skills');
 const PSTACK = process.env.PSTACK_SKILLS || join(HOME, 'code/pstack');
 const BUILD = join(process.env.XDG_DATA_HOME || join(HOME, '.local/share'), 'ron-skills/overlay');
 const HOOK_DIR = process.env.HOOK_DIR || join(HOME, '.claude/hooks');
+const WIN_LIST = join(ROOT, 'windows-skills.txt');
 const DESTS = (process.env.SKILL_DIRS || `${HOME}/.claude/skills ${HOME}/.agents/skills`).split('\n')[0].split(/[ \t]+/).filter(Boolean);
 // git hook（pre-commit 跑 bin/check）會匯出這些變數，`git -C <上游 checkout>` 繼承後讀到的是本 repo。
 const env = { ...process.env };
@@ -166,9 +173,12 @@ function sync(check) {
       if (spawnSync(cmd, args, { env: childEnv, stdio: ['ignore', 2, 2] }).status !== 0) failed = true;
     }
 
+    const win = windowsPlan();
+    if (!win) failed = true;
     if (failed) return 1;
     if (check) {
       reportLinks();
+      checkWindows(win);
       console.log(`CHECK_OK ${target.size} skills`);
       return 0;
     }
@@ -202,11 +212,124 @@ function sync(check) {
     }
     syncHooks();
     linkPreCommit();
+    const winOk = syncWindows(win);
     console.log(`SYNCED ${target.size} skills → ${DESTS.join(' ')}`);
-    return 0;
+    return winOk ? 0 : 1;
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+/** 跑 Windows interop 指令；cmd.exe 在 Linux 路徑的 cwd 會先警告 UNC 不支援，有 /mnt/c 就換過去。stdout 用 latin1：cmd 的中文是 Big5，只需要 ASCII 部分。 */
+const interop = (cmd, args) => spawnSync(cmd, args, { encoding: 'latin1', cwd: isDir('/mnt/c') ? '/mnt/c' : undefined, stdio: ['ignore', 'pipe', 'pipe'] });
+const toWin = path => {
+  const result = interop('wslpath', ['-w', path]);
+  if (result.status !== 0) throw new Error(`wslpath -w ${path} 失敗（exit ${result.status}）`, { cause: result.error });
+  return result.stdout.trim();
+};
+
+/** Windows 目標的 WSL 路徑；不處理時印 WIN_SKIP 並回傳空字串。 */
+function windowsDir() {
+  if ('WIN_SKILL_DIR' in process.env) {
+    if (!process.env.WIN_SKILL_DIR) warn('WIN_SKIP WIN_SKILL_DIR 是空字串，略過 Windows 目標');
+    return process.env.WIN_SKILL_DIR;
+  }
+  if (process.env.SKILL_DIRS) {
+    warn('WIN_SKIP 有設 SKILL_DIRS，Windows 目標要另設 WIN_SKILL_DIR，略過');
+    return '';
+  }
+  if (!(process.env.WSL_DISTRO_NAME || /microsoft/i.test(release())) || !isDir('/mnt/c')) {
+    warn('WIN_SKIP 不在 WSL 或沒有 /mnt/c，略過 Windows 目標');
+    return '';
+  }
+  const profile = interop('cmd.exe', ['/c', 'echo %USERPROFILE%']).stdout.trim();
+  const unix = profile && interop('wslpath', ['-u', profile]);
+  if (!unix || unix.status !== 0) {
+    warn('WIN_SKIP 取不到 Windows 的 %USERPROFILE%，略過 Windows 目標');
+    return '';
+  }
+  return join(unix.stdout.trim(), '.claude/skills');
+}
+
+/**
+ * 讀 windows-skills.txt：清單錯（不是本 repo 的 skill、同名）回傳 null，由呼叫端 exit 1，CI 也驗得到；Windows 目標略過時 dir 是空字串。
+ * 連結指向主 checkout：worktree 會被刪掉，Windows 端要跟著 main。
+ */
+function windowsPlan() {
+  const listed = [];
+  let ok = true;
+  for (const rel of readFileSync(WIN_LIST, 'utf8').split('\n').map(line => line.trim())) {
+    if (!rel || rel.startsWith('#')) continue;
+    if (!hasSkill(join(ROOT, 'skills', rel))) {
+      warn(`MISSING windows ${rel}（本 repo 沒有 skills/${rel}/SKILL.md，請更新 windows-skills.txt）`);
+      ok = false;
+    } else if (listed.some(({ name }) => name === basename(rel))) {
+      warn(`DUPLICATE ${basename(rel)}（windows-skills.txt 同名）`);
+      ok = false;
+    } else {
+      listed.push({ name: basename(rel), rel });
+    }
+  }
+  if (!ok) return null;
+  const dir = listed.length ? windowsDir() : '';
+  if (!dir) return { dir, entries: [] };
+  return { dir, entries: listed.map(({ name, rel }) => ({ name, path: join(dir, name), to: toWin(join(mainCheckout(), 'skills', rel)) })) };
+}
+
+/** `dir /AL` 列出的 Windows 連結：名稱 → 目標（junction 的 `\??\` 前綴去掉）。沒有任何連結時 dir 回 exit 1，視為空。 */
+function windowsLinks(dir) {
+  const links = new Map();
+  for (const line of interop('cmd.exe', ['/c', 'dir', '/AL', toWin(dir)]).stdout.split(/\r?\n/)) {
+    const match = line.match(/<(?:SYMLINKD|SYMLINK|JUNCTION)>\s+(.+?) \[(.*)\]\s*$/);
+    if (match) links.set(match[1], match[2].replace(/^\\\?\?\\/, ''));
+  }
+  return links;
+}
+
+/** 每個清單項目的狀態：ok、missing、wrong（Windows 連結指向別處，或 WSL 專用 symlink）、notLink（實體目錄或檔案）。 */
+function windowsState({ dir, entries }) {
+  const links = entries.length ? windowsLinks(dir) : new Map();
+  return entries.map(entry => {
+    const current = links.get(entry.name);
+    if (current !== undefined) return { ...entry, state: current === entry.to ? 'ok' : 'wrong', current, windowsLink: true };
+    if (isLink(entry.path)) return { ...entry, state: 'wrong', current: `${readlinkSync(entry.path)}（WSL 專用 symlink，Windows 打不開）` };
+    if (lstatSync(entry.path, { throwIfNoEntry: false })) return { ...entry, state: 'notLink' };
+    return { ...entry, state: 'missing' };
+  });
+}
+
+function checkWindows(plan) {
+  for (const { path, to, state, current } of windowsState(plan)) {
+    if (state === 'missing') warn(`WIN_MISSING ${path}（bin/sync-skills 會建立，指向 ${to}）`);
+    else if (state === 'wrong') warn(`WIN_WRONG ${path} -> ${current}（應為 ${to}）`);
+    else if (state === 'notLink') warn(`WIN_NOT_LINK ${path}（實體目錄或檔案，不覆蓋）`);
+  }
+}
+
+/** 建立或更新清單上的 Windows 連結；失敗回傳 false。 */
+function syncWindows(plan) {
+  let ok = true;
+  if (plan.entries.length) mkdirSync(plan.dir, { recursive: true });
+  for (const { path, to, state, windowsLink } of windowsState(plan)) {
+    if (state === 'ok') continue;
+    if (state === 'notLink') {
+      warn(`SKIP ${path}（實體目錄或檔案，不覆蓋）`);
+      continue;
+    }
+    if (state === 'wrong') {
+      // Windows 連結用 rmdir 只移除連結本身；WSL 專用 symlink 從 WSL 刪。
+      if (windowsLink) interop('cmd.exe', ['/c', 'rmdir', toWin(path)]);
+      if (lstatSync(path, { throwIfNoEntry: false })) unlinkSync(path);
+    }
+    const result = interop('cmd.exe', ['/c', 'mklink', '/D', toWin(path), to]);
+    if (result.status === 0) {
+      warn(`WIN_LINKED ${path} -> ${to}`);
+    } else {
+      warn(`WIN_LINK_FAILED ${path}：mklink /D 失敗（exit ${result.status}）；Windows 建 symlink 要開發人員模式（設定 → 系統 → 開發人員專用）或系統管理員權限，開啟後重跑 bin/sync-skills`);
+      ok = false;
+    }
+  }
+  return ok;
 }
 
 /** 兩個目錄的檔案清單與內容是否相同；不存在的目錄視為空。 */
