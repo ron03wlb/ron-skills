@@ -148,7 +148,8 @@ test('--check 對指向本 repo、但不在清單上的 Windows 連結印 WIN_OR
     `WIN_ORPHAN ${join(win, 'removed-main')} -> ${removed}`,
     `WIN_ORPHAN ${join(win, 'removed-worktree')} -> ${fromWorktree}`,
   ]);
-  assert.doesNotMatch(result.stderr, /ask-matt|session-handoff/);
+  // 只看 WIN_ORPHAN 行：macOS 上 WSL 端的 EXTERNAL 行也會帶出 ask-matt 這類名稱（PR #404 的 checks-macos）。
+  assert.doesNotMatch(orphans.join('\n'), /ask-matt|session-handoff/);
   assert.equal(readlinkSync(join(win, 'removed-main')), removed);
   assert.equal(readlinkSync(join(win, 'ask-matt')), external);
 });
