@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { backgroundJobReason, bypassReason, chainedHandoff, chainedLongWaitReason, chainedNote, exitGateReason, foregroundReason, probeFilterReason, wideGrepReason, writesFile } from './claude-hook-git-bypass.mjs';
+import { BUILTIN_BACKGROUND_ONLY, backgroundJobReason, bypassReason, chainedHandoff, chainedLongWaitReason, chainedNote, exitGateReason, foregroundReason, probeFilterReason, selfMatchLoopReason, wideGrepReason, writesFile } from './claude-hook-git-bypass.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-git-bypass.mjs', import.meta.url));
@@ -275,6 +275,10 @@ test('hook：以 --exit-gate 的現行參數執行，迴圈內的 gate 與唯讀
   assert.equal(status('node scripts/issue-create.mjs --help 2>&1 | head -5'), 0);
   assert.equal(status('node scripts/issue-create.mjs --template --parent 999 2>&1 | head -60'), 0);
   assert.equal(status('node scripts/followups.mjs --help | head -5'), 0);
+  // 真實指令：retro spay2 2df91b24#3（jsonl 1719，舊碼 rc=2）。不帶參數只印用法、不寫入；帶子命令的照攔。
+  assert.equal(status('node scripts/followups.mjs 2>&1 | head -20'), 0);
+  assert.equal(status('node scripts/followups.mjs | grep -i add'), 0);
+  assert.equal(status('node scripts/followups.mjs done 754 x 2>&1 | head -20'), 2);
   assert.equal(status('node scripts/issue-create.mjs --title x --help | head'), 2);
 });
 
@@ -694,4 +698,45 @@ test('--long-wait／--whole-output：直譯器 -e 的 import(…)／require(…)
   ]) assert.equal(probeFilterReason(command, probe), null, command);
   for (const command of ['node scripts/pilot-status.mjs --probe | head', 'cd x && node /a/scripts/pilot-status.mjs --probe 2>&1 | grep STAGEABLE',
   ]) assert.ok(probeFilterReason(command, probe), command);
+});
+
+// 真實指令：retro spay2 1a01bf03#1（#961 worker 卡 2 小時；舊碼 rc=0）。pattern 也在執行迴圈的 shell 自己的命令列，pgrep -f 永遠找得到。
+const SELF_MATCH_WAIT = 'until ! pgrep -f "impacted-tests.mjs c1e9348e3" >/dev/null; do sleep 30; done';
+
+test('selfMatchLoopReason：while／until 迴圈條件或內文的 pgrep -f 攔下', () => {
+  for (const command of [SELF_MATCH_WAIT, `cd /x && ${SELF_MATCH_WAIT}; tail -12 log`,
+    'while [ -n "$(pgrep -af foo)" ]; do sleep 5; done', 'while true; do pgrep --full x || break; sleep 1; done',
+    'until ! kill -0 $(pgrep -f "copy-templates|run-checks" | head -1) 2>/dev/null; do sleep 2; done',
+    'until grep -q x log || ! pgrep -fl "run-codex-review.mjs 6a" >/dev/null; do sleep 5; done',
+  ]) assert.equal(selfMatchLoopReason(command), true, command);
+});
+
+test('selfMatchLoopReason：迴圈外單獨的 pgrep、沒有 -f、for 迴圈、kill -0 與字串不攔', () => {
+  for (const command of ['pgrep -af foo', 'pgrep -f foo; echo done', 'until ! pgrep foo; do sleep 1; done', 'for i in 1 2; do pgrep -f x; done',
+    'while kill -0 123 2>/dev/null; do sleep 30; done', 'grep "while pgrep -f" x', 'while read l; do echo "$l"; done < f; pgrep -af foo',
+  ]) assert.equal(selfMatchLoopReason(command), false, command);
+});
+
+test('hook：迴圈內 pgrep -f 不需參數就 exit 2，訊息指向 run_in_background 與 kill -0', () => {
+  const denied = hook(JSON.stringify({ tool_input: { command: SELF_MATCH_WAIT } }));
+  assert.equal(denied.status, 2);
+  assert.match(denied.stderr, /^拒絕：while／until 迴圈裡的 `pgrep -f` 會比對到執行這個迴圈的 shell 本身/);
+  assert.match(denied.stderr, /run_in_background: true/);
+  assert.match(denied.stderr, /`while kill -0 <pid> 2>\/dev\/null; do sleep 30; done`/);
+  assert.equal(hook(JSON.stringify({ tool_input: { command: 'pgrep -af foo' } })).status, 0);
+});
+
+// 真實指令：retro spay2 1a01bf03#8（前景 --when-idle 跑滿 300 秒才被移到背景；舊碼 rc=0）。
+const WHEN_IDLE = 'cd /home/ron/code/spay2 && node scripts/orca-session-send.mjs --terminal term_83f036bf --when-idle --prompt "coordinator：x"';
+
+test('hook：orca-session-send.mjs --when-idle 是內建 background-only，前景拒絕、背景與不帶 --when-idle 放行', () => {
+  assert.deepEqual(BUILTIN_BACKGROUND_ONLY, ['orca-session-send.mjs --when-idle']);
+  const call = (command, extra = {}) => hook(JSON.stringify({ tool_input: { command, ...extra } }));
+  const denied = call(WHEN_IDLE);
+  assert.equal(denied.status, 2);
+  assert.match(denied.stderr, /^拒絕：orca-session-send\.mjs --when-idle 在前景執行/);
+  assert.match(denied.stderr, /run_in_background: true/);
+  assert.equal(call(WHEN_IDLE, { run_in_background: true }).status, 0);
+  assert.equal(call('node scripts/orca-session-send.mjs --terminal t --prompt x').status, 0);
+  assert.equal(call('grep -n -- "--when-idle" scripts/orca-session-send.mjs').status, 0);
 });
