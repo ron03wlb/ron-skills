@@ -703,6 +703,17 @@ test('adapter 宣告的路徑被改名或換成 symlink：一樣算消失，不�
   });
 });
 
+test('adapter 的 Protected paths: 行沒有路徑：不快轉，WARN 說明宣告寫錯，照樣 LANDED', t => {
+  const f = fixture(t, { seed: { 'docs/agents/issue-run.md': 'Protected paths: private\n' } });
+  const before = f.sh(f.main, 'rev-parse', 'HEAD');
+  const result = f.land(['feature', '--body-file', f.body]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [pr] = f.prs();
+  assert.equal(f.last(result), `LANDED ${pr.number} ${pr.mergeCommit.oid}`);
+  assert.match(result.stdout, /^WARN main-not-synced .*Protected paths: 行沒有路徑/m);
+  assert.equal(f.sh(f.main, 'rev-parse', 'HEAD'), before);
+});
+
 test('adapter 沒宣告 Protected paths：刪掉私人檔照舊快轉，輸出與現在相同', t => {
   const f = fixture(t, { seed: { 'docs/agents/issue-run.md': '# adapter\n\n見 `Protected paths:`。\n', 'private/a.txt': 'only copy\n' } });
   f.sh(f.wt, 'rm', '-q', 'private/a.txt');
