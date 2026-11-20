@@ -1,5 +1,10 @@
 {
   "copies": {
+    "scripts/agent-model-audit.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/agent-model-audit.mjs",
+      "commit": "3c410e3f8b337e43289045f974f0d43533071a0b",
+      "sha256": "8fd75828d44eebabd91d2b3779be4cad695d1ecf6b6b54f7e88ec635f9c8b2ad"
+    },
     "scripts/check-claude-settings.mjs": {
       "template": "skills/engineering/setup-workflow/templates/check-claude-settings.mjs",
       "commit": "ada628ad8ff233f859b6e1cd3cdb9965b4629871",
@@ -79,6 +84,11 @@
       "template": "skills/engineering/setup-workflow/templates/lib/changed-units.mjs",
       "commit": "7f95836c6cd67d8f08d599cc90240d214a4da129",
       "sha256": "1ccff6e0c4cdd512810c823d3620a1caec1f008851874e901daed0f4cf5d5789"
+    },
+    "scripts/lib/claude-projects.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/lib/claude-projects.mjs",
+      "commit": "3c410e3f8b337e43289045f974f0d43533071a0b",
+      "sha256": "baa5911888b44ce3205b151757bb2778fde9a6a67e27d1863e00fe4465d691a2"
     },
     "scripts/lib/hosts.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/hosts.mjs",
@@ -194,6 +204,11 @@
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
       "commit": "d60c5aff3cc9b0a0d47e71e4b5dea4d0b75cb6c6",
       "sha256": "cf719a6b5d6f1eccdf39c00e4848c42f0a6bd53d50e7f599425cacea5a2b8edd"
+    },
+    "scripts/token-usage.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/token-usage.mjs",
+      "commit": "3c410e3f8b337e43289045f974f0d43533071a0b",
+      "sha256": "9cb02e6b2f3c5293d460d2f8c991b8143f8a435a29d52272d7237f27e666f893"
     },
     "scripts/worktree-overlap.mjs": {
       "template": "skills/engineering/setup-workflow/templates/worktree-overlap.mjs",
