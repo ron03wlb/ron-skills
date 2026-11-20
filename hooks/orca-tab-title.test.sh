@@ -1,11 +1,14 @@
 #!/bin/sh
 # orca-tab-title.sh 回歸測試：以假的 orca CLI 記錄 rename 呼叫，不動真的 Orca 分頁。
-# 用法：sh ~/.claude/hooks/orca-tab-title.test.sh（需至少兩個存在的 Orca worktree）
+# 用法：sh ~/.claude/hooks/orca-tab-title.test.sh；bin/check 經 tests/orca-tab-title-hook.test.mjs 執行（#374）。
+# 兩個 Orca issue worktree 在暫存目錄自建，hook 的 HOME 也指向暫存目錄：不需要 Orca 或真實 worktree，也不碰 ~/.cache。
 set -u
 hook="$(dirname "$0")/orca-tab-title.sh"
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp" "$HOME/.cache/orca-tab-title/test_handle"*' EXIT
+trap 'rm -rf "$tmp"' EXIT
 fail=0
+fake_home="$tmp/home"
+mkdir -p "$fake_home"
 export TAB_STATE_DIR="$tmp/tab-titles"
 mkdir -p "$TAB_STATE_DIR"
 
@@ -20,13 +23,21 @@ esac
 EOF
 chmod +x "$tmp/fake-orca"
 
-# 取兩個存在、分支含不同 issue 編號的 worktree
-set -- $(git -C "$HOME/code/spay2" worktree list --porcelain | sed -n 's/^worktree //p' | grep '/orca/workspaces/.*issue-[0-9]' |
-  awk '{ n = $0; sub(/.*issue-/, "", n); sub(/[^0-9].*/, "", n) } !seen[n]++' | head -2)
-[ $# -eq 2 ] || { echo "SKIP：找不到兩個 Orca issue worktree"; exit 0; }
-a=$1 b=$2
-issue_a="#$(git -C "$a" branch --show-current | sed -n 's/.*issue-\([0-9]*\).*/\1/p')"
-issue_b="#$(git -C "$b" branch --show-current | sed -n 's/.*issue-\([0-9]*\).*/\1/p')"
+# 自建主 checkout 與兩個分支含不同 issue 編號的 Orca worktree（路徑形如 hook 認得的 …/orca/workspaces/<repo>/<名稱>）
+repo="$tmp/code/spay2" a="$tmp/orca/workspaces/spay2/issue-101" b="$tmp/orca/workspaces/spay2/issue-202"
+fixture() { git -c user.name=fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false -C "$repo" "$@" >/dev/null 2>&1; }
+mkdir -p "$repo" && fixture init -q && fixture commit -q --allow-empty -m fixture &&
+  fixture worktree add -b issue-101-fixture "$a" && fixture worktree add -b issue-202-fixture "$b" ||
+  { echo "FAIL fixture：建不出兩個 worktree"; exit 1; }
+issue_a='#101' issue_b='#202'
+
+# hook 把工作丟到背景就結束；背景子 shell 與 python 繼承 fd 3（指向下游 cat 的管線），cat 要等它們都結束才收到 EOF。
+# 以此等背景工作做完再讀 calls.log，不用固定 sleep（負載高時 sleep 不夠會誤判，負載低時又白等）。
+# 額外的環境變數當參數傳（`VAR=x 函式` 在 bash 的 posix 模式，也就是 macOS 的 sh，呼叫後還留著）。
+run_hook() {
+  env HOME="$fake_home" ORCA_TERMINAL_HANDLE=test_handle ORCA_CLI_COMMAND="$tmp/fake-orca" "$@" sh "$hook" 3>&1 >/dev/null 2>&1 |
+    cat >/dev/null
+}
 
 mk() { printf '{"type":"assistant","message":{"content":[{"type":"tool_use","input":{"command":"%s"}}]}}\n' "$1"; }
 { mk "cd $a && git status"; mk "for d in $a $b; do git -C \$d status; done"; } > "$tmp/transcript.jsonl"
@@ -34,11 +45,10 @@ mk() { printf '{"type":"assistant","message":{"content":[{"type":"tool_use","inp
 # $1 事件 $2 提示 $3 期望的 rename 參數（空字串表示不應呼叫）$4 情境名稱 $5 假 CLI 回傳的原生標題（省略用預設）
 # $6 為 keep 時保留前一案例的快取
 check() {
-  [ "${6:-}" = keep ] || rm -rf "$HOME/.cache/orca-tab-title/test_handle"*; : > "$tmp/calls.log"
-  printf '{"hook_event_name":"%s","prompt":"%s","cwd":"%s/code/spay2","transcript_path":"%s"}' \
-    "$1" "$2" "$HOME" "$tmp/transcript.jsonl" |
-    ORCA_TERMINAL_HANDLE=test_handle ORCA_CLI_COMMAND="$tmp/fake-orca" FAKE_TITLE="${5:-}" sh "$hook"
-  sleep 3
+  [ "${6:-}" = keep ] || rm -rf "$fake_home/.cache/orca-tab-title/test_handle"*; : > "$tmp/calls.log"
+  printf '{"hook_event_name":"%s","prompt":"%s","cwd":"%s","transcript_path":"%s"}' \
+    "$1" "$2" "$repo" "$tmp/transcript.jsonl" |
+    run_hook FAKE_TITLE="${5:-}"
   got=$(grep rename "$tmp/calls.log" | sed 's/^terminal rename --terminal test_handle *//')
   if [ "$got" = "$3" ]; then echo "PASS $4"; else echo "FAIL $4：期望 [$3] 實得 [$got]"; fail=1; fi
 }
@@ -53,11 +63,10 @@ check Stop '' "--title $issue_a 繼續實作" '原生標題為 Claude Code 時�
 
 # PostToolUse：只看本次 tool_input；$1 指令 $2 期望的 rename 參數 $3 情境名稱 $4 為 keep 時保留快取
 check_post() {
-  [ "${4:-}" = keep ] || rm -rf "$HOME/.cache/orca-tab-title/test_handle"*; : > "$tmp/calls.log"
-  printf '{"hook_event_name":"PostToolUse","tool_input":{"command":"%s"},"cwd":"%s/code/spay2","transcript_path":"%s"}' \
-    "$1" "$HOME" "$tmp/transcript.jsonl" |
-    ORCA_TERMINAL_HANDLE=test_handle ORCA_CLI_COMMAND="$tmp/fake-orca" sh "$hook"
-  sleep 3
+  [ "${4:-}" = keep ] || rm -rf "$fake_home/.cache/orca-tab-title/test_handle"*; : > "$tmp/calls.log"
+  printf '{"hook_event_name":"PostToolUse","tool_input":{"command":"%s"},"cwd":"%s","transcript_path":"%s"}' \
+    "$1" "$repo" "$tmp/transcript.jsonl" |
+    run_hook
   got=$(grep rename "$tmp/calls.log" | sed 's/^terminal rename --terminal test_handle *//')
   if [ "$got" = "$2" ]; then echo "PASS $3"; else echo "FAIL $3：期望 [$2] 實得 [$got]"; fail=1; fi
 }

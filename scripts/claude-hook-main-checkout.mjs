@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { doubleQuoteEnd, substitutionEnd } from './lib/shell-quote.mjs';
 
 const git = (cwd, ...args) => spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
 
@@ -83,11 +84,15 @@ function tokenize(command) {
     const c = command[i];
     if (c === "'") { const end = command.indexOf("'", i + 1); if (end < 0) throw new Error('quote'); word = (word ?? '') + command.slice(i + 1, end).replaceAll('$', LITERAL_DOLLAR); i = end; }
     else if (c === '"') {
+      // 雙引號裡的 `$( … )`、反引號引號狀態重設（#360）：整段原樣留在字裡，帶著 `$` 或反引號，代換時解析不了、不算寫入目標。
+      const { end } = doubleQuoteEnd(command, i);
+      if (end >= command.length) throw new Error('quote');
       let j = i + 1; let text = '';
-      for (; j < command.length && command[j] !== '"'; j += 1) {
-        if (command[j] === '\\' && j + 1 < command.length) { j += 1; if (command[j] !== '\n') text += command[j] === '$' ? LITERAL_DOLLAR : command[j]; } else text += command[j];
+      for (; j < end; j += 1) {
+        if (command[j] === '\\' && j + 1 < end) { j += 1; if (command[j] !== '\n') text += command[j] === '$' ? LITERAL_DOLLAR : command[j]; }
+        else if (command[j] === '$' && command[j + 1] === '(') { const close = substitutionEnd(command, j); text += command.slice(j, close + 1); j = close; }
+        else text += command[j];
       }
-      if (j >= command.length) throw new Error('quote');
       word = (word ?? '') + text; i = j;
     } else if (c === '\\' && command[i + 1] === '\n') i += 1; // 續行：反斜線加換行兩個都去掉，不成字也不分段（#185）
     else if (c === '\\' && i + 1 < command.length) { word = (word ?? '') + (command[i + 1] === '$' ? LITERAL_DOLLAR : command[i + 1]); i += 1; }

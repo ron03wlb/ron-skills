@@ -8,7 +8,7 @@
 //   只檢查格式，不判斷狀態對不對；stop_hook_active 為 true（已因 Stop hook 續跑一次）時不檢查。
 //   補前綴蓋不掉既有狀態：標題以狀態名開頭但分隔符不對（`待 Retro|…`），或記錄的標題是處理中以外的狀態（別的 hook 蓋掉實際標題，或 Stop 觸發條件剛換狀態但分頁沒跟上）時不改名。
 //   這兩種情況、改名失敗、讀回仍沒有前綴時 exit 2，stderr 交回 agent 改名。
-// 預設觸發條件見 DEFAULT_TRIGGERS；`/retro` 的待關閉由 retro 最後一步自己呼叫 tab-state。專案可以在 `docs/agents/tab-state.json`
+// 預設觸發條件見 DEFAULT_TRIGGERS；`/retro` 的待關閉由 retro 最後一步自己呼叫 tab-state，記錄的標題已是待關閉時觸發條件不再降回待 Retro（#327）。專案可以在 `docs/agents/tab-state.json`
 // 新增、覆寫或停用觸發條件：`{ "triggers": { "<名稱>": { "event": "PostToolUse"|"Stop", "match": "<regex，逐行比對>", "skipCommand": "<regex>", "state": "<狀態>" } | null } }`，
 // 同名覆寫、null 停用；PostToolUse 的 match 比對 Bash 的 stdout，Stop 的比對最後一段 assistant 文字；
 // 選填的 skipCommand 命中 Bash 指令時不觸發（Stop 沒有指令，不看它）。檔案不存在或不是合法 JSON 就用預設值。
@@ -49,6 +49,14 @@ export function matchedState(list, event, text, command = '') {
     } catch { /* 略過寫壞的 regex */ }
   }
   return null;
+}
+
+/**
+ * 觸發條件的狀態要不要套到 `handle` 的分頁：記錄的標題已是待關閉（`/retro` 最後一步切的）時不降回待 Retro（#327：worker 在 DONE 之後的同一輪跑 retro，
+ * Stop 時最後一段文字仍以 DONE 結果行收尾）。
+ */
+export function applies(state, recorded) {
+  return !(state === '待 Retro' && String(recorded ?? '').startsWith('待關閉｜'));
 }
 
 const unquote = word => word.startsWith("'") ? word.slice(1, -1) : word.startsWith('"') ? word.slice(1, -1).replace(/\\(.)/g, '$1') : word;
@@ -117,12 +125,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const title = renamedTitle(input.tool_input?.command, handle);
       if (title !== null) recordTitle(handle, title);
       const state = matchedState(list, 'PostToolUse', output(input.tool_response), String(input.tool_input?.command ?? ''));
-      if (state) await setState(ctx, handle, state);
+      if (state && applies(state, recordedTitle(handle))) await setState(ctx, handle, state);
     } else if (input.hook_event_name === 'Stop') {
       let text = '';
       try { text = input.transcript_path ? lastAssistantText(input.transcript_path) : ''; } catch { /* 讀不到 transcript 就不觸發 */ }
       const state = matchedState(list, 'Stop', text);
-      if (state) await setState(ctx, handle, state);
+      if (state && applies(state, recordedTitle(handle))) await setState(ctx, handle, state);
       if (!input.stop_hook_active) {
         const title = await currentTitle(ctx, handle);
         if (!hasState(title) && !await addWorkingPrefix(ctx, handle, title)) {
