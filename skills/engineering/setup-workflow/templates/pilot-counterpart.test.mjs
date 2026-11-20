@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./pilot-counterpart.mjs', import.meta.url));
 const run = body => spawnSync('node', [SCRIPT], { input: body, encoding: 'utf8' });
@@ -59,4 +62,23 @@ test('--file：每張對應單後面印一行 COMMAND，照 host 用 gh issue co
     + 'COMMAND gh issue comment 12 --repo acme/web --body-file \'/tmp/x y/counterpart-1.md\'\n'
     + 'COUNTERPART acme/ops#5 github github.corp.example/acme/ops\n'
     + 'COMMAND gh issue comment 5 --repo github.corp.example/acme/ops --body-file \'/tmp/x y/counterpart-1.md\'\n');
+});
+
+// #304：adapter 宣告的對應專案不在 github.com（`Counterpart projects: <owner>/<repo>…`），裸 ref 命中宣告時多印 COUNTERPART_BARE，
+// Probe 在派工前攔下，不必等到 Close 才 STOP counterpart。
+test('--adapter：裸 ref 命中宣告的專案時多印 COUNTERPART_BARE；網址與沒宣告的專案照舊', t => {
+  const temp = mkdtempSync(join(realTmpdir(), 'pilot-counterpart-'));
+  t.after(() => rmSync(temp, { recursive: true, force: true }));
+  const adapter = join(temp, 'issue-run.md');
+  writeFileSync(adapter, '# adapter\n\n## Readiness\n\nCounterpart projects: `acme/app`, Acme/Ops\n');
+  const body = 'app 對應單：acme/app#7\nweb 對應單：acme/web#12\nops 對應單：acme/ops#5\n';
+  const result = spawnSync('node', [SCRIPT, '--adapter', adapter, '--file', '/f.md'], { input: body, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'COUNTERPART acme/app#7\nCOUNTERPART_BARE acme/app#7\nCOMMAND gh issue comment 7 --repo acme/app --body-file /f.md\n'
+    + 'COUNTERPART acme/web#12\nCOMMAND gh issue comment 12 --repo acme/web --body-file /f.md\n'
+    + 'COUNTERPART acme/ops#5\nCOUNTERPART_BARE acme/ops#5\nCOMMAND gh issue comment 5 --repo acme/ops --body-file /f.md\n');
+  const url = spawnSync('node', [SCRIPT, '--adapter', adapter], { input: 'app 對應單：http://192.168.200.202/acme/app/-/issues/7\n', encoding: 'utf8' });
+  assert.equal(url.stdout, 'COUNTERPART acme/app#7 gitlab http://192.168.200.202/acme/app\n');
+  writeFileSync(adapter, '# adapter\n');
+  assert.equal(spawnSync('node', [SCRIPT, '--adapter', adapter], { input: body, encoding: 'utf8' }).stdout, run(body).stdout);
 });
