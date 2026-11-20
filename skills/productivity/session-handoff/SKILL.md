@@ -74,7 +74,7 @@ Give the owner a short 交接摘要 in chat (Traditional Chinese): what was land
 
 A fresh Home chat auto-reads SOUL.md + MEMORY.md only. For it to continue seamlessly it must also read `memory/session-handoff.md`. Two ways, in order of preference:
 
-1. **SOUL.md line (the owner adds it by hand; this skill never writes SOUL.md)**: under `## How I work`, the line `- 開新 chat 先讀 memory/session-handoff.md：狀態是「接續中」就照「下一步」接續，接完把狀態改成「已接續」。`
+1. **SOUL.md line (the owner adds it by hand; this skill never writes SOUL.md)**: under `## How I work`, the line `- 開新 chat 先讀 memory/session-handoff.md（沒有就略過）：狀態是「接續中」就照「下一步」接續，接完把狀態改成「已接續」。`
 2. **Fallback while a bot's SOUL.md lacks that line**: the step-4 summary ends with 「新 chat 請先讀 memory/session-handoff.md 接續」 for the owner to paste as the new chat's first message.
 
 On pickup: read the snapshot, re-check each item/worker/thread is still live (item mail can repeat; a worker may have finished), do the "下一步", then set the snapshot 狀態 to `已接續` or refresh it for the next handoff. Done when the new chat has resumed the "下一步" and the snapshot reflects the new position.

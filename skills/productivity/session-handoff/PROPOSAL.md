@@ -28,7 +28,7 @@
 
 ## 3. 新 chat 自動接續（owner 已核准；SOUL 由 owner 親手加）
 - 5 個 bot 的 SOUL.md 都在 `## How I work` 下加這行（定稿文字，**bot 不改 SOUL**）：
-  `- 開新 chat 先讀 memory/session-handoff.md：狀態是「接續中」就照「下一步」接續，接完把狀態改成「已接續」。`
+  `- 開新 chat 先讀 memory/session-handoff.md（沒有就略過）：狀態是「接續中」就照「下一步」接續，接完把狀態改成「已接續」。`
 - 固定快照位置：各 bot home 的 `memory/session-handoff.md`（覆蓋式單一現況；要留舊的先移到 `memory/handoffs/<date>.md`）。
 - 過渡期（某個 bot 的 SOUL 還沒加這行時）：交接摘要最後一行是「新 chat 請先讀 memory/session-handoff.md 接續」，讓 owner 貼成新 chat 的第一句。
 
