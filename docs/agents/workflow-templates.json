@@ -77,7 +77,7 @@
     },
     "scripts/lib/changed-units.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/changed-units.mjs",
-      "commit": "33f82d4933b3335c79b69d5e01ff761d2f9ff1e7",
+      "commit": "7f95836c6cd67d8f08d599cc90240d214a4da129",
       "sha256": "1ccff6e0c4cdd512810c823d3620a1caec1f008851874e901daed0f4cf5d5789"
     },
     "scripts/lib/hosts.mjs": {
@@ -197,8 +197,8 @@
     },
     "scripts/worktree-overlap.mjs": {
       "template": "skills/engineering/setup-workflow/templates/worktree-overlap.mjs",
-      "commit": "33f82d4933b3335c79b69d5e01ff761d2f9ff1e7",
-      "sha256": "89450451e63c290d9bdd3b814c3715625606cfacf1d3cd786a1b6e2915c77878"
+      "commit": "7f95836c6cd67d8f08d599cc90240d214a4da129",
+      "sha256": "fb21531028af3b65788e44adc380f124ac4e1066c049557f212879b511c9bed1"
     }
   },
   "source": "ron03wlb/ron-skills"

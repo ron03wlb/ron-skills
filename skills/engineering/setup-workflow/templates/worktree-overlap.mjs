@@ -40,7 +40,7 @@
 //   --mine 不帶 --main、自己的改動檔數超過上限（預設 200，`--max-files <N>` 調整）時，不比對任何 worktree，只印這一行、exit 3
 //   （#365：investing 的 develop 領先 main 263 個 commit，每個檔對約 20 個 worktree 算 hunk，300 秒跑不完；帶 --main develop 0.09 秒）。
 //   <N> 是 merge-base(HEAD, <主分支>)..HEAD 的 commit 數。<建議分支> 是本機與 remote-tracking 分支中、和 HEAD 的 merge-base 到 HEAD
-//   最少 commit 的那一條（不含 <主分支>、自己的分支、其他 linked worktree 檢出的分支、`*/HEAD`，也不含已包含 HEAD 的分支：拿它當基準，
+//   最少 commit 的那一條（不含 <主分支>、自己的分支、其他 linked worktree 檢出的分支與這兩者的 remote-tracking 分身、`*/HEAD`，也不含已包含 HEAD 的分支：拿它當基準，
 //   本方的 commit 會整個消失；同數取名稱排序第一個，本機分支排在 `origin/…` 之前），比 <主分支> 近才建議，否則印 `-`。
 //   看到這行：帶 `--main <建議分支>`（或自己知道的整合分支）重跑；印 `-` 時基準沒有更近的分支，改動本來就這麼多，
 //   帶 `--main <主分支>` 照常比對（或調高 --max-files）。帶了 --main 或在上限內時行為不變。
@@ -109,7 +109,8 @@ function ownChanges(cwd, main) {
 /**
  * --mine 的基準落後：`OVERLAP_BASE_BEHIND <main> <N> --main <建議分支>`（#365）。
  * 建議分支：本機與 remote-tracking 分支中 merge-base(HEAD, 它)..HEAD 最少、但不是 0（已含 HEAD）的一條，
- * 排除 `main`、HEAD 自己的分支、`checkedOut`（其他 linked worktree 檢出的分支）與 `<remote>/HEAD`；不比 `main` 近時為 `-`。
+ * 排除 `main`、HEAD 自己的分支、`checkedOut`（其他 linked worktree 檢出的分支）、後兩者的 remote-tracking 分身與 `<remote>/HEAD`；
+ * 不比 `main` 近時為 `-`。
  */
 export function baseBehind(top, base, main, checkedOut = []) {
   const count = from => Number(git(top, 'rev-list', '--count', `${from}..HEAD`).trim());
@@ -118,10 +119,12 @@ export function baseBehind(top, base, main, checkedOut = []) {
   const skip = new Set([main, own, ...checkedOut]);
   let best = null;
   // 本機分支在前、remote-tracking 在後，各自依名稱排序：同數時本機的 develop 勝過 origin/develop。
+  // remote-tracking 略過 `<remote>/HEAD`，也略過自己與其他 worktree 分支的分身（origin/issue/…）：推過之後它離 HEAD 很近，
+  // 當基準會藏掉本方改動。origin/<主分支> 不略過：本機主分支過期時它仍可能比較近。
   const refs = prefix => git(top, 'for-each-ref', '--format=%(refname:short)', prefix).split('\n').filter(Boolean).sort();
-  const branches = [...refs('refs/heads/'), ...refs('refs/remotes/').filter(ref => !ref.endsWith('/HEAD') && ref.includes('/'))];
-  for (const branch of branches) {
-    if (skip.has(branch)) continue;
+  const twin = ref => [own, ...checkedOut].includes(ref.slice(ref.indexOf('/') + 1));
+  const remotes = refs('refs/remotes/').filter(ref => ref.includes('/') && !ref.endsWith('/HEAD') && !twin(ref));
+  for (const branch of [...refs('refs/heads/').filter(ref => !skip.has(ref)), ...remotes]) {
     const fork = spawnGit(top, 'merge-base', 'HEAD', branch);
     if (fork.status !== 0) continue;
     const n = count(fork.stdout.trim());

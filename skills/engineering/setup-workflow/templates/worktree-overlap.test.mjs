@@ -364,3 +364,18 @@ test('建議分支：已含 HEAD 的分支（如合入了本方的 stage 分支�
   assert.equal(remote.status, 3, remote.stderr);
   assert.equal(remote.stdout, `OVERLAP_BASE_BEHIND main ${commits + 1} --main origin/develop\n`);
 });
+
+test('建議分支：自己與其他 worktree 分支的 remote-tracking 分身（origin/issue/…）也不建議', t => {
+  const { main, feat, other, commits } = behindFixture(t);
+  // feat 推過一次後又多了 2 個 commit：origin/issue/9-feat 離 HEAD 只有 2 個 commit，比 develop 的 3 個近，但拿它當基準會藏掉本方改動。
+  git(main, 'update-ref', 'refs/remotes/origin/issue/9-feat', git(feat, 'rev-parse', 'HEAD'));
+  for (const n of [1, 2]) {
+    writeFileSync(join(feat, `develop/${n}.txt`), `feat ${n}\n`);
+    git(feat, 'commit', '-q', '-am', `#9 ${n}`);
+  }
+  git(other, 'commit', '-q', '-am', '#8');
+  git(main, 'update-ref', 'refs/remotes/origin/issue/8-other', git(other, 'rev-parse', 'HEAD'));
+  const result = run(feat, '--mine');
+  assert.equal(result.status, 3, result.stderr);
+  assert.equal(result.stdout, `OVERLAP_BASE_BEHIND main ${commits + 3} --main develop\n`);
+});
