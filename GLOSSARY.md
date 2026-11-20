@@ -75,7 +75,7 @@ session 還在處理這件事，包含停下來等使用者回答或核准。
 _Avoid_: 進行中、WIP
 
 **待 Retro**:
-session 的工作已經做完，等使用者在這個分頁跑 `/retro`。
+session 的工作已經做完，等使用者在這個分頁跑 `/retro`。adapter 有 Retro collect 條目時，pilot 的 worker 與交接後的 coordinator 自己跑，通常直接到待關閉。
 _Avoid_: 完成、done
 
 **待關閉**:

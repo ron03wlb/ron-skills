@@ -1428,3 +1428,30 @@ test('changedUnits：to 為 null 時比對工作樹，未追蹤的 .md 新檔也
   ]);
   assert.deepEqual([...changedUnits(repo, base, null, { paths: ['new.md'] }).keys()], ['new.md']);
 });
+
+// #327 第 2 項（investing session 5936fde0）：pool 列 `human #133`、`human #184`，兩張都寫 `Operator prerequisite：` 等 Operator，
+// gates.md 卻只有 G15（#133），probe 只印 `GATE G15`；coordinator 沒問，Operator 兩度追問「確認目前有什麼需要決策的？」。
+const ISSUE_184 = '## 背景\n\n加 taifex 報價來源。\n\nOperator prerequisite：在 budgets.yaml 新增 taifex 來源…需 Operator 核准\n\n## 驗收\n\n- [ ] 測試';
+const G15 = `# Gates
+
+| id | Issue | question | options | default | parks | opened | status |
+|---|---|---|---|---|---|---|---|
+| G15 | #133 | 保留期要用掉嗎？ | 用｜不用 | 不用 | #133 | 2026-11-15T10:00:00+08:00 | open |
+| G9 | #190 | 舊的 | a｜b | a | #190 | 2026-11-01T10:00:00+08:00 | resolved 2026-11-01T11:00:00+08:00 選 a |
+`;
+
+test('ready-for-human Issue 沒有對應的開放 gate 時印 HUMAN_NO_GATE <n> <prerequisite 摘要>，有 gate 的不印', t => {
+  const human = ['ready-for-human'];
+  const { pilot, probe } = fixture(t, { issues: [
+    { ...issue(184, ISSUE_184, { labels: human }), title: 'taifex 來源' },
+    { ...issue(133, 'Operator prerequisite：開跑前由 Operator 確認（保留期只能用一次）', { labels: human }), title: '保留期' },
+    { ...issue(190, '只有 resolved 的 gate，沒寫 prerequisite。', { labels: human }), title: '要人做的事' },
+    { ...issue(191, 'Operator prerequisite：無關，標的是 ready-for-agent'), title: 'agent 單' },
+  ] });
+  writeFileSync(join(pilot, 'gates.md'), G15);
+  assert.deepEqual(lines(probe()), [
+    'GATE G15 #133 保留期要用掉嗎？',
+    'HUMAN_NO_GATE 184 在 budgets.yaml 新增 taifex 來源…需 Operator 核准',
+    'HUMAN_NO_GATE 190 要人做的事',
+  ]);
+});
