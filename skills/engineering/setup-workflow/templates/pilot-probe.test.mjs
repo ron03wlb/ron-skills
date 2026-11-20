@@ -557,6 +557,9 @@ test('沒有 ORCA_CLI_COMMAND 時其他檢查照跑，running 成員印 STUCK no
 // issue-run.md 與它 Pilot 段連到的檔案 都比；只有 integration 有也算，兩邊相同或沒有 pilot/integration 時不印。
 // review 第一輪：main 自己改了 adapter、integration 還沒跟上時，integration 的版本比較舊，不印（否則 coordinator 會改讀舊規則）。
 const PILOT_SECTION = '# adapter\n\n## Pilot\n\n設定整份在 [pilot-rules.md](pilot-rules.md)。\n';
+// ADAPTER_AHEAD 行：檔名、改動的條目名稱，與讀整合分支那份的提示（#357）。
+const aheadLine = (repo, path, names = '', integration = 'pilot/integration') =>
+  `ADAPTER_AHEAD ${path}${names && ` ${names}`} ｜ git -C ${repo} show ${integration}:${path}`;
 
 test('pilot/integration 的 adapter 比 main 新時印 ADAPTER_AHEAD <檔案>', t => {
   const { repo, git, probe } = fixture(t);
@@ -578,18 +581,18 @@ test('pilot/integration 的 adapter 比 main 新時印 ADAPTER_AHEAD <檔案>', 
   git('switch', '-q', 'main');
   const result = probe();
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(lines(result), ['ADAPTER_AHEAD docs/agents/issue-run.md', 'ADAPTER_AHEAD docs/agents/pilot-rules.md']);
+  assert.deepEqual(lines(result), [aheadLine(repo, 'docs/agents/issue-run.md'), aheadLine(repo, 'docs/agents/pilot-rules.md')]);
 
   // main 跟上 integration 之後只剩 integration 新改的 pilot-rules.md。
   git('merge', '-q', '--ff-only', 'pilot/integration');
   git('switch', '-q', 'pilot/integration');
   commit({ 'docs/agents/pilot-rules.md': '# pilot\n- Probe\n' }, 'newer pilot');
   git('switch', '-q', 'main');
-  assert.deepEqual(lines(probe()), ['ADAPTER_AHEAD docs/agents/pilot-rules.md']);
+  assert.deepEqual(lines(probe()), [aheadLine(repo, 'docs/agents/pilot-rules.md')]);
 
   // main 直接合入新的 issue-run.md：integration 那份比較舊，不印。
   commit({ 'docs/agents/issue-run.md': PILOT_SECTION + '- Push gate\n' }, 'main adapter');
-  assert.deepEqual(lines(probe()), ['ADAPTER_AHEAD docs/agents/pilot-rules.md']);
+  assert.deepEqual(lines(probe()), [aheadLine(repo, 'docs/agents/pilot-rules.md')]);
 
   // review 第二輪：integration 刪掉的檔讀不到（`git show pilot/integration:<檔案>` 會失敗），不印。
   git('-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '-q', '--no-edit', 'pilot/integration');
@@ -631,6 +634,20 @@ test('moved batch-<n> 的成員同樣不擋 STAGEABLE', t => {
   assert.ok(out.includes('STAGEABLE 126-128'), out.join('\n'));
 });
 
+// #357（#330 第 4 項）：batch 151 的 #151 stop、#235 done，舊判斷印 `MOVE 151 151`，照做 `pilot-batch.mjs move 151 151` 得 `STOP 151 same-batch`；
+// 改 `move 151 235` 才能 stage。沒 done 的成員裡有 batch key 那張時，改列可以移走的 done 成員。batch 383 的 #383 stop、#389 done 是第二組（investing retro 1119b）。
+test('沒 done 的成員就是 batch key 時印 MOVE <key> <done 成員…>，不印走不通的 MOVE <key> <key>', t => {
+  const { batch, probe } = fixture(t, { screens: { term_389: { status: 'running', tail: [`DONE 389 ${SHA}`] } } });
+  batch('151', 'dispatched 2026-11-16T10:00:00+08:00', [{ n: 151, state: 'stop' }, { n: 235, state: 'done', candidate: SHA }]);
+  batch('383', 'dispatched 2026-11-19T10:00:00+08:00', [{ n: 383, state: 'stop' }, { n: 389 }]);
+  batch('400', 'dispatched 2026-11-19T10:00:00+08:00', [{ n: 400, state: 'stop' }, { n: 401, state: 'parked after #9' }, { n: 402, state: 'done', candidate: SHA }, { n: 403, state: 'done', candidate: SHA }]);
+  const out = lines(probe());
+  assert.ok(out.includes('MOVE 151 235'), out.join('\n'));
+  assert.ok(out.includes('MOVE 383 389'), out.join('\n'));
+  assert.ok(out.includes('MOVE 400 402 403'), out.join('\n'));
+  assert.ok(!out.some(line => /^MOVE (151 151|383 383|400 400)\b/.test(line)), out.join('\n'));
+});
+
 // #163：batch-131 只剩一個 stop 成員，舊判斷印 STAGEABLE 131，照跑 pilot-land 只得到 `STOP member 131 stop`。
 test('只有 stop 成員的 batch 不印 STAGEABLE，改印 PARKED <key> <n…>', t => {
   const { batch, probe } = fixture(t);
@@ -670,7 +687,7 @@ test('--integration、--main 換掉整合分支與主分支', t => {
   };
   git('branch', '-q', '-m', 'trunk');
   git('switch', '-q', '-c', 'feature-int');
-  const staged = commit('docs/agents/issue-run.md', '# adapter\n', 'adapter');
+  const staged = commit('docs/agents/issue-run.md', PILOT_SECTION, 'adapter');
   git('switch', '-q', 'trunk');
   writeFileSync(join(pilot, 'batch-5.md'), `# batch 5\ncurrent: merged ${staged}\nintegration: feature-int @ 1234567\n\n`
     + '| Issue | branch | worktree | handle | started | stuck-after | state | candidate |\n|---|---|---|---|---|---|---|---|\n'
@@ -678,7 +695,7 @@ test('--integration、--main 換掉整合分支與主分支', t => {
   git('push', '-q', 'origin', 'trunk');
   assert.deepEqual(lines(probe()), ['NOT_MAIN trunk', 'NOT_IN_MAIN 5 tip none']);
   assert.deepEqual(lines(probe({ args: ['--integration', 'feature-int', '--main', 'trunk'] })),
-    ['ADAPTER_AHEAD docs/agents/issue-run.md', 'RESUME_PUSH 5']);
+    [aheadLine(repo, 'docs/agents/issue-run.md', '', 'feature-int'), 'RESUME_PUSH 5']);
 });
 
 test('參數錯誤時 exit 2', t => {
@@ -709,7 +726,7 @@ test('ADAPTER_AHEAD 只比 adapter 與它 Pilot 段連到的同目錄檔案', t 
   git('switch', '-q', '-c', 'pilot/integration');
   commit(Object.fromEntries(Object.keys(files).filter(path => path !== 'docs/agents/issue-run.md').map(path => [path, 'v2\n'])), 'newer');
   git('switch', '-q', 'main');
-  assert.deepEqual(lines(probe()), ['ADAPTER_AHEAD docs/agents/pilot-rules.md']);
+  assert.deepEqual(lines(probe()), [aheadLine(repo, 'docs/agents/pilot-rules.md')]);
 });
 
 // #144：pilot.md 的 Close 條目單行約 3 KB，coordinator 讀整份 diff 被截斷。改動都在 `- **<名稱>.**` 條目裡時，檔名後面附
@@ -739,14 +756,43 @@ test('ADAPTER_AHEAD 附改動的條目名稱，有條目以外的改動時省略
   };
 
   assert.deepEqual(ahead(rules(['- **Stage.** v2', base[1], '- **Close.** v1\n  續行 v2']), 'stage+close'),
-    ['ADAPTER_AHEAD docs/agents/pilot-rules.md Close,Stage']);
+    [aheadLine(repo, 'docs/agents/pilot-rules.md', 'Close,Stage')]);
   assert.deepEqual(ahead(rules([...base, '- **New entry.** v1']), 'new entry'),
-    ['ADAPTER_AHEAD docs/agents/pilot-rules.md New entry']);
+    [aheadLine(repo, 'docs/agents/pilot-rules.md', 'New entry')]);
   // 刪掉的條目取改動前的名稱，整合分支那份讀不到。
-  assert.deepEqual(ahead(rules([base[0], base[2]]), 'drop entry'), ['ADAPTER_AHEAD docs/agents/pilot-rules.md Scripts ahead']);
-  assert.deepEqual(ahead(rules(base).replace('前言。', '前言 v2。'), 'prose'), ['ADAPTER_AHEAD docs/agents/pilot-rules.md']);
+  assert.deepEqual(ahead(rules([base[0], base[2]]), 'drop entry'), [aheadLine(repo, 'docs/agents/pilot-rules.md', 'Scripts ahead')]);
+  assert.deepEqual(ahead(rules(base).replace('前言。', '前言 v2。'), 'prose'), [aheadLine(repo, 'docs/agents/pilot-rules.md')]);
   assert.deepEqual(ahead(rules(['- **Stage.** v2', ...base.slice(1)]).replace('前言。', '前言 v2。'), 'mixed'),
-    ['ADAPTER_AHEAD docs/agents/pilot-rules.md']);
+    [aheadLine(repo, 'docs/agents/pilot-rules.md')]);
+});
+
+// #357（#325 第 3 項）：investing 每輪都印 `ADAPTER_AHEAD docs/agents/issue-run.md`，改的卻是 Review、Permissions 段；coordinator 用整檔
+// `git diff` 讀，輸出 43.9 KB／51 KB。issue-run.md 只在 `## Pilot` 段變動時印，每行附 `git -C <主 checkout> show <整合分支>:<檔案>` 的讀取提示。
+test('issue-run.md 只有 Pilot 段以外變動時不印 ADAPTER_AHEAD；Pilot 段變動時印，並附 git show 的讀取提示', t => {
+  const { repo, git, probe } = fixture(t);
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  const adapter = ({ review = 'v1', pilot = 'v1', permissions = 'v1' }) =>
+    `# adapter\n\n## Review\n\nreview ${review}\n\n## Pilot\n\npilot ${pilot}，見 [pilot-rules.md](pilot-rules.md)。\n\n## Permissions\n\nperms ${permissions}\n`;
+  writeFileSync(join(repo, 'docs/agents/issue-run.md'), adapter({}));
+  writeFileSync(join(repo, 'docs/agents/pilot-rules.md'), '# pilot\n\n- **Stage.** v1\n\n- **Push gate.** v1\n');
+  git('add', 'docs');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'adapter');
+  git('branch', 'pilot/integration');
+  const ahead = files => {
+    git('switch', '-q', 'pilot/integration');
+    git('reset', '-q', '--hard', 'main');
+    for (const [path, text] of Object.entries(files)) writeFileSync(join(repo, path), text);
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-am', 'ahead');
+    git('switch', '-q', 'main');
+    const result = probe();
+    assert.equal(result.status, 0, result.stderr);
+    return lines(result).filter(line => line.startsWith('ADAPTER_AHEAD'));
+  };
+  assert.deepEqual(ahead({ 'docs/agents/issue-run.md': adapter({ review: 'v2', permissions: 'v2' }) }), []);
+  assert.deepEqual(ahead({ 'docs/agents/issue-run.md': adapter({ review: 'v2', pilot: 'v2' }) }),
+    [aheadLine(repo, 'docs/agents/issue-run.md')]);
+  assert.deepEqual(ahead({ 'docs/agents/pilot-rules.md': '# pilot\n\n- **Stage.** v2\n\n- **Push gate.** v2\n' }),
+    [aheadLine(repo, 'docs/agents/pilot-rules.md', 'Push gate,Stage')]);
 });
 
 // #77：coordinator 拿 probe 的 WORKER 行手寫 sed 改成員列，表頭或空的 candidate 欄一變就靜默沒寫進去。
@@ -1142,11 +1188,61 @@ test('gh 失敗時印 DEPS_PROSE_FAILED，其他檢查照跑', t => {
 // #240：閒置輪原本另跑 issue-pool.mjs 才知道池子是空的；分桶與排序共用 issue-pool 的 pool()。
 const poolOutput = result => result.stdout.split('\n').filter(line => /^POOL_/.test(line));
 
-test('池子沒有 ready 單時印 POOL_EMPTY', t => {
-  const { probe } = fixture(t, { issues: [issue(5, '', { labels: ['needs-triage'] }), issue(6, '', { labels: ['ready-for-human'] })] });
+test('池子沒有 ready 單、也沒有 needs-triage 單時印 POOL_EMPTY', t => {
+  const { probe } = fixture(t, { issues: [issue(5, '', { labels: ['needs-info'] }), issue(6, '', { labels: ['ready-for-human'] })] });
   const result = probe();
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(poolOutput(result), ['POOL_EMPTY']);
+});
+
+// #357（#325 第 4 項）：兩個 coordinator 的第一 tick 都印 POOL_EMPTY，issue-pool.mjs 卻列 13／9 張 needs-triage，idle 規則把喚醒拉到 1800／3600 秒。
+test('沒有 ready 單但有 needs-triage 單時印 POOL_TRIAGE <n>...，略過開著的 batch 成員與 blocked、已認領的單；有 ready 單時照印 POOL_READY', t => {
+  const triage = n => issue(n, '', { labels: ['needs-triage'] });
+  const { probe, batch } = fixture(t, { screens: { term_9: { status: 'running', tail: ['❯'] } }, issues: [
+    triage(12), triage(5), triage(9), issue(6, '', { labels: ['ready-for-human'] }),
+    issue(7, '', { labels: ['needs-triage'], blockedBy: [{ number: 6, state: 'OPEN', createdAt: created(6), repository: { nameWithOwner: 'acme/app' } }] }),
+    { ...triage(8), assignees: { nodes: [{ login: 'someone' }] }, comments: { nodes: [{ createdAt: new Date().toISOString() }] } },
+  ] });
+  batch('9', 'dispatched 2026-11-20T10:00:00+08:00', [{ n: 9 }]);
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(poolOutput(result), ['POOL_TRIAGE 5 12']);
+});
+
+// #357（#325 第 2 項）：batch-138 唯一成員 #138 是 stop（等 #136），#136 結案後 probe 仍只印 `PARKED 138 138`，
+// coordinator 讀前任 decisions.md 才知道要 fresh 重派。stop 成員的 blocker 全關時印 UNBLOCKED <key> <n>。
+test('stop 成員的 blocker 全關時印 UNBLOCKED <key> <n>；還有開著的 blocker、沒有 blocker、不是 stop、batch 已關都不印', t => {
+  const blocker = (number, state, repo = 'acme/app') => ({ number, state, createdAt: created(number), repository: { nameWithOwner: repo } });
+  const member = (n, blockedBy) => issue(n, '', { labels: ['ready-for-agent'], blockedBy });
+  const { probe, batch } = fixture(t, { screens: { term_150: { status: 'running', tail: ['STOP 150 prerequisite #149'] } }, issues: [
+    { ...member(138, [blocker(136, 'CLOSED')]), assignees: { nodes: [{ login: 'me' }] } },
+    member(140, [blocker(136, 'CLOSED'), blocker(139, 'OPEN')]),
+    member(141, []),
+    member(142, [blocker(136, 'CLOSED')]),
+    member(143, [blocker(136, 'CLOSED')]),
+    member(144, [blocker(7, 'CLOSED', 'acme/other')]),
+    member(150, [blocker(149, 'CLOSED')]),
+  ] });
+  batch('138', 'dispatched 2026-11-14T10:00:00+08:00', [{ n: 138, state: 'stop' }]);
+  batch('140-141-142', 'dispatched 2026-11-14T10:00:00+08:00', [{ n: 140, state: 'stop' }, { n: 141, state: 'stop' }, { n: 142, state: 'done', candidate: SHA }]);
+  batch('143', 'closed not dispatchable', [{ n: 143, state: 'stop' }]);
+  batch('144-150', 'dispatched 2026-11-14T10:00:00+08:00', [{ n: 144, state: 'stop' }, { n: 150 }]);
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result).filter(line => line.startsWith('UNBLOCKED ')), ['UNBLOCKED 138 138', 'UNBLOCKED 144-150 144', 'UNBLOCKED 144-150 150']);
+});
+
+test('gh 失敗時不印 UNBLOCKED，其他行照印', t => {
+  const { probe, batch } = fixture(t, { issues: null });
+  batch('138', 'dispatched 2026-11-14T10:00:00+08:00', [{ n: 138, state: 'stop' }]);
+  const out = lines(probe());
+  assert.ok(out.includes('PARKED 138 138'), out.join('\n'));
+  assert.ok(!out.some(line => line.startsWith('UNBLOCKED')), out.join('\n'));
+});
+
+test('有 ready 單時不印 POOL_TRIAGE', t => {
+  const { probe } = fixture(t, { issues: [issue(5, '', { labels: ['needs-triage'] }), issue(6, '')] });
+  assert.deepEqual(poolOutput(probe()), ['POOL_READY 6']);
 });
 
 test('有 ready 單時印 POOL_READY <n>...：照 issue-pool 的排序，略過開著的 batch checkpoint 裡的 Issue', t => {
