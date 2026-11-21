@@ -559,6 +559,10 @@ export function parseBatch(text) {
     const [n, branch, worktree, handle, started, stuckAfter, state, candidate] = cells;
     members.push({ n, branch, worktree, handle, started, stuckAfter, state, candidate });
   }
+  // pilot-batch resume 記下的那一行（#356）：每個成員取最後一行 `resumed: #<n> <time> <結果行|->`。
+  for (const [, n, line] of text.matchAll(/^resumed: #(\d+) \S+ (.*)$/gm)) {
+    for (const member of members) if (member.n === n) member.resumed = line === '-' ? undefined : line;
+  }
   return { current, members, regression, regressionExit, sha, regressing: regressingMark(text) };
 }
 
@@ -586,10 +590,10 @@ export function resultMatch(tail, n) {
   return null;
 }
 
-/** 這個 worker 的結果行，去掉號碼：`DONE <sha>`、`STOP <cause>`，沒有時 null。 */
-export function resultLine(tail, n) {
+/** 這個 worker 的結果行，去掉號碼：`DONE <sha>`、`STOP <cause>`，沒有時、或最後一個結果行（去框線後的整行）就是 `ignore` 時 null。 */
+export function resultLine(tail, n, ignore) {
   const match = resultMatch(tail, n);
-  return match && `${match.kind} ${match.value}`;
+  return match && match.line !== ignore ? `${match.kind} ${match.value}` : null;
 }
 
 /** 一個 running 成員的狀態行（不含 `WORKER <n> ` 前綴）。`ctx.cli` 缺省時（沒有 ORCA_CLI_COMMAND）讀不到 terminal。 */
@@ -601,7 +605,8 @@ export async function workerState(ctx, member, now = Date.now()) {
   } catch (error) {
     return `STUCK orca ${error.message}`;
   }
-  const result = resultLine(terminal.tail ?? [], member.n);
+  // resume 當下畫面最後一個結果行（成員的 resumed，#356）還是最後一個時不算：那是 resume 前的舊結果。
+  const result = resultLine(terminal.tail ?? [], member.n, member.resumed);
   if (result) return result;
   if (terminal.status === 'exited') return 'STUCK exited';
   const started = Date.parse(member.started);

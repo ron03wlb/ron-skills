@@ -37,7 +37,7 @@ Project settings for the user-level `/issue-pilot` coordinator (`/loop /issue-pi
 
 - **Pool.** See `docs/agents/pilot-round.md`: read at Pick, when choosing the next batch; fetch only this entry with `node scripts/adapter-line.mjs 'Pool'`.
 
-- **Batch.** The batch checkpoint is `.scratch/pilot/batch-<key>.md`, created by Dispatch; each Issue's own checkpoint stays in its worktree. Move or park members before staging with `node scripts/pilot-batch.mjs <main checkout> move <key> <n> [--state stop]`, `park <key> <n> --after <m> --reason <text>`, `unpark <n>`, as the Probe's `MOVE` and `UNPARK` lines say.
+- **Batch.** The batch checkpoint is `.scratch/pilot/batch-<key>.md`, created by Dispatch; each Issue's own checkpoint stays in its worktree. Move or park members before staging with `node scripts/pilot-batch.mjs <main checkout> move <key> <n> [--state stop]`, `park <key> <n> --after <m> --reason <text>`, `unpark <n>`, as the Probe's `MOVE` and `UNPARK` lines say. Send a `stop`/`done` worker back to work with `resume <key> <n> --note <text>`, not `terminal send` plus a row edit; adopt its reported candidate with `accept <key> <n> <sha>`.
 
 - **Brief check.** A worker's brief is `/issue-run <n> --worker <checkpoint>` plus the Issue body, and gets no check. For a tooling fix unit's brief, first print a labelled skeleton with `node scripts/brief-check.mjs --skeleton`, write it to `.scratch/pilot/briefs/<file>` and fill it in, then run `node scripts/brief-check.mjs <brief>`: dispatch only on `BRIEF_OK <brief>` (exit 0); on `BRIEF_REJECTED … missing=<fields>` (exit 1) fix the brief and rerun.
 
