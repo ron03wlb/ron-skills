@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { FAST, orcaReplySource } from './test/fake-orca.mjs';
 import { repoFixture, run, source } from './test/repo-fixture.mjs';
@@ -29,21 +29,20 @@ else if (b === 'read') reply('read', { terminal: { tail: sent().length > ${swall
   const titles = join(temp, 'titles');
   const open = args => run(repo, ['node', script, ...args], { env: { ORCA_CLI_COMMAND: cli, ...FAST, ORCA_TERMINAL_HANDLE: self ?? '', TAB_STATE_DIR: titles } });
   const recorded = handle => readFileSync(join(titles, handle), 'utf8');
-  return { repo, log, open, recorded };
+  return { repo, log, open, recorded, titles };
 }
 
-test('在 Orca pane 內：split 在呼叫者旁邊、命名、送出 prompt 且不帶 --wait-submit', t => {
-  const { log, open, recorded } = fixture(t, { self: 'term_self' });
+// split 出來的 pane 和呼叫者同一個分頁：分頁標題歸呼叫者，不改名也不記標題（#378）。
+test('在 Orca pane 內：split 在呼叫者旁邊、不改分頁標題、送出 prompt 且不帶 --wait-submit', t => {
+  const { log, open, titles } = fixture(t, { self: 'term_self' });
   const result = open(['--title', '#12 交付', '--prompt', '/issue-run 12']);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), 'OPENED term_split');
   const calls = readFileSync(log, 'utf8');
   assert.match(calls, /terminal split --terminal term_self --direction vertical --command claude/);
-  assert.match(calls, /terminal rename --terminal term_split --title 處理中｜#12 交付/);
   assert.match(calls, /terminal send --terminal term_split --text \/issue-run 12 --enter --json\n/);
-  assert.doesNotMatch(calls, /terminal create|--wait-submit/);
-  // Orca 讀不回 rename 設的標題：新 session 的 tab-state 要靠這份記錄（tab-state.mjs）。
-  assert.equal(recorded('term_split'), '處理中｜#12 交付');
+  assert.doesNotMatch(calls, /terminal create|terminal rename|--wait-submit/);
+  assert.equal(existsSync(join(titles, 'term_split')), false);
 });
 
 test('不在 Orca pane 內：在主 checkout 新開 terminal', t => {

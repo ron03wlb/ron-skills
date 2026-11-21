@@ -2,11 +2,13 @@
 // 在 Orca 開一個新的 Claude session 並送出第一個 prompt：有 ORCA_TERMINAL_HANDLE 時 split 在呼叫者的 pane 旁邊（使用者的每個分頁各有用途，不另開新分頁），
 // 沒有時，或帶 `--tab`（新 session 要比呼叫者活得久，例如 coordinator 交接後使用者會關掉舊視窗）時，在主 checkout 新開分頁；
 // 帶 `--worktree <path>`（要在自己 worktree 跑的 session）時，在該 worktree 新開分頁；
-// 標題前面加上分頁狀態「處理中｜」（tab-state.mjs；已有狀態前綴就換掉）→ 命名並記下標題（Orca 讀不回，見 tab-state.mjs） → 等 TUI 就緒（兩輪）→ 送出 prompt 並讀畫面確認送達（orca-session-send.mjs 的 waitTuiReady／sendPrompt）。
+// 新分頁時標題前面加上分頁狀態「處理中｜」（tab-state.mjs；已有狀態前綴就換掉），命名並記下標題（Orca 讀不回，見 tab-state.mjs）。
+// split 模式不改名也不記標題：分頁標題歸呼叫者，split 出來的 session 跑 tab-state 時也不改（印 TAB_STATE_SKIP split，#378）。
+// 之後等 TUI 就緒（兩輪）→ 送出 prompt 並讀畫面確認送達（orca-session-send.mjs 的 waitTuiReady／sendPrompt）。
 // 送出不帶 `--wait-submit`：Orca 從 WSL 常因無法確認 prompt-delivery 回 runtime_unavailable 且完全不送出。
 // 任何「開新 session 接手」的交接都走這裡，不手動組 create／split／rename／wait／send。
 //
-// 用法（cwd 為 repo 內任一 checkout）：node scripts/orca-session-split.mjs --title <分頁標題> --prompt <第一個 prompt> [--tab | --worktree <path>]
+// 用法（cwd 為 repo 內任一 checkout）：node scripts/orca-session-split.mjs --title <分頁標題（split 模式不用）> --prompt <第一個 prompt> [--tab | --worktree <path>]
 // stdout：OPENED <terminal handle>，或 STOP <原因>（create <錯誤>、tui-timeout <handle>、send <handle>、orca <錯誤碼>）。
 // exit：0 已送出；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawnSync } from 'node:child_process';
@@ -34,12 +36,12 @@ export async function openSession(ctx, { title, prompt, main, self = process.env
   let handle;
   try {
     if (self && !newTab) {
+      // split 出來的 pane 和呼叫者同一個分頁，分頁標題歸呼叫者：不改名、不記標題（#378）。
       handle = (await orca({ ...ctx, signal: createSignal }, 'terminal', 'split', '--terminal', self, '--direction', 'vertical', '--command', 'claude')).split.handle;
-      await orca({ ...ctx, signal: createSignal }, 'terminal', 'rename', '--terminal', handle, '--title', tabTitle);
     } else {
       handle = (await orca({ ...ctx, signal: createSignal }, 'terminal', 'create', '--worktree', `path:${main}`, '--title', tabTitle, '--command', 'claude')).terminal.handle;
+      recordTitle(handle, tabTitle);
     }
-    recordTitle(handle, tabTitle);
   } catch (error) {
     return handle ? { stop: `create ${error.message}`, handle } : { stop: `create ${error.message}`, aborted: error.name === 'AbortError' };
   }

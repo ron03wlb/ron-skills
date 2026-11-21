@@ -117,8 +117,8 @@
     },
     "scripts/orca-session-split.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-split.mjs",
-      "commit": "5f90ad2313e2cb8ec73e7d3c8ea3059604cc0b2b",
-      "sha256": "361a58f9750105f25380081b89675ed0531260d0bd32e67fdd648a8a38975fc6"
+      "commit": "1b2838a6dc7751e4400378227185cd2484fcb268",
+      "sha256": "1e7c9b7f34f1260748fdc8f542bc75e7347a80433ca2232345759595bd400e21"
     },
     "scripts/orca-worktree-create.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-worktree-create.mjs",
@@ -227,8 +227,8 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "d003ad1367c5528cc76dda2ba001472485a4bbce",
-      "sha256": "82dde93be27a3e04e794027f92f51de670384a5c438dbaaddcf1d9fca1fa3a24"
+      "commit": "1b2838a6dc7751e4400378227185cd2484fcb268",
+      "sha256": "36ad6e4941c162f611e652c51acca4b69829cefeaea59ff64dcac65d5bc218ee"
     },
     "scripts/token-usage.mjs": {
       "template": "skills/engineering/setup-workflow/templates/token-usage.mjs",
