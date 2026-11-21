@@ -46,7 +46,7 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 
 在其他 session 輸入 `/issue-pilot <n>`、`/issue-pilot hold`、`/issue-pilot stop`，請求會轉給正在跑的 coordinator，不會多開一個。
 
-**交棒**：coordinator 刻意短命。合入幾批（ron-skills 是 2 批）或遇到 compaction 後，它在安全點停掉自己的背景工作、在新的 session 接手 `/loop /issue-pilot`，舊 session 退役。
+**交棒**：coordinator 刻意短命。合入幾批（ron-skills 是 2 批）或遇到 compaction 後，它在安全點停掉自己的背景工作、在新的 session 接手 `/loop /issue-pilot`，舊 session 退役。退役的 session 收到合入請求（例如 retro-collector 送來的）時不合入，回覆現任 coordinator 的名稱（`coordinator` 檔的 `name`）。
 
 ## adapter 的 Pilot 段
 
@@ -62,6 +62,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Gates | 開、解、列出 `gates.md` gate 的指令；有 setup-workflow 正本時用 `pilot-gate` |
 | Defaults | worker 上限、每批張數、誰合入、誰 push 與合併 PR／MR、何時交棒 |
 | Integration branch | 本機整合分支的名稱、怎麼開、合進主線後怎麼跟上 |
+| Adapter ref | 選用：本機整合分支可能落後時（別台機器會 push），coordinator 改從哪個 ref 讀 adapter（例如 `origin/develop`，先 fetch）；預設是本機整合分支 |
 | Pool | 挑單的查詢與排序；被擋住或已在其他批次的單怎麼濾掉 |
 | Batch | 批次 checkpoint 由哪個步驟建立；檔名、欄位與狀態值照 [`PILOT-STORE.md`](../../skills/engineering/issue-pilot/PILOT-STORE.md) |
 | Brief check | 拒絕缺欄位 brief 的指令（goal、scope、acceptance、verify、timebox、forbidden、report、standing orders 路徑）；有 setup-workflow 正本時用 `brief-check`，`--skeleton` 印可直接填的骨架 |
@@ -104,7 +105,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 L1／L2 的 review 是 Claude 的 `code-review` skill。L3 在 adapter 的 Review 段加上 Codex 的 runner，只做 code review，用在兩個地方：
 
 - **跨模型挑戰**：兩輪 review 後仍有爭議的 finding，或高風險 Issue 上的 finding，同一個問題分別問 Claude 與 Codex，報告兩邊同意與分歧之處再決定。
-- **worker 的最後一輪**：兩輪修正後，在最終 candidate 上用 adapter 的 review 指令（有 Codex runner 時就是它）跑一輪只審不修；P2 以上只要有一項不是兩輪修正時已經裁定的產品取捨，就 `STOP`，原因寫 `findings after two review cycles`，coordinator 重派一個 worker（ron-skills 先以不帶 `--note` 的 `pilot-dispatch.mjs --fresh` 產生整併範圍草稿：prior SHA、共同改過的檔與條目、最後一輪 review-only 原文，coordinator 只補「怎麼整併」）；否則 P3 記進 rulings 後照常 `DONE`，兩輪修正時的產品取捨以 `confirm` 裁定隨結果交回，結案前由你確認。adapter 沒有確認 gate 時，只要兩輪修正時有過產品取捨，就算這一輪沒再列出，也 `STOP`，原因寫 `decision <摘要>`，coordinator 開 gate。
+- **worker 的最後一輪**：兩輪修正後，在最終 candidate 上用 adapter 的 review 指令（有 Codex runner 時就是它）跑一輪只審不修；P2 以上只要有一項不是兩輪修正時已經裁定的產品取捨，就先把這些發現逐條寫進 checkpoint 的 `final review-only round` 段，再 `STOP`，原因寫 `findings after two review cycles`，coordinator 重派一個 worker（ron-skills 先以不帶 `--note` 的 `pilot-dispatch.mjs --fresh` 產生整併範圍草稿：prior SHA、共同改過的檔與條目、最後一輪 review-only 原文，coordinator 只補「怎麼整併」）；否則 P3 記進 rulings 後照常 `DONE`，兩輪修正時的產品取捨以 `confirm` 裁定隨結果交回，結案前由你確認。adapter 沒有確認 gate 時，只要兩輪修正時有過產品取捨，就算這一輪沒再列出，也 `STOP`，原因寫 `decision <摘要>`，coordinator 開 gate。
 
 Codex 呼叫失敗時改用 `code-review` skill，並在報告註明 Codex 不可用。
 

@@ -9,12 +9,13 @@ import { spawnSync } from 'node:child_process';
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const pilot = read('docs/agents/pilot-after-merge.md');
 const probeEntry = read('docs/agents/pilot-exceptions.md').match(/^- \*\*Probe lines\.\*\*.*$/m)?.[0] ?? '';
-const prefix = 'git -C <主 checkout> show pilot/integration:<檔案> | ';
-const command = probeEntry.split('`').find(span => span.startsWith(prefix))?.slice(prefix.length);
+// #333：指令讀 ADAPTER_AHEAD 存下的檔（`<存檔>`），這裡改從 stdin 餵。
+const suffix = ' <存檔>';
+const command = probeEntry.split('`').find(span => span.startsWith("awk -v n='- **<名稱>.**'") && span.endsWith(suffix))?.slice(0, -suffix.length);
 
 /** 照 Probe 條目的指令從 `text` 抽出名稱為 `name` 的條目（去掉結尾空白）。 */
 function extract(text, name) {
-  assert.ok(command, 'pilot-exceptions.md 的 Probe lines 條目沒有 `git -C <主 checkout> show pilot/integration:<檔案> | …` 的抽條目指令');
+  assert.ok(command, 'pilot-exceptions.md 的 Probe lines 條目沒有 `awk -v n=\'- **<名稱>.**\' … <存檔>` 的抽條目指令');
   const result = spawnSync('sh', ['-c', command.replaceAll('<名稱>', name)], { input: text, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   return result.stdout.trimEnd();

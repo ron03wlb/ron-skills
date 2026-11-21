@@ -599,9 +599,11 @@ test('沒有 ORCA_CLI_COMMAND 時其他檢查照跑，running 成員印 STUCK no
 // issue-run.md 與它 Pilot 段連到的檔案 都比；只有 integration 有也算，兩邊相同或沒有 pilot/integration 時不印。
 // review 第一輪：main 自己改了 adapter、integration 還沒跟上時，integration 的版本比較舊，不印（否則 coordinator 會改讀舊規則）。
 const PILOT_SECTION = '# adapter\n\n## Pilot\n\n設定整份在 [pilot-rules.md](pilot-rules.md)。\n';
-// ADAPTER_AHEAD 行：檔名、改動的條目名稱，與讀整合分支那份的提示（#357）。
-const aheadLine = (repo, path, names = '', integration = 'pilot/integration') =>
-  `ADAPTER_AHEAD ${path}${names && ` ${names}`} ｜ git -C ${repo} show ${integration}:${path}`;
+// ADAPTER_AHEAD 行：檔名、改動的條目名稱，與讀整合分支那份的指令（#357）：存進 `.scratch/pilot/adapter/<檔名>` 再 Read，
+// 不直接印到輸出（#333：`git show` 印 35 KB、67 KB，被存檔後又進 context 一次）；遠端 ref 先 fetch。
+const aheadLine = (repo, path, names = '', ref = 'pilot/integration', fetch = '') =>
+  `ADAPTER_AHEAD ${path}${names && ` ${names}`} ｜ mkdir -p ${repo}/.scratch/pilot/adapter && ${fetch && `git -C ${repo} fetch ${fetch} && `}` +
+  `git -C ${repo} show ${ref}:${path} > ${repo}/.scratch/pilot/adapter/${path.slice(path.lastIndexOf('/') + 1)}`;
 
 test('pilot/integration 的 adapter 比 main 新時印 ADAPTER_AHEAD <檔案>', t => {
   const { repo, git, probe } = fixture(t);
@@ -835,6 +837,40 @@ test('issue-run.md 只有 Pilot 段以外變動時不印 ADAPTER_AHEAD；Pilot �
     [aheadLine(repo, 'docs/agents/issue-run.md')]);
   assert.deepEqual(ahead({ 'docs/agents/pilot-rules.md': '# pilot\n\n- **Stage.** v2\n\n- **Push gate.** v2\n' }),
     [aheadLine(repo, 'docs/agents/pilot-rules.md', 'Push gate,Stage')]);
+});
+
+// #333：investing 的 adapter 規定讀 `origin/develop`，本機 `develop` 落後 origin 9 個 commit；probe 比本機分支就讀到舊 adapter。
+// adapter 的 Pilot 條目 **Adapter ref.** 宣告遠端 ref 時，probe 比那個 ref，指令先 `git fetch <remote> <branch>` 再 show 存檔；印出的指令可以直接跑。
+test('Pilot 段宣告 Adapter ref 為遠端 ref 時，ADAPTER_AHEAD 比那個 ref，指令含 fetch＋show 存檔', t => {
+  const { repo, git, probe } = fixture(t);
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  const rules = stage => `# pilot\n\n- **Adapter ref.** \`origin/develop\`：本機 develop 會落後。\n\n- **Stage.** ${stage}\n`;
+  writeFileSync(join(repo, 'docs/agents/issue-run.md'), PILOT_SECTION);
+  writeFileSync(join(repo, 'docs/agents/pilot-rules.md'), rules('v1'));
+  git('add', 'docs');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'adapter');
+  git('push', '-q', 'origin', 'main');
+  git('switch', '-q', '-c', 'develop');
+  writeFileSync(join(repo, 'docs/agents/pilot-rules.md'), rules('v2'));
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-am', 'newer');
+  git('push', '-q', 'origin', 'develop');
+  git('switch', '-q', 'main');
+  // 本機 develop 落後 origin/develop：比本機分支會讀不到新版。追蹤 ref 也停在舊版（別台機器 push 之後還沒 fetch），probe 要自己 fetch（review P2）。
+  git('branch', '-f', 'develop', 'main');
+  git('update-ref', 'refs/remotes/origin/develop', 'main');
+  const result = probe({ args: ['--integration', 'develop'] });
+  assert.equal(result.status, 0, result.stderr);
+  const line = aheadLine(repo, 'docs/agents/pilot-rules.md', 'Stage', 'origin/develop', 'origin develop');
+  assert.deepEqual(lines(result).filter(l => l.startsWith('ADAPTER_AHEAD')), [line]);
+  // ` ｜ ` 之後的指令可以直接跑，存下的是 origin/develop 那份。
+  const run = spawnSync('sh', ['-c', line.split(' ｜ ')[1]], { encoding: 'utf8', env });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(readFileSync(join(repo, '.scratch/pilot/adapter/pilot-rules.md'), 'utf8'), rules('v2'));
+  // fetch 失敗：印 FETCH_FAILED adapter-ref，照上次 fetch 的 ref 比（review-only 輪 P3）。
+  git('remote', 'set-url', 'origin', join(repo, 'missing.git'));
+  const failed = lines(probe({ args: ['--integration', 'develop'] }));
+  assert.ok(failed.some(l => l.startsWith('FETCH_FAILED adapter-ref ')), failed.join('\n'));
+  assert.ok(failed.includes(line), failed.join('\n'));
 });
 
 // #77：coordinator 拿 probe 的 WORKER 行手寫 sed 改成員列，表頭或空的 candidate 欄一變就靜默沒寫進去。
