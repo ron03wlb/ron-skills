@@ -2,7 +2,7 @@
 // 重建 skill 連結：上游原版（Matt、pstack，皆唯讀）＋ overlays/ 補丁＋本 repo 自有 skills。
 // 由 bin/sync-skills 呼叫；原本是 bash，macOS 內建 bash 3.2 沒有 `declare -A`，改寫成 node（#85）。
 // 用法：bin/sync-skills [--check | --list]
-//   --check  只檢查 overlay 能否套用在目前的上游 checkout，不改任何連結；也回報 SKILL_DIRS 裡的失效連結與 repo 外的來源（#287），這是這台機器的狀態，不影響 exit。
+//   --check  只檢查 overlay 能否套用在目前的上游 checkout，不改任何連結；也回報 SKILL_DIRS 裡的失效連結與 repo 外的來源（#287）、連結來源 repo 落後上次 fetch 的 upstream（#380），這是這台機器的狀態，不影響 exit。
 //   --list   列出目前可用的 skill：user/model、名稱、來源（含目前目錄的 .claude/skills 專案 skill）。
 // 同步時也把 hooks/ 的檔案連到 HOOK_DIR：沒版控的全域 hook 只存在一台機器，換機就失效。實體檔內容相同才換成連結，不同就 SKIP。
 // 環境變數：MATT_SKILLS（預設 ~/code/skills）、PSTACK_SKILLS（預設 ~/code/pstack）、
@@ -16,7 +16,7 @@
 //   只新增或更新清單上的項目；不在清單上的項目一律不碰（也不刪），連到本 repo 的由 --check 印 WIN_ORPHAN 提示。
 // 清單內 `# pin: <SHA>` 註明驗證過的上游版本；checkout 的 HEAD 不同時只警告。
 // stdout：--list 每個 skill 一行；--check 成功時 `CHECK_OK <n> skills`；同步成功時先印內容有變的 overlay `SKILL_CHANGED <名稱>`（已安裝的全域行為變了，retro spay2 b949589b#2），再印 `SYNCED <n> skills → <dirs>`。
-// stderr：MISSING、DUPLICATE、OVERLAY_FAILED、WIN_LINK_FAILED（exit 1），NEW、SKIP、WARN、DANGLING <連結> -> <目標>、EXTERNAL <連結> -> <真實路徑>（只提示）。exit 0 成功、1 有任何 exit 1 的行或檢查失敗。
+// stderr：MISSING、DUPLICATE、OVERLAY_FAILED、WIN_LINK_FAILED（exit 1），NEW、SKIP、WARN、DANGLING <連結> -> <目標>、EXTERNAL <連結> -> <真實路徑>、SKILLS_BEHIND <repo> <落後 commit 數>（只提示）。exit 0 成功、1 有任何 exit 1 的行或檢查失敗。
 //   Windows 目標：WIN_SKIP <原因>（不在 WSL 等，略過）；--check 回報 WIN_MISSING、WIN_WRONG <連結> -> <目前目標>（應為 …）、WIN_NOT_LINK、
 //   WIN_ORPHAN <連結> -> <目標>（目標在本 repo 底下、已不在 windows-skills.txt；只提示，這台機器的狀態）；同步時建立或更新印 WIN_LINKED <連結> -> <目標>。
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
@@ -79,6 +79,20 @@ function reportLinks() {
       if (!existsSync(link)) warn(`DANGLING ${link} -> ${readlinkSync(link)}`);
       else if (!known.some(base => under(realpathSync(link), base))) warn(`EXTERNAL ${link} -> ${realpathSync(link)}`);
     }
+  }
+}
+
+/**
+ * --check 的提示：連結來源所在的 repo 落後 upstream 時印 SKILLS_BEHIND <repo> <n>（#380）。
+ * 只比上次 fetch 的結果（`HEAD..@{upstream}`，不連網）；不在 repo 裡、沒有 upstream 或不落後的不印。
+ */
+function reportBehind() {
+  // 兩個 SKILL_DIRS 連到同一份來源時只查一次。
+  const sources = new Set(DESTS.flatMap(entries).filter(link => isLink(link) && existsSync(link)).map(link => realpathSync(link)));
+  const repos = new Set([...sources].map(dir => git(dir, ['rev-parse', '--show-toplevel'])).filter(Boolean));
+  for (const repo of repos) {
+    const behind = Number(git(repo, ['rev-list', '--count', 'HEAD..@{upstream}'], { fallback: '0' }));
+    if (behind > 0) warn(`SKILLS_BEHIND ${repo} ${behind}`);
   }
 }
 
@@ -179,6 +193,7 @@ function sync(check) {
     if (failed) return 1;
     if (check) {
       reportLinks();
+      reportBehind();
       checkWindows(win);
       console.log(`CHECK_OK ${target.size} skills`);
       return 0;

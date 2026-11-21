@@ -23,6 +23,8 @@ bin/sync-skills           # 重建 ~/.claude/skills 與 ~/.agents/skills 的連�
 bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來源（在專案目錄執行會含專案 skill）
 ```
 
+`--check` 也對 `~/.claude/skills`、`~/.agents/skills` 裡連結來源所在的 repo 比 `HEAD..@{upstream}`：只用上次 fetch 的結果、不連網，落後時在 stderr 印 `SKILLS_BEHIND <repo> <落後 commit 數>`（只提示，不影響 exit；沒有 upstream 或不落後的 repo 不印）。看到就到那個 repo `git pull --ff-only` 再跑 `bin/sync-skills`。本 repo 不預設在 session 開頭提示；想要的人自行在 `~/.claude/settings.json` 掛 `SessionStart` hook 跑 `bin/sync-skills --check`（#380）。
+
 升級 Matt：`~/code/skills` 是 fork（ron03wlb/skills），不會自動跟上 mattpocock 上游，先 `gh repo sync ron03wlb/skills` 再 `git -C ~/code/skills pull --ff-only`；`--check` 通過並試跑後，更新 `matt-skills.txt` 的 `# pin:`，再跑 `bin/sync-skills`。升級 pstack：`git -C ~/code/pstack pull`，`--check` 通過並試跑後，更新 `pstack-skills.txt` 的 `# pin:`。出現 `OVERLAY_FAILED` 代表上游改到補丁位置，連結保持舊版，重做該補丁後再同步。
 
 - `matt-skills.txt`：要連結的 Matt skill 清單（相對 `skills/`）；`-<path>` 表示刻意不連結。`--check` 列出的 `NEW` 行，二選一加入清單。
