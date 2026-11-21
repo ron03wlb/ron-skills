@@ -150,6 +150,7 @@ test('sessions.md 被鎖住時等持鎖者寫完才讀，兩邊的 start 行都�
   writeFileSync(store(dir, 'sessions.md'), '');
   holdLock(store(dir, 'sessions.md'));
   const child = spawn('node', [SCRIPT, dir, ...ARGS], { stdio: 'ignore', env: { ...process.env, CLAUDE_PID: '553382', CLAUDE_CODE_SESSION_ID: SESSION } });
+  t.after(() => child.kill());
   const exited = once(child, 'exit');
   await sleep(1000);
   assert.equal(child.exitCode, null, '持鎖期間 register 不該已結束');

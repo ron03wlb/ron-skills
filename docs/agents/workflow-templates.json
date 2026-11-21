@@ -45,6 +45,16 @@
       "commit": "ca4a2330b3dd127ec76c524e1b6dd12c2d7c874f",
       "sha256": "7fd966e114997c1bc37b6348e34a17782c002627d82188c2cb1d354c403a0c41"
     },
+    "scripts/check-shadowed-imports.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/check-shadowed-imports.mjs",
+      "commit": "1225a56f5284fffb915e0ef06c378e52ccbf7ca7",
+      "sha256": "3806cd131b902b7d293db4c3ad73a1844842f21518308dded48ead7dd0385e1e"
+    },
+    "scripts/check-test-child-kill.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/check-test-child-kill.mjs",
+      "commit": "1225a56f5284fffb915e0ef06c378e52ccbf7ca7",
+      "sha256": "5c8922b1a74344562482db77eeae4dbb22d88966e68777ca91b0f67644ed910c"
+    },
     "scripts/check-test-git-isolation.mjs": {
       "template": "skills/engineering/setup-workflow/templates/check-test-git-isolation.mjs",
       "commit": "774f7b44ee01e33305be974d55c6837733d406a0",
@@ -89,6 +99,11 @@
       "template": "skills/engineering/setup-workflow/templates/gh-tracker.mjs",
       "commit": "7ee0a2369ca29b4e333deabda3d931ce61cebb27",
       "sha256": "79ea206d5975a3824776e08fd9b2e47e66a9681f2a38498deacfd42e4e4d98b6"
+    },
+    "scripts/hook-acceptance.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/hook-acceptance.mjs",
+      "commit": "1225a56f5284fffb915e0ef06c378e52ccbf7ca7",
+      "sha256": "a9be10b6d703380107bc0d7850faf9fabdd098c2ba8ab8daf9675d3cbadbfe99"
     },
     "scripts/issue-pool.mjs": {
       "template": "skills/engineering/setup-workflow/templates/issue-pool.mjs",
