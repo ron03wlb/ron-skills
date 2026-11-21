@@ -66,3 +66,42 @@ test('用法錯誤：exit 2', t => {
   assert.equal(run(dir, 'set', 'a\nb').status, 2);
   assert.equal(spawnSync('node', [SCRIPT], { encoding: 'utf8' }).status, 2);
 });
+
+// #379（#330 第 3 項）：main 暫停推送期間 Probe 每 tick 印所有 NOT_IN_MAIN／RESUME_PUSH；set-main 寫旗標，Probe 收成一行 MAIN_PAUSED。
+const mainPaused = dir => join(dir, '.scratch/pilot/main-paused');
+
+test('set-main 寫一行 JSON {since,reason,until,session}，印 MAIN_PAUSE_SET；clear-main 刪掉', t => {
+  const dir = checkout(t);
+  const set = run(dir, 'set-main', '等 #246 過渡期', '--until', '2999-12-01');
+  assert.equal(set.status, 0, set.stderr);
+  assert.equal(set.stdout, 'MAIN_PAUSE_SET\n');
+  const text = readFileSync(mainPaused(dir), 'utf8');
+  assert.match(text, /^\{.*\}\n$/);
+  const value = JSON.parse(text);
+  assert.deepEqual(Object.keys(value), ['since', 'reason', 'until', 'session']);
+  assert.equal(value.reason, '等 #246 過渡期');
+  assert.equal(value.until, '2999-12-01');
+  assert.equal(value.session, 'sess-1');
+  // hold 是另一個旗標，不受影響。
+  assert.ok(!existsSync(hold(dir)));
+  assert.equal(run(dir, 'clear-main').stdout, 'MAIN_PAUSE_CLEARED\n');
+  assert.ok(!existsSync(mainPaused(dir)));
+  const again = run(dir, 'clear-main');
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(again.stdout, 'NO_MAIN_PAUSE\n');
+});
+
+test('set-main 用法錯誤：沒有 --until、日期格式不對或不存在、已過期、reason 有三個空白：exit 2，不寫檔', t => {
+  const dir = checkout(t);
+  for (const args of [
+    ['set-main', 'x'],
+    ['set-main', 'x', '--until'],
+    ['set-main', 'x', '--until', '2999/12/01'],
+    ['set-main', 'x', '--until', '2999-02-30'],
+    ['set-main', 'x', '--until', '2000-01-01'],
+    ['set-main', 'a   b', '--until', '2999-12-01'],
+    ['set-main', '--until', '2999-12-01'],
+    ['clear-main', 'x'],
+  ]) assert.equal(run(dir, ...args).status, 2, args.join(' '));
+  assert.ok(!existsSync(mainPaused(dir)));
+});
