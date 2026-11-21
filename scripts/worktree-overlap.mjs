@@ -5,7 +5,8 @@
 //
 // setup-workflow 正本。做成獨立指令、不做成 pilot-probe.mjs 的子命令：pilot-probe 的介面是「對主 checkout 的 pilot 存檔對帳」，
 // 這支看的是所有 worktree、不讀 `.scratch/pilot/`，呼叫者也不是 coordinator。條目判斷與 Probe 的 OVERLAP（#176）共用
-// lib/changed-units.mjs 的 changedUnits（`to` 給 null 時比工作樹），不另寫一份；只靠它，所以可以複製到沒有 pilot 腳本的 repo。
+// lib/changed-units.mjs 的 changedUnits（`to` 給 null 時比工作樹），試合併與 Probe 的 CONFLICT 共用 lib/merge-tree.mjs（#376），
+// 不另寫一份；只靠這兩支，所以可以複製到沒有 pilot 腳本的 repo。
 //
 // 用法：node scripts/worktree-overlap.mjs [--main <分支>] [--mine [--near <N>] [--generated <glob>]… [--max-files <N>] | <檔案>…]（cwd 在 repo 任一 worktree 的任一目錄；檔案一律是 repo 根的相對路徑，
 //   不隨 cwd 的子目錄改變，每個 worktree 才能用同一組 pathspec）
@@ -28,6 +29,9 @@
 //                        git 可自動合併，不必再 diff；語意上是否相依仍由呼叫者判斷。不 actionable。
 //     hunks=near <行>    有一對 hunk 相距 N 行以內（或重疊）；<行> 是本方那個 hunk 在本方 merge-base 的起始行（新檔、二進位或刪檔一律 1）。
 //                        actionable：對那個 worktree 跑 `git diff <主分支>...<分支> -- <檔案>` 看那一段，決定先等它合入或改到別處。
+//                        後面再一個欄位 `merge=clean|conflict`（#376）：以 lib/merge-tree.mjs 拿兩邊的工作樹快照（含未 commit、未追蹤的新檔；
+//                        乾淨時是 HEAD）跑 `git merge-tree --write-tree`，這個檔在不在衝突清單裡。conflict 是真的會衝突；clean 是 git 合得起來，
+//                        仍可能語意相依。git 低於 2.38 或判斷不了時省略這個欄位。
 //     generated          檔案符合 `--generated <glob>`（可重複；`*` 不跨 `/`、`**` 跨目錄）：由工具重新產生的檔（例如 spay2 的
 //                        `scripts/workflow-doc-sync.json`），衝突時重跑產生器即可，不比 hunk。不 actionable。
 //   行號取各自與 <主分支> 的 merge-base：兩邊 merge-base 不同時，主分支中間的改動會讓行號略有位移，所以 apart／near 是近似值。
@@ -36,6 +40,7 @@
 //   （retro spay2 31d564a6#1：只比其他 worktree，整合分支在 merge-base 後已合入改同檔的批次，fix-land 才 STOP merge-conflict）。
 //   <commit7> 是該區間最後一個改到這個檔的 commit 前 7 碼；hunk 欄位同 OVERLAP_WT 的判斷，兩邊都以本方 merge-base 的行號比，
 //   所以這裡的 apart／near 是精確值。hunks=near 是 actionable：先 sync <主分支>（合入本分支並解衝突）再落地；apart、generated 不 actionable。
+//   hunks=near 後同樣附 `merge=clean|conflict`（本方工作樹快照對 <主分支> 的 tip 試合併）。
 //   OVERLAP_BASE_BEHIND <主分支> <N> --main <建議分支>
 //   --mine 不帶 --main、自己的改動檔數超過上限（預設 200，`--max-files <N>` 調整）時，不比對任何 worktree，只印這一行、exit 3
 //   （#365：investing 的 develop 領先 main 263 個 commit，每個檔對約 20 個 worktree 算 hunk，300 秒跑不完；帶 --main develop 0.09 秒）。
@@ -55,6 +60,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
+import { mergeConflicts, snapshot } from './lib/merge-tree.mjs';
 
 const USAGE = '用法：node scripts/worktree-overlap.mjs [--main <分支>] [--mine [--near <N>] [--generated <glob>]… [--max-files <N>] | <檔案>…]\n'
   + '  --mine 不帶 --main、自己的改動檔超過 --max-files（預設 200）時只印 OVERLAP_BASE_BEHIND <主分支> <N> --main <建議分支>，exit 3';
@@ -161,11 +167,28 @@ export function commitRanges(checkout, base, to, path) {
   return ranges.length ? ranges : [[1, Infinity]];
 }
 
+/**
+ * hunks=near 時以 lib/merge-tree.mjs 試合併，行尾再加 `merge=clean|conflict`（#376）；`conflicts()` 傳回那一對的衝突檔（null：git 判斷不了，不加）。
+ * apart 不跑合併：git 只在 hunk 重疊或相接時衝突。
+ */
+function withMerge(proximity, path, conflicts) {
+  if (!proximity.startsWith('hunks=near')) return [proximity];
+  const files = conflicts();
+  return files ? [proximity, `merge=${files.includes(path) ? 'conflict' : 'clean'}`] : [proximity];
+}
+
+/** 一對 commit 的衝突檔只算一次：第一次呼叫才跑 merge-tree。 */
+function lazyConflicts(cwd, ours, theirs) {
+  let files;
+  return () => (files === undefined ? (files = mergeConflicts(cwd, ours(), theirs())) : files);
+}
+
 /** --mine：<主分支> 在本方 merge-base 之後改到本方檔案的 OVERLAP_MAIN 行（retro spay2 31d564a6#1）。 */
 function mainOverlaps(own, main, near, isGenerated, mineRanges) {
   const tip = git(own.top, 'rev-parse', '--verify', `${main}^{commit}`).trim();
   if (tip === own.base) return [];
   const out = [];
+  const conflicts = lazyConflicts(own.top, own.snapshot, () => tip);
   for (const path of own.files) {
     const last = git(own.top, 'log', '-1', '--format=%H', `${own.base}..${tip}`, '--', path).trim();
     if (!last) continue;
@@ -173,7 +196,7 @@ function mainOverlaps(own, main, near, isGenerated, mineRanges) {
     if (isGenerated(path)) fields.push('generated');
     else {
       if (!mineRanges.has(path)) mineRanges.set(path, hunkRanges(own.top, own.base, path));
-      fields.push(hunkProximity(mineRanges.get(path), commitRanges(own.top, own.base, tip, path), near));
+      fields.push(...withMerge(hunkProximity(mineRanges.get(path), commitRanges(own.top, own.base, tip, path), near), path, conflicts));
     }
     out.push(fields.join(' '));
   }
@@ -219,6 +242,8 @@ export function worktreeOverlaps(cwd, files = [], { main = 'main', mine = false,
   if (mine) {
     own = ownChanges(cwd, main);
     if (!own.files.length) return [];
+    let commit;
+    own.snapshot = () => (commit ??= snapshot(own.top));
     self = realpathSync(own.top);
     files = own.files;
   }
@@ -238,12 +263,13 @@ export function worktreeOverlaps(cwd, files = [], { main = 'main', mine = false,
     if (base.status === 1) continue;
     if (base.status !== 0) throw new Error(`git merge-base HEAD ${main} exit ${base.status}（${tree.path}）：${(base.stderr ?? '').trim()}`);
     const name = tree.branch ?? `detached@${tree.head.slice(0, 7)}`;
+    const conflicts = own && lazyConflicts(own.top, own.snapshot, () => snapshot(tree.path));
     for (const [path, { entries }] of changedUnits(tree.path, base.stdout.trim(), null, { paths: files, adjacent: false })) {
       const fields = ['OVERLAP_WT', name, path, ...([...entries].map(entry => `**${entry}.**`))];
       if (own && isGenerated(path)) fields.push('generated');
       else if (own) {
         if (!mineRanges.has(path)) mineRanges.set(path, hunkRanges(own.top, own.base, path));
-        fields.push(hunkProximity(mineRanges.get(path), hunkRanges(tree.path, base.stdout.trim(), path), near));
+        fields.push(...withMerge(hunkProximity(mineRanges.get(path), hunkRanges(tree.path, base.stdout.trim(), path), near), path, conflicts));
       }
       out.push(fields.join(' '));
     }
