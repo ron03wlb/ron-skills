@@ -29,7 +29,7 @@ Edit the "Label in our tracker" column to match whatever vocabulary you actually
 
 標 `ready-for-agent` 之前，先照 [issue-run.md](issue-run.md#readiness) 的 **Readiness** 檢查驗收與做法用到的輸入取得到；取不到的維持 `needs-info`。
 
-驗收裡「改 `skills/engineering/setup-workflow/templates/` 的正本與測試，`scripts/` 副本用 `copy-templates.mjs` 同步」這一項，只在 `node scripts/worktree-overlap.mjs <要改的檔>…` 印 `TEMPLATE_COPY` 時才寫；沒印就不是範本副本，寫了 worker 得先查清單、記一條 ruling 才知道不適用（#438：#380 的 `scripts/sync-skills.mjs` 不在 `docs/agents/workflow-templates.json`）。
+驗收裡「改 `skills/engineering/setup-workflow/templates/` 的正本與測試，`scripts/` 副本用 `skills/engineering/setup-workflow/scripts/copy-templates.mjs` 同步」這一項，只在 `node scripts/worktree-overlap.mjs <要改的檔>…` 印 `TEMPLATE_COPY` 時才寫；沒印就不是範本副本，寫了 worker 得先查清單、記一條 ruling 才知道不適用（#438：#380 的 `scripts/sync-skills.mjs` 不在 `docs/agents/workflow-templates.json`）。
 
 ## `parent` label
 

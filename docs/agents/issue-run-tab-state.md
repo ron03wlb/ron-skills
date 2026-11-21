@@ -1,6 +1,6 @@
 # issue-run 分頁狀態：ron-skills
 
-[issue-run.md](issue-run.md) 的必讀核心（14000 bytes，`scripts/adapter-size-budget.json`）放不下、只在自己切換分頁狀態或 hook 要求改名時才用到的段落（#470）。用 `node scripts/adapter-line.mjs '<條目名>'` 只取需要的一條。
+[issue-run.md](issue-run.md) 的必讀核心（14000 bytes，`scripts/adapter-size-budget.json`）放不下、只在自己切換分頁狀態或 hook 要求改名時才用到的段落（#470）。下一段是總則，要讀就整段讀；其後的條目用 `node scripts/adapter-line.mjs '<條目名>'` 只取需要的一條。
 
 [分頁狀態](../../GLOSSARY.md#分頁狀態)與整個標題的格式、何時改名、` ⏸`、worktree 顯示名稱照 [ADAPTER.md](../../skills/engineering/issue-run/ADAPTER.md) 的 Tab state 段預設值，本 repo 標題用繁體中文（[CLAUDE.md](../../CLAUDE.md) 的 Language），段裡的 `orca` 寫成 `"$ORCA_CLI_COMMAND"`；這裡寫本 repo 什麼時候轉換。只換狀態用 `node scripts/tab-state.mjs <狀態>`：換成處理中時只換目前分頁標題的狀態前綴，其他文字（含階段與動作）不動；換成其他狀態時只留 `<狀態>｜<主題>`，拿掉主題後的 `｜` 段（階段、動作）與 ` ⏸`（#334）；要留別的段（例如 `｜已合入 PR #130`）時帶 `--topic` 重設整個標題。hook 自動切換仍只換前綴，階段與動作會留著。兩種寫法在沒有 `ORCA_TERMINAL_HANDLE` 時 exit 0 不輸出；Orca 失敗時也 exit 0，stderr 印 `TAB_STATE_FAILED <狀態> <原因>`（逾時的話改名可能已送達，#295）；session 在 split 出來的 pane（不是分頁的第一個 pane，例如 `orca-session-split.mjs` 不帶 `--tab`、`--worktree` 開的）時 exit 0、只印 `TAB_STATE_SKIP split`，分頁標題歸分頁擁有者，不必重跑或改用 `--topic`（#378；`claude-hook-tab-state.mjs` 的自動切換還沒有這個判斷）。session 開頭改用 `node scripts/tab-state.mjs 處理中 --topic "<主題>"` 一次設定前綴與主題（`<主題>` 是標題格式裡狀態前綴之後的部分）：本機記錄的可能還是同一個 handle 上一個 session 的標題，只換前綴會帶出舊主題（#141）。`.claude/settings.json` 掛的 `scripts/claude-hook-tab-state.mjs` 自動做能用程式偵測的轉換，`Stop` 時標題沒有前綴就自己設成 `處理中`；只有改名失敗、讀回仍無前綴、標題以狀態名開頭但分隔符錯，或記錄的是其他狀態時才 exit 2 要求改名。
 
