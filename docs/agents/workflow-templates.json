@@ -67,7 +67,7 @@
     },
     "scripts/gh-tracker.mjs": {
       "template": "skills/engineering/setup-workflow/templates/gh-tracker.mjs",
-      "commit": "5f90ad2313e2cb8ec73e7d3c8ea3059604cc0b2b",
+      "commit": "3d32688b8c25c972e3fc7e1daa6faa57bac3baed",
       "sha256": "ac307038b74a94a88b279ec492885b94c968bc2e10c67bbcd84859a2b7aa51ca"
     },
     "scripts/issue-pool.mjs": {
@@ -122,8 +122,13 @@
     },
     "scripts/orca-worktree-create.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-worktree-create.mjs",
-      "commit": "5f90ad2313e2cb8ec73e7d3c8ea3059604cc0b2b",
+      "commit": "3d32688b8c25c972e3fc7e1daa6faa57bac3baed",
       "sha256": "01d40e755d4c42f65b8b19154a348cd00bb5ea2c4a7c5f5c3cdd8ffe4d5ff2bb"
+    },
+    "scripts/parent-hints.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/parent-hints.mjs",
+      "commit": "5f90ad2313e2cb8ec73e7d3c8ea3059604cc0b2b",
+      "sha256": "5dd3654f7f2edd47010b1408401342e484d90b1a6cf285ce2af356752a6eb718"
     },
     "scripts/pilot-batch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-batch.mjs",
@@ -157,8 +162,8 @@
     },
     "scripts/pilot-gate.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-gate.mjs",
-      "commit": "76eb90190bc130315ec18c68075bc3dc7f3e415c",
-      "sha256": "3377f9674f4c02094fcba31a626b8083c78ae38103869dc3b92dc2f07789189d"
+      "commit": "5f90ad2313e2cb8ec73e7d3c8ea3059604cc0b2b",
+      "sha256": "298fa15c68a53712733eefe096f031028561f0a722501f9da76497d07bf1f7ec"
     },
     "scripts/pilot-handoff.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-handoff.mjs",
@@ -212,7 +217,7 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "5f90ad2313e2cb8ec73e7d3c8ea3059604cc0b2b",
+      "commit": "3d32688b8c25c972e3fc7e1daa6faa57bac3baed",
       "sha256": "cf719a6b5d6f1eccdf39c00e4848c42f0a6bd53d50e7f599425cacea5a2b8edd"
     },
     "scripts/token-usage.mjs": {
