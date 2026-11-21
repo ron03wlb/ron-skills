@@ -53,6 +53,7 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 | `poteto-mode` | 本機 harness：先讀上游 `docs/harness/claude-code.md` 做名稱對照；repo 規則與語言優先、無 GitHub PR（對應 candidate／整合分支）、無 cloud（Orca terminal）、Codex 只做 code review、未連結 skill 改用 Matt 對應 |
 | `code-review` | Standards 子代理固定 `model: sonnet`；Spec 子代理只在呼叫端參數帶 `low-risk` 時用 sonnet，否則沿用 session 模型（spay2 grill 2026-11-16 R1-Q6） |
 | `diagnosing-bugs` | 用 tmux 起互動 `claude` 做實驗時，等待程序每次輪詢也看 `tmux capture-pane`，停在對話框（資料夾 trust、Enter to confirm）就立即回報，不只等結果檔 |
+| `wizard` | 第 3 步：精靈需要使用者 shell 的變數時不開互動式 shell（`zsh -i`、`bash -i`，會被 SIGTTIN 暫停），非秘密值讀 `~/.zshrc` 的 `export` 行、秘密讀平台的秘密存放處（macOS Keychain、Linux／WSL 的 `secret-tool`），以環境變數帶給其他程式 |
 | `arena` | 只用在昂貴、難逆轉且多解的設計決策；兩席都是 Claude worktree 子代理，judge 是沒寫候選的全新 Claude 子代理；Eval 只用於 worker／review／stop-policy 的 skill 變更 |
 
 ## issue-run
