@@ -36,6 +36,8 @@
 
 - **Batch.** 批次 checkpoint 是 `.scratch/pilot/batch-<key>.md`，由 Dispatch 建立；請求分支的 `batch-req-<行號>.md` 由 `pilot-land.mjs --branch` 建立（見 Requests）。各 Issue 自己的 checkpoint 仍在 `.scratch/issue-run-<n>/state.md`（在它的 worktree 裡）。
 
+- **Resume.** 見 [pilot-round.md](pilot-round.md)：要請 `stop`／`done` 的 worker 繼續，或採用它已回報的 candidate 時讀（`pilot-batch.mjs resume`／`accept`，不用裸 `terminal send` 加手改列，#356）；整條用 `node scripts/adapter-line.mjs 'Resume'` 取。
+
 - **Brief check.** worker 的 brief 就是 `/issue-run <n> --worker <checkpoint>` 加上 Issue 本文，不跑這條。tooling fix unit 的 brief：先用 `node scripts/brief-check.mjs --skeleton` 印出帶標籤的骨架（`目標：`、`範圍：`、`驗收：`、`驗證：`、`TIMEBOX：<n> 分鐘`、`禁止：`、`回報：`、`Standing orders：` 已填主 checkout 的 `preferences.md`），寫進 `.scratch/pilot/briefs/<檔>` 填好內容，再跑 `node scripts/brief-check.mjs <brief> [--batch <key>] [--iid <n>]`：印 `BRIEF_OK <brief>`（exit 0）才派；`BRIEF_REJECTED … missing=<欄位,…>`（exit 1）時補 brief 再跑，不改 worker 的 prompt（#346）。
 
 - **Dispatch.** 見 [pilot-round.md](pilot-round.md)：Dispatch 認領、開 worktree 與派 worker 時讀；整條用 `node scripts/adapter-line.mjs 'Dispatch'` 取。
