@@ -13,6 +13,8 @@ const script = new URL('./orca-session-send.mjs', import.meta.url).pathname;
 // 送出 Enter 後連同送出的文字一起出現在畫面上。
 // `stuck` 次送出的文字進了輸入框卻沒提交：畫面最後一行是輸入框裡的 prompt，draft 也還是它。
 // `working` 模擬一直在跑的 worker：每次 read 的畫面都帶 `esc to interrupt`（要搭配夠大的 `busy`）。
+// `startsAt` 模擬已收下 prompt、開始工作的 worker（畫面文字照抄 #323 第 3 項 11-15 留言的 `terminal read --screen`，fixtures/orca/ 沒有工作中的 read 樣本）：第 `startsAt` 次 read 起畫面只剩工作中的輸出與 spinner，
+// spinner 沒有 `esc to interrupt`，prompt 那一行已被長回應擠出畫面，draft 是空的。
 // 寫出假 Orca CLI（`body(temp, log)` 回傳腳本本體，接在記錄呼叫之後），回傳呼叫紀錄、執行腳本與列出送出指令的函式。
 function fakeOrca(t, body) {
   const temp = mkdtempSync(join(realTmpdir(), 'orca-session-send-'));
@@ -31,12 +33,14 @@ ${body(temp, log)}`);
   return { log, send, sends };
 }
 
-function fixture(t, { busy = 0, sendRejected = false, swallow = 0, stale = false, draft, stuck = 0, working = false } = {}) {
+function fixture(t, { busy = 0, sendRejected = false, swallow = 0, stale = false, draft, stuck = 0, working = false, startsAt = 0 } = {}) {
   return fakeOrca(t, (temp, log) => `
 const sentFile = ${JSON.stringify(log)} + '.sent'; const sent = () => fs.existsSync(sentFile) ? fs.readFileSync(sentFile, 'utf8').split('\\n').slice(0, -1) : [];
 const spinner = ${working} ? ['✻ Working… (esc to interrupt)'] : [];
 if (${stale}) { fail('terminal_handle_stale'); process.exit(1); }
-if (b === 'wait') reply('wait', { wait: { satisfied: (fs.readFileSync(${JSON.stringify(log)}, 'utf8').match(/terminal wait/g) || []).length > ${busy} } });
+const reads = (fs.readFileSync(${JSON.stringify(log)}, 'utf8').match(/terminal read/g) || []).length;
+if (b === 'read' && ${startsAt} && reads >= ${startsAt}) reply('read', { terminal: { tail: ['⏺ 正在讀 #22 相關程式與 fixture…', '', '✳ Fiddle-faddling… (1m 32s · ↓ 1.2k tokens)'], draft: '' } });
+else if (b === 'wait') reply('wait', { wait: { satisfied: (fs.readFileSync(${JSON.stringify(log)}, 'utf8').match(/terminal wait/g) || []).length > ${busy} } });
 else if (b === 'send') { fs.appendFileSync(sentFile, arg('--text') + '\\n'); reply('send', { send: { accepted: ${!sendRejected} } }); }
 else if (b === 'read' && sent().length && sent().length <= ${stuck}) reply('read', { terminal: { tail: [...spinner, '● 先前的報告', '> ' + sent()[0]], draft: sent()[0] } });
 else if (b === 'read') {
@@ -114,6 +118,41 @@ test('文字進了輸入框卻沒提交：不算送達，只補 Enter 一次後�
   assert.equal(result.stdout.trim(), 'SENT term_w');
   const sends = readFileSync(log, 'utf8').split('\n').filter(line => line.startsWith('terminal send '));
   assert.deepEqual(sends, [`terminal send --terminal term_w --text ${PROMPT} --enter --json`, 'terminal send --terminal term_w --text  --enter --json']);
+});
+
+// 真實發生過的錯（#323 第 3 項、#354）：worker 已收下 prompt 開始工作，spinner 沒有 `esc to interrupt`、prompt 行被擠出畫面，
+// 確認逾時就再送整段兩次，排成兩行 `❯ /issue-run …` 並 STOP send。
+test('確認時畫面已有 worker 工作中（spinner、prompt 行已捲走）：SENT，只送一次', t => {
+  const { send, sends } = fixture(t, { startsAt: 2 });
+  const result = send(['--terminal', 'term_w', '--prompt', PROMPT]);
+  assert.equal(result.stdout.trim(), 'SENT term_w', result.stderr);
+  assert.equal(result.status, 0);
+  assert.deepEqual(sends(), [`terminal send --terminal term_w --text ${PROMPT} --enter --json`]);
+});
+
+test('確認逾時、重送前 worker 才開始工作：重送前再讀一次畫面，SENT，只送一次', t => {
+  // 第 1 次 read 是送出前讀 composer，第 2–6 次是確認，第 7 次是重送前的再讀。
+  const { send, sends } = fixture(t, { swallow: 3, startsAt: 7 });
+  const result = send(['--terminal', 'term_w', '--prompt', PROMPT]);
+  assert.equal(result.stdout.trim(), 'SENT term_w', result.stderr);
+  assert.equal(sends().length, 1);
+});
+
+test('SPINNER：工作中的 spinner 算，已結束的一輪、閒置輸入列與一般輸出不算', async () => {
+  const { SPINNER } = await import(script);
+  for (const line of ['✳ Fiddle-faddling… (1m 32s · ↓ 1.2k tokens)', '✻ Working… (esc to interrupt)', '  ✶ Thinking… (12s · esc to interrupt)']) assert.match(line, SPINNER);
+  for (const line of ['✻ Cogitated for 46s', '❯', '⏺ 正在讀 #22 相關程式與 fixture…', '● 先前的報告', '* 清單項目… (見下)', '⏺ 讀取中… (見下)']) assert.doesNotMatch(line, SPINNER);
+});
+
+test('已結束那一輪的 spinner（`✻ Cogitated for 46s`）不算工作中：仍重送，三次都被吞 STOP send', t => {
+  const { send, sends } = fakeOrca(t, () => `
+if (b === 'wait') reply('wait', { wait: { satisfied: true } });
+else if (b === 'send') reply('send', { send: { accepted: true } });
+else if (b === 'read') reply('read', { terminal: { tail: ['● 先前的報告', '✻ Cogitated for 46s', '❯'], draft: '' } });
+`);
+  const result = send(['--terminal', 'term_w', '--prompt', PROMPT]);
+  assert.equal(result.stdout.trim(), 'STOP send term_w');
+  assert.equal(sends().length, 3);
 });
 
 // 忙碌中的 session 的假 Orca：wait 永遠不成立，畫面一直有 `esc to interrupt` 和開頭相同的上一則提醒（也會捲出畫面），
