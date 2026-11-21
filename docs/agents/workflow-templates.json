@@ -72,8 +72,8 @@
     },
     "scripts/issue-pool.mjs": {
       "template": "skills/engineering/setup-workflow/templates/issue-pool.mjs",
-      "commit": "5f90ad2313e2cb8ec73e7d3c8ea3059604cc0b2b",
-      "sha256": "794540de1680c9fb1985268cf029a9a2d81074c85f2dc61af15de150d68f0e17"
+      "commit": "d003ad1367c5528cc76dda2ba001472485a4bbce",
+      "sha256": "35758498b6d93e39bb0a48a5879bb276692e9a1846831972a20d232341994061"
     },
     "scripts/land.mjs": {
       "template": "skills/engineering/setup-workflow/templates/land.mjs",
@@ -92,7 +92,7 @@
     },
     "scripts/lib/hosts.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/hosts.mjs",
-      "commit": "5f90ad2313e2cb8ec73e7d3c8ea3059604cc0b2b",
+      "commit": "d003ad1367c5528cc76dda2ba001472485a4bbce",
       "sha256": "27903739d0a621c91f571544ec51cd07b96e94484697a6a38f18b4b99864791b"
     },
     "scripts/lib/pilot-store.mjs": {

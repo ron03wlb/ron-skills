@@ -23,6 +23,8 @@
 // 依 ready 的順序各印一行 `PREREQ <n> <內容>`（先查環境或開 gate 再派）；最後對開著、有 triage 狀態 label（TRIAGE_STATES）卻沒有分類 label 的單印一行
 // `NO_CATEGORY <n> <n>...`（號碼升冪，沒有時不印），母單（有 sub-issue 或 `parent` label）與 `retro-candidates` 不算。分類 label 預設是 DEFAULT_CATEGORIES（triage 的 `bug`、`enhancement`），
 // adapter 用的 label 不同時以 `--categories` 覆寫（逗號分隔）。exit 0。gh 或 glab 失敗時 stderr 印原因、exit 1；用法錯誤或本機 Markdown tracker 時 exit 2。
+// 有母單的 ready 行在號碼與標題之間多寫 `parent #<p> `（`ready #<n> parent #<p> <標題>`；別的 repo 的母單寫 `<owner>/<repo>#<p>`，GitLab 是父項目），
+// Shared registry 看同一母單不必逐張查 sub-issue（#397）；其他桶不寫。
 // claim 是 session 開始處理一張 Issue 前的認領：先留「認領：<機器>／<session>」（整則留言只有這一行；session 預設
 // $CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE），再指派給自己（HOSTS.md 的 Assign yourself），印 `CLAIMED <n>`。同一個帳號會在好幾台機器上跑，
 // 指派分不出是誰，所以看認領留言：
@@ -54,13 +56,13 @@ const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-h
 const LABEL_FIELDS = 'labels(first:50){nodes{name}}';
 const BLOCKED_BY_FIELDS = 'blockedBy(first:50){nodes{number state repository{nameWithOwner}}}';
 /** pool() 分桶與排序要的 GitHub Issue 欄位；pilot-probe 的查詢也引用這一段，bucketOf 多要欄位時只改這裡（#240）。
- * body 給 PREREQ，最後 10 則留言的內文給 landed 桶找 `DONE` 結果行（#352）。 */
-export const POOL_FIELDS = `number title body ${LABEL_FIELDS} assignees(first:20){nodes{login}} subIssuesSummary{total} ${BLOCKED_BY_FIELDS} blocking(first:50){nodes{number state repository{nameWithOwner}}} comments(last:10){nodes{createdAt body}} timelineItems(last:1,itemTypes:[ASSIGNED_EVENT]){nodes{... on AssignedEvent{createdAt}}} closedByPullRequestsReferences(first:10,includeClosedPrs:false){nodes{state}}`;
+ * body 給 PREREQ，最後 10 則留言的內文給 landed 桶找 `DONE` 結果行（#352），parent 給 ready 行的 `parent #<p>`（#397）。 */
+export const POOL_FIELDS = `number title body ${LABEL_FIELDS} assignees(first:20){nodes{login}} subIssuesSummary{total} ${BLOCKED_BY_FIELDS} blocking(first:50){nodes{number state repository{nameWithOwner}}} comments(last:10){nodes{createdAt body}} timelineItems(last:1,itemTypes:[ASSIGNED_EVENT]){nodes{... on AssignedEvent{createdAt}}} closedByPullRequestsReferences(first:10,includeClosedPrs:false){nodes{state}} parent{number repository{nameWithOwner}}`;
 const QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS}}}}}`;
 const OPEN_WORK_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){closedByPullRequestsReferences(first:20,includeClosedPrs:false){nodes{number state url headRefName}}}}}`;
 const CHILDREN_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number subIssues(first:100){nodes{number title state ${LABEL_FIELDS} ${BLOCKED_BY_FIELDS} comments(last:1){nodes{body}}}}}}}`;
 // GitLab 的 Issue 是 work item：label、指派、子項目、相依與留言都在 widgets 裡；notes 分成留言（comments）與系統紀錄（activity，指派紀錄在這裡）。
-const GITLAB_QUERY = `query($fullPath:ID!,$cursor:String){project(fullPath:$fullPath){workItems(types:[ISSUE],state:opened,first:50,after:$cursor){pageInfo{hasNextPage endCursor} nodes{iid title widgets{__typename ... on WorkItemWidgetLabels{labels(first:50){nodes{title}}} ... on WorkItemWidgetAssignees{assignees(first:20){nodes{username}}} ... on WorkItemWidgetHierarchy{hasChildren} ... on WorkItemWidgetLinkedItems{linkedItems(first:50){nodes{linkType workItem{iid state namespace{fullPath}}}}} ... on WorkItemWidgetNotes{comments:notes(filter:ONLY_COMMENTS,last:10){nodes{createdAt body}} activity:notes(filter:ONLY_ACTIVITY,last:100){nodes{createdAt body}}} ... on WorkItemWidgetDescription{description}}}}}}`;
+const GITLAB_QUERY = `query($fullPath:ID!,$cursor:String){project(fullPath:$fullPath){workItems(types:[ISSUE],state:opened,first:50,after:$cursor){pageInfo{hasNextPage endCursor} nodes{iid title widgets{__typename ... on WorkItemWidgetLabels{labels(first:50){nodes{title}}} ... on WorkItemWidgetAssignees{assignees(first:20){nodes{username}}} ... on WorkItemWidgetHierarchy{hasChildren parent{iid namespace{fullPath}}} ... on WorkItemWidgetLinkedItems{linkedItems(first:50){nodes{linkType workItem{iid state namespace{fullPath}}}}} ... on WorkItemWidgetNotes{comments:notes(filter:ONLY_COMMENTS,last:10){nodes{createdAt body}} activity:notes(filter:ONLY_ACTIVITY,last:100){nodes{createdAt body}}} ... on WorkItemWidgetDescription{description}}}}}}`;
 
 class CliError extends Error {}
 class UsageError extends Error {}
@@ -82,6 +84,7 @@ export function fromWorkItem({ iid, title, widgets }) {
   const links = type => (widget('LinkedItems').linkedItems?.nodes ?? []).filter(({ linkType, workItem }) => linkType === type && workItem)
     .map(({ workItem }) => ({ number: Number(workItem.iid), state: workItem.state, repository: { nameWithOwner: workItem.namespace?.fullPath } }));
   const notes = widget('Notes');
+  const parent = widget('Hierarchy').parent;
   return {
     number: Number(iid), title, body: widget('Description').description ?? '',
     labels: { nodes: (widget('Labels').labels?.nodes ?? []).map(({ title: name }) => ({ name })) },
@@ -91,6 +94,7 @@ export function fromWorkItem({ iid, title, widgets }) {
     comments: { nodes: notes.comments?.nodes ?? [] },
     timelineItems: { nodes: (notes.activity?.nodes ?? []).filter(({ body }) => /^assigned to /.test(body)) },
     closedByPullRequestsReferences: { nodes: [] },
+    parent: parent ? { number: Number(parent.iid), repository: { nameWithOwner: parent.namespace?.fullPath } } : null,
   };
 }
 
@@ -188,6 +192,13 @@ const openNodes = ({ nodes }) => nodes.filter(({ state }) => state === 'OPEN');
 const lastActivity = issue => Math.max(0, ...[...issue.comments.nodes, ...issue.timelineItems.nodes].map(({ createdAt }) => Date.parse(createdAt)));
 
 const labelsOf = issue => new Set(issue.labels.nodes.map(({ name }) => name));
+
+/** ready 行號碼與標題之間的一段（格式見檔頭）：有母單時是 `parent #<p> `，沒有時是空字串。 */
+function parentDetail({ parent }, repo) {
+  if (!parent) return '';
+  const owner = parent.repository?.nameWithOwner;
+  return `parent ${owner && owner !== repo ? owner : ''}#${parent.number} `;
+}
 
 /** 本文第一行 `… prerequisite：<內容>` 的內容（去掉頭尾空白），沒有這行時 undefined；PREREQ 與 pilot-probe 的 HUMAN_NO_GATE 共用（#352）。 */
 export const prerequisiteOf = body => (body ?? '').match(/^.*\bprerequisite\s*[：:]\s*(?:[*_]+\s*)?(\S.*?)\s*$/im)?.[1];
@@ -295,7 +306,8 @@ function blockedDetail(issue, { repo, landed, integration }) {
 /** stdout 的全部行（格式見檔頭）：分桶行、PREREQ、NO_CATEGORY。landed、integration 只在帶 --integration 時給。 */
 export function poolLines(issues, { repo, categories = DEFAULT_CATEGORIES, landed, integration, ...options }) {
   const rows = pool(issues, { repo, landed, ...options });
-  const lines = rows.map(({ issue, bucket }) => `${bucket} #${issue.number} ${bucket === 'blocked' ? `${blockedDetail(issue, { repo, landed, integration })} ` : ''}${issue.title}`);
+  const detail = (issue, bucket) => bucket === 'blocked' ? `${blockedDetail(issue, { repo, landed, integration })} ` : bucket === 'ready' ? parentDetail(issue, repo) : '';
+  const lines = rows.map(({ issue, bucket }) => `${bucket} #${issue.number} ${detail(issue, bucket)}${issue.title}`);
   for (const { issue } of rows.filter(({ bucket }) => bucket === 'ready')) {
     const prerequisite = prerequisiteOf(issue.body);
     if (prerequisite && !NO_PREREQUISITE.test(prerequisite)) lines.push(`PREREQ ${issue.number} ${prerequisite}`);
