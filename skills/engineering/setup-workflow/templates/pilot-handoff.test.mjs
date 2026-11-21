@@ -18,10 +18,11 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !ke
 // `sendRejected` 時通常不寫，`lateTakeover` 為真時仍寫（Orca 回報拒收，prompt 其實已經送進去）。
 // `waitHangs` 為真時 `terminal wait` 永遠不回；`createDelayMs` 讓 `terminal create` 晚回（分頁已開、handle 還沒回來）；
 // `orphanLate` 為真時 `terminal list` 看不到 create 開的分頁（create 被殺時 Orca 還沒建好）。
+// 新 session 寫的 pid 行帶 `name <takeoverName>`（pilot-register 的格式）；`takeoverName` 為 null 時不帶 name 欄（舊格式的 coordinator 檔）。
 // 主 checkout 另有既有 session（`--to` 的對象）：term_peer（標題 ron-skills-peer）、兩個標題都是 twin 的分頁；
 // 別的 repo 也有一個標題 ron-skills-peer 的分頁，`--to` 不能選到它。`terminal list --worktree path:<p>` 只回那個 worktree 的分頁。
 // term_peer 在 TAB_STATE_DIR 另有記錄的標題 `處理中｜[維運] renamed-peer`（Orca 讀不回 rename 設的標題，見 tab-state.mjs）。
-function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true, lateTakeover = false, waitHangs = false, createDelayMs = 0, orphanLate = false } = {}) {
+function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true, lateTakeover = false, waitHangs = false, createDelayMs = 0, orphanLate = false, takeoverName = 'ron-skills-ac' } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-handoff-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
@@ -49,7 +50,7 @@ else if (b === 'wait') reply('wait', { wait: { satisfied: (fs.readFileSync(${JSO
 else if (b === 'send') {
   fs.appendFileSync(${JSON.stringify(log)} + '.sent', arg('--text') + '\\n');
   fs.writeFileSync(${JSON.stringify(log)} + '.coordinator', fs.readFileSync(${JSON.stringify(coordinator)}, 'utf8'));
-  if (${takeover && (!sendRejected || lateTakeover)}) fs.writeFileSync(${JSON.stringify(coordinator)}, 'pid 99   loop yes   since 2026-10-30T15:00:00+08:00   name ron-skills-ac\\n');
+  if (${takeover && (!sendRejected || lateTakeover)}) fs.writeFileSync(${JSON.stringify(coordinator)}, ${JSON.stringify(`pid 99   loop yes   since 2026-10-30T15:00:00+08:00${takeoverName === null ? '' : `   name ${takeoverName}`}\n`)});
   reply('send', { send: { accepted: ${!sendRejected} } });
 }
 else if (b === 'close') reply('close', { close: { handle: arg('--terminal') } });
@@ -93,13 +94,28 @@ test('交接：改寫為 handoff 行、在主 checkout 開分頁並送出 /loop 
   const { repo, coordinator, log, handoff } = fixture(t);
   const result = handoff();
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout.trim(), 'HANDED_OFF term_pilot');
+  assert.equal(result.stdout.trim(), 'HANDED_OFF term_pilot name ron-skills-ac');
   const calls = readFileSync(log, 'utf8');
   assert.ok(calls.startsWith(`terminal list --worktree path:${repo} --json\nterminal create --worktree path:${repo} --title 處理中｜[維運] issue-pilot coordinator --command claude --json\n`), calls);
   assert.match(calls, /^terminal wait --terminal term_pilot --for tui-idle /m);
   assert.match(calls, /^terminal send --terminal term_pilot --text \/loop \/issue-pilot --enter --json$/m);
   assert.doesNotMatch(calls, /terminal split/);
   assert.match(readFileSync(coordinator, 'utf8'), /^pid 99 /);
+});
+
+// #372：別的 session 要 SendMessage 接手的 coordinator 得知道它的 name；接手 session 的 pid 行沒有 name 欄（舊版 pilot-register）時維持舊格式。
+test('接手 session 的 coordinator 行沒有 name：HANDED_OFF 只帶 handle', t => {
+  const { handoff } = fixture(t, { takeoverName: null });
+  const result = handoff();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'HANDED_OFF term_pilot');
+});
+
+test('接手 session 的 name 含空白：整段帶在行尾', t => {
+  const { handoff } = fixture(t, { takeoverName: 'ron skills ac' });
+  const result = handoff();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'HANDED_OFF term_pilot name ron skills ac');
 });
 
 // spay2 版在 script 內附加 sessions.md；ron-skills 版要 coordinator 在 HANDED_OFF 之後手動附加，漏了 `/retro` 就找不到交接。
@@ -143,7 +159,7 @@ test('--held-check 回報沒有合併：照常 HANDED_OFF，指令在主 checkou
   const { repo, handoff } = fixture(t);
   const result = handoff('42', {}, ['--held-check', 'pwd > held-cwd; exit 1']);
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout.trim(), 'HANDED_OFF term_pilot');
+  assert.equal(result.stdout.trim(), 'HANDED_OFF term_pilot name ron-skills-ac');
   assert.equal(readFileSync(join(repo, 'held-cwd'), 'utf8').trim(), repo);
 });
 
@@ -153,7 +169,7 @@ for (const target of ['term_peer', 'ron-skills-peer', '處理中｜ron-skills-pe
     const { coordinator, sessions, log, handoff } = fixture(t);
     const result = handoff('42', {}, ['--to', target]);
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout.trim(), 'HANDED_OFF term_peer');
+    assert.equal(result.stdout.trim(), 'HANDED_OFF term_peer name ron-skills-ac');
     const calls = readFileSync(log, 'utf8');
     assert.doesNotMatch(calls, /terminal (create|split|close) /);
     assert.match(calls, /^terminal send --terminal term_peer --text \/loop \/issue-pilot --enter --json$/m);
@@ -168,7 +184,7 @@ test('--to 對到自己與另一個同標題分頁：排除自己，HANDED_OFF �
   for (const handle of ['term_current', 'term_peer']) writeFileSync(join(titles, handle), '處理中｜[維運] issue-pilot coordinator');
   const result = handoff('42', { ORCA_TERMINAL_HANDLE: 'term_current' }, ['--to', 'issue-pilot coordinator']);
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout.trim(), 'HANDED_OFF term_peer');
+  assert.equal(result.stdout.trim(), 'HANDED_OFF term_peer name ron-skills-ac');
   assert.match(readFileSync(log, 'utf8'), /^terminal send --terminal term_peer --text \/loop \/issue-pilot --enter --json$/m);
 });
 
@@ -283,7 +299,7 @@ test('terminal create 花 15 秒：預設上限內，照常 HANDED_OFF', t => {
   const { handoff } = fixture(t, { createDelayMs: 15000 });
   const result = handoff();
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.equal(result.stdout.trim(), 'HANDED_OFF term_pilot');
+  assert.equal(result.stdout.trim(), 'HANDED_OFF term_pilot name ron-skills-ac');
 });
 
 // #22 審查 P3：create 逾時被殺時 Orca 可能已開好分頁卻沒回 handle；從 `terminal list` 找回來關掉。
