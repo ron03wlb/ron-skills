@@ -145,6 +145,8 @@ test('pilot 各檔不寫死機器路徑與 Orca 指令名：Orca 一律 "$ORCA_C
   }
   // Watch 經 pilot-probe --tail，它自己讀 ORCA_CLI_COMMAND，不手拼 JSON（#295：機器上沒有 jq）。
   assert.match(line('Watch'), /`node scripts\/pilot-probe\.mjs --tail <handle>`/);
+  // #355：背景 watcher 用範本 pilot-watch.mjs，多批都監看，不自寫。
+  assert.match(line('Watch'), /`node scripts\/pilot-watch\.mjs --batch <key>`/);
 });
 
 test('主 checkout 與 stage worktree 各在自己的條目定義一次怎麼取得', () => {

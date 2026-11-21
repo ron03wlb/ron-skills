@@ -53,7 +53,8 @@ ${orcaReplySource()}
 const screens = ${JSON.stringify(screens)};
 const screen = screens[arg('--terminal')];
 if (!screen) { fail('terminal_handle_stale'); process.exit(1); }
-reply('read', { terminal: screen });
+if (screen.raw !== undefined) process.stdout.write(screen.raw);
+else reply('read', { terminal: screen });
 `);
   chmodSync(cli, 0o755);
 
@@ -219,6 +220,15 @@ test('closed batch 殘留的 running 列：不印 WORKER、不讀 terminal、不
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stdout, /^WORKER 53 /m);
   assert.match(readFileSync(ledger, 'utf8'), /^app\t0\b/m);
+});
+
+// #204、#355：tail 帶反斜線時 Orca 的 JSON 有不成立的跳脫；Probe 與 pilot-watch 共用 orca() 的修復，WORKER 照樣讀出結果行。
+test('screen JSON 帶不成立的反斜線跳脫：WORKER 照樣讀出 DONE', t => {
+  const raw = String.raw`{"ok":true,"result":{"terminal":{"handle":"term_61","status":"running","tail":["C:\Users\ron","  DONE 61 ${SHA}","❯"]}}}` + '\n';
+  const { batch, probe } = fixture(t, { screens: { term_61: { raw } } });
+  batch('61', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 61, handle: 'term_61' }]);
+  const out = lines(probe());
+  assert.ok(out.includes(`WORKER 61 DONE ${SHA}`), out.join('\n'));
 });
 
 test('--tail：印 worker 畫面的最後 n 行，不需要 jq', t => {

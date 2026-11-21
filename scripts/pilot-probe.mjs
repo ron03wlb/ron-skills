@@ -507,19 +507,34 @@ export function parseBatch(text) {
   return { current, members, regression, regressionExit, sha };
 }
 
+/** Claude Code 輸入框下方的提示列（`✻ …`、`❯ …`、`⏵⏵ …`）：使用者打字或提示文字可能長得像結果行，不算。 */
+const PROMPT_CHROME = /^[\s│]*(?:✻|❯|⏵⏵)/;
+
+/** Orca 的 tail → 一行一個字串：tail 可能是單一字串，元素裡也可能帶換行（investing 的 parseTerminal）；缺省時是空陣列。 */
+export const screenLines = tail => (tail === undefined || tail === null ? [] : Array.isArray(tail) ? tail : [tail]).flatMap(line => String(line).split('\n'));
+
 /**
- * terminal 畫面裡這個 worker 的結果行：取最後一行 `DONE <n> <sha>` 或 `STOP <n> <cause>`。
- * TUI 畫框線時行首、行尾會帶 `│` 與空白，行首也可能是 Claude Code 的 bullet（`●`、`⏺`、`⎿`），比對前先去掉。
+ * terminal 畫面裡最後一個結果行 `DONE <n> <sha>` 或 `STOP <n> <cause>`（Probe 的 WORKER 與 pilot-watch.mjs 共用這一份，#355）。
+ * `n` 缺省時任何號碼都算。TUI 畫框線時行首、行尾會帶 `│` 與空白，行首也可能是縮排或 Claude Code 的 bullet（`●`、`⏺`、`⎿`），比對前先去掉；
+ * 提示列略過，tail 先經 screenLines 攤平，行內的控制字元換成空白。傳回 { line（去掉框線後的整行）, kind（DONE｜STOP）, n, value（sha 或 cause） }，沒有時 null。
  */
-export function resultLine(tail, n) {
-  for (const raw of [...tail].reverse()) {
-    const line = raw.replace(/^[\s│●⏺⎿]+|[\s│]+$/g, '');
-    const done = line.match(new RegExp(`^DONE ${n} ([0-9a-f]{7,40})$`));
-    if (done) return `DONE ${done[1]}`;
-    const stop = line.match(new RegExp(`^STOP ${n} (.+)$`));
-    if (stop) return `STOP ${stop[1]}`;
+export function resultMatch(tail, n) {
+  const number = n === undefined ? '(\\d+)' : `(${n})`;
+  const done = new RegExp(`^DONE ${number} ([0-9a-f]{7,40})$`);
+  const stop = new RegExp(`^STOP ${number} (.+)$`);
+  for (const raw of screenLines(tail).reverse()) {
+    if (PROMPT_CHROME.test(raw)) continue;
+    const line = raw.replace(/^[\s│●⏺⎿]+|[\s│]+$/g, '').replace(/[\u0000-\u001f\u007f]/g, ' ');
+    const match = line.match(done) ?? line.match(stop);
+    if (match) return { line, kind: line.startsWith('DONE') ? 'DONE' : 'STOP', n: match[1], value: match[2] };
   }
   return null;
+}
+
+/** 這個 worker 的結果行，去掉號碼：`DONE <sha>`、`STOP <cause>`，沒有時 null。 */
+export function resultLine(tail, n) {
+  const match = resultMatch(tail, n);
+  return match && `${match.kind} ${match.value}`;
 }
 
 /** 一個 running 成員的狀態行（不含 `WORKER <n> ` 前綴）。`ctx.cli` 缺省時（沒有 ORCA_CLI_COMMAND）讀不到 terminal。 */
