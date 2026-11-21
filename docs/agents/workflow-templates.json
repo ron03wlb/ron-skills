@@ -220,6 +220,11 @@
       "commit": "8a5996d20233b0c9a7a35388eb7a704c661d3cf0",
       "sha256": "1685e7e4c136c7a2c71101746f39a60b48e06026f6431e7251c2aea7def86994"
     },
+    "scripts/session-log.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/session-log.mjs",
+      "commit": "6eefca70cbcd28df8a94c56d1a42a6ae059be082",
+      "sha256": "4c269f3e54901c4c7ed9af857f010b4618b0ea23b97f8b66656a3535abf6fd63"
+    },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
       "commit": "d003ad1367c5528cc76dda2ba001472485a4bbce",
