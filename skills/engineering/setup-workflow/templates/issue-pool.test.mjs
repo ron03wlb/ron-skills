@@ -9,7 +9,7 @@ import { realTmpdir } from './test/real-tmpdir.mjs';
 import { git } from './test/repo-fixture.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./issue-pool.mjs', import.meta.url));
-// 真實 gh 回應的樣本（ron03wlb/ron-skills 2026-10-31）：issues.json 是列表用的 `gh api graphql`，issue-view.json 是 claim 讀的
+// 真實 gh 回應的樣本（ron03wlb/ron-skills 2026-10-31；`parent` 是 2026-11-21 對 #108 補查的）：issues.json 是列表用的 `gh api graphql`，issue-view.json 是 claim 讀的
 // `gh issue view --json assignees,comments`。fixture 只能覆寫樣本有的欄位，替身才不會長出 GitHub 沒有的形狀。
 const fixture = name => JSON.parse(readFileSync(new URL(`./test/fixtures/github/${name}.json`, import.meta.url), 'utf8'));
 const SAMPLE = fixture('issues');
@@ -18,7 +18,7 @@ const VIEW = fixture('issue-view');
 const hoursAgo = hours => new Date(Date.now() - hours * 3600_000).toISOString();
 
 /** 一張開著的 Issue：沒指定的欄位是空的（沒 label、沒指派、沒相依、沒留言）。comments 是 [內文, 建立時間]，給了就取代 commentAt。 */
-function issue(number, { labels = [], assignees = [], subIssues = 0, blockedBy = [], blocking = [], commentAt, assignedAt, prs = [], body = '', comments } = {}) {
+function issue(number, { labels = [], assignees = [], subIssues = 0, blockedBy = [], blocking = [], commentAt, assignedAt, prs = [], body = '', comments, parent } = {}) {
   // 數字是本 repo 的開著的單；`<owner>/<repo>#<n>` 是別的 repo 的。
   const nodes = list => list.map(ref => {
     const [, repo = 'acme/app', n] = String(ref).match(/^(?:(.+)#)?(\d+)$/);
@@ -33,6 +33,8 @@ function issue(number, { labels = [], assignees = [], subIssues = 0, blockedBy =
     comments: { nodes: comments ? comments.map(([text, createdAt]) => ({ body: text, createdAt })) : commentAt ? [{ createdAt: commentAt, body: '' }] : [] },
     timelineItems: { nodes: assignedAt ? [{ createdAt: assignedAt }] : [] },
     closedByPullRequestsReferences: { nodes: prs.map(state => ({ state })) },
+    // parent 同 blockedBy 的寫法：數字是本 repo 的母單，`<owner>/<repo>#<n>` 是別的 repo 的；沒給時沒有母單。
+    parent: parent === undefined ? null : (({ number, repository }) => ({ number, repository }))(nodes([parent])[0]),
   }, 'issue');
 }
 
@@ -108,6 +110,20 @@ test('標 ready-for-agent、沒被 block、不是母單、沒被認領的 Issue 
   const result = run();
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'ready #7 標題 7\n');
+});
+
+// #397（retro 1120a 的 #391 第 5 項）：Shared registry 要知道 ready 單的母單，coordinator 原本對每張母單另跑 `gh api …/sub_issues`。
+test('有母單的 ready 行在號碼與標題之間附 parent #<p>（別的 repo 的母單寫全名）；沒有母單的行不變，其他桶不附', () => {
+  const result = fakeGh({ issues: [
+    issue(362, { labels: ['enhancement', 'ready-for-agent'], parent: 351 }),
+    issue(363, { labels: ['enhancement', 'ready-for-agent'] }),
+    issue(364, { labels: ['enhancement', 'ready-for-agent'], parent: 'other/repo#9' }),
+    issue(365, { labels: ['enhancement', 'needs-triage'], parent: 351 }),
+    issue(366, { labels: ['enhancement', 'ready-for-agent'], blockedBy: [3], parent: 351 }),
+  ] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #362 parent #351 標題 362\nready #363 標題 363\nready #364 parent other/repo#9 標題 364\n'
+    + 'blocked #366 ready-for-agent by #3 標題 366\nneeds-triage #365 標題 365\n');
 });
 
 const BUCKET_CASES = [
@@ -652,7 +668,7 @@ const GL_NOTES = glabFixture('notes');
 
 /** 一張 GitLab work item：參數同 issue()，children 是有沒有子項目；blockedBy、blocking 的數字是同專案 acme/app 開著的單。
  * widgets 是不同型別的陣列，逐個依 __typename 對樣本的同型 widget 合併。 */
-function workItem(number, { labels = [], assignees = [], children = false, blockedBy = [], blocking = [], commentAt, activity = [], description = '' } = {}) {
+function workItem(number, { labels = [], assignees = [], children = false, parent, blockedBy = [], blocking = [], commentAt, activity = [], description = '' } = {}) {
   const link = linkType => ref => {
     const [, path = 'acme/app', n, state = 'OPEN'] = String(ref).match(/^(?:(.+)#)?(\d+)(?::(\w+))?$/);
     return { linkType, workItem: { iid: n, state, namespace: { fullPath: path } } };
@@ -663,7 +679,7 @@ function workItem(number, { labels = [], assignees = [], children = false, block
     widgets: [
       widget('WorkItemWidgetLabels', { labels: { nodes: labels.map(title => ({ title })) } }),
       widget('WorkItemWidgetAssignees', { assignees: { nodes: assignees.map(username => ({ username })) } }),
-      widget('WorkItemWidgetHierarchy', { hasChildren: children }),
+      widget('WorkItemWidgetHierarchy', { hasChildren: children, parent: parent === undefined ? null : { iid: String(parent), namespace: { fullPath: 'acme/app' } } }),
       widget('WorkItemWidgetLinkedItems', { linkedItems: { nodes: [...blockedBy.map(link('is_blocked_by')), ...blocking.map(link('blocks'))] } }),
       widget('WorkItemWidgetNotes', { comments: { nodes: commentAt ? [{ createdAt: commentAt, body: '' }] : [] }, activity: { nodes: activity.map(([body, createdAt]) => ({ body, createdAt })) } }),
       widget('WorkItemWidgetDescription', { description }),
@@ -747,6 +763,13 @@ test('GitLab：ready 單的 description 寫了 Operator prerequisite 時印 PRER
   const result = run();
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'ready #7 標題 7\nPREREQ 7 先申請憑證\n');
+});
+
+test('GitLab：有父項目的 ready 行附 parent #<p>，沒有的不變', () => {
+  const { run } = fakeGlab({ items: [workItem(7, { labels: ['enhancement', 'ready-for-agent'], parent: 3 }), workItem(8, { labels: ['enhancement', 'ready-for-agent'] })] });
+  const result = run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #7 parent #3 標題 7\nready #8 標題 8\n');
 });
 
 test('GitLab：系統紀錄裡只有指派算認領後的動靜，改 label 這類紀錄不算', () => {
