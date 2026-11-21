@@ -126,3 +126,22 @@ test('retro overlay 拿掉 disable-model-invocation，description 限定只在�
   const collect = skill.split('\n\n').find(paragraph => paragraph.includes('**Collect mode.**'));
   assert.match(collect, /`From: retro-collect` line when this session ran `\/retro-collect`/);
 });
+
+// #358（#340 第 1 項）：main 暫停時 hook 跑主 checkout 的舊版 script，retro 把整合分支早已修好的 hook 問題重複回報（investing#407、#424）。
+// 重現要排在列出候選之前（步驟 4），否則照順序讀會先回報才重現。
+test('retro overlay：候選牽涉 HOOK_BEHIND 的 hook script 時，先在整合分支版重現再列出', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'retro-overlay-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(upstream, dir, { recursive: true });
+  const applied = spawnSync('git', ['apply', patch], { cwd: dir, encoding: 'utf8', env });
+  assert.equal(applied.status, 0, applied.stderr);
+
+  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
+  const behind = skill.split('\n\n').find(paragraph => paragraph.includes('**Hook behind.**'));
+  assert.ok(behind, 'overlay 沒有 Hook behind 段落');
+  assert.match(behind, /`HOOK_BEHIND <file>`/);
+  assert.match(behind, /\.claude\/settings\.json/);
+  assert.match(behind, /integration branch's version/);
+  assert.match(behind, /reproduce/);
+  assert.ok(skill.indexOf('**Hook behind.**') < skill.indexOf('4. Present these candidates'), '重現要排在步驟 4 列出候選之前');
+});
