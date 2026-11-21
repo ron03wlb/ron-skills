@@ -1602,3 +1602,52 @@ test('ready-for-human 的單已落地在整合分支時印 HUMAN_LANDED <n> <sha
     `HUMAN_LANDED 316 ${sha316}`,
   ]);
 });
+
+// #359（#338 第 2 項，investing#379 第 1 項）：#348 的 blocker #321 分支已在整合分支，#321 卻是改寫範圍後還沒做的 ready-for-agent，
+// coordinator 照 `(landed …)` 派了 #348，10 分鐘後 `STOP 348 decision … 未實作`。
+test('blocker 已落地在整合分支，卻沒指派、或本文在最後一次指派後改過，而掛 ready-for-agent／needs-triage／ready-for-human 時印 BLOCKER_OPEN_SCOPE <n> #<m> <label>', t => {
+  const open = number => ({ number, state: 'OPEN', createdAt: created(number), repository: { nameWithOwner: 'acme/app' } });
+  const { repo, git, probe } = fixture(t, { issues: [
+    issue(321, '範圍已改寫'),
+    { ...issue(322, '已做完、等進 main'), assignees: { nodes: [{ login: 'me' }] }, timelineItems: { nodes: [{ createdAt: '2026-11-18T12:01:15Z' }] }, lastEditedAt: '2026-11-18T11:00:00Z' },
+    { ...issue(325, '做完後改寫範圍'), assignees: { nodes: [{ login: 'me' }] }, timelineItems: { nodes: [{ createdAt: '2026-11-18T12:01:15Z' }] }, lastEditedAt: '2026-11-18T12:32:00Z' },
+    issue(323, '還沒落地'),
+    issue(324, '等人', { labels: ['ready-for-human'] }),
+    issue(348, '', { blockedBy: [open(321), open(322), open(323), open(325)] }),
+    issue(349, '', { labels: ['needs-triage'], blockedBy: [open(324), { ...open(7), repository: { nameWithOwner: 'acme/other' } }] }),
+  ] });
+  git('switch', '-q', '-c', 'pilot/integration');
+  for (const n of [321, 322, 324, 325]) {
+    writeFileSync(join(repo, `f${n}`), `${n}\n`);
+    git('add', `f${n}`);
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', `做 (#${n})`);
+  }
+  git('switch', '-q', 'main');
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result).filter(line => !line.startsWith('HUMAN_')), [
+    'BLOCKER_OPEN_SCOPE 348 #321 ready-for-agent',
+    'BLOCKER_OPEN_SCOPE 348 #325 ready-for-agent',
+    'BLOCKER_OPEN_SCOPE 349 #324 ready-for-human',
+  ]);
+});
+
+// #359（#338 第 3 項，investing#379 第 2 項）：#321 在 worker 開工（2026-11-18T20:01:15+08:00）後 20:32 改寫範圍，worker 交付原範圍，
+// batch 照常合入，新範圍 15 小時沒人接。
+test('done 成員的 Issue 本文最後編輯晚於列的 started 時印 SCOPE_CHANGED <key> <n> <edited at>；更早、沒編輯過、還在跑、batch 已關都不印', t => {
+  const edited = (n, lastEditedAt) => ({ ...issue(n, ''), lastEditedAt });
+  const started = '2026-11-18T20:01:15+08:00';
+  const { probe, batch } = fixture(t, { screens: { term_325: { status: 'running', tail: [`DONE 325 ${SHA}`] }, term_326: { status: 'running', tail: ['❯'] } }, issues: [
+    edited(321, '2026-11-18T12:32:00Z'), edited(322, '2026-11-18T11:00:00Z'), edited(323, null),
+    edited(325, '2026-11-18T12:40:00Z'), edited(326, '2026-11-18T12:40:00Z'), edited(327, '2026-11-18T12:40:00Z'),
+  ] });
+  batch('321-322-323', 'dispatched 2026-11-18T20:01:15+08:00', [321, 322, 323].map(n => ({ n, started, state: 'done', candidate: SHA })));
+  batch('325-326', 'dispatched 2026-11-18T20:01:15+08:00', [{ n: 325, started }, { n: 326, started }]);
+  batch('327', 'closed', [{ n: 327, started, state: 'done', candidate: SHA }]);
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result).filter(line => line.startsWith('SCOPE_CHANGED ')), [
+    'SCOPE_CHANGED 321-322-323 321 2026-11-18T12:32:00Z',
+    'SCOPE_CHANGED 325-326 325 2026-11-18T12:40:00Z',
+  ]);
+});
