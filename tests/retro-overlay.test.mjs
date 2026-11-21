@@ -60,6 +60,9 @@ test('retro overlay 收集模式：每個 session 把候選開成一張 retro-ca
   assert.doesNotMatch(step, /retro-collect\.mjs|--role/, '收集模式不能再依賴收集腳本');
   // #156：handle 只是給 /retro-collect 收完關分頁的記錄，沒有 Orca 也照樣開單。
   assert.match(step, /starts with an `Orca: <handle>` line when `ORCA_TERMINAL_HANDLE` is set/);
+  // #369：從聊天視窗開的 retro 單沒有可對應的行，收集端只能印 NO_ORCA（investing#382）。
+  assert.match(step, /`Chat: <\$CLAUDE_CODE_SESSION_ID>` line when it is not/, '沒有 handle 時第一行要寫 Chat: 行');
+  assert.ok(step.indexOf('`Orca: <handle>`') < step.indexOf('`Chat: <$CLAUDE_CODE_SESSION_ID>`'), '有 handle 時仍寫 Orca: 行，Chat: 只是退路');
   assert.match(step, /one Issue labelled `retro-candidates`/, '候選清單不能掛 retro：pilot 會把 retro 單當一般 Issue 派出去');
   assert.match(step, /Implement nothing/);
   assert.match(step, /\/retro-collect/);
