@@ -1,4 +1,4 @@
-# pin: a496f5513d4a4cf889bc48e189e579f4b0bdf6aa
+# pin: abeeaf95660ba9e8b7c753eb38f441ca707a8823
 engineering/ask-matt
 in-progress/chief-of-staff
 in-progress/claude-handoff
@@ -33,6 +33,7 @@ in-progress/writing-beats
 productivity/writing-for-agents
 in-progress/writing-fragments
 in-progress/writing-shape
+-in-progress/software-factory
 -misc/git-guardrails-claude-code
 -misc/migrate-to-shoehorn
 -misc/scaffold-exercises
