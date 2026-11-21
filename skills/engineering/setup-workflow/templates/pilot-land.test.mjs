@@ -346,7 +346,8 @@ test('stage 前 origin/<主分支> 不是整合分支的祖先（落後）：同
   const upstream = withOrigin(f, { upstream: { 'up.txt': 'up\n' } });
   const result = f.land(f.key);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.deepEqual(result.lines.slice(0, 2), [`SYNCED ${upstream} ff`, result.lines[1]]);
+  assert.equal(result.lines.length, 3, result.stdout);
+  assert.equal(result.lines[0], `SYNCED ${upstream} ff`);
   assert.match(result.lines[1], new RegExp(`^STAGED 1 [0-9a-f]{40} onto ${upstream}$`));
   assert.match(result.last, /^MERGED 1 [0-9a-f]{40}$/);
   const tip = git(f.repo, 'rev-parse', 'pilot/integration');
