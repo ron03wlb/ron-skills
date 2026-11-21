@@ -14,7 +14,7 @@
 //   resume 請停下的 worker 繼續（#356）：batch-<key> 的成員 #n 要是 stop 或 done。先讀該列 handle 的畫面，記下最後一個結果行（`DONE <n> <sha>`／`STOP <n> <cause>`，
 //          pilot-probe 的 resultMatch），再以 orca-session-send 的 sendToSession 送 --note（等 tui-idle、讀畫面確認送達；不用 --wait-submit，WSL 上它常不送出）。
 //          送達後才在鎖內改列：state running、candidate 清空、started 設為現在，表格下方加 `resumed: #<n> <time> <那一行|->`；
-//          送達後鎖內重檢失敗（STOP state）或等鎖逾時（CHECKPOINT_LOCKED）時檔案不動，但 note 已送到：不要重跑（會再送一次），手動改列。
+//          送達後鎖內重檢失敗（`STOP <n> delivered …`）或等鎖逾時（CHECKPOINT_LOCKED，resume 只在送達後才拿鎖）時檔案不動，但 note 已送到：不要重跑（會再送一次），手動改列。
 //          Probe 讀到最後一個結果行就是它時不算結果（畫面殘留的舊 STOP／DONE 不再被 --apply 寫回），之後出現的新結果行照常寫回。
 //   accept 採用 worker 已回報的 candidate（#338 第 1 項：coordinator 代決 STOP decision、選了候選的做法）：成員要是 running 或 stop，
 //          <sha> 要等於成員分支（branch 欄）在 checkout 的 HEAD；寫 state done、candidate 完整 SHA，Probe 下一輪照常印 STAGEABLE。
@@ -26,7 +26,7 @@
 //   STOP（檔案不動）：`STOP <key> missing`（沒有 batch-<key>.md）、`STOP <n> rows <列數>`（成員列不是剛好一列）、`STOP <n> same-batch`（move 的 <key> 就是 <n>）、
 //   `STOP <n> members <數目>`（就地 park 的 batch 還有別的成員）、`STOP <n> state <state>`（park 的成員不是 done、unpark 的不是 parked、move／park 的成員已移到別處）、`STOP <n> target batch-<n>.md`（目標檔已存在卻沒有這個成員）、
 //   `STOP <n> state missing`（resume／accept 的成員不在 batch 裡）、resume 的成員不是 stop／done 或 accept 的不是 running／stop 時 `STOP <n> state <state>`、
-//   `STOP <n> orca <錯誤碼>`／`STOP <n> send <handle>`／`STOP <n> tui-timeout <handle>`（resume 讀不到畫面或沒送達）、`STOP <n> sha <分支 HEAD|missing>`（accept 的 SHA 不是分支 HEAD、分支不存在）。
+//   `STOP <n> orca <錯誤碼>`／`STOP <n> send <handle>`／`STOP <n> tui-timeout <handle>`（resume 讀不到畫面或沒送達）、`STOP <n> sha <分支 HEAD|missing>`（accept 的 SHA 不是分支 HEAD、分支不存在）、`STOP <n> delivered <原因>`（resume 送達 note 後鎖內重檢失敗，例如 `delivered state running`：note 已送到，不要重跑）。
 //   讀改寫都在 batch-<key>.md 與 batch-<n>.md 的 checkpoint 鎖內（lib/pilot-store.mjs 的 withCheckpointLock，#345）：逾時印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，什麼都沒寫。
 // exit：0 成功；4 STOP；3 CHECKPOINT_LOCKED；2 用法錯誤（--reason 不能空白、含換行、三個連續空白或 `|`；--note 不能空白或含換行；resume 沒有 ORCA_CLI_COMMAND；accept 的 <sha> 不是 7–40 碼十六進位）。
 import { spawnSync } from 'node:child_process';
@@ -160,7 +160,15 @@ async function resume(file, key, n, note, ctx) {
   const sent = await sendToSession(ctx, handle, note);
   if (sent.stop) throw new Stop(`${n} ${sent.stop}`);
   return withCheckpointLock(file, () => {
-    const { batch, i } = memberRow(file, key, n, RESUMABLE);
+    let row;
+    try {
+      row = memberRow(file, key, n, RESUMABLE);
+    } catch (error) {
+      // note 已送到：與送出前同字樣的 STOP 區分開，讀者才知道不要重跑（重跑會送兩次）。
+      if (error instanceof Stop) throw new Stop(error.message.startsWith(`${n} `) ? `${n} delivered ${error.message.slice(n.length + 1)}` : `${n} delivered ${error.message}`);
+      throw error;
+    }
+    const { batch, i } = row;
     const at = now();
     batch.lines[i] = setCells(batch.lines[i], 'running', '', at);
     writeCheckpoint(file, `${batch.lines.join('\n').replace(/\n*$/, '\n')}resumed: #${n} ${at} ${last}\n`);

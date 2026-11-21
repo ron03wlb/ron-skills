@@ -233,7 +233,7 @@ test('鎖檔讀不出 pid、超過 2 秒時當成殘留鎖搶回；不到 2 秒�
 // resume（#356、#325 第 1 項）：請停下的 worker 繼續原本只能 terminal send＋sed 改列；started 沒重設，Probe 印假的 STUCK；
 // 畫面殘留的舊結果行又被 probe --apply 寫回。
 // 假 Orca：`screens` 是 handle → `terminal read` 的 tail；`send` 收下的文字之後以 `> <text>` 出現在畫面上（orca-session-send 以此確認送達）；
-// `reject` 時 send 回 accepted false。每次呼叫記進 orca.log。
+// `reject` 時 send 回 accepted false；`<orca.log>.mutate`（JSON `{ file, text }`）存在時，send 把 text 寫進 file 一次（模擬送出時列被改）。每次呼叫記進 orca.log。
 function orcaFixture(t, batches, { screens = {}, reject = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-batch-orca-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
@@ -249,7 +249,12 @@ const sentFile = ${JSON.stringify(log)} + '.sent';
 const sent = fs.existsSync(sentFile) ? fs.readFileSync(sentFile, 'utf8').split('\\n').filter(Boolean) : [];
 if (!screens[arg('--terminal')]) { fail('terminal_handle_stale'); process.exit(1); }
 if (b === 'wait') reply('wait', { wait: { satisfied: true } });
-else if (b === 'send') { if (!${reject}) fs.appendFileSync(sentFile, arg('--text') + '\\n'); reply('send', { send: { accepted: ${!reject} } }); }
+else if (b === 'send') {
+  if (!${reject}) fs.appendFileSync(sentFile, arg('--text') + '\\n');
+  const mutate = ${JSON.stringify(log)} + '.mutate';
+  if (fs.existsSync(mutate)) { const { file, text } = JSON.parse(fs.readFileSync(mutate, 'utf8')); fs.writeFileSync(file, text); fs.rmSync(mutate); }
+  reply('send', { send: { accepted: ${!reject} } });
+}
 else reply('read', { terminal: { status: 'running', tail: [...screens[arg('--terminal')], ...sent.map(text => '> ' + text)], draft: '' } });
 `);
   chmodSync(cli, 0o755);
@@ -313,6 +318,18 @@ test('resume：不是 stop／done 的列、不存在的成員印 STOP <n> state 
   const stale = orcaFixture(t, stopped, { screens: {} });
   assert.match(stale.run('resume', '7', '7', '--note', '繼續').stdout, /^STOP 7 orca terminal_handle_stale\n$/);
   assert.equal(stale.read('7'), stopped[7]);
+});
+
+test('resume：送達後鎖內重檢發現列已變，印 STOP <n> delivered state <state>（與送出前的 STOP <n> state 區分），不改檔', t => {
+  const stopped = batchText('7', 'dispatched 2026-11-18T10:00:00+08:00', [row(7, 'stop')]);
+  const changed = batchText('7', 'dispatched 2026-11-18T10:00:00+08:00', [row(7, 'running')]);
+  const { run, read, pilot, log, sends } = orcaFixture(t, { 7: stopped }, { screens: { term_7: ['STOP 7 decision x', '❯'] } });
+  writeFileSync(`${log}.mutate`, JSON.stringify({ file: join(pilot, 'batch-7.md'), text: changed }));
+  const result = run('resume', '7', '7', '--note', '繼續');
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(result.stdout, 'STOP 7 delivered state running\n');
+  assert.equal(sends().length, 1);
+  assert.equal(read('7'), changed);
 });
 
 test('resume 用法錯誤 exit 2：要 --note 一行文字；沒有 ORCA_CLI_COMMAND', t => {
