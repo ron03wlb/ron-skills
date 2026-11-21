@@ -62,7 +62,7 @@
 //   batch：dispatched 的 batch 沒有 running 成員時（這一輪剛讀到 DONE／STOP 的照結果算；moved（含 `moved batch-<n>`）的成員已移到別的 batch，不算）：
 //          每個成員都 done 印 STAGEABLE <key>；有 done 也有 stop、parked 印 MOVE <key> <不是 done 的成員…>（先用 pilot-batch 移走）；
 //          done 的成員被 gates.md 開著的 gate 以 `- hold：#<n>` hold 住（pilot-gate open --hold）時，每個先印 HELD <n> <gate id>（依成員列順序），
-//          這時不印 STAGEABLE（pilot-land 會 STOP held）；MOVE、PARKED 照印；gate resolved 後恢復（#367）；
+//          這時不印 STAGEABLE（pilot-land 會 STOP held）；MOVE 照印、排在 HELD 之後（PARKED 沒有 done 成員，不會有 HELD）；gate resolved 後恢復（#367）；
 //          不是 done 的成員裡有 batch key 那張時（pilot-batch move 會 STOP same-batch，#357）改印 MOVE <key> <done 的成員…>；
 //          開著的 batch 裡 stop 的成員（這一輪剛讀到 STOP 的也算）的 Issue 有 blocked_by、而且每張都已關閉時印 UNBLOCKED <key> <n>
 //          （#357；gh 失敗或成員的 Issue 已關閉時不印）；
@@ -625,7 +625,7 @@ const stateNow = (m, results) => (m.state === 'running' && results.find(r => r.n
  * 還有 running 時不印；每個成員都 done 印 STAGEABLE；有 done 也有其他狀態（stop、parked）印 MOVE <key> <其他成員…>，先移走它們才 stage；
  * 其他成員裡有 batch key 那張時改列 done 的成員（pilot-batch 不能把 key 移出自己的 batch，#357）；
  * 沒有 done 印 PARKED <key> <n…>（pilot-land 對它只會 STOP member）。
- * `held`（heldIssues 的結果，#367）裡的 done 成員各先印 `HELD <n> <gate id>`，有 HELD 時不印 STAGEABLE；MOVE、PARKED 照印。
+ * `held`（heldIssues 的結果，#367）裡的 done 成員各先印 `HELD <n> <gate id>`，有 HELD 時不印 STAGEABLE；MOVE 照印（PARKED 沒有 done 成員，不會有 HELD）。
  */
 export function stageLines(key, active, results, held = new Map()) {
   const states = active.map(m => ({ n: m.n, state: stateNow(m, results) }));
