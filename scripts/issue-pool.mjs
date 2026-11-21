@@ -19,7 +19,7 @@
 // 輸出順序：ready 桶先印，依 `retro` label 的先（retro 判定太複雜、交給 worker 的單）、`priority` label 的先、直接或間接 block 最多開著的單的先（關鍵路徑）、號碼小的先；
 // 其餘依上面的桶順序、桶內號碼小的先。
 // stdout：每張一行 `<桶> #<n> <標題>`；blocked 桶在號碼與標題之間多寫狀態與開著的 blocker：`blocked #<n> <triage 狀態 label|unlabeled> by #<m>,<owner>/<repo>#<k> <標題>`，
-// 帶 --integration 時已落地在整合分支的本 repo blocker 後面接 ` (landed <分支>)`（#352）。之後 ready 桶本文有 `… prerequisite：<內容>` 一行、內容不是「無」的，
+// 帶 --integration 時已落地在整合分支的本 repo blocker 後面接 ` (landed <分支>)`（#352）；Probe 的 BLOCKER_OPEN_SCOPE 用同一份 blocker 資料（export 的 blockerOpenScope，#359），這支 CLI 不印。之後 ready 桶本文有 `… prerequisite：<內容>` 一行、內容不是「無」的，
 // 依 ready 的順序各印一行 `PREREQ <n> <內容>`（先查環境或開 gate 再派）；最後對開著、有 triage 狀態 label（TRIAGE_STATES）卻沒有分類 label 的單印一行
 // `NO_CATEGORY <n> <n>...`（號碼升冪，沒有時不印），母單（有 sub-issue 或 `parent` label）與 `retro-candidates` 不算。分類 label 預設是 DEFAULT_CATEGORIES（triage 的 `bug`、`enhancement`），
 // adapter 用的 label 不同時以 `--categories` 覆寫（逗號分隔）。exit 0。gh 或 glab 失敗時 stderr 印原因、exit 1；用法錯誤或本機 Markdown tracker 時 exit 2。
@@ -294,13 +294,44 @@ export function pool(issues, { repo, ...options }) {
     || a.issue.number - b.issue.number);
 }
 
+/** triage 狀態 label，沒有時 'unlabeled'。 */
+const triageState = issue => {
+  const labels = labelsOf(issue);
+  return TRIAGE_STATES.find(name => labels.has(name)) ?? 'unlabeled';
+};
+
+/** 開著的 blocker：本 repo 的 { number, landedSha（landed 的結果） }，別的 repo 的 { ref }。blocked 行與 blockerOpenScope 共用這一份（#359）。 */
+const openBlockers = (issue, { repo, landed }) => openNodes(issue.blockedBy).map(({ number, repository: { nameWithOwner } }) =>
+  (nameWithOwner !== repo ? { ref: `${nameWithOwner}#${number}` } : { number, landedSha: landed?.(number) }));
+
 /** blocked 行號碼與標題之間的一段（格式見檔頭）。 */
 function blockedDetail(issue, { repo, landed, integration }) {
-  const labels = labelsOf(issue);
-  const state = TRIAGE_STATES.find(name => labels.has(name)) ?? 'unlabeled';
-  const blockers = openNodes(issue.blockedBy).map(({ number, repository: { nameWithOwner } }) => nameWithOwner !== repo ? `${nameWithOwner}#${number}`
-    : `#${number}${landed?.(number) ? ` (landed ${integration})` : ''}`);
-  return `${state} by ${blockers.join(',')}`;
+  const blockers = openBlockers(issue, { repo, landed }).map(({ ref, number, landedSha }) => ref ?? `#${number}${landedSha ? ` (landed ${integration})` : ''}`);
+  return `${triageState(issue)} by ${blockers.join(',')}`;
+}
+
+/** blocker 已落地、範圍卻還開著時的 triage label（#359，#338 第 2 項）。 */
+const OPEN_SCOPE_STATES = ['ready-for-agent', 'needs-triage', 'ready-for-human'];
+
+/** 最後一次指派的時間（ms），沒有指派事件時 0。 */
+const lastAssigned = issue => Math.max(0, ...issue.timelineItems.nodes.map(({ createdAt }) => Date.parse(createdAt)));
+
+/**
+ * blocked 桶的單，本 repo 的開著的 blocker 已落地在整合分支（landedOn）、掛著 OPEN_SCOPE_STATES 之一，而且範圍還開著時，依號碼、blocker 順序各一個 `{ n, m, label }`：
+ * 範圍還開著是 blocker 不在 landed 桶（沒指派：回到池子，或 `ready-for-human` 等人），或本文最後編輯（lastEditedAt，呼叫端的查詢要帶這個欄位）晚於最後一次指派。
+ * 這張不算可派，blocker 的 `(landed …)` 只代表舊範圍做完（investing#379：#348 的 blocker #321 在 worker 開工後改寫範圍，#348 派出去 10 分鐘就 STOP decision）。
+ * 已指派、做完而本文沒改過的 blocker（等關單）不算。blocker 資料與 blocked 行同一份；landed 沒給時是空的。
+ */
+export function blockerOpenScope(issues, { repo, landed, ...options }) {
+  if (!landed) return [];
+  const byNumber = new Map(issues.map(issue => [issue.number, issue]));
+  const openScope = blocker => bucketOf(blocker, { ...options, landed }) !== 'landed' || Date.parse(blocker.lastEditedAt ?? '') > lastAssigned(blocker);
+  return pool(issues, { repo, landed, ...options }).filter(({ bucket }) => bucket === 'blocked').map(({ issue }) => issue).sort((a, b) => a.number - b.number)
+    .flatMap(issue => openBlockers(issue, { repo, landed }).flatMap(({ number, landedSha }) => {
+      const blocker = byNumber.get(number);
+      const label = blocker && triageState(blocker);
+      return landedSha && OPEN_SCOPE_STATES.includes(label) && openScope(blocker) ? [{ n: issue.number, m: number, label }] : [];
+    }));
 }
 
 /** stdout 的全部行（格式見檔頭）：分桶行、PREREQ、NO_CATEGORY。landed、integration 只在帶 --integration 時給。 */
