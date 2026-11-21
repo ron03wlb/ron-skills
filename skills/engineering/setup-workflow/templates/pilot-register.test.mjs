@@ -17,8 +17,9 @@ const checkout = t => {
   writeFileSync(join(dir, 'AGENTS.md'), 'rules\n');
   return dir;
 };
+// HOME 預設指向 checkout 裡不存在的目錄：真實 ~/.claude/sessions/ 不影響測試（#364）。
 const run = (dir, args = [], env = {}) => spawnSync('node', [SCRIPT, dir, ...args], { encoding: 'utf8',
-  env: { ...process.env, CLAUDE_PID: '553382', CLAUDE_CODE_SESSION_ID: SESSION, ...env } });
+  env: { ...process.env, HOME: join(dir, '.home'), CLAUDE_PID: '553382', CLAUDE_CODE_SESSION_ID: SESSION, ...env } });
 const store = (dir, name) => join(dir, '.scratch/pilot', name);
 const read = (dir, name) => readFileSync(store(dir, name), 'utf8');
 const ARGS = ['--name', 'demo-0c', '--loop', 'yes'];
@@ -172,4 +173,29 @@ test('coordinator 被活著的 pid 鎖住到逾時：印 CHECKPOINT_LOCKED、exi
   assert.equal(result.stdout, `CHECKPOINT_LOCKED ${store(dir, 'coordinator')}.lock pid=${process.pid} at=2026-11-21T00:00:00.000Z test\n`);
   assert.equal(existsSync(store(dir, 'coordinator')), false);
   assert.equal(existsSync(store(dir, 'sessions.md')), false);
+});
+
+// #364：pid 變了、coordinator 仍傳舊 --name 時，coordinator 檔與 sessions.md 寫入舊名，別的 session SendMessage 找不到它。
+const sessionFile = (dir, content) => {
+  mkdirSync(join(dir, '.home/.claude/sessions'), { recursive: true });
+  writeFileSync(join(dir, '.home/.claude/sessions/553382.json'), content);
+};
+
+test('~/.claude/sessions/<pid>.json 的 name 與 --name 不同：照常 REGISTERED，另印 NAME_CHECK <現名> registered <--name>、exit 0', t => {
+  const dir = checkout(t);
+  sessionFile(dir, JSON.stringify({ pid: 553382, sessionId: SESSION, name: 'demo-1f' }));
+  const result = run(dir, ARGS);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^REGISTERED pid 553382   since \S+\nNAME_CHECK demo-1f registered demo-0c\nSESSION_APPENDED\n$/);
+  assert.match(read(dir, 'coordinator'), /   name demo-0c\n$/);
+});
+
+test('name 相同、session 檔不存在、沒有 name 或不是 JSON：不印 NAME_CHECK', t => {
+  for (const content of [JSON.stringify({ pid: 553382, name: 'demo-0c' }), undefined, JSON.stringify({ pid: 553382 }), 'not json']) {
+    const dir = checkout(t);
+    if (content !== undefined) sessionFile(dir, content);
+    const result = run(dir, ARGS);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /NAME_CHECK/, String(content));
+  }
 });
