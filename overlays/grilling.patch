@@ -28,7 +28,7 @@ diff --git a/SKILL.md b/SKILL.md
  
  ➡️ <your recommended answer>
  ```
-@@ -25,6 +26,18 @@
+@@ -25,6 +26,20 @@ Word each question so "yes" accepts your recommended answer.
  
  Each round the user answers reshapes the tree: settled decisions push the frontier outward and unblock questions that depended on them. Recompute the frontier and ask the next round. A question whose answer depends on another question still open in this round belongs to a _later_ round, not this one.
  
@@ -46,5 +46,7 @@ diff --git a/SKILL.md b/SKILL.md
 +A recommendation that replaces the operation the user named with a different one (they said edit, you propose retire-and-recreate) says so in the question's title, in the user's own word.
 +
 +Before the session ends, state each decided operation as the user will observe it: its identity, its state afterwards, and when it takes effect.
++
++When the session ends by writing a spec outside `to-spec` (which runs it itself), run the `spec-review` skill on the draft before showing the user the final version.
  
  The session is done when the frontier is empty: every branch of the design tree visited, nothing left silently assumed. Do not act on it until the user confirms you have reached a shared understanding.

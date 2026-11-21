@@ -48,7 +48,8 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 
 | 補丁 | 內容 |
 | --- | --- |
-| `grilling`、`grill-me`、`grill-with-docs` | `effort: high`；`grilling` 另把「派子代理查事實」改為自己用工具查、範圍大才派，並在第一輪前列出與主題相關、還開著的 Issue；建議換掉使用者講的操作時要在題目點明，結束前列出每個決定後使用者實際看到的結果；建議答案點名 class、bean、設定 key 或 SQL 宣告形式時先查證存在並引用結果，建議兩項工作互不阻擋或 Blocked by 前先跑 repo 的開單前重疊檢查 |
+| `grilling`、`grill-me`、`grill-with-docs` | `effort: high`；`grilling` 另把「派子代理查事實」改為自己用工具查、範圍大才派，並在第一輪前列出與主題相關、還開著的 Issue；建議換掉使用者講的操作時要在題目點明，結束前列出每個決定後使用者實際看到的結果；建議答案點名 class、bean、設定 key 或 SQL 宣告形式時先查證存在並引用結果，建議兩項工作互不阻擋或 Blocked by 前先跑 repo 的開單前重疊檢查；`grilling` 在 `to-spec` 以外自己寫出 spec 時，給使用者看定稿前先跑 `spec-review` |
+| `to-spec` | 發布前先跑 `spec-review`，使用者看到的是審查修正後的 spec |
 | `domain-modeling` | repo 自訂的 ADR 版面與索引編號優先；主 checkout 不能寫時，詞條與 ADR 原文寫進負責實作的 Issue，由它在 worktree 提交 |
 | `retro` | 候選開成 Issue 前，依它提到的名稱查開著的 Issue：同一件事就留言補證據不另開，只是同檔不同事就讓新單依賴它；寫入前檢查其他 session 的並行修改；adapter 有 **Retro collect** 條目時一律改為收集模式：不實作，把候選開成一張 `retro-candidates` label 的 Issue（一個 session 一張），等 `/retro-collect`；條目宣告 `Collect command:` 時改照該指令走，不開 Issue |
 | `poteto-mode` | 本機 harness：先讀上游 `docs/harness/claude-code.md` 做名稱對照；repo 規則與語言優先、無 GitHub PR（對應 candidate／整合分支）、無 cloud（Orca terminal）、Codex 只做 code review、未連結 skill 改用 Matt 對應 |
@@ -56,6 +57,21 @@ bin/sync-skills --list    # 列出所有可用 skill：user/model、名稱、來
 | `diagnosing-bugs` | 用 tmux 起互動 `claude` 做實驗時，等待程序每次輪詢也看 `tmux capture-pane`，停在對話框（資料夾 trust、Enter to confirm）就立即回報，不只等結果檔 |
 | `wizard` | 第 3 步：精靈需要使用者 shell 的變數時不開互動式 shell（`zsh -i`、`bash -i`，會被 SIGTTIN 暫停），先用繼承的環境變數，沒有時非秘密值只取 `~/.zshrc` `export` 行的字面值（不 `source`／`eval`）、秘密讀平台的秘密存放處（macOS Keychain、Linux／WSL 的 `secret-tool`），都拿不到時用 `ask`／`ask_secret` 問使用者；以 `VAR=value cmd` 前綴帶給其他程式、不當參數 |
 | `arena` | 只用在昂貴、難逆轉且多解的設計決策；兩席都是 Claude worktree 子代理，judge 是沒寫候選的全新 Claude 子代理；Eval 只用於 worker／review／stop-policy 的 skill 變更 |
+
+## spec-review
+
+spec 討論完（`to-spec`、`grilling` 這類使用者在場的流程）、交給 AI 實作之前跑一輪「新人審查」：派一個沒看過討論的 `sonnet` 子代理，只給 spec 與 spec 直接引用的檔案（不遞迴，最多 8 個檔、約 150 KB，整輪目標約 8 萬 token），挑出看不懂（`unclear`）、互相矛盾（`contradiction`）、還沒決定（`undecided`）的地方，每條附 spec 行號與段落、建議修法或要問的問題；主 agent 依結果修 spec，需要使用者決定的照 `grilling` 的問法一次問完，最後才給使用者看定稿。`to-spec` 的 overlay 在發布前呼叫它，也可以手動 `/spec-review <spec>`；`issue-run`、`issue-pilot` 等無人值守流程不跑。
+
+專案在 adapter（`docs/agents/` 底下的檔，通常是 `issue-run.md`）以固定段落宣告哪些類別不算缺失，審查不報：
+
+```markdown
+## Spec review
+
+Not defects:
+- Missing test plan, file boundaries, or phasing: child Issues and the adapter's acceptance section carry them.
+```
+
+沒有這段就只用內建的排除項（一般工程術語、對沒提供的檔案的推測）。新人讀者角色與「先轉述」檢查改寫自 Google Elephant-Goldfish Model 的 `agents/comprehension.md`（Apache 2.0），出處寫在 SKILL.md。
 
 ## issue-run
 
