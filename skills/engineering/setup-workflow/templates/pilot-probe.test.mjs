@@ -866,6 +866,11 @@ test('Pilot 段宣告 Adapter ref 為遠端 ref 時，ADAPTER_AHEAD 比那個 re
   const run = spawnSync('sh', ['-c', line.split(' ｜ ')[1]], { encoding: 'utf8', env });
   assert.equal(run.status, 0, run.stderr);
   assert.equal(readFileSync(join(repo, '.scratch/pilot/adapter/pilot-rules.md'), 'utf8'), rules('v2'));
+  // fetch 失敗：印 FETCH_FAILED adapter-ref，照上次 fetch 的 ref 比（review-only 輪 P3）。
+  git('remote', 'set-url', 'origin', join(repo, 'missing.git'));
+  const failed = lines(probe({ args: ['--integration', 'develop'] }));
+  assert.ok(failed.some(l => l.startsWith('FETCH_FAILED adapter-ref ')), failed.join('\n'));
+  assert.ok(failed.includes(line), failed.join('\n'));
 });
 
 // #77：coordinator 拿 probe 的 WORKER 行手寫 sed 改成員列，表頭或空的 candidate 欄一變就靜默沒寫進去。

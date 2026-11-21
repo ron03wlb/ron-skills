@@ -30,8 +30,8 @@
 //   adapter：ADAPTER_AHEAD <檔案> [<名稱>[,<名稱>…]] ｜ mkdir -p <主 checkout>/.scratch/pilot/adapter && [git -C <主 checkout> fetch <remote> <分支> && ]
 //            git -C <主 checkout> show <adapter ref>:<檔案> > <主 checkout>/.scratch/pilot/adapter/<檔名>（adapter ref 上的 adapter 比主分支新；
 //            adapter ref 是主分支那份 adapter 的 Pilot 段與它連到的檔裡 `- **Adapter ref.**` 條目的第一個反引號值，沒有時是 --integration 的本機分支；
-//            以已設定的 remote 名稱加 `/` 開頭時是遠端 ref：probe 先 `git fetch <remote> <分支>` 再比 refs/remotes/<ref>，失敗時印 FETCH_FAILED <錯誤>、照上次 fetch 的 ref 比，
-//            指令也先 fetch（#333：本機 develop 落後 origin 9 個 commit）；SCRIPT_AHEAD 也比同一個 ref：
+//            以已設定的 remote 名稱加 `/` 開頭時是遠端 ref：probe 先 `git fetch <remote> <分支>` 再比 refs/remotes/<ref>，失敗時印 FETCH_FAILED adapter-ref <錯誤>、照上次 fetch 的 ref 比，
+//            指令也先 fetch（#333：本機 develop 落後 origin 9 個 commit）；SCRIPT_AHEAD 仍比本機整合分支（run-in 跑 stage worktree 的檔）：
 //            docs/agents/issue-run.md 只在 `## Pilot` 段變動時算（#357：Review、Permissions 段的改動不影響 coordinator），不附名稱、只讀那一段；
 //            它 `## Pilot` 段連到的同目錄 .md 整份都算，改動都在 `- **<名稱>.**` 條目裡時附改動的條目名稱，依名稱排序、以 `,` 分隔，名稱本身可能有空格
 //            （不能有 `,` 或 `｜`）；刪掉或改名的條目也列（取改動前的名稱）；有條目以外的改動或不是 `.md` 時省略名稱欄，表示要讀整份。
@@ -254,10 +254,10 @@ function stageWorktree(checkout, integration) {
  * 而且整合分支那份不比主分支舊（integrationNewer）時，依路徑印 `SCRIPT_AHEAD <path> run-in <stage worktree>`；stage worktree 不存在或也沒有這個檔時
  * 印 `SCRIPT_AHEAD <path> sync-main`（先跑 pilot-land.mjs sync-main 建好、跟上 stage worktree）。缺檔會 MODULE_NOT_FOUND，舊版會靜默做錯（`pilot-watch.mjs`）。
  */
-export function scriptsAhead(checkout, adapterLines, { integration = 'pilot/integration', main = 'main', source } = {}) {
+export function scriptsAhead(checkout, adapterLines, { integration = 'pilot/integration', main = 'main' } = {}) {
   if (!adapterLines.length) return [];
-  const base = `refs/heads/${main}`;
-  const tip = (source ?? adapterRef(checkout, base, integration)).ahead;
+  // 比本機整合分支，不比 Adapter ref：run-in 跑的是 stage worktree（本機整合分支）的檔，比遠端 ref 會指向 stage 裡的舊版（#333 review）。
+  const [tip, base] = [`refs/heads/${integration}`, `refs/heads/${main}`];
   const adapter = show(checkout, tip, ADAPTER);
   const text = [pilotSection(adapter), ...pilotFiles(adapter).map(path => show(checkout, tip, path))].join('\n');
   const stale = scriptRefs(text, ADAPTER_SCRIPT).sort().filter(path => {
@@ -902,7 +902,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   const tracker = trackerLines(checkout, batched, projects, gates, integrationLanded(checkout, integration), skipLabels);
   const source = adapterRef(checkout, `refs/heads/${main}`, integration);
   const ahead = adapterAhead(checkout, { integration, main, source });
-  const out = [...checkoutState(checkout, main), ...(source.fetchError ? [`FETCH_FAILED ${source.fetchError}`] : []), ...ahead, ...scriptsAhead(checkout, ahead, { integration, main, source }), ...hookBehind(checkout, { integration, main }), ...openRows(pilot), ...tracker.lines];
+  const out = [...checkoutState(checkout, main), ...(source.fetchError ? [`FETCH_FAILED adapter-ref ${source.fetchError}`] : []), ...ahead, ...scriptsAhead(checkout, ahead, { integration, main }), ...hookBehind(checkout, { integration, main }), ...openRows(pilot), ...tracker.lines];
   if (apply) out.push(...applyParentFixes(checkout, tracker.fixes));
   const landing = [];
   const batches = [];
