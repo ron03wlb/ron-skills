@@ -150,7 +150,7 @@ export function checkoutState(checkout, main = 'main') {
 }
 
 /** 下一批在整合分支上 stage，主 checkout 的 adapter 卻是主分支的版本。 */
-const ADAPTER = 'docs/agents/issue-run.md';
+export const ADAPTER = 'docs/agents/issue-run.md';
 
 /** adapter 的 `## Pilot` 段（標題之後到下一個 `## ` 標題或檔尾）；沒有這一段時是空字串。coordinator 只讀這一段與它連到的檔（#357）。 */
 export const pilotSection = text => text.match(/^## Pilot[ \t]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1] ?? '';
