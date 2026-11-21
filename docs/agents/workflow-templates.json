@@ -102,7 +102,7 @@
     },
     "scripts/gh-tracker.mjs": {
       "template": "skills/engineering/setup-workflow/templates/gh-tracker.mjs",
-      "commit": "1155b4e18a900ed62a4c1d341d6aee693d7adb7b",
+      "commit": "7ee0a2369ca29b4e333deabda3d931ce61cebb27",
       "sha256": "79ea206d5975a3824776e08fd9b2e47e66a9681f2a38498deacfd42e4e4d98b6"
     },
     "scripts/hook-acceptance.mjs": {
@@ -112,7 +112,7 @@
     },
     "scripts/issue-pool.mjs": {
       "template": "skills/engineering/setup-workflow/templates/issue-pool.mjs",
-      "commit": "1155b4e18a900ed62a4c1d341d6aee693d7adb7b",
+      "commit": "55505003094a5452f4a9b3109ce6b290e8305e97",
       "sha256": "ec6761cfb3e3b036474f10e0d370c8a4988da8dd1a0278f98f4ae94bdc793c47"
     },
     "scripts/land.mjs": {
@@ -122,7 +122,7 @@
     },
     "scripts/lib/changed-units.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/changed-units.mjs",
-      "commit": "1155b4e18a900ed62a4c1d341d6aee693d7adb7b",
+      "commit": "55505003094a5452f4a9b3109ce6b290e8305e97",
       "sha256": "1ccff6e0c4cdd512810c823d3620a1caec1f008851874e901daed0f4cf5d5789"
     },
     "scripts/lib/claude-projects.mjs": {
@@ -132,32 +132,32 @@
     },
     "scripts/lib/hosts.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/hosts.mjs",
-      "commit": "1155b4e18a900ed62a4c1d341d6aee693d7adb7b",
+      "commit": "55505003094a5452f4a9b3109ce6b290e8305e97",
       "sha256": "27903739d0a621c91f571544ec51cd07b96e94484697a6a38f18b4b99864791b"
     },
     "scripts/lib/pilot-store.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/pilot-store.mjs",
-      "commit": "1155b4e18a900ed62a4c1d341d6aee693d7adb7b",
+      "commit": "55505003094a5452f4a9b3109ce6b290e8305e97",
       "sha256": "b4f1bdea5bf4737d363691786ac88f0b0aa812692ddf6fbcbd336e9dd39d3b25"
     },
     "scripts/lib/protected-paths.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/protected-paths.mjs",
-      "commit": "1155b4e18a900ed62a4c1d341d6aee693d7adb7b",
+      "commit": "7ee0a2369ca29b4e333deabda3d931ce61cebb27",
       "sha256": "fd5447454d48ac3ae652404b8d7a41fd2a62cd096fd57ed697cfe21175eedff0"
     },
     "scripts/lib/shell-quote.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/shell-quote.mjs",
-      "commit": "1155b4e18a900ed62a4c1d341d6aee693d7adb7b",
+      "commit": "18445356b0e22d38101073fbb4e16360c1e0f3d9",
       "sha256": "3e5db11b40e187cbbb728d34d2493725658693dbefc6fe5274dfa0fa98002192"
     },
     "scripts/memory-audit.mjs": {
       "template": "skills/engineering/setup-workflow/templates/memory-audit.mjs",
-      "commit": "1155b4e18a900ed62a4c1d341d6aee693d7adb7b",
+      "commit": "55505003094a5452f4a9b3109ce6b290e8305e97",
       "sha256": "6c8a7839bf03ebf7837fc0b5d98df9beb6570d9363a466d497e9a30b66097df8"
     },
     "scripts/orca-session-send.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-send.mjs",
-      "commit": "1155b4e18a900ed62a4c1d341d6aee693d7adb7b",
+      "commit": "55505003094a5452f4a9b3109ce6b290e8305e97",
       "sha256": "0b60c3210b8d896c827b890b105b749456e57985b9687567db3849112110598d"
     },
     "scripts/orca-session-split.mjs": {
@@ -167,7 +167,7 @@
     },
     "scripts/orca-worktree-create.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-worktree-create.mjs",
-      "commit": "1155b4e18a900ed62a4c1d341d6aee693d7adb7b",
+      "commit": "1225a56f5284fffb915e0ef06c378e52ccbf7ca7",
       "sha256": "01d40e755d4c42f65b8b19154a348cd00bb5ea2c4a7c5f5c3cdd8ffe4d5ff2bb"
     },
     "scripts/parent-hints.mjs": {
@@ -177,12 +177,12 @@
     },
     "scripts/pilot-batch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-batch.mjs",
-      "commit": "7ee0a2369ca29b4e333deabda3d931ce61cebb27",
-      "sha256": "96fc6c7224f743c5abcb19cfabf874873e3f0115a73b5e5a1d5d00c5fa725986"
+      "commit": "55505003094a5452f4a9b3109ce6b290e8305e97",
+      "sha256": "942813096b331c787e3004708e52c1dee4d5cb478662ee4611507b6dbf4aed63"
     },
     "scripts/pilot-capacity.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-capacity.mjs",
-      "commit": "1155b4e18a900ed62a4c1d341d6aee693d7adb7b",
+      "commit": "55505003094a5452f4a9b3109ce6b290e8305e97",
       "sha256": "b4c2cf2dd52b83c24435eb11831d01fd0f2201d8f086819cc8610380fbe9a01a"
     },
     "scripts/pilot-close.mjs": {
@@ -237,8 +237,8 @@
     },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",
-      "commit": "1155b4e18a900ed62a4c1d341d6aee693d7adb7b",
-      "sha256": "dc2c6ea2ce414e28d7afff2ee0787fc323a6e4dc7c9f2fb96f64e6c34fd52317"
+      "commit": "8dc71060a587f2166505039afbb92f36a90d79ec",
+      "sha256": "d972478df0b49ec17a342009a1c9fb3d58e645987cfab94e1b5bb6477720bc43"
     },
     "scripts/pilot-register.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-register.mjs",
@@ -257,7 +257,7 @@
     },
     "scripts/pilot-unbare.sh": {
       "template": "skills/engineering/setup-workflow/templates/pilot-unbare.sh",
-      "commit": "1155b4e18a900ed62a4c1d341d6aee693d7adb7b",
+      "commit": "1225a56f5284fffb915e0ef06c378e52ccbf7ca7",
       "sha256": "93c37ad070828d1f3ea76888b30a48e3f7520024b55149fd4e339e55f32353a1"
     },
     "scripts/pilot-watch.mjs": {
@@ -272,7 +272,7 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "1155b4e18a900ed62a4c1d341d6aee693d7adb7b",
+      "commit": "7ee0a2369ca29b4e333deabda3d931ce61cebb27",
       "sha256": "36ad6e4941c162f611e652c51acca4b69829cefeaea59ff64dcac65d5bc218ee"
     },
     "scripts/token-usage.mjs": {

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { orcaReplySource } from './test/fake-orca.mjs';
+import { FAST, orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 import { applyResults, changedUnits } from './pilot-probe.mjs';
 
@@ -53,8 +53,13 @@ ${orcaReplySource()}
 const screens = ${JSON.stringify(screens)};
 const screen = screens[arg('--terminal')];
 if (!screen) { fail('terminal_handle_stale'); process.exit(1); }
-if (screen.raw !== undefined) process.stdout.write(screen.raw);
-else reply('read', { terminal: screen });
+// pilot-batch resume 送 note（orca-session-send）：wait 一律就緒，send 收下的文字之後以 \`> <text>\` 接在畫面最後。
+const sentFile = ${JSON.stringify(log)} + '.sent';
+const sent = fs.existsSync(sentFile) ? fs.readFileSync(sentFile, 'utf8').split('\\n').filter(Boolean) : [];
+if (process.argv[3] === 'wait') reply('wait', { wait: { satisfied: true } });
+else if (process.argv[3] === 'send') { fs.appendFileSync(sentFile, arg('--text') + '\\n'); reply('send'); }
+else if (screen.raw !== undefined) process.stdout.write(screen.raw);
+else reply('read', { terminal: { ...screen, tail: [...(screen.tail ?? []), ...sent.map(text => '> ' + text)] } });
 `);
   chmodSync(cli, 0o755);
 
@@ -128,7 +133,8 @@ ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? 
   }
   const probe = ({ input = 'stdin 不該被 orca 讀到\n', args = [], extraEnv = {} } = {}) =>
     spawnSync('node', [probeScript, repo, ...args], { encoding: 'utf8', input, env: { ...probeEnv, ORCA_CLI_COMMAND: cli, ...extraEnv } });
-  return { repo, pilot, origin, git, log, batch, probe, probeEnv, cli, temp, ghLog: join(temp, 'gh.log') };
+  const pilotBatch = (...args) => spawnSync('node', [new URL('./pilot-batch.mjs', import.meta.url).pathname, repo, ...args], { encoding: 'utf8', env: { ...probeEnv, ORCA_CLI_COMMAND: cli, ...FAST } });
+  return { repo, pilot, origin, git, log, batch, probe, probeEnv, cli, temp, pilotBatch, ghLog: join(temp, 'gh.log') };
 }
 
 // 池子摘要（POOL_EMPTY｜POOL_READY｜POOL_FAILED，#240）每次都印一行；其他測試只看自己的行，比對前去掉它，池子的測試另外看 stdout。
@@ -1847,4 +1853,75 @@ test('預算表的上限不是正整數時 exit 1，不靜默略過', t => {
   const result = budgetFixture(t, { budget: { 'docs/a.md': '100' } });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /adapter-size-budget\.json/);
+});
+
+// #356（investing 五次再現）：coordinator 請停下的 worker 繼續、把列改回 running 後，畫面還留著舊結果行，
+// `--apply` 把列寫回 stop／舊 SHA 的 done，照 STAGEABLE stage 又撞同一衝突。pilot-batch resume 在表格下方記 `resumed:` 那一行，Probe 忽略它。
+const resumedLine = (n, line) => `resumed: #${n} ${ago(1)} ${line}\n`;
+
+test('resume 後畫面殘留的舊 STOP：印 WORKER <n> RUNNING，--apply 不改列', t => {
+  const old = 'STOP 234 decision pilot-close 與兩個 git 步驟偏離待 Operator 決定';
+  const { batch, pilot, probe } = fixture(t, { screens: { term_234: { status: 'running', tail: [`│ ${old}      │`, '● 在 ab277c8 跑完整 gate · 57s', '❯'] } } });
+  batch('234', 'dispatched 2026-11-16T10:00:00+08:00', [{ n: 234, started: ago(2) }]);
+  const file = join(pilot, 'batch-234.md');
+  writeFileSync(file, readFileSync(file, 'utf8') + resumedLine(234, old));
+  const before = readFileSync(file, 'utf8');
+  const result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(lines(result).some(line => /^WORKER 234 RUNNING [23]$/.test(line)), result.stdout);
+  assert.equal(readFileSync(file, 'utf8'), before);
+});
+
+test('resume 後畫面殘留的舊 DONE 不印 STAGEABLE；出現新的 DONE 才寫回新 SHA', t => {
+  const OLD = '5234c1b8b40944a9e0ecc1526ce225e861e64b27';
+  const NEW = '8cbfc83' + 'c'.repeat(33);
+  const screens = { term_319: { status: 'running', tail: [`DONE 319 ${OLD}`, '● 合併 pilot/integration 中', '❯'] } };
+  const { batch, pilot, probe } = fixture(t, { screens });
+  batch('319', 'dispatched 2026-11-18T10:00:00+08:00', [{ n: 319, started: ago(1) }]);
+  const file = join(pilot, 'batch-319.md');
+  writeFileSync(file, readFileSync(file, 'utf8') + resumedLine(319, `DONE 319 ${OLD}`));
+  let result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!lines(result).includes('STAGEABLE 319'), result.stdout);
+  assert.ok(lines(result).some(line => /^WORKER 319 RUNNING/.test(line)), result.stdout);
+  assert.match(readFileSync(file, 'utf8'), /\| 319 \|.*\| running \|/);
+  // 之後 worker 印出新的 DONE：照常寫回、印 STAGEABLE。
+  const { probe: again, batch: batch2, pilot: pilot2 } = fixture(t, { screens: { term_319: { status: 'running', tail: [`DONE 319 ${OLD}`, '● 合併完成', `DONE 319 ${NEW}`, '❯'] } } });
+  batch2('319', 'dispatched 2026-11-18T10:00:00+08:00', [{ n: 319, started: ago(1) }]);
+  const file2 = join(pilot2, 'batch-319.md');
+  writeFileSync(file2, readFileSync(file2, 'utf8') + resumedLine(319, `DONE 319 ${OLD}`));
+  result = again({ args: ['--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(lines(result).includes(`WORKER 319 DONE ${NEW}`), result.stdout);
+  assert.ok(lines(result).includes('STAGEABLE 319'), result.stdout);
+  assert.match(readFileSync(file2, 'utf8'), new RegExp(`\\| 319 \\|.*\\| done \\| ${NEW} \\|`));
+});
+
+test('resumed 行只對同號成員、最後一行有效；舊格式（沒有 resumed 行）照常讀結果', t => {
+  const { batch, pilot, probe } = fixture(t, { screens: {
+    term_1: { status: 'running', tail: ['STOP 1 decision 舊的', '❯'] },
+    term_2: { status: 'running', tail: ['STOP 2 decision 舊的', '❯'] },
+    term_3: { status: 'running', tail: ['STOP 3 decision 舊的', '❯'] },
+  } });
+  batch('1-2-3', 'dispatched 2026-11-18T10:00:00+08:00', [{ n: 1 }, { n: 2 }, { n: 3 }]);
+  const file = join(pilot, 'batch-1-2-3.md');
+  writeFileSync(file, readFileSync(file, 'utf8') + resumedLine(1, 'STOP 1 decision 舊的') + resumedLine(2, 'STOP 2 decision 舊的') + resumedLine(2, 'STOP 2 decision 更早的'));
+  const out = lines(probe());
+  assert.ok(out.some(line => /^WORKER 1 RUNNING/.test(line)), out.join('\n'));
+  assert.ok(out.includes('WORKER 2 STOP decision 舊的'), out.join('\n'));
+  assert.ok(out.includes('WORKER 3 STOP decision 舊的'), out.join('\n'));
+});
+
+test('pilot-batch resume 之後：started 是現在，Probe 印 RUNNING 不印 STUCK，--apply 不把舊 STOP 寫回', t => {
+  const old = 'STOP 385 decision G50 待 Operator';
+  const { batch, pilot, probe, pilotBatch } = fixture(t, { screens: { term_385: { status: 'running', tail: [old, '❯'] } } });
+  batch('385', 'dispatched 2026-11-20T18:35:00+08:00', [{ n: 385, started: ago(179), state: 'stop' }]);
+  const resumed = pilotBatch('resume', '385', '385', '--note', 'G50 已解決，請繼續');
+  assert.equal(resumed.stdout, 'RESUMED 385 385\n', resumed.stderr);
+  const file = join(pilot, 'batch-385.md');
+  const before = readFileSync(file, 'utf8');
+  const result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(lines(result).includes('WORKER 385 RUNNING 0'), result.stdout);
+  assert.equal(readFileSync(file, 'utf8'), before);
 });
