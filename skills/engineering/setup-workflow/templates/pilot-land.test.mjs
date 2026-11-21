@@ -5,6 +5,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 // 正本的通用路徑：沒有專案 resolver 時只自己解 workflow-templates.json 的 restamp，其他衝突一律 STOP conflict；
@@ -65,7 +66,7 @@ function fixture(t, { members, base = {}, integration = 'pilot/integration', ext
   write(repo, {
     [`.scratch/pilot/batch-${key}.md`]: `# batch ${key}\ncurrent: dispatched 2026-11-01T07:00:00+08:00\nintegration: ${integration} @ ${git(repo, 'rev-parse', '--short', integration)}\n\n`
       + '| Issue | branch | worktree | handle | started | stuck-after | state | candidate |\n|---|---|---|---|---|---|---|---|\n'
-      + `${members.map(({ n }) => `| ${n} | issue/${n}-x | ${temp}/issue-${n} | term_${n} | 2026-11-01T07:00:00+08:00 | 90m | done | abc1234 |`).join('\n')}\n`,
+      + `${members.map(({ n, state = 'done', started = '2026-11-01T07:00:00+08:00' }) => `| ${n} | issue/${n}-x | ${temp}/issue-${n} | term_${n} | ${started} | 90m | ${state} | ${state === 'done' ? 'abc1234' : ''} |`).join('\n')}\n`,
   });
   const log = join(temp, 'check.log');
   writeFileSync(log, '');
@@ -239,4 +240,83 @@ test('checkpoint 被活著的 pid 鎖住到逾時：印 CHECKPOINT_LOCKED、exit
   assert.equal(result.status, 3, result.stdout + result.stderr);
   assert.equal(result.last, `CHECKPOINT_LOCKED ${f.file}.lock ${holder}`);
   assert.equal(f.read(), before);
+});
+
+// 假 Orca CLI：`screens` 是 handle → `terminal read --screen` 的 `{ status, tail }`，不在表裡的 handle 回 terminal_handle_stale。
+function fakeOrca(temp, screens) {
+  const cli = join(temp, 'orca');
+  writeFileSync(cli, `#!/usr/bin/env node
+const arg = k => process.argv[process.argv.indexOf(k) + 1];
+${orcaReplySource()}
+const screen = ${JSON.stringify(screens)}[arg('--terminal')];
+if (!screen) { fail('terminal_handle_stale'); process.exit(1); }
+reply('read', { terminal: screen });
+`);
+  chmodSync(cli, 0o755);
+  return cli;
+}
+
+const recent = () => new Date(Date.now() - 5 * 60000).toISOString();
+
+// #361：pilot-watch 已印 `DONE 133 …`，緊接的 pilot-land 仍因 checkpoint 還記 running 而 STOP member，要先跑一輪 probe --apply。
+// running 成員先用 Probe 的 worker 解析讀一次畫面：讀到 DONE 就照 --apply 寫回 done 與 candidate 再繼續。
+test('running 成員的畫面最後是 DONE <n> <sha>：寫回 done 與 candidate 後照常 stage、MERGED', t => {
+  const f = fixture(t, { members: [{ n: 133, state: 'running', started: recent(), files: { 'a.txt': 'a\n' } }] });
+  const sha = git(f.repo, 'rev-parse', 'issue/133-x');
+  const cli = fakeOrca(f.temp, { term_133: { status: 'running', tail: ['工作完成', `DONE 133 ${sha}`, ''] } });
+  const result = spawnSync('node', [script, f.key], { cwd: f.repo, encoding: 'utf8', env: { ...env, FAKE_CHECK_LOG: join(f.temp, 'check.log'), ORCA_CLI_COMMAND: cli } });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const out = result.stdout.trim().split('\n');
+  assert.equal(out[0], `WORKER 133 DONE ${sha}`);
+  assert.match(out.at(-1), /^MERGED 133 [0-9a-f]{40}$/);
+  assert.match(f.read(), new RegExp(`^\\| 133 \\| issue/133-x \\|.*\\| done \\| ${sha} \\|$`, 'm'));
+});
+
+test('running 成員仍在工作或讀不到畫面：STOP member <n> running 並提示 probe --apply，成員列不動', t => {
+  const working = fixture(t, { members: [{ n: 133, state: 'running', started: recent(), files: { 'a.txt': 'a\n' } }] });
+  const before = working.read();
+  const cli = fakeOrca(working.temp, { term_133: { status: 'running', tail: ['● 跑測試中…'] } });
+  const run = (f, extra) => spawnSync('node', [script, f.key], { cwd: f.repo, encoding: 'utf8', env: { ...env, FAKE_CHECK_LOG: join(f.temp, 'check.log'), ...extra } });
+  const busy = run(working, { ORCA_CLI_COMMAND: cli });
+  assert.equal(busy.status, 4, busy.stdout + busy.stderr);
+  assert.match(busy.stdout.trim().split('\n').at(-1), /^STOP member 133 running \(RUNNING \d+\)，先跑 pilot-probe\.mjs --apply$/);
+  assert.equal(working.read(), before);
+  assert.equal(working.checks(), '');
+
+  const stale = fixture(t, { members: [{ n: 133, state: 'running', started: recent(), files: { 'a.txt': 'a\n' } }] });
+  const staleBefore = stale.read();
+  const failed = run(stale, { ORCA_CLI_COMMAND: fakeOrca(stale.temp, {}) });
+  assert.equal(failed.status, 4, failed.stdout + failed.stderr);
+  assert.equal(failed.stdout.trim().split('\n').at(-1), 'STOP member 133 running (STUCK orca terminal_handle_stale)，先跑 pilot-probe.mjs --apply');
+  assert.equal(stale.read(), staleBefore);
+
+  const noOrca = fixture(t, { members: [{ n: 133, state: 'running', started: recent(), files: { 'a.txt': 'a\n' } }] });
+  const bare = spawnSync('node', [script, noOrca.key], { cwd: noOrca.repo, encoding: 'utf8',
+    env: Object.fromEntries(Object.entries({ ...env, FAKE_CHECK_LOG: join(noOrca.temp, 'check.log') }).filter(([key]) => key !== 'ORCA_CLI_COMMAND')) });
+  assert.equal(bare.stdout.trim().split('\n').at(-1), 'STOP member 133 running (STUCK no-orca)，先跑 pilot-probe.mjs --apply');
+});
+
+// 畫面是 STOP 時照 --apply 寫回 stop，接著和以前一樣 STOP member <n> stop（stop 成員要先 move）。
+test('running 成員的畫面最後是 STOP <n> <cause>：寫回 stop 後 STOP member <n> stop', t => {
+  const f = fixture(t, { members: [{ n: 133, state: 'running', started: recent(), files: { 'a.txt': 'a\n' } }] });
+  const cli = fakeOrca(f.temp, { term_133: { status: 'running', tail: ['STOP 133 decision 選哪個格式'] } });
+  const result = spawnSync('node', [script, f.key], { cwd: f.repo, encoding: 'utf8', env: { ...env, FAKE_CHECK_LOG: join(f.temp, 'check.log'), ORCA_CLI_COMMAND: cli } });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), ['WORKER 133 STOP decision 選哪個格式', 'STOP member 133 stop']);
+  assert.match(f.read(), /^\| 133 \|.*\| stop \| +\|$/m);
+});
+
+// #361：Regression 期間 checkpoint 留 `regressing: <staged sha> pid <pid>`，Probe 據此印 REGRESSING 而不是 RESTAGE … none；
+// regression 行寫入時同一次寫入拿掉它。
+test('Regression 期間 checkpoint 有 regressing 標記，寫 regression 行時拿掉', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
+  const during = join(f.temp, 'during.md');
+  const result = f.land(f.key, '--check-command', `cp '${f.file}' '${during}' && echo 'CHECK_PASS tests 1'`);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const staged = result.lines.find(line => line.startsWith('STAGED ')).split(' ')[2];
+  const copy = readFileSync(during, 'utf8');
+  assert.match(copy, new RegExp(`^current: staged ${staged} onto [0-9a-f]{40}$`, 'm'));
+  assert.match(copy, new RegExp(`^regressing: ${staged} pid \\d+$`, 'm'));
+  assert.doesNotMatch(f.read(), /^regressing:/m);
+  assert.match(f.read(), new RegExp(`^regression: ${staged} exit 0 CHECK_PASS tests 1$`, 'm'));
 });

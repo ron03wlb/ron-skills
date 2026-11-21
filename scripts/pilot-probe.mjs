@@ -77,6 +77,8 @@
 //          沒有 done 印 PARKED <key> <n…>（#163：只剩 stop 的 batch 照跑 pilot-land 只得到 STOP member）；
 //          current 是 `staged <sha>` 的 batch，最後一行 regression 不是這個 staged SHA 的 exit 0 時印 RESTAGE <key> regression-failed <code 或 none>
 //          （#191：Regression 沒過、batch 停在 staged，probe 卻什麼都不印；none 是沒有 regression 行、SHA 是先前那次 stage 的，或 SHA 後面沒緊接 exit <code>）；
+//          其中這個 staged SHA 還沒有 regression 行、checkpoint 的 `regressing: <sha> pid <pid>` 是同一個 SHA、那個 pid 還是 pilot-land（ps 的命令列）時
+//          改印 REGRESSING <key> <staged sha>（#361：land 還在跑 Regression，coordinator 等它，不重 stage）；
 //          沒關的 batch 裡 `parked after #<m>` 的成員，在 #m 以 done 留在 `closed` 的 batch 之後印 UNPARK <n>；
 //          current 是 merged／pushed 的 batch 在 git fetch 後比 origin/<主分支>，印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
 //          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA，且那一行是 exit 0），
@@ -101,7 +103,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
-import { CheckpointLocked, gateLines, heldIssues, isOpenRequest, now, openGates, parksAllPush, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
+import { CheckpointLocked, gateLines, heldIssues, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 import { envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 import { POOL_FIELDS, blockerOpenScope, landedOn, pool, prerequisiteOf } from './issue-pool.mjs';
@@ -539,7 +541,7 @@ export function trackerLines(checkout, batched = new Set(), projects = new Set()
 
 /**
  * 解析 batch checkpoint：`current:`、成員表格、最後一行 `regression: <sha> exit <code>` 的 SHA 與 exit（SHA 後面不是 `exit <code>` 時 undefined），
- * 與合入的 SHA（`current: merged|pushed <sha>`，沒有就取 regression 的 SHA）。
+ * 與合入的 SHA（`current: merged|pushed <sha>`，沒有就取 regression 的 SHA），以及 pilot-land 的存活標記 `regressing`（`{ sha, pid }`，#361）。
  */
 export function parseBatch(text) {
   const current = text.match(/^current:\s*(.*)$/m)?.[1].trim() ?? '';
@@ -555,7 +557,7 @@ export function parseBatch(text) {
     const [n, branch, worktree, handle, started, stuckAfter, state, candidate] = cells;
     members.push({ n, branch, worktree, handle, started, stuckAfter, state, candidate });
   }
-  return { current, members, regression, regressionExit, sha };
+  return { current, members, regression, regressionExit, sha, regressing: regressingMark(text) };
 }
 
 /** Claude Code 輸入框下方的提示列（`✻ …`、`❯ …`、`⏵⏵ …`）：使用者打字或提示文字可能長得像結果行，不算。 */
@@ -709,12 +711,16 @@ export function scopeChangedLines(key, active, results, issues) {
  * staged batch 的 Regression 判斷（#191）：最後一行 regression 是這個 staged SHA 的 exit 0 才算過（pilot-land 接著做 Integrate，或 hold 擋著），
  * 其他情況（exit 不是 0、沒寫 exit、SHA 是先前那次 stage 的、沒有 regression 行）印 RESTAGE，coordinator 讀 reg-<key>.log 後重跑 pilot-land。
  * SHA 兩邊都可能是縮寫，以前綴比對。
+ * `liveLandSha` 是還活著的 pilot-land 留的 `regressing:` 標記 SHA（#361）：這個 staged SHA 還沒有 regression 行、標記是同一個 SHA 時
+ * Regression 還在跑，改印 `REGRESSING <key> <staged sha>`（coordinator 等，不重 stage）。
  */
-export function restageLines(key, current, regression, regressionExit) {
+export function restageLines(key, current, regression, regressionExit, liveLandSha) {
   const staged = current.match(/^staged ([0-9a-f]{7,40})\b/)?.[1];
   if (!staged) return [];
-  const same = regression && (regression.startsWith(staged) || staged.startsWith(regression));
+  const sameAsStaged = sha => sha && (sha.startsWith(staged) || staged.startsWith(sha));
+  const same = sameAsStaged(regression);
   if (same && regressionExit === '0') return [];
+  if (!same && sameAsStaged(liveLandSha)) return [`REGRESSING ${key} ${staged}`];
   return [`RESTAGE ${key} regression-failed ${(same && regressionExit) || 'none'}`];
 }
 
@@ -913,7 +919,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   let running = 0;
   for (const file of batchFiles(pilot)) {
     const key = file.slice('batch-'.length, -'.md'.length);
-    const { current, members, regression, regressionExit, sha } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
+    const { current, members, regression, regressionExit, sha, regressing } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
     batches.push({ key, current, members });
     const active = members.filter(m => !/^moved\b/.test(m.state));
     const results = [];
@@ -928,7 +934,9 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     if (apply && results.length) out.push(...applyResults(join(pilot, file), key, results));
     if (/^dispatched\b/.test(current)) out.push(...stageLines(key, active, results, held));
     if (!/^closed\b/.test(current)) out.push(...unblockedLines(key, active, results, tracker.issues), ...scopeChangedLines(key, active, results, tracker.issues));
-    out.push(...restageLines(key, current, regression, regressionExit));
+    // 只有 staged 而且留了標記的 batch 才查行程（ps），其他 batch 不多花一次 spawn。
+    const liveLandSha = /^staged\b/.test(current) && regressing && landAlive(regressing.pid) ? regressing.sha : undefined;
+    out.push(...restageLines(key, current, regression, regressionExit, liveLandSha));
     if (/^(merged|pushed)\b/.test(current)) landing.push({ key, sha, regression, regressionExit, merged: /^merged\b/.test(current) });
   }
   out.push(...unparkLines(batches));

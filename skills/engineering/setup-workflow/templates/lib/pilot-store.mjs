@@ -1,4 +1,4 @@
-// pilot 存檔（issue-pilot 的 PILOT-STORE.md）正本 script 共用的小工具：存檔目錄、時間格式、用法錯誤，requests.md、gates.md 的解析（probe 與 pilot-request、pilot-gate 共用），以及 checkpoint 讀改寫的加鎖與原子寫入（withCheckpointLock、updateCheckpoint，#345）。
+// pilot 存檔（issue-pilot 的 PILOT-STORE.md）正本 script 共用的小工具：存檔目錄、時間格式、用法錯誤，requests.md、gates.md 的解析（probe 與 pilot-request、pilot-gate 共用），以及 checkpoint 讀改寫的加鎖與原子寫入（withCheckpointLock、updateCheckpoint，#345）與 land 存活標記（regressingMark、landAlive，#361）。
 // 存檔一律在 coordinator checkout 的 `.scratch/pilot/`；checkout 由呼叫者傳入，不寫死任何專案路徑。
 import { spawnSync } from 'node:child_process';
 import { accessSync, closeSync, constants, existsSync, linkSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
@@ -120,6 +120,33 @@ export function updateCheckpoint(file, edit, options) {
     if (after !== before) writeCheckpoint(file, after);
     return after;
   }, options);
+}
+
+/**
+ * batch checkpoint 的 land 存活標記（#361）：pilot-land 寫 `current: staged` 時同一次寫入留 `regressing: <staged sha> pid <pid>`，
+ * 追加 regression 行時同一次寫入拿掉。傳回最後一個標記 `{ sha, pid }`，沒有時 undefined。
+ */
+export function regressingMark(text) {
+  const match = [...text.matchAll(/^regressing:[ \t]*([0-9a-f]{7,40}) pid (\d+)\b/gm)].at(-1);
+  return match && { sha: match[1], pid: Number(match[2]) };
+}
+
+/** 拿掉 regressing 標記行（追加 regression 行、重新 stage 時用）。 */
+export const dropRegressing = text => text.replace(/^regressing:.*\n?/gm, '');
+
+/**
+ * 標記的 pid 還是一支 pilot-land：行程在（kill 0 成功或 EPERM），而且 `ps` 印的命令列含 `pilot-land`
+ * （land 被 kill -9、重開機之後 pid 可能被別的行程重用，只看 pid 會一直印 REGRESSING）。ps 跑不起來時只看 kill 0。
+ */
+export function landAlive(pid) {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if (error.code !== 'EPERM') return false;
+  }
+  const ps = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  if (ps.error) return true;
+  return ps.status === 0 && ps.stdout.includes('pilot-land');
 }
 
 /** CLI 的頂層 catch：CheckpointLocked 印它的訊息並 exit 3（可動手：等持鎖者結束後重跑同一條指令，鎖住的那個檔沒寫）；其他錯誤直接返回，由呼叫端照原本的方式處理。 */
