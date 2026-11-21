@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { orcaReplySource } from './test/fake-orca.mjs';
+import { git } from './test/repo-fixture.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-tab-state.mjs', import.meta.url));
@@ -50,7 +51,7 @@ else if (b === 'rename') {
     { type: 'user', message: { role: 'user', content: '/issue-run 126 --worker x' } },
     { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } },
   ].map(entry => JSON.stringify(entry)).join('\n'));
-  return { record, recorded, hook, say, calls: () => readFileSync(log, 'utf8'), tabNow: () => readFileSync(tab, 'utf8') };
+  return { project, transcript, record, recorded, hook, say, calls: () => readFileSync(log, 'utf8'), tabNow: () => readFileSync(tab, 'utf8') };
 }
 
 const bash = (command, stdout) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, tool_response: { stdout, stderr: '' } });
@@ -258,4 +259,36 @@ test('Stop：分頁已是待關閉（retro 已跑完）時，DONE 結果行與 L
   assert.equal(hook(bash('node scripts/land.mjs issue/327-x --title x --body-file b.md', `LANDED 130 ${SHA}\n`)).status, 0);
   assert.equal(recorded(), '待關閉｜#327 自動 retro');
   assert.doesNotMatch(calls(), /rename/);
+});
+
+// #399：只回答問題的 session（工作區乾淨、session 沒有 commit）不該被引去待 Retro，等於要使用者為一則問答跑 /retro。
+test('Stop exit 2：乾淨工作區、沒有 commit 的 session，訊息指向待關閉；有改動或有 commit 的 session 訊息不變', t => {
+  const QA = /只回答問題.*`node scripts\/tab-state\.mjs 待關閉`/;
+  const session = (t, { dirty = false, commits = false, repo = true } = {}) => {
+    const f = fixture(t);
+    if (repo) git(f.project, 'init', '-q', '--initial-branch=main');
+    if (repo) git(f.project, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'base');
+    if (dirty) writeFileSync(join(f.project, 'note.md'), 'x');
+    writeFileSync(f.transcript, [
+      { type: 'user', message: { role: 'user', content: 'Orca bot 怎麼連 Claude？' } },
+      ...(commits ? [{ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'git add -A && git commit -m x' } }] } }] : []),
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '設定在 settings.json。' }] } },
+    ].map(entry => JSON.stringify(entry)).join('\n'));
+    f.record('處理中|#126');
+    const result = f.hook({ cwd: f.project, hook_event_name: 'Stop', stop_hook_active: false });
+    assert.equal(result.status, 2, result.stderr);
+    return result.stderr;
+  };
+  const qa = session(t);
+  assert.match(qa, QA);
+  const dirty = session(t, { dirty: true });
+  const committed = session(t, { commits: true });
+  const unknown = session(t, { repo: false });
+  for (const stderr of [dirty, committed, unknown]) {
+    assert.doesNotMatch(stderr, QA);
+    assert.match(stderr, /工作已交付、等使用者跑 \/retro 用待 Retro，\/retro 已結束用待關閉。\n$/);
+  }
+  assert.equal(dirty, committed);
+  assert.equal(dirty, unknown, '不是 git repo（判斷不了）時訊息不變');
+  assert.ok(qa.startsWith(dirty.replace(/\n$/, '')), '問答 session 只在原訊息後補一句');
 });
