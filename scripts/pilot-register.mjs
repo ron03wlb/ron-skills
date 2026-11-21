@@ -6,7 +6,8 @@
 //   pid、session 預設取 $CLAUDE_PID、$CLAUDE_CODE_SESSION_ID；name 是 ListAgents 印的 "This session is <name>"；source 照 pilot-sources。
 //   --sources-file（#240）：adapter 指定的來源清單檔，一行一個來源（相對 checkout 或絕對路徑，`~` 開頭展開成 $HOME；空行與 `#` 開頭的行略過），
 //   清單檔本身的路徑同樣相對 checkout 或絕對、`~` 展開；讀出的來源接在位置參數後面一起記錄（帶這個旗標時重複的只記一次）。
-// stdout：`REGISTERED pid <pid>   since <since>`，有附加 start 行時接 `SESSION_APPENDED`，再接 pilot-sources 的結果行（有來源時）；
+// stdout：`REGISTERED pid <pid>   since <since>`；`<HOME>/.claude/sessions/<pid>.json` 的 `name` 與 --name 不同時接 `NAME_CHECK <現名> registered <--name>`
+//   （照常登記、exit 0，coordinator 該重取 ListAgents 名稱重跑，#364；檔案不存在、讀不成 JSON 或沒有 name 時不印），有附加 start 行時接 `SESSION_APPENDED`，再接 pilot-sources 的結果行（有來源時）；
 //   已退役時只印 `STOP retired`（先於清單檔的檢查）；清單檔不存在時只印 `STOP sources-file <path>`（照傳入的寫法），不寫任何檔。
 //   讀 sessions.md 到寫完都在 `coordinator` 與 `sessions.md` 的 checkpoint 鎖內（lib/pilot-store.mjs 的 withCheckpointLock，#345）：逾時印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，什麼都沒寫。
 //   exit：0 成功；4 STOP；3 CHECKPOINT_LOCKED；2 用法錯誤。
@@ -33,6 +34,15 @@ if (!isField(options.name)) usage(USAGE, '缺少 --name，或含三個連續空�
 if (!['yes', 'no'].includes(options.loop)) usage(USAGE, '--loop 只能是 yes 或 no');
 
 const dir = storeDir(checkout);
+// Claude Code 在 ~/.claude/sessions/<pid>.json 記這個 pid 的 session 名稱（ListAgents 印的那個）；讀不到就回 undefined。
+function sessionName(pid) {
+  try {
+    const { name } = JSON.parse(readFileSync(join(homedir(), '.claude/sessions', `${pid}.json`), 'utf8'));
+    return typeof name === 'string' && name ? name : undefined;
+  } catch {
+    return undefined;
+  }
+}
 function register() {
   const read = name => (existsSync(join(dir, name)) ? readFileSync(join(dir, name), 'utf8') : '');
   const sessions = read('sessions.md').split('\n');
@@ -56,6 +66,8 @@ function register() {
   mkdirSync(dir, { recursive: true });
   writeCheckpoint(join(dir, 'coordinator'), `pid ${options.pid}   loop ${options.loop}   since ${since}   name ${options.name}\n`);
   console.log(`REGISTERED pid ${options.pid}   since ${since}`);
+  const current = sessionName(options.pid);
+  if (current !== undefined && current !== options.name) console.log(`NAME_CHECK ${current} registered ${options.name}`);
 
   const started = sessions.some(line => line.includes(`   session ${options.session}   `) || (line.endsWith('  coordinator start') && line.includes(`  ${options.session}  `)));
   if (!started) {
