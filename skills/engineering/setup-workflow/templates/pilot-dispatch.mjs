@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // setup-workflow 正本（#58）：/issue-pilot coordinator 的 Dispatch，一個指令把 batch 的每個成員派給一個 `/issue-run <n> --worker <checkpoint>` worker。
 // batch checkpoint 的格式照 issue-pilot 的 PILOT-STORE.md；專案不同的值（整合分支、stuck-after）由參數傳入。
-// 每個成員依序：orca-worktree-create → Bare guard → 確認 worktree → terminal create → orca-session-send。
+// 每個成員依序：orca-worktree-create → Bare guard → 確認 worktree → Env sync（adapter 有宣告時）→ terminal create → orca-session-send。
 // Bare guard 是同目錄的 pilot-unbare.sh（setup-workflow 正本；`<checkout> <時機>`，時機 `dispatch #<n>`；Orca 從 WSL 建 worktree 會把主 checkout 設成 bare），沒有就略過。
 // 派每個成員之前先讀 Issue 最近一則認領留言（同目錄 issue-pool.mjs 的格式與判斷，含 claim 的前任 coordinator 接手）：不是這個 session
 // （$CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE）的就印 `STOP <n> not-claimed`，不開 worktree、不開分頁（#165：claim 印 STOP 後照樣派出）。
@@ -19,6 +19,10 @@
 // 失敗（exit 非 0 或 ok 不是 true）就只印 `STOP orca-unavailable <訊息第一個非空行>`、exit 4：什麼都不建、不寫 checkpoint，認領也保留（下一輪原樣重跑）。
 // 登記（#394）：worktree 確認建好之後、`terminal create` 之前，輪詢 `worktree list --json` 直到列出這個路徑（WSL 上 Orca 回 `\\wsl.localhost\<distro>\…` 的 UNC 路徑，
 // 反斜線換成斜線後比尾段），最多 PILOT_DISPATCH_REGISTER_MS（預設 60000）、間隔 PILOT_DISPATCH_REGISTER_POLL_MS（預設 2000）；到上限沒列出時 stderr 印 `WARN orca-register <路徑>`，仍照樣 `terminal create`。
+// Env sync（#363）：主 checkout 的 adapter（docs/agents/issue-run.md）的 `## Pilot` 段或它連到的檔（同 pilot-probe.mjs 的 pilotFiles）有一行 `Env sync: `<指令>``
+// （前面可以有 `- ` 或 `* `，指令是該行第一個反引號裡的字）時，worktree 確認建好之後、關舊分頁與 `terminal create` 之前，以 `sh -c` 在 worktree 裡跑它，
+// 重派既有 worktree 也跑（同步指令應該可以重跑）；指令的 stdout、stderr 轉到 dispatch 的 stderr。exit 非 0 印 `STOP sync <n> exit <code>`，不開分頁、成員記 stop；
+// 被總預算或信號中止時同其他步驟記 `STOP <n> timeout|signal …`。沒宣告時不跑。宣告寫錯（沒有反引號裡的指令、合計宣告超過一次）時 exit 2，什麼都不動。
 // 剛建好的 worktree Orca 可能還在背景登記，`terminal create` 回 `selector_not_found`：再輪詢一次後重試一次，仍失敗才 `STOP <n> terminal …`。
 // 所有子行程的 stdin 都接 /dev/null：Orca CLI 會吃掉 stdin，`while read` 迴圈因此只派到第一個成員。
 // 總時間有上限（比照 pilot-handoff.mjs）：Bash 工具最多等 600 秒，被殺就來不及寫 checkpoint，所以預算到了（timeout）或收到 SIGTERM、SIGINT（signal <名稱>）
@@ -67,12 +71,12 @@
 //       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--integration <分支>]（草稿，不需要 ORCA_CLI_COMMAND）
 //   --integration worktree 的 base 與表頭的整合分支，預設 pilot/integration；--stuck-after 成員行的 stuck-after，預設 90m。
 // stdout：容量行（CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP、CAPACITY ok repo …、CAPACITY ok …，或 STOP capacity repo …、STOP capacity … 接 RELEASED <n>）、Orca 不能用時唯一的成員外 STOP orca-unavailable <第一行>（見上）、最後的 REPORTED <repo> …（見上）；
-//   stderr 另有 WARN release …、WARN capacity-report …、WARN orca-register …。每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、worktree-branch、create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
+//   stderr 另有 WARN release …、WARN capacity-report …、WARN orca-register …。每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、worktree-branch、create、unbare、terminal、tui-timeout、send、orca、timeout、signal），Env sync 失敗是 `STOP sync <n> exit <code>`（見上）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
 //   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop；running、overlap 的 STOP 不改寫那一列；
 //   send 的 STOP 記 running：worker 可能其實已在跑，交給 Probe 判定，#354），STOP 原因只在 stdout。
 //   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
-// exit：0 全部派出（草稿：寫好）；4 有成員 STOP（或 STOP capacity、STOP orca-unavailable）；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤（含草稿帶了派工旗標）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
+// exit：0 全部派出（草稿：寫好）；4 有成員 STOP（或 STOP capacity、STOP orca-unavailable）；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤（含草稿帶了派工旗標、Env sync 宣告寫錯）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
@@ -81,7 +85,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { claimedBy, defaultSession } from './issue-pool.mjs';
 import { orca, sendToSession } from './orca-session-send.mjs';
 import { closeIfAllMoved, exitIfLocked, updateCheckpoint } from './lib/pilot-store.mjs';
-import { changedUnits, memberOverlaps, parseBatch } from './pilot-probe.mjs';
+import { changedUnits, memberOverlaps, parseBatch, pilotFiles, pilotSection } from './pilot-probe.mjs';
 import { envMissingLines, check as capacityCheck, ledgerPath, machineCap, report as capacityReport } from './pilot-capacity.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
 
@@ -98,6 +102,46 @@ const REGISTER_MS = Number(process.env.PILOT_DISPATCH_REGISTER_MS ?? 60000);
 const REGISTER_POLL_MS = Number(process.env.PILOT_DISPATCH_REGISTER_POLL_MS || 2000);
 /** Orca 還沒登記 worktree 時 `terminal create` 的 error code（orca-session-send 的 orca() 以它當錯誤訊息）。 */
 const SELECTOR_NOT_FOUND = 'selector_not_found';
+
+/** adapter 裡 Env sync 宣告行的寫法（#363）。 */
+const ENV_SYNC = /^(?:[-*]\s+)?Env sync:(.*)$/;
+/** adapter，相對於主 checkout（同 pilot-probe.mjs）。 */
+const ADAPTER = 'docs/agents/issue-run.md';
+
+/** adapter 各檔的 `{ file, text }` → Env sync 宣告的指令；沒有宣告傳回 undefined，宣告寫錯（沒有反引號指令、超過一次）時丟錯。 */
+function declaredEnvSync(sources) {
+  const found = sources.flatMap(({ file, text }) => String(text ?? '').split('\n')
+    .map(line => line.trim()).filter(line => ENV_SYNC.test(line)).map(line => ({ file, line })));
+  if (found.length > 1) throw new Error(`Env sync 宣告了 ${found.length} 次，只能有一行：${found.map(({ file, line }) => `${file}：${line}`).join('；')}`);
+  if (!found.length) return undefined;
+  const [{ file, line }] = found;
+  const command = ENV_SYNC.exec(line)[1].match(/`([^`]+)`/)?.[1].trim();
+  if (!command) throw new Error(`${file} 的 Env sync 行沒有指令（寫成 Env sync: \`<指令>\`）：${line}`);
+  return command;
+}
+
+/** 主 checkout 的 adapter 的 Pilot 段與它連到的檔（pilot-probe.mjs 的 pilotFiles）宣告的 Env sync 指令；檔案不在就當沒宣告。 */
+function envSyncCommand(main) {
+  const read = file => (existsSync(join(main, file)) ? readFileSync(join(main, file), 'utf8') : '');
+  const adapter = read(ADAPTER);
+  return declaredEnvSync([{ file: ADAPTER, text: pilotSection(adapter) }, ...pilotFiles(adapter).map(file => ({ file, text: read(file) }))]);
+}
+
+/** 在 worktree 裡以 `sh -c` 跑 Env sync 指令，輸出轉到 stderr；傳回 exit code（被信號殺掉時是信號名稱）。`signal` 中止時丟錯。 */
+async function runEnvSync(command, worktree, signal) {
+  const child = spawn('sh', ['-c', command], { cwd: worktree, stdio: ['ignore', 'pipe', 'pipe'], signal });
+  child.stdout.pipe(process.stderr, { end: false });
+  child.stderr.pipe(process.stderr, { end: false });
+  return new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (code, killed) => resolve(code ?? killed));
+  });
+}
+
+/** 成員的 STOP 行：Env sync 失敗照 #363 寫成 `STOP sync <n> …`，其他是 `STOP <n> <原因>`。 */
+function stopLine(n, stop) {
+  return stop.startsWith('sync ') ? `STOP sync ${n} ${stop.slice(5)}` : `STOP ${n} ${stop}`;
+}
 
 /** 同步跑子行程；stdin 一律接 /dev/null。 */
 function run(command, args, options = {}) {
@@ -305,10 +349,11 @@ async function spawnText(command, args, options) {
 
 /**
  * 派一個成員；傳回 `{ worktree?, handle }` 或 `{ worktree?, handle?, stop, keep? }`（不含 `STOP <n> ` 前綴；`keep` 時什麼都沒動，成員列也不改寫）。
+ * `envSync` 是 adapter 宣告的 Env sync 指令（沒宣告時 undefined），worktree 確認建好之後、開分頁之前在裡面跑。
  * worktree 已存在（重跑 STOP 的成員）時不再 create：再呼叫一次，Orca 會去重出 `issue-<n>-2`。
  * `signal` 中止時（reason 為 `timeout` 或 `signal <名稱>`）進行中的步驟丟錯，STOP 原因改用 reason；create 被中止時仍跑 Bare guard。
  */
-async function dispatchMember(cli, main, checkpoint, integration, { n, branch }, signal, allowOverlap) {
+async function dispatchMember(cli, main, checkpoint, integration, { n, branch }, signal, allowOverlap, envSync) {
   if (signal.aborted) return { stop: signal.reason };
   const unclaimed = claimStop(n);
   if (unclaimed) return { stop: unclaimed };
@@ -350,6 +395,16 @@ async function dispatchMember(cli, main, checkpoint, integration, { n, branch },
     let detail = created.trim();
     try { detail = JSON.parse(detail).error ?? detail; } catch { /* 非 JSON 就原樣附上 */ }
     return { stop: `create ${detail}` };
+  }
+  if (envSync) {
+    let code;
+    try {
+      code = await runEnvSync(envSync, worktree, signal);
+    } catch (error) {
+      return { worktree, stop: signal.aborted ? signal.reason : `sync ${error.message}` };
+    }
+    if (signal.aborted) return { worktree, stop: signal.reason };
+    if (code !== 0) return { worktree, stop: `sync exit ${code}` };
   }
   if (existed) {
     try {
@@ -600,6 +655,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       clearTimeout(budget);
       process.exit(written.stop ? 4 : 0);
     }
+    let envSync;
+    try {
+      envSync = envSyncCommand(main);
+    } catch (error) {
+      console.error(`${error.message}\n${USAGE}`);
+      process.exit(2);
+    }
     const stopCapacity = line => {
       console.log(line);
       releaseClaims(members);
@@ -645,9 +707,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         process.exit(4);
       }
       // 重疊已在 refresh 比對過；這時的分支是剛從整合分支開的，沒有改動可比。
-      const result = await dispatchMember(cli, main, ready.checkpoint, options.integration, member, controller.signal, true);
+      const result = await dispatchMember(cli, main, ready.checkpoint, options.integration, member, controller.signal, true, envSync);
       // 結果行先印：成員行等鎖逾時（exit 3）時，coordinator 仍看得到 worker 已經派出（#345）。
-      console.log(result.stop ? `STOP ${member.n} ${result.stop}` : `DISPATCHED ${member.n} ${result.handle}\nPRIOR ${member.n} ${ready.prior} ${ready.sha}`);
+      console.log(result.stop ? stopLine(member.n, result.stop) : `DISPATCHED ${member.n} ${result.handle}\nPRIOR ${member.n} ${ready.prior} ${ready.sha}`);
       writeRow(ready.checkpoint, member.n, [member.branch, result.worktree ?? ready.worktree, result.handle ?? '', started, options.stuckAfter, rowState(result.stop)]);
       reportDispatched(result.stop ? 0 : 1);
       clearTimeout(budget);
@@ -659,9 +721,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     let dispatched = 0;
     for (const member of members) {
       const started = now();
-      const result = await dispatchMember(cli, main, checkpoint, options.integration, member, controller.signal, Boolean(given.allowOverlap));
+      const result = await dispatchMember(cli, main, checkpoint, options.integration, member, controller.signal, Boolean(given.allowOverlap), envSync);
       stopped ||= Boolean(result.stop);
-      console.log(result.stop ? `STOP ${member.n} ${result.stop}` : `DISPATCHED ${member.n} ${result.handle}`);
+      console.log(result.stop ? stopLine(member.n, result.stop) : `DISPATCHED ${member.n} ${result.handle}`);
       if (!result.keep) writeRow(checkpoint, member.n, [member.branch, result.worktree ?? '', result.handle ?? '', started, options.stuckAfter, rowState(result.stop)]);
       if (!result.stop) dispatched++;
     }

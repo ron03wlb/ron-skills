@@ -34,7 +34,8 @@ const git = (cwd, ...args) => {
 // `claims[<n>]` 是那張 Issue 原有的留言（排在 comments.json 之前）；沒給時是一則這個 session（SESSION）的認領留言。
 // `tracker` 為真時也把 dispatch 與相依複製到暫存的 scripts/，旁邊放 gh-tracker.mjs 與指向 acme/app 的 docs/agents/issue-run.md；
 // 假 gh 的 `issue edit <n> --remove-assignee=@me` 從 assignees.json 拿掉 me（每張 Issue 起始都指派給 me），`editFails` 列的 Issue 改成失敗。
-function fixture(t, { modes = {}, waitHangs = false, guard, claims = {}, tracker = false, editFails = [], orcaDown = false } = {}) {
+// `adapter` 是 `{ <檔名>: <內容> }`，寫進主 checkout 的 docs/agents/（不 commit，#363 的 Env sync 宣告從這裡讀）。
+function fixture(t, { modes = {}, waitHangs = false, guard, claims = {}, tracker = false, editFails = [], orcaDown = false, adapter = {} } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-dispatch-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
@@ -46,6 +47,10 @@ function fixture(t, { modes = {}, waitHangs = false, guard, claims = {}, tracker
   git(repo, 'add', '.');
   git(repo, 'commit', '-qm', 'fixture');
   git(repo, 'branch', 'pilot/integration');
+  for (const [name, text] of Object.entries(adapter)) {
+    mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+    writeFileSync(join(repo, 'docs/agents', name), text);
+  }
   const log = join(temp, 'orca.log');
   writeFileSync(log, '');
   const root = join(temp, 'workspaces');
@@ -1021,4 +1026,67 @@ test('checkpoint 被活著的 pid 鎖住到逾時：寫成員行時印 CHECKPOIN
   assert.equal(result.status, 3, result.stdout + result.stderr);
   assert.deepEqual(lines(result).slice(-2), ['DISPATCHED 23 term_23', `CHECKPOINT_LOCKED ${file}.lock ${holder}`], '結果行先印，看得出 worker 已派出');
   assert.doesNotMatch(readFileSync(file, 'utf8'), /^\| 23 \|/m);
+});
+
+// #363：adapter 宣告 `Env sync: `<指令>`` 時，worktree 確認建好之後、開分頁之前在 worktree 裡跑它（investing 的 worker 因為沒跑 uv sync 各撞一次 env-ensure）。
+// 測試的指令把 `SYNC <cwd>` 寫進假 Orca 的呼叫記錄，順序就看得出在 terminal create 之前。
+const syncInto = log => `echo "SYNC $PWD" >> '${log}'`;
+const orcaLines = calls => calls.split('\n').filter(line => /^(SYNC|worktree create|terminal create) /.test(line)).map(line => line.split(' --')[0]);
+
+test('Env sync：宣告的指令在新 worktree 內、開分頁前跑一次；重派既有 worktree 時再跑一次', t => {
+  const fx = fixture(t);
+  mkdirSync(join(fx.repo, 'docs/agents'), { recursive: true });
+  writeFileSync(join(fx.repo, 'docs/agents/issue-run.md'), `# adapter\n\n## Pilot\n\nEnv sync: \`${syncInto(fx.log)}\`\n`);
+  const result = fx.dispatch(['46', '46:pilot-dispatch']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['DISPATCHED 46 term_46']);
+  const tree = `${fx.root}/issue-46`;
+  assert.deepEqual(orcaLines(fx.calls()), ['worktree create', `SYNC ${tree}`, 'terminal create']);
+  markRow(fx.repo, '46', '46', 'stop');
+  const again = fx.dispatch(['46', '46:pilot-dispatch']);
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.deepEqual(orcaLines(fx.calls()), ['worktree create', `SYNC ${tree}`, 'terminal create', `SYNC ${tree}`, 'terminal create']);
+});
+
+test('Env sync：宣告寫在 Pilot 段連到的檔的條目清單裡也照跑', t => {
+  const fx = fixture(t, { adapter: { 'issue-run.md': '# adapter\n\n## Pilot\n\n見 [pilot.md](pilot.md)。\n' } });
+  writeFileSync(join(fx.repo, 'docs/agents', 'pilot.md'), `# pilot\n\n- Env sync: \`${syncInto(fx.log)}\`（建好 worktree 後同步相依）\n`);
+  const result = fx.dispatch(['46', '46:pilot-dispatch']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(orcaLines(fx.calls()), ['worktree create', `SYNC ${fx.root}/issue-46`, 'terminal create']);
+});
+
+test('Env sync 失敗：STOP sync <n>、exit 4，沒開分頁、成員記 stop，指令輸出轉到 stderr；其他成員照常派出', t => {
+  const fx = fixture(t);
+  mkdirSync(join(fx.repo, 'docs/agents'), { recursive: true });
+  writeFileSync(join(fx.repo, 'docs/agents/issue-run.md'), `## Pilot\n\nEnv sync: \`case "$PWD" in */issue-46) echo 'uv: lock mismatch' >&2; exit 3;; esac\`\n`);
+  const result = fx.dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['DISPATCHED 23 term_23', 'STOP sync 46 exit 3']);
+  assert.match(result.stderr, /uv: lock mismatch/);
+  assert.equal(fx.calls().split('\n').filter(line => line.startsWith('terminal create ') && line.includes('#46')).length, 0);
+  assert.deepEqual(fx.open().map(({ handle }) => handle), ['term_23']);
+  assert.match(fx.checkpoint('23-46'), new RegExp(`^\\| 46 \\| issue/46-pilot-dispatch \\| ${fx.root}/issue-46 \\|  \\| ${ISO} \\| 90m \\| stop \\| \\|$`, 'm'));
+  assert.match(fx.checkpoint('23-46'), /^\| 23 \| .* \| running \| \|$/m);
+});
+
+test('沒宣告 Env sync（或寫在 Pilot 段以外、Pilot 段沒連到的檔）：不跑同步，照常派出', t => {
+  const fx = fixture(t, { adapter: { 'issue-run.md': '# adapter\n\n## Checks\n\nEnv sync: `false`\n\n## Pilot\n\nEnv sync 還沒用到。\n', 'pilot.md': 'Env sync: `false`\n' } });
+  const result = fx.dispatch(['46', '46:pilot-dispatch']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(orcaLines(fx.calls()), ['worktree create', 'terminal create']);
+});
+
+test('Env sync 宣告寫錯（沒有反引號裡的指令、宣告兩次）：exit 2，不建 worktree、不寫 checkpoint', t => {
+  for (const adapter of [
+    { 'issue-run.md': '## Pilot\n\nEnv sync: uv sync\n' },
+    { 'issue-run.md': '## Pilot\n\n[pilot.md](pilot.md)\n\nEnv sync: `uv sync`\n', 'pilot.md': '- Env sync: `npm ci`\n' },
+  ]) {
+    const fx = fixture(t, { adapter });
+    const result = fx.dispatch(['46', '46:pilot-dispatch']);
+    assert.equal(result.status, 2, JSON.stringify(adapter) + result.stdout + result.stderr);
+    assert.match(result.stderr, /Env sync/);
+    assert.equal(fx.calls(), '');
+    assert.equal(existsSync(join(fx.repo, '.scratch/pilot/batch-46.md')), false);
+  }
 });
