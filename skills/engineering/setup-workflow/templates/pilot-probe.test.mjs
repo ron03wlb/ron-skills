@@ -524,6 +524,53 @@ ${resolved ? '- resolved 2026-10-31T12:00:00+08:00 帳務已恢復\n' : ''}`;
     ['RESUME_PUSH 11', 'NOT_IN_MAIN 12 no-regression', 'NOT_IN_MAIN 13', 'IN_MAIN 14'], out.join('\n'));
 });
 
+// #379（#330 第 3 項，investing#251）：main 依決定暫停推送期間，每 tick 印所有 NOT_IN_MAIN／RESUME_PUSH（investing 約 150 行），
+// 已在整合分支的也印。`pilot-hold set-main` 的旗標（.scratch/pilot/main-paused）有效時收成一行 MAIN_PAUSED，過期後恢復原輸出；
+// IN_MAIN 照印；開著的 all-push gate 仍印 PUSH_PARKED（gate 要人處理）。
+test('main 暫停旗標有效時 NOT_IN_MAIN／RESUME_PUSH 收成一行 MAIN_PAUSED，過期恢復原輸出', t => {
+  const { batch, probe, git, pilot } = fixture(t);
+  git('switch', '-q', '-c', 'pilot/integration');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'staged');
+  const staged = git('rev-parse', 'HEAD');
+  git('switch', '-q', 'main');
+  // 三批在整合分支、不在 main：一批 merged（RESUME_PUSH），一批 merged 但 tip 已不是 Regression SHA（NOT_IN_MAIN tip），一批 pushed（NOT_IN_MAIN）；另一批已進 main。
+  batch('11', `merged ${staged}`, [{ n: 11, state: 'done', candidate: 'abc1234' }]);
+  writeFileSync(join(pilot, 'batch-11.md'), readFileSync(join(pilot, 'batch-11.md'), 'utf8') + `regression: ${staged} exit 0 CHECK_PASS tests 1+2\n`);
+  batch('12', `merged ${staged}`, [{ n: 12, state: 'done', candidate: 'abc1234' }]);
+  writeFileSync(join(pilot, 'batch-12.md'), readFileSync(join(pilot, 'batch-12.md'), 'utf8') + `regression: ${git('rev-parse', 'main')} exit 0 CHECK_PASS tests 1+2\n`);
+  batch('13', `pushed ${staged}`, [{ n: 13, state: 'done', candidate: 'abc1234' }]);
+  batch('14', `pushed ${git('rev-parse', 'main')}`, [{ n: 14, state: 'done', candidate: 'abc1234' }]);
+  const pushLines = out => out.filter(line => /^(MAIN_PAUSED|PUSH_PARKED|NOT_IN_MAIN|RESUME_PUSH|IN_MAIN) /.test(line));
+  const flag = until => writeFileSync(join(pilot, 'main-paused'), `${JSON.stringify({ since: '2026-11-21T10:00:00+08:00', reason: '等 #246 過渡期', until, session: 's' })}\n`);
+
+  flag('2999-12-01');
+  let out = lines(probe());
+  assert.deepEqual(pushLines(out), ['IN_MAIN 14', 'MAIN_PAUSED 等 #246 過渡期 until 2999-12-01 pending 11 12 13'], out.join('\n'));
+
+  // 過期：恢復各行。
+  flag('2000-01-01');
+  out = lines(probe());
+  assert.deepEqual(pushLines(out), ['RESUME_PUSH 11', `NOT_IN_MAIN 12 tip ${staged.slice(0, 7)}`, 'NOT_IN_MAIN 13', 'IN_MAIN 14'], out.join('\n'));
+
+  // 讀不懂的旗標不收合：寧可多印，也不藏住待推的 batch。
+  writeFileSync(join(pilot, 'main-paused'), 'not json\n');
+  assert.deepEqual(pushLines(lines(probe())), ['RESUME_PUSH 11', `NOT_IN_MAIN 12 tip ${staged.slice(0, 7)}`, 'NOT_IN_MAIN 13', 'IN_MAIN 14']);
+
+  // 異常（regression 沒過、沒有 regression 行、沒有 SHA）照印：main 暫停不會有人來處理，收進 pending 就看不到了。
+  flag('2999-12-01');
+  batch('15', `merged ${staged}`, [{ n: 15, state: 'done', candidate: 'abc1234' }]);
+  writeFileSync(join(pilot, 'batch-15.md'), readFileSync(join(pilot, 'batch-15.md'), 'utf8') + `regression: ${staged} exit 1\n`);
+  batch('16', `merged ${staged}`, [{ n: 16, state: 'done', candidate: 'abc1234' }]);
+  batch('17', 'pushed', [{ n: 17, state: 'done', candidate: 'abc1234' }]);
+  assert.deepEqual(pushLines(lines(probe())), ['IN_MAIN 14', 'NOT_IN_MAIN 15 regression-failed 1', 'NOT_IN_MAIN 16 no-regression', 'NOT_IN_MAIN 17 no-sha',
+    'MAIN_PAUSED 等 #246 過渡期 until 2999-12-01 pending 11 12 13']);
+  for (const key of ['15', '16', '17']) rmSync(join(pilot, `batch-${key}.md`));
+
+  // 有開著的 all-push gate 時印 PUSH_PARKED。
+  writeFileSync(join(pilot, 'gates.md'), '# Gates\n\n## G4 帳務\n- Issue：batch 120\n- parked：all-push\n- opened：2026-10-31T10:00:00+08:00\n');
+  assert.deepEqual(pushLines(lines(probe())), ['IN_MAIN 14', 'PUSH_PARKED G4 3 batches']);
+});
+
 // 主 checkout 的狀態沒問題時不印任何一行，有問題才各印一行：Bare guard 印的行、不在 main、有 hold 檔、
 // `git status --short` 有內容（每行一個 DIRTY，帶 status 原文）。
 test('主 checkout 正常時不印狀態行；沒有 Bare guard 時略過', t => {
