@@ -38,7 +38,7 @@ echo "CHECK_PASS tests 1+2"
  * 主 checkout（main、整合分支）＋ stage worktree（停在整合分支）＋ 成員分支。members 是 [{ n, files }]，每個成員從整合分支開分支、寫入 files 後 commit。
  * `integration` 是整合分支名稱；`base` 是 main 上的額外檔案。
  */
-function fixture(t, { members, base = {}, integration = 'pilot/integration' }) {
+function fixture(t, { members, base = {}, integration = 'pilot/integration', extraEnv = {} }) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-land-template-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
@@ -70,7 +70,7 @@ function fixture(t, { members, base = {}, integration = 'pilot/integration' }) {
   const log = join(temp, 'check.log');
   writeFileSync(log, '');
   const land = (...args) => {
-    const result = spawnSync('node', [script, ...args], { cwd: repo, encoding: 'utf8', env: { ...env, FAKE_CHECK_LOG: log } });
+    const result = spawnSync('node', [script, ...args], { cwd: repo, encoding: 'utf8', env: { ...env, FAKE_CHECK_LOG: log, ...extraEnv } });
     const lines = result.stdout.trim().split('\n');
     return { ...result, lines, last: lines.at(-1) };
   };
@@ -227,4 +227,16 @@ test('sync-main --main：讓整合分支包含 origin/<主分支>，落後時快
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(result.last, `SYNCED ${sha} ff`);
   assert.equal(git(f.repo, 'rev-parse', 'pilot/integration'), sha);
+});
+
+// #345：current:／regression: 的讀改寫走 checkpoint 鎖；手動 pilot-batch 持鎖到逾時時印 CHECKPOINT_LOCKED、exit 3，不拿舊內容整檔寫回。
+test('checkpoint 被活著的 pid 鎖住到逾時：印 CHECKPOINT_LOCKED、exit 3，checkpoint 不動', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }], extraEnv: { PILOT_STORE_LOCK_TIMEOUT_MS: '200' } });
+  const before = f.read();
+  const holder = `pid=${process.pid} at=2026-11-21T00:00:00.000Z test`;
+  writeFileSync(`${f.file}.lock`, `${holder}\n`);
+  const result = f.land(f.key);
+  assert.equal(result.status, 3, result.stdout + result.stderr);
+  assert.equal(result.last, `CHECKPOINT_LOCKED ${f.file}.lock ${holder}`);
+  assert.equal(f.read(), before);
 });

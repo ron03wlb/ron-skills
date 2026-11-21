@@ -28,11 +28,12 @@
 //   （開頭 main 那步的 <n> 是 batch key；checkpoint 讀不到或沒有 done 成員只印 STOP <key> checkpoint；
 //   done 成員的 branch 不是 `issue/<n>-<slug>`（請求分支成員是 `retro/<x>`）時，在任何寫入之前只印 STOP branch-malformed <n> <JSON 字串的 branch>）。Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。
 //   全部成員做完，checkpoint 的 `current:` 寫成 `closed`，最後一行 `CLOSED <key>`。
-// exit：0 CLOSED；4 STOP；2 用法錯誤（含沒有 --repo）或沒有 ORCA_CLI_COMMAND。
+// exit：0 CLOSED；4 STOP；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤（含沒有 --repo）或沒有 ORCA_CLI_COMMAND。
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { exitIfLocked, updateCheckpoint } from './lib/pilot-store.mjs';
 import { protectedReason, readDeclaredPaths, vanishingFiles } from './lib/protected-paths.mjs';
 
 const USAGE = '用法：node scripts/pilot-close.mjs <batch key> <pr> <merge sha> --repo [<host>/]<owner>/<repo> [--main <分支>] [--protect-path <路徑>]...（需要 ORCA_CLI_COMMAND）';
@@ -328,9 +329,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       for (const outcome of closeMember({ cli, main, key, pr, sha, regression }, member, at)) console.log(`${outcome} ${member.id} ${at.step}`);
     }
     Object.assign(at, { n: key, step: 'checkpoint' });
-    writeFileSync(checkpoint, readFileSync(checkpoint, 'utf8').replace(/^current: .*$/m, 'current: closed'));
+    updateCheckpoint(checkpoint, text => text.replace(/^current: .*$/m, 'current: closed'));
     console.log(`CLOSED ${key}`);
   } catch (error) {
+    exitIfLocked(error);
     console.log(`STOP ${at.n} ${error instanceof Stop ? error.step : at.step} ${error.message.split('\n')[0]}`);
     process.exit(4);
   }

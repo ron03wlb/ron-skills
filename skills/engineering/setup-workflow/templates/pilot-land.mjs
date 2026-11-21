@@ -56,14 +56,14 @@
 //     例：`STOP conflict 108 scripts/lib/hosts.mjs=member 79:code docs/notes.md=integration:other`。以及 `STOP checkpoint …`、`STOP member <n> <state>`、`STOP dirty <worktree>`、
 //   `STOP no-stage-worktree`、`STOP create …`、`STOP merge <n> …`、`STOP git …`、`STOP load <load> <門檻>`。之前的行：`STAGED <key> <sha> onto <tip>`、
 //   `RESUME <key> <sha>`、`RESOLVED <n> <解法> <檔案…>`，Bare guard 還原主 checkout 時的 `UNBARE <主 checkout>`。
-// exit：0 MERGED；4 STOP；2 用法錯誤；1 其他失敗（程式錯誤，不印 STOP）。
+// exit：0 MERGED；4 STOP；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤；1 其他失敗（程式錯誤，不印 STOP）。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { availableParallelism, loadavg } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { heldIssues, openGates, runInStageWorktree } from './lib/pilot-store.mjs';
+import { exitIfLocked, heldIssues, openGates, runInStageWorktree, updateCheckpoint } from './lib/pilot-store.mjs';
 
 const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--check-command <指令>] [--integration <分支>] [--main <分支>] [--resolver <模組>] [--load-max <n>] | sync-main [同上選項，不含 --branch]（--branch 時 key 是 req-<n>；門檻預設 $PILOT_LOAD_MAX，再來 3 × 核心數；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
 const LOAD = /^\d+(\.\d+)?$/;
@@ -175,14 +175,13 @@ function openRequest(key, branch, loadMax) {
 
 /** 改寫 `current:` 行；寫完再讀一次，不是這個值就 STOP（多一個空格就靜默不中的 sed 正是 #74 的起因）。 */
 function setCurrent(file, value) {
-  writeFileSync(file, readFileSync(file, 'utf8').replace(/^current:.*$/m, `current: ${value}`));
+  updateCheckpoint(file, text => text.replace(/^current:.*$/m, `current: ${value}`));
   if (readCheckpoint(file).current !== value) throw new Stop(`checkpoint ${file} 的 current: 沒寫成 ${value}`);
 }
 
 /** 追加 `regression:` 行；寫完再讀一次，最後一個 regression 行不是它就 STOP。 */
 function appendRegression(file, value) {
-  const text = readFileSync(file, 'utf8');
-  writeFileSync(file, `${text}${text.endsWith('\n') ? '' : '\n'}regression: ${value}\n`);
+  updateCheckpoint(file, text => `${text}${text.endsWith('\n') ? '' : '\n'}regression: ${value}\n`);
   if (readCheckpoint(file).regression !== value) throw new Stop(`checkpoint ${file} 的 regression: 沒寫成 ${value}`);
 }
 
@@ -500,7 +499,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (request) openRequest(key, request, Number(loadMax));
     console.log(`MERGED ${key} ${land(key, Number(loadMax))}`);
   } catch (error) {
-    if (!(error instanceof Stop)) throw error;
+    if (!(error instanceof Stop)) {
+      exitIfLocked(error);
+      throw error;
+    }
     console.log(`STOP ${error.message}`);
     process.exit(4);
   }

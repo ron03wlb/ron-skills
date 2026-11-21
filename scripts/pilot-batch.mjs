@@ -15,10 +15,11 @@
 //   重跑以目標檔已有這個成員為準，不核對那一列的 state（probe --apply 可能已改過它）：中斷後要換成另一個子命令或 --state 時，先看目標檔。
 //   STOP（檔案不動）：`STOP <key> missing`（沒有 batch-<key>.md）、`STOP <n> rows <列數>`（成員列不是剛好一列）、`STOP <n> same-batch`（move 的 <key> 就是 <n>）、
 //   `STOP <n> members <數目>`（就地 park 的 batch 還有別的成員）、`STOP <n> state <state>`（park 的成員不是 done、unpark 的不是 parked、move／park 的成員已移到別處）、`STOP <n> target batch-<n>.md`（目標檔已存在卻沒有這個成員）。
-// exit：0 成功；4 STOP；2 用法錯誤（--reason 不能空白、含換行、三個連續空白或 `|`）。
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+//   讀改寫都在 batch-<key>.md 與 batch-<n>.md 的 checkpoint 鎖內（lib/pilot-store.mjs 的 withCheckpointLock，#345）：逾時印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，什麼都沒寫。
+// exit：0 成功；4 STOP；3 CHECKPOINT_LOCKED；2 用法錯誤（--reason 不能空白、含換行、三個連續空白或 `|`）。
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { closeIfAllMoved, isField, now, storeDir, tableCells, usage } from './lib/pilot-store.mjs';
+import { closeIfAllMoved, exitIfLocked, isField, now, storeDir, tableCells, usage, withCheckpointLock, writeCheckpoint } from './lib/pilot-store.mjs';
 
 const USAGE = '用法：node scripts/pilot-batch.mjs <checkout> move <key> <n> [--state stop] | <checkout> park <key> <n> --after <m> --reason <原因> | <checkout> unpark <n>';
 
@@ -64,7 +65,7 @@ function move(pilot, key, n, { state, candidate, note, requireDone }) {
   // 重跑已做完的搬移時也補關舊 batch：#205 之前 --fresh 搬走全部成員卻沒寫 `closed moved` 的舊 batch，對任一成員重跑就關掉。
   if (memberState === moved && copied) {
     const closed = closeIfAllMoved(source.lines);
-    if (closed) writeFileSync(file, source.lines.join('\n'));
+    if (closed) writeCheckpoint(file, source.lines.join('\n'));
     return `MOVED ${key} ${n} batch-${n}${closed ? ' closed' : ''}`;
   }
   if (isMoved(source.lines[i])) throw new Stop(`${n} state ${memberState}`);
@@ -73,11 +74,11 @@ function move(pilot, key, n, { state, candidate, note, requireDone }) {
     if (requireDone && memberState !== 'done') throw new Stop(`${n} state ${memberState}`);
     const header = source.lines.slice(0, source.lines.findIndex(isMember)).map(line => (/^# batch /.test(line) ? `# batch ${n}` : line));
     const member = state === undefined ? source.lines[i] : setCells(source.lines[i], state, candidate);
-    writeFileSync(target, `${[...header, member, ...(note ? [note] : [])].join('\n')}\n`);
+    writeCheckpoint(target, `${[...header, member, ...(note ? [note] : [])].join('\n')}\n`);
   }
   source.lines[i] = setCells(source.lines[i], moved);
   const closed = closeIfAllMoved(source.lines);
-  writeFileSync(file, source.lines.join('\n'));
+  writeCheckpoint(file, source.lines.join('\n'));
   return `MOVED ${key} ${n} batch-${n}${closed ? ' closed' : ''}`;
 }
 
@@ -95,7 +96,7 @@ function parkInPlace(pilot, n, after, note) {
   if (state !== 'done') throw new Stop(`${n} state ${state}`);
   batch.lines[i] = setCells(batch.lines[i], parked);
   const text = batch.lines.join('\n').replace(/\n*$/, '\n');
-  writeFileSync(file, `${text}${note}\n`);
+  writeCheckpoint(file, `${text}${note}\n`);
   return `PARKED_MEMBER ${n} after #${after}`;
 }
 
@@ -107,7 +108,7 @@ function unpark(pilot, n) {
   const state = stateOf(batch.lines[i]);
   if (!/^parked\b/.test(state)) throw new Stop(`${n} state ${state}`);
   batch.lines[i] = setCells(batch.lines[i], 'done');
-  writeFileSync(file, batch.lines.join('\n'));
+  writeCheckpoint(file, batch.lines.join('\n'));
   return `UNPARKED ${n}`;
 }
 
@@ -129,10 +130,12 @@ const [checkout, command, ...rest] = process.argv.slice(2);
 if (!checkout || checkout.startsWith('--')) usage(USAGE);
 const pilot = storeDir(checkout);
 let run;
+let files;
 if (command === 'move') {
   const [key, n, ...more] = rest;
   const { state } = flags(more, ['state']);
   if (!isKey(key) || !isNumber(n) || (state !== undefined && state !== 'stop')) usage(USAGE);
+  files = [join(pilot, `batch-${key}.md`), join(pilot, `batch-${n}.md`)];
   if (key === n) run = () => { throw new Stop(`${n} same-batch`); };
   else run = () => move(pilot, key, n, state ? { state, candidate: '' } : {});
 } else if (command === 'park') {
@@ -140,18 +143,23 @@ if (command === 'move') {
   const { after, reason } = flags(more, ['after', 'reason']);
   if (!isKey(key) || !isNumber(n) || !isNumber(after) || after === n) usage(USAGE);
   if (!isField(reason) || reason.includes('|')) usage(USAGE, '--reason 要是一行，不能空白、含三個連續空白或 |');
+  files = [join(pilot, `batch-${key}.md`), join(pilot, `batch-${n}.md`)];
   const note = `parked: after #${after} ${now()} ${reason}`;
   run = key === n ? () => parkInPlace(pilot, n, after, note) : () => move(pilot, key, n, { state: `parked after #${after}`, note, requireDone: true });
 } else if (command === 'unpark') {
   const [n, ...more] = rest;
   if (!isNumber(n) || more.length) usage(USAGE);
+  files = [join(pilot, `batch-${n}.md`)];
   run = () => unpark(pilot, n);
 } else usage(USAGE);
 
 try {
-  console.log(run());
+  console.log(withCheckpointLock(files, run));
 } catch (error) {
-  if (!(error instanceof Stop)) throw error;
+  if (!(error instanceof Stop)) {
+    exitIfLocked(error);
+    throw error;
+  }
   console.log(`STOP ${error.message}`);
   process.exit(4);
 }

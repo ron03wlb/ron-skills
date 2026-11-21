@@ -72,7 +72,7 @@
 //   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop；running、overlap 的 STOP 不改寫那一列；
 //   send 的 STOP 記 running：worker 可能其實已在跑，交給 Probe 判定，#354），STOP 原因只在 stdout。
 //   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
-// exit：0 全部派出（草稿：寫好）；4 有成員 STOP（或 STOP capacity、STOP orca-unavailable）；2 用法錯誤（含草稿帶了派工旗標）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
+// exit：0 全部派出（草稿：寫好）；4 有成員 STOP（或 STOP capacity、STOP orca-unavailable）；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤（含草稿帶了派工旗標）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
@@ -80,7 +80,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { claimedBy, defaultSession } from './issue-pool.mjs';
 import { orca, sendToSession } from './orca-session-send.mjs';
-import { closeIfAllMoved } from './lib/pilot-store.mjs';
+import { closeIfAllMoved, exitIfLocked, updateCheckpoint } from './lib/pilot-store.mjs';
 import { changedUnits, memberOverlaps, parseBatch } from './pilot-probe.mjs';
 import { envMissingLines, check as capacityCheck, ledgerPath, machineCap, report as capacityReport } from './pilot-capacity.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
@@ -211,7 +211,7 @@ function writeHeader(main, checkpoint, key, integration) {
 function freshHeader(main, checkpoint, key, integration) {
   if (!existsSync(checkpoint)) return writeHeader(main, checkpoint, key, integration);
   const sha = run('git', ['-C', main, 'rev-parse', '--short', integration]).stdout.trim();
-  writeFileSync(checkpoint, readFileSync(checkpoint, 'utf8')
+  updateCheckpoint(checkpoint, text => text
     .replace(/^current:.*$/m, `current: dispatched ${now()}`).replace(/^integration:.*$/m, `integration: ${integration} @ ${sha}`));
 }
 
@@ -227,23 +227,30 @@ function rowState(stop) {
 /** 把成員行的 state 欄改成 `state`；沒有這一行就不動。改完成員全是 moved 時 `current:` 寫成 `closed moved`（同 pilot-batch，#205）。 */
 function setRowState(checkpoint, n, state) {
   if (!existsSync(checkpoint)) return;
-  const lines = readFileSync(checkpoint, 'utf8').split('\n');
-  const i = lines.findIndex(line => line.startsWith(`| ${n} |`));
-  if (i < 0) return;
-  const cells = lines[i].split('|');
-  cells[7] = ` ${state} `;
-  lines[i] = cells.join('|');
-  closeIfAllMoved(lines);
-  writeFileSync(checkpoint, lines.join('\n'));
+  updateCheckpoint(checkpoint, text => {
+    const lines = text.split('\n');
+    const i = lines.findIndex(line => line.startsWith(`| ${n} |`));
+    if (i < 0) return undefined;
+    const cells = lines[i].split('|');
+    cells[7] = ` ${state} `;
+    lines[i] = cells.join('|');
+    closeIfAllMoved(lines);
+    return lines.join('\n');
+  });
 }
+
+/** 成員行是在 worker 派出之後才寫的，等鎖的預設上限放寬到 120 秒（`PILOT_STORE_LOCK_TIMEOUT_MS` 照樣優先）：逾時時重跑會重複派工（#345）。 */
+const ROW_LOCK_TIMEOUT_MS = 120000;
 
 /** 寫入成員行：同一個 Issue 已有一行就就地換掉，否則接在最後。 */
 function writeRow(checkpoint, n, cells) {
   const row = `| ${n} | ${cells.join(' | ')} | |`;
-  const lines = readFileSync(checkpoint, 'utf8').replace(/\n$/, '').split('\n');
-  const i = lines.findIndex(line => line.startsWith(`| ${n} |`));
-  if (i >= 0) lines[i] = row; else lines.push(row);
-  writeFileSync(checkpoint, `${lines.join('\n')}\n`);
+  updateCheckpoint(checkpoint, text => {
+    const lines = text.replace(/\n$/, '').split('\n');
+    const i = lines.findIndex(line => line.startsWith(`| ${n} |`));
+    if (i >= 0) lines[i] = row; else lines.push(row);
+    return `${lines.join('\n')}\n`;
+  }, { timeout: Number(process.env.PILOT_STORE_LOCK_TIMEOUT_MS) || ROW_LOCK_TIMEOUT_MS });
 }
 
 /**
@@ -639,8 +646,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       }
       // 重疊已在 refresh 比對過；這時的分支是剛從整合分支開的，沒有改動可比。
       const result = await dispatchMember(cli, main, ready.checkpoint, options.integration, member, controller.signal, true);
-      writeRow(ready.checkpoint, member.n, [member.branch, result.worktree ?? ready.worktree, result.handle ?? '', started, options.stuckAfter, rowState(result.stop)]);
+      // 結果行先印：成員行等鎖逾時（exit 3）時，coordinator 仍看得到 worker 已經派出（#345）。
       console.log(result.stop ? `STOP ${member.n} ${result.stop}` : `DISPATCHED ${member.n} ${result.handle}\nPRIOR ${member.n} ${ready.prior} ${ready.sha}`);
+      writeRow(ready.checkpoint, member.n, [member.branch, result.worktree ?? ready.worktree, result.handle ?? '', started, options.stuckAfter, rowState(result.stop)]);
       reportDispatched(result.stop ? 0 : 1);
       clearTimeout(budget);
       process.exit(result.stop ? 4 : 0);
@@ -653,14 +661,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const started = now();
       const result = await dispatchMember(cli, main, checkpoint, options.integration, member, controller.signal, Boolean(given.allowOverlap));
       stopped ||= Boolean(result.stop);
-      if (!result.keep) writeRow(checkpoint, member.n, [member.branch, result.worktree ?? '', result.handle ?? '', started, options.stuckAfter, rowState(result.stop)]);
       console.log(result.stop ? `STOP ${member.n} ${result.stop}` : `DISPATCHED ${member.n} ${result.handle}`);
+      if (!result.keep) writeRow(checkpoint, member.n, [member.branch, result.worktree ?? '', result.handle ?? '', started, options.stuckAfter, rowState(result.stop)]);
       if (!result.stop) dispatched++;
     }
     reportDispatched(dispatched);
     clearTimeout(budget);
     process.exit(stopped ? 4 : 0);
   } catch (error) {
+    exitIfLocked(error);
     console.error(error.message);
     process.exit(1);
   }
