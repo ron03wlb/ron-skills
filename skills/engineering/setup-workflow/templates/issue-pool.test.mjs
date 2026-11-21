@@ -362,6 +362,24 @@ test('--integration：已指派、最近認領之後有 DONE 結果行，或分�
   assert.equal(result.stdout, 'landed #229 標題 229\nlanded #231 標題 231\nstale #233 標題 233\nclaimed #230 標題 230\nclaimed #232 標題 232\n');
 });
 
+// #379（#330 第 3 項）：main 暫停期間已在整合分支的單越積越多，逐張列出洗版；main-paused 旗標有效時 landed 桶收成一行計數，過期或讀不懂時恢復逐行。
+test('--integration 且 main 暫停旗標有效：landed 桶收成 LANDED_COUNT <數量> <整合分支>，過期恢復逐行', () => {
+  const f = landedFixture();
+  mkdirSync(join(f.repo, '.scratch/pilot'), { recursive: true });
+  const flag = text => writeFileSync(join(f.repo, '.scratch/pilot/main-paused'), text);
+  flag(`${JSON.stringify({ since: '2026-11-21T10:00:00+08:00', reason: '過渡期', until: '2999-12-01', session: 's' })}\n`);
+  let result = f.run('--integration', 'pilot/integration');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'LANDED_COUNT 2 pilot/integration\nstale #233 標題 233\nclaimed #230 標題 230\nclaimed #232 標題 232\n');
+  // 沒帶 --integration 時沒有 landed 桶，旗標不影響。
+  assert.equal(f.run().stdout, 'stale #229 標題 229\nstale #233 標題 233\nclaimed #230 標題 230\nclaimed #231 標題 231\nclaimed #232 標題 232\n');
+  for (const text of [`${JSON.stringify({ reason: '過渡期', until: '2000-01-01' })}\n`, 'not json\n']) {
+    flag(text);
+    result = f.run('--integration', 'pilot/integration');
+    assert.equal(result.stdout, 'landed #229 標題 229\nlanded #231 標題 231\nstale #233 標題 233\nclaimed #230 標題 230\nclaimed #232 標題 232\n', text);
+  }
+});
+
 test('沒帶 --integration 時不判斷落地：沒有 landed 桶、blocked 行不標 landed，其餘逐行同以前', () => {
   const f = fakeGh({ issues: [...LANDED_ISSUES, issue(247, { labels: ['enhancement', 'needs-triage'], blockedBy: [151] })] });
   integrationBranch(f.repo, { subjects: ['加報價來源 (#151)'], merged: ['issue/231-landed'] });

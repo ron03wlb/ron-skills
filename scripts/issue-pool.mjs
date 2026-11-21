@@ -21,7 +21,9 @@
 // 輸出順序：ready 桶先印，依 `retro` label 的先（retro 判定太複雜、交給 worker 的單）、`priority` label 的先、直接或間接 block 最多開著的單的先（關鍵路徑）、號碼小的先；
 // 其餘依上面的桶順序、桶內號碼小的先。
 // stdout：每張一行 `<桶> #<n> <標題>`；blocked 桶在號碼與標題之間多寫狀態與開著的 blocker：`blocked #<n> <triage 狀態 label|unlabeled> by #<m>,<owner>/<repo>#<k> <標題>`，
-// 帶 --integration 時已落地在整合分支的本 repo blocker 後面接 ` (landed <分支>)`（#352）；Probe 的 BLOCKER_OPEN_SCOPE 用同一份 blocker 資料（export 的 blockerOpenScope，#359），這支 CLI 不印。之後 ready 桶本文有 `… prerequisite：<內容>` 一行、內容不是「無」的，
+// 帶 --integration 時已落地在整合分支的本 repo blocker 後面接 ` (landed <分支>)`（#352）。帶 --integration 而且主 checkout 的 main 暫停旗標有效時
+// （`.scratch/pilot/main-paused`，`pilot-hold.mjs set-main` 寫、until 當天仍有效，判斷是 export 的 mainPause，Probe 的 MAIN_PAUSED 共用，#379），
+// landed 桶不逐張印，在它的位置收成一行 `LANDED_COUNT <數量> <整合分支>`；旗標過期、讀不懂或沒有時照逐行印；Probe 的 BLOCKER_OPEN_SCOPE 用同一份 blocker 資料（export 的 blockerOpenScope，#359），這支 CLI 不印。之後 ready 桶本文有 `… prerequisite：<內容>` 一行、內容不是「無」的，
 // 依 ready 的順序各印一行 `PREREQ <n> <內容>`（先查環境或開 gate 再派）；最後對開著、有 triage 狀態 label（TRIAGE_STATES）卻沒有分類 label 的單印一行
 // `NO_CATEGORY <n> <n>...`（號碼升冪，沒有時不印），母單（有 sub-issue 或 `parent` label）、`retro-candidates` 與 `--skip-labels` 的 label 不算。分類 label 預設是 DEFAULT_CATEGORIES（triage 的 `bug`、`enhancement`），
 // adapter 用的 label 不同時以 `--categories` 覆寫（逗號分隔）。exit 0。gh 或 glab 失敗時 stderr 印原因、exit 1；用法錯誤或本機 Markdown tracker 時 exit 2。
@@ -340,11 +342,36 @@ export function blockerOpenScope(issues, { repo, landed, ...options }) {
     }));
 }
 
-/** stdout 的全部行（格式見檔頭）：分桶行、PREREQ、NO_CATEGORY。landed、integration 只在帶 --integration 時給。 */
-export function poolLines(issues, { repo, categories = DEFAULT_CATEGORIES, landed, integration, ...options }) {
+/** main 暫停旗標（#379）：`pilot-hold.mjs set-main` 寫的檔，相對於主 checkout；格式見 issue-pilot 的 PILOT-STORE.md。 */
+export const MAIN_PAUSE_FILE = '.scratch/pilot/main-paused';
+const pad = n => String(n).padStart(2, '0');
+/** 本機時區的日期 `YYYY-MM-DD`。 */
+export const localDate = (at = new Date()) => `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+/** `YYYY-MM-DD` 而且是存在的日期（2999-02-30 不算）。 */
+export const isDate = text => /^\d{4}-\d\d-\d\d$/.test(text) && new Date(`${text}T00:00:00Z`).toISOString().slice(0, 10) === text;
+
+/**
+ * main 是否依決定暫停推送（#379），Probe 的 MAIN_PAUSED 與這支的 LANDED_COUNT 共用：`<checkout>/.scratch/pilot/main-paused` 的一行 JSON
+ * 有非空的 reason、until 是日期且不早於本機今天（當天仍有效）時回傳 { reason, until }；沒有檔、讀不懂或已過期時 undefined，照原輸出：
+ * 收合會藏住待推的內容，讀不懂時寧可多印。
+ */
+export function mainPause(checkout, today = localDate()) {
+  let value;
+  try { value = JSON.parse(readFileSync(join(checkout, MAIN_PAUSE_FILE), 'utf8')); } catch { return undefined; }
+  const { reason, until } = value ?? {};
+  return typeof reason === 'string' && reason && typeof until === 'string' && isDate(until) && until >= today ? { reason, until } : undefined;
+}
+
+/** stdout 的全部行（格式見檔頭）：分桶行、PREREQ、NO_CATEGORY。landed、integration 只在帶 --integration 時給；
+ * paused（main 暫停旗標有效，#379）時 landed 桶收成一行 `LANDED_COUNT <數量> <整合分支>`，放在 landed 桶的位置。 */
+export function poolLines(issues, { repo, categories = DEFAULT_CATEGORIES, landed, integration, paused = false, ...options }) {
   const rows = pool(issues, { repo, landed, ...options });
   const detail = (issue, bucket) => bucket === 'blocked' ? `${blockedDetail(issue, { repo, landed, integration })} ` : bucket === 'ready' ? parentDetail(issue, repo) : '';
-  const lines = rows.map(({ issue, bucket }) => `${bucket} #${issue.number} ${detail(issue, bucket)}${issue.title}`);
+  const landedCount = paused && landed ? rows.filter(({ bucket }) => bucket === 'landed').length : 0;
+  const lines = rows.flatMap(({ issue, bucket }, i) => {
+    if (!landedCount || bucket !== 'landed') return [`${bucket} #${issue.number} ${detail(issue, bucket)}${issue.title}`];
+    return rows[i - 1]?.bucket === 'landed' ? [] : [`LANDED_COUNT ${landedCount} ${integration}`];
+  });
   for (const { issue } of rows.filter(({ bucket }) => bucket === 'ready')) {
     const prerequisite = prerequisiteOf(issue.body);
     if (prerequisite && !NO_PREREQUISITE.test(prerequisite)) lines.push(`PREREQ ${issue.number} ${prerequisite}`);
@@ -527,7 +554,9 @@ function main(argv) {
     if (command === 'open-work') return openWork(n, tracker);
     repo = tracker.repo();
     const issues = tracker.issues(repo);
-    for (const line of poolLines(issues, { repo, staleHours, categories, skipLabels, landed, integration })) console.log(line);
+    const checkout = landed && mainCheckout();
+    const paused = Boolean(checkout && mainPause(checkout));
+    for (const line of poolLines(issues, { repo, staleHours, categories, skipLabels, landed, integration, paused })) console.log(line);
     return 0;
   } catch (error) {
     if (!(error instanceof CliError) && !(error instanceof UsageError)) throw error;

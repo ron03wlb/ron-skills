@@ -89,7 +89,10 @@
 //          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> regression-failed <code 或 none>
 //          （#130：最後一行 regression 的 exit 不是 0，或 SHA 後面沒緊接 exit <code>）｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
 //          gates.md 有開著的 gate 的 parked 以 `all-push` 開頭（擋住所有 push）時，上面所有 NOT_IN_MAIN／RESUME_PUSH 合成一行
-//          PUSH_PARKED <gate id> <batch 數> batches（多個這種 gate 取第一個：表格列先於 `## G<n>` 段落，各照檔案順序；IN_MAIN、FETCH_FAILED 照印；#136）
+//          PUSH_PARKED <gate id> <batch 數> batches（多個這種 gate 取第一個：表格列先於 `## G<n>` 段落，各照檔案順序；IN_MAIN、FETCH_FAILED 照印；#136）；
+//          沒有這種 gate、而 main 暫停旗標有效（`.scratch/pilot/main-paused`，`pilot-hold.mjs set-main <reason> --until <YYYY-MM-DD>` 寫，until 當天仍有效；
+//          判斷是 issue-pool 的 mainPause，過期、讀不懂或沒有時照印各行）時，RESUME_PUSH、NOT_IN_MAIN <key>、NOT_IN_MAIN <key> tip … 合成一行
+//          MAIN_PAUSED <reason> until <date> pending <key>...（依 batch 順序；no-sha、no-regression、regression-failed 照印；#379）
 //   重疊：OVERLAP <n> <m|integration> <檔案數> files [**<條目>.**…]（開著的 batch 裡 running、done 的成員分支已 commit 的內容，相對於與整合分支的 merge-base：
 //          兩個成員改到同一個檔，或整合分支自成員的 merge-base 以來也改了它改的檔；`.md` 檔的改動都在 `- **<名稱>.**` 條目裡時細到條目，
 //          相接的行與同一處的插入也算，git 合併時會衝突；同一對只印一行，後面列重疊的條目名稱，#176：條目不帶檔名、不同檔的同名條目只列一次，
@@ -113,7 +116,7 @@ import { mergeConflicts } from './lib/merge-tree.mjs';
 import { CheckpointLocked, gateLines, heldIssues, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 import { envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
-import { POOL_FIELDS, blockerOpenScope, landedOn, pool, prerequisiteOf } from './issue-pool.mjs';
+import { POOL_FIELDS, blockerOpenScope, landedOn, mainPause, pool, prerequisiteOf } from './issue-pool.mjs';
 import { counterparts, declaredProjects } from './pilot-counterpart.mjs';
 import { MEMORY_AUDIT_FILE, declaredDays, memoryAuditLine } from './memory-audit.mjs';
 
@@ -1026,18 +1029,22 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     const fetch = git(checkout, 'fetch', '-q', 'origin');
     if (fetch.status !== 0) out.push(`FETCH_FAILED ${fetch.stderr.trim().split('\n').find(line => line.startsWith('fatal:')) ?? fetch.stderr.trim().split('\n')[0]}`);
     else {
-      // 開著的 gate 擋住所有 push 時，每個沒進主分支的 batch 都在等它，NOT_IN_MAIN／RESUME_PUSH 合成一行（#136）。
+      // 開著的 gate 擋住所有 push 時，每個沒進主分支的 batch 都在等它，NOT_IN_MAIN／RESUME_PUSH 合成一行（#136）；
+      // 沒有這種 gate、而 main 依決定暫停推送（pilot-hold set-main 的旗標有效）時，暫停期間預期的待推行（RESUME_PUSH、NOT_IN_MAIN <key>、
+      // NOT_IN_MAIN <key> tip …）合成 MAIN_PAUSED 一行（#379）；no-sha、no-regression、regression-failed 是要人處理的異常，main 暫停不會有人來看，照印。
       const parking = openGates(readStore(pilot, 'gates.md')).find(parksAllPush);
-      let parked = 0;
-      const unpushed = line => (parking ? parked++ : out.push(line));
+      const pause = !parking && mainPause(checkout);
+      const pending = [];
+      const expected = line => /^(RESUME_PUSH \S+|NOT_IN_MAIN \S+( tip \S+)?)$/.test(line);
+      const unpushed = (key, line) => (parking || (pause && expected(line)) ? pending.push(key) : out.push(line));
       for (const { key, sha, regression, regressionExit, merged } of landing) {
-        if (!sha) unpushed(`NOT_IN_MAIN ${key} no-sha`);
+        if (!sha) unpushed(key, `NOT_IN_MAIN ${key} no-sha`);
         else if (git(checkout, 'merge-base', '--is-ancestor', sha, `origin/${main}`).status === 0) {
           out.push(`IN_MAIN ${key}`);
           if (apply && merged) out.push(...applyPushed(join(pilot, `batch-${key}.md`), key));
-        } else unpushed(merged ? mergedNotInMain(checkout, integration, key, regression, regressionExit) : `NOT_IN_MAIN ${key}`);
+        } else unpushed(key, merged ? mergedNotInMain(checkout, integration, key, regression, regressionExit) : `NOT_IN_MAIN ${key}`);
       }
-      if (parked) out.push(`PUSH_PARKED ${parking.id} ${parked} batches`);
+      if (pending.length) out.push(parking ? `PUSH_PARKED ${parking.id} ${pending.length} batches` : `MAIN_PAUSED ${pause.reason} until ${pause.until} pending ${pending.join(' ')}`);
     }
   }
   out.push(...behindMain(checkout, { integration, main }));
