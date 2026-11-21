@@ -279,8 +279,12 @@ test('batch：狀態檔和批次檔對不上（改過步驟順序）時 exit 2�
   assert.deepEqual(swapped.calls, []);
 });
 
-test('batch：狀態檔的單號不是正整數（被改成路徑、網址、旗標）或掛在非 create 步驟時 exit 2、不呼叫 gh', t => {
+test('batch：狀態檔的單號不是正整數（被改成路徑、網址、旗標）、掛在非 create 步驟，或已完成的 create 沒有單號時 exit 2、不呼叫 gh', t => {
   const steps = [{ op: 'create', code: 'a', title: 'A', body: 'x' }, { op: 'comment', issue: 'a', body: 'y' }];
+  const noNumber = run(t, ['batch', 'tickets.json'], { files: { 'tickets.json': steps, 'tickets.json.state.json': { created: {}, done: ['0 create a'] } } });
+  assert.equal(noNumber.status, 2, noNumber.stderr);
+  assert.match(noNumber.stderr, /沒有它建立的單號/);
+  assert.deepEqual(noNumber.calls, []);
   for (const created of [{ 0: '1/../../../evil/x/issues/7' }, { 0: 'https://github.com/other/repo/issues/1' }, { 0: '-Rfoo/bar' }, { 0: 0 }, { 0: 1.5 }, { 1: 7 }, [7]]) {
     const result = run(t, ['batch', 'tickets.json'], { files: { 'tickets.json': steps, 'tickets.json.state.json': { created, done: ['0 create a'] } } });
     assert.equal(result.status, 2, `${JSON.stringify(created)}：${result.stderr}`);

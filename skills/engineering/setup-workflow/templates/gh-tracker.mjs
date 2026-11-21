@@ -204,6 +204,8 @@ function runBatch(args) {
     if (Array.isArray(saved.created) || forged) fail(`狀態檔 ${stateFile} 的 created 要是 create 步驟索引對正整數單號，收到：${JSON.stringify(forged ?? saved.created)}`);
     Object.assign(state, { created: saved.created, done: saved.done });
     const stale = state.done.find(key => { const [i] = key.split(' '); return !steps[i] || !(key === steps[i].sig || key.startsWith(`${steps[i].sig} `)); });
+    const missing = steps.find((step, i) => step.op === 'create' && saved.done.includes(step.sig) && !Object.hasOwn(saved.created, i));
+    if (missing) fail(`狀態檔 ${stateFile} 記「${missing.sig}」已完成，卻沒有它建立的單號：先到 tracker 查出單號補進 created，或刪掉這筆 done 重建`);
     if (stale) fail(`狀態檔 ${stateFile} 記的步驟「${stale}」和批次檔對不上：批次檔在中斷後改過步驟順序或內容；改回原樣再跑，或刪掉狀態檔從頭來`);
   }
   const done = new Set(state.done);
