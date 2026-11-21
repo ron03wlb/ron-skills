@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
-import { changedUnits } from './pilot-probe.mjs';
+import { applyResults, changedUnits } from './pilot-probe.mjs';
 
 const script = new URL('./pilot-probe.mjs', import.meta.url).pathname;
 // pre-commit hook 匯出的 GIT_DIR 等會讓暫存 repo 的 git 指令寫到本 repo。
@@ -1688,4 +1688,22 @@ test('done 成員的 Issue 本文最後編輯晚於列的 started 時印 SCOPE_C
     'SCOPE_CHANGED 321-322-323 321 2026-11-18T12:32:00Z',
     'SCOPE_CHANGED 325-326 325 2026-11-18T12:40:00Z',
   ]);
+});
+
+// #345：手動 pilot-batch 持鎖時，probe --apply 不能拿開頭讀到的舊內容整檔寫回；等到逾時就印 CHECKPOINT_LOCKED，不寫檔。
+test('applyResults：checkpoint 被活著的 pid 鎖住到逾時，傳回 CHECKPOINT_LOCKED 行、檔案不動', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'pilot-probe-lock-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'batch-7.md');
+  const text = '# batch 7\ncurrent: dispatched 2026-11-21T10:00:00+08:00\nintegration: pilot/integration @ 370114b\n\n'
+    + '| Issue | branch | worktree | handle | started | stuck-after | state | candidate |\n|---|---|---|---|---|---|---|---|\n'
+    + '| 7 | issue/7-x | /w/issue-7 | term_7 | 2026-11-21T10:00:00+08:00 | 90m | running | |\n';
+  writeFileSync(file, text);
+  const holder = `pid=${process.pid} at=2026-11-21T00:00:00.000Z test`;
+  writeFileSync(`${file}.lock`, `${holder}\n`);
+  const saved = process.env.PILOT_STORE_LOCK_TIMEOUT_MS;
+  process.env.PILOT_STORE_LOCK_TIMEOUT_MS = '200';
+  t.after(() => { if (saved === undefined) delete process.env.PILOT_STORE_LOCK_TIMEOUT_MS; else process.env.PILOT_STORE_LOCK_TIMEOUT_MS = saved; });
+  assert.deepEqual(applyResults(file, '7', [{ n: '7', state: 'done', sha: 'a'.repeat(40) }]), [`CHECKPOINT_LOCKED ${file}.lock ${holder}`]);
+  assert.equal(readFileSync(file, 'utf8'), text);
 });

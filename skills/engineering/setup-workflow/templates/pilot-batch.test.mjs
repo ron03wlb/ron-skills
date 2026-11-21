@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { realTmpdir } from './test/real-tmpdir.mjs';
@@ -23,7 +25,7 @@ function fixture(t, batches) {
   for (const [key, text] of Object.entries(batches)) writeFileSync(join(pilot, `batch-${key}.md`), text);
   const run = (...args) => spawnSync('node', [SCRIPT, dir, ...args], { encoding: 'utf8' });
   const read = key => (existsSync(join(pilot, `batch-${key}.md`)) ? readFileSync(join(pilot, `batch-${key}.md`), 'utf8') : null);
-  return { run, read };
+  return { run, read, pilot, dir };
 }
 
 // d8f8c8fa 手抄過去的成員 state 還是 done，probe 下一輪印 STAGEABLE 124，又多一步改成 stop（#163）。
@@ -156,4 +158,71 @@ test('park 的 <key> 是 <n> 但 batch 還有別的成員時 STOP 不動檔', t 
   assert.equal(result.status, 4);
   assert.equal(result.stdout, 'STOP 94 members 2\n');
   assert.equal(read('94'), text);
+});
+
+// #345：coordinator 的 probe --apply 與手動 pilot-batch 同時讀改寫同一份 checkpoint，後寫的整檔蓋掉先寫的（spay2 679ce48fd）。
+const holdLock = (file, pid = process.pid) => writeFileSync(`${file}.lock`, `pid=${pid} at=2026-11-21T00:00:00.000Z test\n`);
+
+test('鎖被占用時 move 等持鎖者寫完才讀，兩邊的修改都留著', async t => {
+  const { read, pilot, dir } = fixture(t, { '123-124': batchText('123-124', 'dispatched 2026-10-31T11:29:04+08:00', [row(123, 'running'), row(124, 'done', B)]) });
+  const file = join(pilot, 'batch-123-124.md');
+  holdLock(file);
+  const child = spawn('node', [SCRIPT, dir, 'move', '123-124', '124', '--state', 'stop'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  const exited = once(child, 'exit');
+  await sleep(1000);
+  assert.equal(child.exitCode, null, '持鎖期間 move 不該已結束');
+  // 持鎖者（例如 probe --apply）以它開頭讀到的內容寫回 123 的結果，再放鎖。
+  writeFileSync(file, batchText('123-124', 'dispatched 2026-10-31T11:29:04+08:00', [row(123, 'done', A), row(124, 'done', B)]));
+  rmSync(`${file}.lock`);
+  const [code] = await exited;
+  assert.equal(code, 0);
+  assert.equal(stdout, 'MOVED 123-124 124 batch-124\n');
+  assert.equal(read('123-124'), batchText('123-124', 'dispatched 2026-10-31T11:29:04+08:00', [row(123, 'done', A), row(124, 'moved batch-124', B)]));
+  assert.equal(existsSync(`${file}.lock`), false);
+});
+
+test('持鎖 pid 已不存在時搶回殘留鎖照常寫入', t => {
+  const { run, read, pilot } = fixture(t, { '123-124': batchText('123-124', 'dispatched 2026-10-31T11:29:04+08:00', [row(123, 'running'), row(124, 'done', B)]) });
+  const dead = spawnSync('node', ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout;
+  holdLock(join(pilot, 'batch-123-124.md'), dead);
+  holdLock(join(pilot, 'batch-124.md'), dead);
+  const result = run('move', '123-124', '124');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'MOVED 123-124 124 batch-124\n');
+  assert.match(read('123-124'), /\| 124 \|.*\| moved batch-124 \|/);
+  assert.equal(existsSync(join(pilot, 'batch-123-124.md.lock')), false);
+  assert.equal(existsSync(join(pilot, 'batch-124.md.lock')), false);
+});
+
+test('持鎖 pid 還活著、等到逾時就印 CHECKPOINT_LOCKED、exit 3，檔案與鎖都不動', t => {
+  const text = batchText('94', 'dispatched 2026-10-31T13:57:05+08:00', [row(94, 'parked after #123', A)]);
+  const { read, pilot, dir } = fixture(t, { 94: text });
+  const file = join(pilot, 'batch-94.md');
+  holdLock(file);
+  // 鎖齡一小時：pid 還活著就不論鎖齡都等，不當成殘留鎖。
+  const hourAgo = new Date(Date.now() - 3600 * 1000);
+  utimesSync(`${file}.lock`, hourAgo, hourAgo);
+  const result = spawnSync('node', [SCRIPT, dir, 'unpark', '94'], { encoding: 'utf8', env: { ...process.env, PILOT_STORE_LOCK_TIMEOUT_MS: '300' } });
+  assert.equal(result.status, 3, result.stderr);
+  assert.equal(result.stdout, `CHECKPOINT_LOCKED ${file}.lock pid=${process.pid} at=2026-11-21T00:00:00.000Z test\n`);
+  assert.equal(read('94'), text);
+  assert.equal(readFileSync(`${file}.lock`, 'utf8'), `pid=${process.pid} at=2026-11-21T00:00:00.000Z test\n`);
+});
+
+test('鎖檔讀不出 pid、超過 2 秒時當成殘留鎖搶回；不到 2 秒時照樣等', t => {
+  const text = batchText('94', 'dispatched 2026-10-31T13:57:05+08:00', [row(94, 'parked after #123', A)]);
+  const { read, pilot, dir } = fixture(t, { 94: text });
+  const lock = join(pilot, 'batch-94.md.lock');
+  writeFileSync(lock, '');
+  const fresh = spawnSync('node', [SCRIPT, dir, 'unpark', '94'], { encoding: 'utf8', env: { ...process.env, PILOT_STORE_LOCK_TIMEOUT_MS: '300' } });
+  assert.equal(fresh.status, 3, fresh.stdout + fresh.stderr);
+  assert.equal(read('94'), text);
+  const old = new Date(Date.now() - 5000);
+  utimesSync(lock, old, old);
+  const result = spawnSync('node', [SCRIPT, dir, 'unpark', '94'], { encoding: 'utf8', env: { ...process.env, PILOT_STORE_LOCK_TIMEOUT_MS: '300' } });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout, 'UNPARKED 94\n');
+  assert.equal(existsSync(lock), false);
 });

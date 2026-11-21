@@ -1009,3 +1009,16 @@ test('--fresh 不帶 --note：分頁尾段讀不到（Orca 失敗、找不到起
     if (noCli || setup) assert.equal(orca.reads(), '', label);
   }
 });
+
+// #345：成員行的讀改寫走 checkpoint 鎖；手動 pilot-batch 持鎖到逾時時印 CHECKPOINT_LOCKED、exit 3，不拿舊內容整檔寫回。
+test('checkpoint 被活著的 pid 鎖住到逾時：寫成員行時印 CHECKPOINT_LOCKED、exit 3，成員行沒寫', t => {
+  const { repo, dispatch } = fixture(t);
+  const file = join(repo, '.scratch/pilot/batch-23.md');
+  mkdirSync(join(repo, '.scratch/pilot'), { recursive: true });
+  const holder = `pid=${process.pid} at=2026-11-21T00:00:00.000Z test`;
+  writeFileSync(`${file}.lock`, `${holder}\n`);
+  const result = dispatch(['23', '23:pilot-probe'], { PILOT_STORE_LOCK_TIMEOUT_MS: '200' });
+  assert.equal(result.status, 3, result.stdout + result.stderr);
+  assert.deepEqual(lines(result).slice(-2), ['DISPATCHED 23 term_23', `CHECKPOINT_LOCKED ${file}.lock ${holder}`], '結果行先印，看得出 worker 已派出');
+  assert.doesNotMatch(readFileSync(file, 'utf8'), /^\| 23 \|/m);
+});

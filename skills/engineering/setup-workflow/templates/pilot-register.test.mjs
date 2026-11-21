@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -136,4 +138,37 @@ test('缺 pid、session、name 或 loop 不是 yes/no：exit 2', t => {
   assert.equal(run(dir, ['--loop', 'yes']).status, 2);
   assert.equal(run(dir, ['--name', 'x', '--loop', 'maybe']).status, 2);
   assert.ok(!existsSync(store(dir, 'coordinator')));
+});
+
+// #345：pilot-register 與別的寫入者（另一個 session 的 register、pilot-handoff）同時讀改寫 sessions.md、coordinator 時不能丟行。
+const holdLock = file => writeFileSync(`${file}.lock`, `pid=${process.pid} at=2026-11-21T00:00:00.000Z test\n`);
+const OTHER = '2026-11-21T10:00:00+08:00   session 65514abc-cac8-41b6-a870-996eec768045   pid 1234   other-0d\n';
+
+test('sessions.md 被鎖住時等持鎖者寫完才讀，兩邊的 start 行都留著', async t => {
+  const dir = checkout(t);
+  mkdirSync(join(dir, '.scratch/pilot'), { recursive: true });
+  writeFileSync(store(dir, 'sessions.md'), '');
+  holdLock(store(dir, 'sessions.md'));
+  const child = spawn('node', [SCRIPT, dir, ...ARGS], { stdio: 'ignore', env: { ...process.env, CLAUDE_PID: '553382', CLAUDE_CODE_SESSION_ID: SESSION } });
+  const exited = once(child, 'exit');
+  await sleep(1000);
+  assert.equal(child.exitCode, null, '持鎖期間 register 不該已結束');
+  // 持鎖者以它開頭讀到的內容（空檔）加上自己那一行整檔寫回，再放鎖。
+  writeFileSync(store(dir, 'sessions.md'), OTHER);
+  rmSync(`${store(dir, 'sessions.md')}.lock`);
+  const [code] = await exited;
+  assert.equal(code, 0);
+  assert.match(read(dir, 'sessions.md'), new RegExp(`^${OTHER.replace(/[+.]/g, "\\$&")}${TIME}   session ${SESSION}   pid 553382   demo-0c\\n$`));
+  assert.equal(existsSync(`${store(dir, 'sessions.md')}.lock`), false);
+});
+
+test('coordinator 被活著的 pid 鎖住到逾時：印 CHECKPOINT_LOCKED、exit 3，什麼都沒寫', t => {
+  const dir = checkout(t);
+  mkdirSync(join(dir, '.scratch/pilot'), { recursive: true });
+  holdLock(store(dir, 'coordinator'));
+  const result = run(dir, ARGS, { PILOT_STORE_LOCK_TIMEOUT_MS: '300' });
+  assert.equal(result.status, 3, result.stderr);
+  assert.equal(result.stdout, `CHECKPOINT_LOCKED ${store(dir, 'coordinator')}.lock pid=${process.pid} at=2026-11-21T00:00:00.000Z test\n`);
+  assert.equal(existsSync(store(dir, 'coordinator')), false);
+  assert.equal(existsSync(store(dir, 'sessions.md')), false);
 });
