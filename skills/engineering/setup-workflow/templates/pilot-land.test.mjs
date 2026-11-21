@@ -320,3 +320,77 @@ test('Regression 期間 checkpoint 有 regressing 標記，寫 regression 行時
   assert.doesNotMatch(f.read(), /^regressing:/m);
   assert.match(f.read(), new RegExp(`^regression: ${staged} exit 0 CHECK_PASS tests 1$`, 'm'));
 });
+
+/**
+ * 給 fixture 加 origin（bare，主分支 main）：先在整合分支（stage worktree）commit `integration`，再在 main commit `upstream`，最後 push main。
+ * 傳回 origin/main 的 SHA。兩邊都空時整合分支就是 origin/main。
+ */
+function withOrigin(f, { upstream = {}, integration = {} } = {}) {
+  const origin = join(f.temp, 'origin.git');
+  git(f.temp, 'init', '-q', '--bare', '-b', 'main', origin);
+  git(f.repo, 'remote', 'add', 'origin', origin);
+  for (const [tree, files, message] of [[f.stageTree, integration, 'integration only'], [f.repo, upstream, 'upstream']]) {
+    if (!Object.keys(files).length) continue;
+    write(tree, files);
+    git(tree, 'add', '--', ...Object.keys(files));
+    git(tree, 'commit', '-qm', message);
+  }
+  git(f.repo, 'push', '-q', 'origin', 'main');
+  return git(f.repo, 'rev-parse', 'main');
+}
+
+// #366（investing#313：batch 299 stage 在落後 origin/develop 的整合分支上，Push gate 拒推，完整回歸跑了兩次）：
+// 要 stage 時先確認 origin/<主分支> 是整合分支的祖先，不是就在同一次執行裡照 sync-main 同步，再從同步後的 tip stage。
+test('stage 前 origin/<主分支> 不是整合分支的祖先（落後）：同一次執行先 SYNCED … ff 再從新的 tip stage、MERGED', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
+  const upstream = withOrigin(f, { upstream: { 'up.txt': 'up\n' } });
+  const result = f.land(f.key);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.lines.length, 3, result.stdout);
+  assert.equal(result.lines[0], `SYNCED ${upstream} ff`);
+  assert.match(result.lines[1], new RegExp(`^STAGED 1 [0-9a-f]{40} onto ${upstream}$`));
+  assert.match(result.last, /^MERGED 1 [0-9a-f]{40}$/);
+  const tip = git(f.repo, 'rev-parse', 'pilot/integration');
+  assert.equal(git(f.repo, 'merge-base', '--is-ancestor', upstream, tip), '');
+  assert.equal(f.checks(), 'check \n');
+});
+
+test('stage 前整合分支與 origin/<主分支> 分叉：照 sync-main 合併並跑 Regression，通過後才 stage', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
+  const upstream = withOrigin(f, { upstream: { 'up.txt': 'up\n' }, integration: { 'int.txt': 'int\n' } });
+  const result = f.land(f.key);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [synced, staged] = result.lines;
+  const [, sha] = synced.match(/^SYNCED ([0-9a-f]{40}) CHECK_PASS tests 1\+2$/) ?? [];
+  assert.ok(sha, result.stdout);
+  assert.equal(git(f.repo, 'merge-base', '--is-ancestor', upstream, sha), '');
+  assert.match(staged, new RegExp(`^STAGED 1 [0-9a-f]{40} onto ${sha}$`));
+  assert.match(result.last, /^MERGED 1 [0-9a-f]{40}$/);
+  assert.equal(f.checks(), 'check \ncheck \n');
+});
+
+test('stage 前 origin/<主分支> 已是整合分支的祖先：不同步，輸出與沒有 origin 時相同', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
+  withOrigin(f);
+  const result = f.land(f.key);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.lines.length, 2, result.stdout);
+  assert.match(result.lines[0], /^STAGED 1 [0-9a-f]{40} onto [0-9a-f]{40}$/);
+  assert.match(result.last, /^MERGED 1 [0-9a-f]{40}$/);
+  assert.equal(f.checks(), 'check \n');
+});
+
+test('stage 前同步失敗（sync-main 衝突）：STOP conflict sync-main、不 stage、不跑 Regression，checkpoint 與整合分支都不動', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
+  withOrigin(f, { upstream: { 'same.txt': 'up\n' }, integration: { 'same.txt': 'int\n' } });
+  const tip = git(f.repo, 'rev-parse', 'pilot/integration');
+  const before = f.read();
+  const result = f.land(f.key);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(result.last, 'STOP conflict sync-main same.txt');
+  assert.ok(!result.stdout.includes('STAGED'), result.stdout);
+  assert.equal(f.checks(), '');
+  assert.equal(f.read(), before);
+  assert.equal(git(f.repo, 'rev-parse', 'pilot/integration'), tip);
+  assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
+});
