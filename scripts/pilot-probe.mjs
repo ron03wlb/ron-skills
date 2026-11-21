@@ -90,6 +90,8 @@
 //          兩個成員改到同一個檔，或整合分支自成員的 merge-base 以來也改了它改的檔；`.md` 檔的改動都在 `- **<名稱>.**` 條目裡時細到條目，
 //          相接的行與同一處的插入也算，git 合併時會衝突；同一對只印一行，後面列重疊的條目名稱，#176：條目不帶檔名、不同檔的同名條目只列一次，
 //          名稱可能有空格，以 `**`…`.**` 切分；數量固定寫 files，1 也是）
+//   預算：BUDGET <檔案> <合計> <上限> <成員…>（#398：整合分支（沒有時主分支）上 scripts/adapter-size-budget.json 列的檔，整合分支的大小加上
+//          同一批成員已 commit 的增量超過上限時印，列出讓它變大的成員；沒有預算表不印，表不是 { 路徑: 正整數 } 時 exit 1）
 //   落後主分支：BEHIND_MAIN <落後數> <origin/主分支 SHA>（整合分支沒有包含 origin/<主分支>，例如 retro 直接合進主分支之後；
 //          比的是本機最後一次 fetch 的 origin ref，有 merged／pushed 的 batch 時在這一輪的 fetch 之後比；兩個 ref 有一個不存在時不印。
 //          #268：沒有這一行時 coordinator 要自己算 rev-list 才知道要 sync-main，漏掉就在舊 tip 上 stage，到 Push gate 才 STOP behind-main）
@@ -782,14 +784,19 @@ function overlapLine(n, m, a, b) {
 const overlapOnto = (checkout, { integration = 'pilot/integration', main = 'main' } = {}) =>
   [`refs/heads/${integration}`, `refs/heads/${main}`].find(ref => rev(checkout, ref));
 
-/** 分支已 commit 的內容相對於與 `onto` 的 merge-base 改了哪些檔或條目：`{ base, units }`；本機沒有這個分支或沒有共同祖先時傳回 undefined。 */
-function branchUnits(checkout, onto, branch) {
+/** 本機分支的 tip 與它和 `onto` 的 merge-base：`{ tip, base }`；本機沒有這個分支或沒有共同祖先時傳回 undefined，git 失敗時 throw。 */
+function branchBase(checkout, onto, branch) {
   const tip = branch && rev(checkout, `refs/heads/${branch}`);
   if (!tip) return undefined;
   const base = git(checkout, 'merge-base', tip, onto);
   if (base.status > 1) throw new Error(`git merge-base ${branch} exit ${base.status}：${base.stderr.trim()}`);
-  if (base.status) return undefined;
-  return { base: base.stdout.trim(), units: changedUnits(checkout, base.stdout.trim(), tip) };
+  return base.status ? undefined : { tip, base: base.stdout.trim() };
+}
+
+/** 分支已 commit 的內容相對於與 `onto` 的 merge-base 改了哪些檔或條目：`{ base, units }`；本機沒有這個分支或沒有共同祖先時傳回 undefined。 */
+function branchUnits(checkout, onto, branch) {
+  const found = branchBase(checkout, onto, branch);
+  return found && { base: found.base, units: changedUnits(checkout, found.base, found.tip) };
 }
 
 /** 開著的 batch（current 不是 closed）裡 running 或 done 的成員列，同一個 Issue 只取第一列。 */
@@ -840,6 +847,46 @@ export function memberOverlaps(checkout, n, branch, options = {}) {
     const other = branchUnits(checkout, onto, m.branch);
     const where = other ? overlaps(mine.units, other.units) : [];
     if (where.length) out.push({ m: m.n, where });
+  }
+  return out;
+}
+
+const BUDGET_FILE = 'scripts/adapter-size-budget.json';
+
+/** `ref` 上 `path` 的 bytes；沒有這個檔時 0。 */
+function blobSize(checkout, ref, path) {
+  const result = git(checkout, 'cat-file', '-s', `${ref}:${path}`);
+  return result.status === 0 ? Number(result.stdout.trim()) : 0;
+}
+
+/**
+ * 同時進行的成員共用的檔案大小預算（#398）：預算表是整合分支（沒有時主分支）上的 `scripts/adapter-size-budget.json`
+ * （`{ 路徑: bytes }`，check-adapter-size 讀的同一份）。表上每個檔，整合分支的大小加上開著的 batch 裡 running、done 成員各自相對於
+ * 與整合分支的 merge-base 的增量（只看已 commit 的內容，縮小的成員也算進去），超過上限時印 `BUDGET <檔案> <合計> <上限> <成員…>`，
+ * 成員是讓檔案變大的那些（依號碼排序）。沒有成員改這個檔、沒有預算表、本機沒有成員分支時不印；預算表不是物件或上限不是正整數時 throw。
+ */
+export function budgetLines(checkout, batches, options = {}) {
+  const onto = overlapOnto(checkout, options);
+  const text = onto && show(checkout, onto, BUDGET_FILE);
+  if (!text) return [];
+  const table = JSON.parse(text);
+  if (!table || typeof table !== 'object' || Array.isArray(table) || !Object.values(table).every(limit => Number.isInteger(limit) && limit > 0)) {
+    throw new Error(`${BUDGET_FILE} 不是 { 路徑: bytes } 物件（上限要是正整數）`);
+  }
+  const members = activeMembers(batches).map(m => ({ n: m.n, ...branchBase(checkout, onto, m.branch) })).filter(m => m.tip);
+  const out = [];
+  for (const [path, limit] of Object.entries(table)) {
+    let total = blobSize(checkout, onto, path);
+    const grew = [];
+    let touched = false;
+    for (const { n, tip, base } of members) {
+      const delta = blobSize(checkout, tip, path) - blobSize(checkout, base, path);
+      if (!delta) continue;
+      touched = true;
+      total += delta;
+      if (delta > 0) grew.push(n);
+    }
+    if (touched && total > limit) out.push(['BUDGET', path, total, limit, ...grew].join(' '));
   }
   return out;
 }
@@ -941,6 +988,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   }
   out.push(...unparkLines(batches));
   out.push(...overlapLines(checkout, batches, { integration, main }));
+  out.push(...budgetLines(checkout, batches, { integration, main }));
   if (landing.length) {
     const fetch = git(checkout, 'fetch', '-q', 'origin');
     if (fetch.status !== 0) out.push(`FETCH_FAILED ${fetch.stderr.trim().split('\n').find(line => line.startsWith('fatal:')) ?? fetch.stderr.trim().split('\n')[0]}`);

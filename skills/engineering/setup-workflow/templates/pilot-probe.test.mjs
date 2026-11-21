@@ -1802,3 +1802,49 @@ test('applyResults：checkpoint 被活著的 pid 鎖住到逾時，傳回 CHECKP
   assert.deepEqual(applyResults(file, '7', [{ n: '7', state: 'done', sha: 'a'.repeat(40) }]), [`CHECKPOINT_LOCKED ${file}.lock ${holder}`]);
   assert.equal(readFileSync(file, 'utf8'), text);
 });
+
+// #398：adapter 檔的大小預算由同時進行的成員共用，每個成員在自己的 base 上都通過，合計超過要到 stage 的 pre-commit 才發現（#353、#394）。
+// 預算表是整合分支上的 scripts/adapter-size-budget.json（{ 路徑: bytes }，check-adapter-size 讀的同一份）。
+function budgetFixture(t, { budget = { 'docs/a.md': 100 }, grow = { 1: 15, 2: 15 }, state = 'done' } = {}) {
+  const f = fixture(t);
+  const commit = message => f.git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', message);
+  f.git('switch', '-q', '-c', 'pilot/integration');
+  mkdirSync(join(f.repo, 'docs'), { recursive: true });
+  mkdirSync(join(f.repo, 'scripts'), { recursive: true });
+  writeFileSync(join(f.repo, 'docs/a.md'), `${'a'.repeat(79)}\n`);
+  if (budget) writeFileSync(join(f.repo, 'scripts/adapter-size-budget.json'), JSON.stringify(budget));
+  f.git('add', '.');
+  commit('integration');
+  for (const [n, bytes] of Object.entries(grow)) {
+    f.git('switch', '-q', '-c', `issue/${n}-x`, 'pilot/integration');
+    if (bytes) writeFileSync(join(f.repo, 'docs/a.md'), `${readFileSync(join(f.repo, 'docs/a.md'), 'utf8')}${'b'.repeat(bytes - 1)}\n`);
+    else writeFileSync(join(f.repo, `other-${n}.md`), 'x\n');
+    f.git('add', '.');
+    commit(`#${n}`);
+  }
+  f.git('switch', '-q', 'main');
+  f.batch('1-2', 'dispatched 2026-11-21T00:00:00+08:00', Object.keys(grow).map(n => ({ n, state, candidate: state === 'done' ? SHA : '' })));
+  const result = f.probe();
+  if (budget && !Object.values(budget).every(limit => Number.isInteger(limit) && limit > 0)) return result;
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.split('\n').filter(line => line.startsWith('BUDGET '));
+}
+
+test('兩個成員各在預算內、合計超過時印 BUDGET <檔案> <合計> <上限> <成員…>', t => {
+  assert.deepEqual(budgetFixture(t), ['BUDGET docs/a.md 110 100 1 2']);
+});
+
+test('成員合計仍在預算內、沒有預算表時不印 BUDGET', t => {
+  assert.deepEqual(budgetFixture(t, { grow: { 1: 10, 2: 10 } }), []);
+  assert.deepEqual(budgetFixture(t, { budget: null }), []);
+});
+
+test('running 成員已 commit 的增量也算；沒改這個檔的成員不列', t => {
+  assert.deepEqual(budgetFixture(t, { grow: { 1: 25, 2: 0 }, state: 'running' }), ['BUDGET docs/a.md 105 100 1']);
+});
+
+test('預算表的上限不是正整數時 exit 1，不靜默略過', t => {
+  const result = budgetFixture(t, { budget: { 'docs/a.md': '100' } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /adapter-size-budget\.json/);
+});
