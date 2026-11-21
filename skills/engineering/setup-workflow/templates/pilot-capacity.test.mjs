@@ -4,7 +4,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { machineTotal, readLedger, report } from './pilot-capacity.mjs';
+import { machineTotal, missingEnv, readLedger, report } from './pilot-capacity.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./pilot-capacity.mjs', import.meta.url));
@@ -16,6 +16,7 @@ const ledger = t => {
 const run = (file, args, extra = {}) => {
   const env = { ...process.env, PILOT_WORKERS_LEDGER: file, ...extra };
   if (!('PILOT_MACHINE_WORKER_CAP' in extra)) delete env.PILOT_MACHINE_WORKER_CAP;
+  for (const [key, value] of Object.entries(extra)) if (value === undefined) delete env[key];
   return spawnSync('node', [SCRIPT, ...args], { encoding: 'utf8', env });
 };
 const NOW = new Date('2026-10-31T12:00:00+08:00');
@@ -53,21 +54,44 @@ test('check：合計加上新增人數不超過上限印 CAPACITY ok，超過印
   const file = ledger(t);
   report(file, 'ron-skills', 2, { cap: 4 });
   report(file, 'investing', 1, { cap: 4 });
-  const ok = run(file, ['check', '1']);
+  const ok = run(file, ['check', '1'], { PILOT_MACHINE_WORKER_CAP: '4' });
   assert.equal(ok.status, 0, ok.stderr);
   assert.equal(ok.stdout, 'CAPACITY ok 4/4\n');
-  const over = run(file, ['check', '2']);
+  const over = run(file, ['check', '2'], { PILOT_MACHINE_WORKER_CAP: '4' });
   assert.equal(over.status, 4, over.stderr);
   assert.equal(over.stdout, 'STOP capacity 5/4\n');
   const raised = run(file, ['check', '2'], { PILOT_MACHINE_WORKER_CAP: '6' });
   assert.equal(raised.stdout, 'CAPACITY ok 5/6\n');
 });
 
-test('沒有帳本時 check 以 0 起算；上限預設 4', t => {
+test('沒有帳本時 check 以 0 起算；上限沒設時先印 CAPACITY_ENV_MISSING 再用預設 4', t => {
   const file = ledger(t);
-  assert.equal(run(file, ['check', '4']).stdout, 'CAPACITY ok 4/4\n');
-  assert.equal(run(file, ['check', '5']).stdout, 'STOP capacity 5/4\n');
+  const missing = 'CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP\n';
+  assert.equal(run(file, ['check', '4']).stdout, `${missing}CAPACITY ok 4/4\n`);
+  assert.equal(run(file, ['check', '5']).stdout, `${missing}STOP capacity 5/4\n`);
+  assert.equal(run(file, ['check', '5'], { PILOT_MACHINE_WORKER_CAP: '' }).stdout, `${missing}STOP capacity 5/4\n`);
   assert.equal(existsSync(file), false);
+  assert.equal(run(file, ['report', 'ron-skills', '1']).stdout, `${missing}REPORTED ron-skills 1 1/4\n`);
+});
+
+// #396：Bash tool 的 shell 讀不到 ~/.zshrc，變數空白時容量檢查曾經默默略過 investing、默默用預設上限。
+// env 子指令逐一檢查 $PILOT_MACHINE_WORKER_CAP 與帶入的名稱，空白的各印一行 CAPACITY_ENV_MISSING <名稱>，都有值時印 CAPACITY_ENV ok。
+test('env：INVESTING_DATA_ROOT 未設或空字串時印 CAPACITY_ENV_MISSING INVESTING_DATA_ROOT，都有值時印 CAPACITY_ENV ok', t => {
+  const file = ledger(t);
+  const unset = run(file, ['env', 'INVESTING_DATA_ROOT'], { PILOT_MACHINE_WORKER_CAP: '4', INVESTING_DATA_ROOT: undefined });
+  assert.equal(unset.status, 0, unset.stderr);
+  assert.equal(unset.stdout, 'CAPACITY_ENV_MISSING INVESTING_DATA_ROOT\n');
+  const both = run(file, ['env', 'INVESTING_DATA_ROOT'], { PILOT_MACHINE_WORKER_CAP: '', INVESTING_DATA_ROOT: '' });
+  assert.equal(both.stdout, 'CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP\nCAPACITY_ENV_MISSING INVESTING_DATA_ROOT\n');
+  const set = run(file, ['env', 'INVESTING_DATA_ROOT'], { PILOT_MACHINE_WORKER_CAP: '4', INVESTING_DATA_ROOT: '/data' });
+  assert.equal(set.stdout, 'CAPACITY_ENV ok\n');
+  assert.equal(run(file, ['env'], { PILOT_MACHINE_WORKER_CAP: '4' }).stdout, 'CAPACITY_ENV ok\n');
+  assert.equal(run(file, ['env', 'BAD-NAME'], { PILOT_MACHINE_WORKER_CAP: '4' }).status, 2);
+  assert.equal(existsSync(file), false);
+});
+
+test('missingEnv 只把未設與空字串算缺', () => {
+  assert.deepEqual(missingEnv(['A', 'B', 'C'], { A: '', C: '0' }), ['A', 'B']);
 });
 
 test('CLI report 印 REPORTED <repo> <running> <合計>/<上限>', t => {
@@ -80,7 +104,7 @@ test('CLI report 印 REPORTED <repo> <running> <合計>/<上限>', t => {
 
 test('用法錯誤 exit 2：缺參數、人數不是非負整數、repo 帶 tab、上限不是正整數', t => {
   const file = ledger(t);
-  for (const args of [[], ['check'], ['check', '-1'], ['report', 'a'], ['report', 'a\tb', '1'], ['report', 'a', '1.5'], ['bogus', '1']]) {
+  for (const args of [[], ['check'], ['check', '-1'], ['report', 'a'], ['report', 'a\tb', '1'], ['report', 'a', '1.5'], ['bogus', '1'], ['constructor'], ['toString', '1']]) {
     assert.equal(run(file, args).status, 2, `${JSON.stringify(args)} 應該是用法錯誤`);
   }
   assert.equal(run(file, ['check', '1'], { PILOT_MACHINE_WORKER_CAP: '0' }).status, 2);

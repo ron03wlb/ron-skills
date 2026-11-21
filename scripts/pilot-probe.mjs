@@ -17,6 +17,7 @@
 //   --capacity <repo>（#178）：把這一輪還在跑的成員數（各 batch 的 running 列，扣掉這一輪讀到 DONE、STOP 的）以 <repo> 寫進全機帳本
 //            （同目錄 pilot-capacity.mjs 的 report：$PILOT_WORKERS_LEDGER，預設 ~/.local/state/pilot-workers.tsv）；所有 repo 的合計超過
 //            $PILOT_MACHINE_WORKER_CAP（預設 4）時最後印 OVER_CAP <合計> <上限>。只回報，不改派工；沒帶時不碰帳本。
+//            $PILOT_MACHINE_WORKER_CAP 空白時在這之前印 CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP，照預設 4 算（#396）。
 //            <repo> 空白或帶 tab、換行，或上限不是正整數時是用法錯誤（exit 2）。
 //   --tail <handle> [--lines <n>]（取代主 checkout 引數，只做這件事）：印那個 worker 分頁畫面的最後 n 行（預設 40），給 Watch 用，不必手拼 JSON 或依賴 jq（#295）；
 //            沒有 ORCA_CLI_COMMAND 或讀不到時 stderr 說明、exit 1。
@@ -77,7 +78,7 @@
 //   落後主分支：BEHIND_MAIN <落後數> <origin/主分支 SHA>（整合分支沒有包含 origin/<主分支>，例如 retro 直接合進主分支之後；
 //          比的是本機最後一次 fetch 的 origin ref，有 merged／pushed 的 batch 時在這一輪的 fetch 之後比；兩個 ref 有一個不存在時不印。
 //          #268：沒有這一行時 coordinator 要自己算 rev-list 才知道要 sync-main，漏掉就在舊 tip 上 stage，到 Push gate 才 STOP behind-main）
-//   全機上限：OVER_CAP <合計> <上限>（帶 --capacity 時，見上）
+//   全機上限：CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP、OVER_CAP <合計> <上限>（帶 --capacity 時，見上）
 // exit：0 印完；2 用法錯誤；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS、PARENT_APPLY_FAILED 等）。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -86,7 +87,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
 import { gateLines, isOpenRequest, now, openGates, parksAllPush, tableCells } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
-import { ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
+import { envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 import { POOL_FIELDS, landedOn, pool, prerequisiteOf } from './issue-pool.mjs';
 import { counterparts, declaredProjects } from './pilot-counterpart.mjs';
 
@@ -869,6 +870,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   }
   out.push(...behindMain(checkout, { integration, main }));
   if (capacity) {
+    out.push(...envMissingLines());
     const { total, cap } = report(ledgerPath(), capacity, running);
     if (total > cap) out.push(`OVER_CAP ${total} ${cap}`);
   }

@@ -8,23 +8,30 @@
 //   超過 2 小時沒更新的列（coordinator 已經停了）與解析不了的列不算進合計，也不刪。改寫時先寫暫存檔再 rename，讀的一方不會讀到半份；
 //   讀、改、寫整段持有 `<帳本>.lock` 目錄鎖（mkdir），兩個 coordinator 同時 report 也不會蓋掉對方的列；鎖超過 30 秒沒放（持有者被殺）視為遺留、拿掉重來，
 //   等 10 秒還拿不到就失敗（exit 1）。
-// 上限：$PILOT_MACHINE_WORKER_CAP，沒設時 4。
+// 上限：$PILOT_MACHINE_WORKER_CAP，沒設時 4；CLI 的 report、check 這時先印 `CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP` 再用 4（#396）。
+// 環境變數（#396）：Bash tool 的 shell 不讀 ~/.zshrc，寫在那裡的變數在 coordinator 那裡是空的，容量檢查會默默用預設值或略過別的 repo；
+//   每台機器把這些變數設在 Bash tool 讀得到的地方（使用者層級 ~/.claude/settings.json 的 `env`）。
+//   `env [<名稱>...]` 檢查 $PILOT_MACHINE_WORKER_CAP 與帶入的名稱（例如 INVESTING_DATA_ROOT），空白（未設或空字串）的各印一行
+//   `CAPACITY_ENV_MISSING <名稱>`，都有值時印 `CAPACITY_ENV ok`；只回報，exit 0。
 // 匯出的 report 另有 `add` 選項（#353，pilot-dispatch.mjs 派出後用）：寫入的是那一列的現值（2 小時內更新過才算）加上人數，讀寫在同一把鎖裡。
 //
 // 用法：node scripts/pilot-capacity.mjs report <repo> <running>
 //       node scripts/pilot-capacity.mjs check <新增人數>
-// stdout：report 印 `REPORTED <repo> <running> <合計>/<上限>`；
+//       node scripts/pilot-capacity.mjs env [<環境變數名稱>...]
+// stdout：$PILOT_MACHINE_WORKER_CAP 空白時 report、check 先印 `CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP`；env 見上；report 印 `REPORTED <repo> <running> <合計>/<上限>`；
 //         check 在「合計＋新增人數」不超過上限時印 `CAPACITY ok <合計>/<上限>`，超過時印 `STOP capacity <合計>/<上限>`（合計已含新增人數）。
-// exit：0 report 完成或 CAPACITY ok；4 STOP capacity；2 用法錯誤；1 其他失敗（讀寫帳本失敗）。
+// exit：0 report 完成、CAPACITY ok 或 env；4 STOP capacity；2 用法錯誤；1 其他失敗（讀寫帳本失敗）。
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const USAGE = '用法：node scripts/pilot-capacity.mjs report <repo> <running> | check <新增人數>（帳本 $PILOT_WORKERS_LEDGER，上限 $PILOT_MACHINE_WORKER_CAP，預設 4）';
+const USAGE = '用法：node scripts/pilot-capacity.mjs report <repo> <running> | check <新增人數> | env [<環境變數名稱>...]（帳本 $PILOT_WORKERS_LEDGER，上限 $PILOT_MACHINE_WORKER_CAP，預設 4）';
 export const DEFAULT_CAP = 4;
 const FRESH_MS = 2 * 60 * 60 * 1000;
 const COUNT = /^\d+$/;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export const CAP_ENV = 'PILOT_MACHINE_WORKER_CAP';
 const LOCK_STALE_MS = 30 * 1000;
 const LOCK_WAIT_MS = 10 * 1000;
 
@@ -68,9 +75,19 @@ export function ledgerPath(env = process.env) {
   return env.PILOT_WORKERS_LEDGER || join(homedir(), '.local/state/pilot-workers.tsv');
 }
 
+/** names 裡值空白（未設或空字串）的環境變數名稱，順序不變（#396）。 */
+export function missingEnv(names, env = process.env) {
+  return names.filter(name => env[name] === undefined || env[name] === '');
+}
+
+/** names（預設只有 $PILOT_MACHINE_WORKER_CAP）裡空白的各一行 `CAPACITY_ENV_MISSING <名稱>`，都有值時是空陣列（#396：不再默默用預設值）。 */
+export function envMissingLines(names = [CAP_ENV], env = process.env) {
+  return missingEnv(names, env).map(name => `CAPACITY_ENV_MISSING ${name}`);
+}
+
 /** 上限；設了卻不是正整數時傳回 undefined（用法錯誤）。 */
 export function machineCap(env = process.env) {
-  const value = env.PILOT_MACHINE_WORKER_CAP;
+  const value = env[CAP_ENV];
   if (value === undefined || value === '') return DEFAULT_CAP;
   return /^[1-9]\d*$/.test(value) ? Number(value) : undefined;
 }
@@ -124,13 +141,23 @@ export function check(file, add, { now = new Date(), cap = machineCap() } = {}) 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [command, ...rest] = process.argv.slice(2);
   const cap = machineCap();
-  const valid = cap !== undefined && (command === 'report'
-    ? rest.length === 2 && validRepo(rest[0]) && COUNT.test(rest[1])
-    : command === 'check' && rest.length === 1 && COUNT.test(rest[0]));
+  // env 只檢查名稱，上限寫壞也照跑；report、check 要上限是正整數。
+  const validators = {
+    env: () => rest.every(name => ENV_NAME.test(name)),
+    report: () => cap !== undefined && rest.length === 2 && validRepo(rest[0]) && COUNT.test(rest[1]),
+    check: () => cap !== undefined && rest.length === 1 && COUNT.test(rest[0]),
+  };
+  const valid = Object.hasOwn(validators, command) && validators[command]();
   if (!valid) {
     console.error(USAGE);
     process.exit(2);
   }
+  if (command === 'env') {
+    const lines = envMissingLines([...new Set([CAP_ENV, ...rest])]);
+    console.log(lines.length ? lines.join('\n') : 'CAPACITY_ENV ok');
+    process.exit(0);
+  }
+  for (const line of envMissingLines()) console.log(line);
   try {
     const file = ledgerPath();
     if (command === 'report') {

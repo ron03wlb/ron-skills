@@ -25,7 +25,7 @@ code=\${FAKE_CHECK_EXIT:-0}
 exit "$code"
 `;
 
-// 本機 ~/.zshrc 設的 PILOT_LOAD_MAX 不能帶進來，否則 fallback 案例測的不是 3 × 核心數。
+// 本機環境設的 PILOT_LOAD_MAX（~/.claude/settings.json 的 env 等）不能帶進來，否則 fallback 案例測的不是 3 × 核心數。
 const landEnv = Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'PILOT_LOAD_MAX'));
 
 // ron-skills 的 Stage 與 Push gate 指令帶的專案值（docs/agents/pilot.md 的 Stage、pilot-after-merge.md 的 Push gate，#245）。
@@ -987,7 +987,7 @@ function syncMainFixture(t, { integration, upstream, base = {}, batches = {} }) 
   for (const [key, text] of Object.entries(batches)) write(repo, { [`.scratch/pilot/batch-${key}.md`]: typeof text === 'function' ? text(tip) : text });
   const log = join(temp, 'check.log');
   writeFileSync(log, '');
-  // 同 land()：預設 PILOT_LOAD_NOW=0，不受真機負載與 ~/.zshrc 的 PILOT_LOAD_MAX 影響。
+  // 同 land()：預設 PILOT_LOAD_NOW=0，不受真機負載與本機環境的 PILOT_LOAD_MAX 影響。
   const sync = (extra = {}, args = []) => {
     const result = spawnSync('node', [script, 'sync-main', ...args, ...PROJECT], { cwd: repo, encoding: 'utf8', env: { ...landEnv, FAKE_CHECK_LOG: log, PILOT_LOAD_NOW: '0', ...extra } });
     const lines = result.stdout.trim().split('\n');
