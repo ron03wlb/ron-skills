@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync, realpathSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
 import { hasSystemBash, systemBashPath } from '../skills/engineering/setup-workflow/templates/test/bash32.mjs';
@@ -184,4 +184,41 @@ test('同步時連結 git 的 pre-commit hook；已有的不覆蓋；--check 不
   assert.equal(kept.status, 0, kept.stderr);
   assert.match(kept.stderr, /^SKIP .*pre-commit/m);
   assert.match(readFileSync(join(hooks, 'pre-commit'), 'utf8'), /使用者自己的 hook/);
+});
+
+// #380：~/.claude/skills 連到的 checkout 落後時沒有提示，investing 用到舊版 skill。
+const gitIn = (cwd, ...args) => {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+};
+/** 一個含 skills/<名稱>/SKILL.md 的 clone，落後 upstream behind 個 commit；upstream 為 false 時沒有 upstream。 */
+const sourceRepo = (tmp, name, { behind = 0, upstream = true } = {}) => {
+  const origin = join(tmp, `${name}-origin`), clone = join(tmp, name);
+  mkdirSync(origin);
+  gitIn(origin, 'init', '-q', '-b', 'main');
+  skill(join(origin, 'skills', name));
+  gitIn(origin, 'add', '.');
+  gitIn(origin, 'commit', '-qm', 'init');
+  gitIn(tmp, 'clone', '-q', origin, clone);
+  for (let i = 0; i < behind; i++) gitIn(origin, 'commit', '-q', '--allow-empty', '-m', `c${i}`);
+  gitIn(clone, 'fetch', '-q');
+  if (!upstream) gitIn(clone, 'branch', '--unset-upstream');
+  return clone;
+};
+
+test('--check 對連結來源落後 upstream 的 repo 印 SKILLS_BEHIND <repo> <n>，不連網、不影響 exit', t => {
+  const tmp = scratch(t);
+  const dest = join(tmp, 'dest');
+  mkdirSync(dest);
+  const lagging = sourceRepo(tmp, 'lagging', { behind: 3 });
+  for (const repo of [lagging, sourceRepo(tmp, 'current'), sourceRepo(tmp, 'loose', { upstream: false })]) {
+    symlinkSync(join(repo, 'skills', basename(repo)), join(dest, basename(repo)));
+  }
+  symlinkSync(join(lagging, 'skills/lagging'), join(dest, 'lagging-again'));
+
+  const result = run(['--check'], { SKILL_DIRS: dest });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^CHECK_OK \d+ skills$/m);
+  assert.deepEqual(result.stderr.split('\n').filter(line => line.startsWith('SKILLS_BEHIND')), [`SKILLS_BEHIND ${realpathSync(lagging)} 3`]);
 });
