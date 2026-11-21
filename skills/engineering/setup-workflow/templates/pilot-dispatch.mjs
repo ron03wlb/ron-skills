@@ -20,7 +20,7 @@
 // 登記（#394）：worktree 確認建好之後、`terminal create` 之前，輪詢 `worktree list --json` 直到列出這個路徑（WSL 上 Orca 回 `\\wsl.localhost\<distro>\…` 的 UNC 路徑，
 // 反斜線換成斜線後比尾段），最多 PILOT_DISPATCH_REGISTER_MS（預設 60000）、間隔 PILOT_DISPATCH_REGISTER_POLL_MS（預設 2000）；到上限沒列出時 stderr 印 `WARN orca-register <路徑>`，仍照樣 `terminal create`。
 // Env sync（#363）：主 checkout 的 adapter（docs/agents/issue-run.md）的 `## Pilot` 段或它連到的檔（同 pilot-probe.mjs 的 pilotFiles）有一行 `Env sync: `<指令>``
-// （前面可以有 `- ` 或 `* `，指令是該行第一個反引號裡的字）時，worktree 確認建好之後、關舊分頁與 `terminal create` 之前，以 `sh -c` 在 worktree 裡跑它，
+// （或 Pilot 條目格式的 `- **Env sync.** `<指令>``；前面可以有 `- ` 或 `* `，指令是該行第一個反引號裡的字）時，worktree 確認建好之後、關舊分頁與 `terminal create` 之前，以 `sh -c` 在 worktree 裡跑它，
 // 重派既有 worktree 也跑（同步指令應該可以重跑）；指令的 stdout、stderr 轉到 dispatch 的 stderr。exit 非 0 印 `STOP sync <n> exit <code>`，不開分頁、成員記 stop；
 // 被總預算或信號中止時同其他步驟記 `STOP <n> timeout|signal …`。沒宣告時不跑。宣告寫錯（沒有反引號裡的指令、合計宣告超過一次）時 exit 2，什麼都不動。
 // 剛建好的 worktree Orca 可能還在背景登記，`terminal create` 回 `selector_not_found`：再輪詢一次後重試一次，仍失敗才 `STOP <n> terminal …`。
@@ -85,7 +85,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { claimedBy, defaultSession } from './issue-pool.mjs';
 import { orca, sendToSession } from './orca-session-send.mjs';
 import { closeIfAllMoved, exitIfLocked, updateCheckpoint } from './lib/pilot-store.mjs';
-import { changedUnits, memberOverlaps, parseBatch, pilotFiles, pilotSection } from './pilot-probe.mjs';
+import { ADAPTER, changedUnits, memberOverlaps, parseBatch, pilotFiles, pilotSection } from './pilot-probe.mjs';
 import { envMissingLines, check as capacityCheck, ledgerPath, machineCap, report as capacityReport } from './pilot-capacity.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
 
@@ -103,19 +103,17 @@ const REGISTER_POLL_MS = Number(process.env.PILOT_DISPATCH_REGISTER_POLL_MS || 2
 /** Orca 還沒登記 worktree 時 `terminal create` 的 error code（orca-session-send 的 orca() 以它當錯誤訊息）。 */
 const SELECTOR_NOT_FOUND = 'selector_not_found';
 
-/** adapter 裡 Env sync 宣告行的寫法（#363）。 */
-const ENV_SYNC = /^(?:[-*]\s+)?Env sync:(.*)$/;
-/** adapter，相對於主 checkout（同 pilot-probe.mjs）。 */
-const ADAPTER = 'docs/agents/issue-run.md';
+/** adapter 裡 Env sync 宣告行的寫法（#363）：`Env sync:` 開頭的行，或 Pilot 條目格式的 `- **Env sync.**`。 */
+const ENV_SYNC = /^(?:[-*]\s+)?(?:Env sync:|\*\*Env sync\.\*\*)(.*)$/;
 
 /** adapter 各檔的 `{ file, text }` → Env sync 宣告的指令；沒有宣告傳回 undefined，宣告寫錯（沒有反引號指令、超過一次）時丟錯。 */
 function declaredEnvSync(sources) {
-  const found = sources.flatMap(({ file, text }) => String(text ?? '').split('\n')
-    .map(line => line.trim()).filter(line => ENV_SYNC.test(line)).map(line => ({ file, line })));
-  if (found.length > 1) throw new Error(`Env sync 宣告了 ${found.length} 次，只能有一行：${found.map(({ file, line }) => `${file}：${line}`).join('；')}`);
-  if (!found.length) return undefined;
-  const [{ file, line }] = found;
-  const command = ENV_SYNC.exec(line)[1].match(/`([^`]+)`/)?.[1].trim();
+  const declarations = sources.flatMap(({ file, text }) => String(text ?? '').split('\n').map(line => line.trim())
+    .map(line => ({ file, line, rest: ENV_SYNC.exec(line)?.[1] })).filter(({ rest }) => rest !== undefined));
+  if (declarations.length > 1) throw new Error(`Env sync 宣告了 ${declarations.length} 次，只能有一行：${declarations.map(({ file, line }) => `${file}：${line}`).join('；')}`);
+  if (!declarations.length) return undefined;
+  const [{ file, line, rest }] = declarations;
+  const command = rest.match(/`([^`]+)`/)?.[1].trim();
   if (!command) throw new Error(`${file} 的 Env sync 行沒有指令（寫成 Env sync: \`<指令>\`）：${line}`);
   return command;
 }
@@ -138,7 +136,7 @@ async function runEnvSync(command, worktree, signal) {
   });
 }
 
-/** 成員的 STOP 行：Env sync 失敗照 #363 寫成 `STOP sync <n> …`，其他是 `STOP <n> <原因>`。 */
+/** 成員的 STOP 行：Env sync 失敗照 #363 指定的 `STOP sync <n> …`（同 `STOP dirty <n>` 的語序），其他是 `STOP <n> <原因>`。 */
 function stopLine(n, stop) {
   return stop.startsWith('sync ') ? `STOP sync ${n} ${stop.slice(5)}` : `STOP ${n} ${stop}`;
 }

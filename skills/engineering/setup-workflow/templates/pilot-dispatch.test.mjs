@@ -1034,8 +1034,7 @@ const syncInto = log => `echo "SYNC $PWD" >> '${log}'`;
 const orcaLines = calls => calls.split('\n').filter(line => /^(SYNC|worktree create|terminal create) /.test(line)).map(line => line.split(' --')[0]);
 
 test('Env sync：宣告的指令在新 worktree 內、開分頁前跑一次；重派既有 worktree 時再跑一次', t => {
-  const fx = fixture(t);
-  mkdirSync(join(fx.repo, 'docs/agents'), { recursive: true });
+  const fx = fixture(t, { adapter: { 'issue-run.md': '# adapter\n\n## Pilot\n\n' } });
   writeFileSync(join(fx.repo, 'docs/agents/issue-run.md'), `# adapter\n\n## Pilot\n\nEnv sync: \`${syncInto(fx.log)}\`\n`);
   const result = fx.dispatch(['46', '46:pilot-dispatch']);
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -1048,18 +1047,16 @@ test('Env sync：宣告的指令在新 worktree 內、開分頁前跑一次；�
   assert.deepEqual(orcaLines(fx.calls()), ['worktree create', `SYNC ${tree}`, 'terminal create', `SYNC ${tree}`, 'terminal create']);
 });
 
-test('Env sync：宣告寫在 Pilot 段連到的檔的條目清單裡也照跑', t => {
+test('Env sync：宣告寫在 Pilot 段連到的檔、寫成 `- **Env sync.**` 條目也照跑', t => {
   const fx = fixture(t, { adapter: { 'issue-run.md': '# adapter\n\n## Pilot\n\n見 [pilot.md](pilot.md)。\n' } });
-  writeFileSync(join(fx.repo, 'docs/agents', 'pilot.md'), `# pilot\n\n- Env sync: \`${syncInto(fx.log)}\`（建好 worktree 後同步相依）\n`);
+  writeFileSync(join(fx.repo, 'docs/agents', 'pilot.md'), `# pilot\n\n- **Env sync.** \`${syncInto(fx.log)}\`（建好 worktree 後同步相依）\n`);
   const result = fx.dispatch(['46', '46:pilot-dispatch']);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(orcaLines(fx.calls()), ['worktree create', `SYNC ${fx.root}/issue-46`, 'terminal create']);
 });
 
 test('Env sync 失敗：STOP sync <n>、exit 4，沒開分頁、成員記 stop，指令輸出轉到 stderr；其他成員照常派出', t => {
-  const fx = fixture(t);
-  mkdirSync(join(fx.repo, 'docs/agents'), { recursive: true });
-  writeFileSync(join(fx.repo, 'docs/agents/issue-run.md'), `## Pilot\n\nEnv sync: \`case "$PWD" in */issue-46) echo 'uv: lock mismatch' >&2; exit 3;; esac\`\n`);
+  const fx = fixture(t, { adapter: { 'issue-run.md': `## Pilot\n\nEnv sync: \`case "$PWD" in */issue-46) echo 'uv: lock mismatch' >&2; exit 3;; esac\`\n` } });
   const result = fx.dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.deepEqual(lines(result), ['DISPATCHED 23 term_23', 'STOP sync 46 exit 3']);
@@ -1080,7 +1077,7 @@ test('沒宣告 Env sync（或寫在 Pilot 段以外、Pilot 段沒連到的檔�
 test('Env sync 宣告寫錯（沒有反引號裡的指令、宣告兩次）：exit 2，不建 worktree、不寫 checkpoint', t => {
   for (const adapter of [
     { 'issue-run.md': '## Pilot\n\nEnv sync: uv sync\n' },
-    { 'issue-run.md': '## Pilot\n\n[pilot.md](pilot.md)\n\nEnv sync: `uv sync`\n', 'pilot.md': '- Env sync: `npm ci`\n' },
+    { 'issue-run.md': '## Pilot\n\n[pilot.md](pilot.md)\n\nEnv sync: `uv sync`\n', 'pilot.md': '- **Env sync.** `npm ci`\n' },
   ]) {
     const fx = fixture(t, { adapter });
     const result = fx.dispatch(['46', '46:pilot-dispatch']);
