@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 把開著的 Issue 逐張分桶，pilot 的 Pool 從 ready 桶依序挑；tracker 支援 GitHub（gh）與 GitLab（glab，含自架），本機 Markdown tracker 不支援。
-// 用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] [--integration <分支>]
+// 用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] [--skip-labels <label>,...] [--integration <分支>]
 //       node scripts/issue-pool.mjs claim <n> [--repo <專案>] [--session <id>] [--take-stale] [--integration <分支>]
 //       node scripts/issue-pool.mjs children <母單> [--repo <專案>] [--ask-prefix <前綴>]...
 //       node scripts/issue-pool.mjs open-work <n> [--repo <專案>]
@@ -12,6 +12,8 @@
 // （最近 100 則系統紀錄內）；`blocks` 連結是 GitLab Premium 以上才有，Free 版沒有 blocked 桶。
 // 一張只歸一個桶，依序取第一個符合的：parent（有 sub-issue；GitLab 是有子項目）、human（`ready-for-human`，指派給人不算認領）、
 // retro-candidates（`retro-candidates` label：retro 的候選清單，等 `/retro-collect`；被 `/retro-collect` 認領、指派之後也歸這裡，不混進 claimed、stale，#270）、
+// `--skip-labels` 帶的每個 label（逗號分隔，adapter 宣告的「不進分級的 label」，例如 investing 的 `ci-report` 報告單）：歸到以該 label 命名的桶，與 retro-candidates 同樣處理，排在它之後，
+// 多個時取 --skip-labels 裡第一個掛著的（#326；沒帶時沒有這些桶）、
 // landed（只在帶 --integration 時：已指派，且最近一則認領留言之後有 `DONE <n> <sha>` 結果行，或已落地在整合分支（landedOn）；已做完、等合入 main，不算進行中，#352）、
 // stale（已指派，超過 --stale-hours（預設 24）沒有新留言或新指派）、claimed（已指派）、
 // in-review（有開著的 PR 以 closing reference 指向這張單：單獨跑的 /issue-run 做完、沒留指派也沒留認領的單，不能再派一次，#284；只看 GitHub，GitLab 沒有這個桶）、blocked（有開著的 blocked_by）、
@@ -21,7 +23,7 @@
 // stdout：每張一行 `<桶> #<n> <標題>`；blocked 桶在號碼與標題之間多寫狀態與開著的 blocker：`blocked #<n> <triage 狀態 label|unlabeled> by #<m>,<owner>/<repo>#<k> <標題>`，
 // 帶 --integration 時已落地在整合分支的本 repo blocker 後面接 ` (landed <分支>)`（#352）；Probe 的 BLOCKER_OPEN_SCOPE 用同一份 blocker 資料（export 的 blockerOpenScope，#359），這支 CLI 不印。之後 ready 桶本文有 `… prerequisite：<內容>` 一行、內容不是「無」的，
 // 依 ready 的順序各印一行 `PREREQ <n> <內容>`（先查環境或開 gate 再派）；最後對開著、有 triage 狀態 label（TRIAGE_STATES）卻沒有分類 label 的單印一行
-// `NO_CATEGORY <n> <n>...`（號碼升冪，沒有時不印），母單（有 sub-issue 或 `parent` label）與 `retro-candidates` 不算。分類 label 預設是 DEFAULT_CATEGORIES（triage 的 `bug`、`enhancement`），
+// `NO_CATEGORY <n> <n>...`（號碼升冪，沒有時不印），母單（有 sub-issue 或 `parent` label）、`retro-candidates` 與 `--skip-labels` 的 label 不算。分類 label 預設是 DEFAULT_CATEGORIES（triage 的 `bug`、`enhancement`），
 // adapter 用的 label 不同時以 `--categories` 覆寫（逗號分隔）。exit 0。gh 或 glab 失敗時 stderr 印原因、exit 1；用法錯誤或本機 Markdown tracker 時 exit 2。
 // 有母單的 ready 行在號碼與標題之間多寫 `parent #<p> `（`ready #<n> parent #<p> <標題>`；別的 repo 的母單寫 `<owner>/<repo>#<p>`，GitLab 是父項目），
 // Shared registry 看同一母單不必逐張查 sub-issue（#397）；其他桶不寫。
@@ -51,7 +53,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { codeHost, projectInDoc, trackerKind } from './lib/hosts.mjs';
 
-const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] [--integration <分支>] | claim <n> [--repo <專案>] [--session <id>] [--take-stale] [--integration <分支>] | children <母單> [--repo <專案>] [--ask-prefix <前綴>]... | open-work <n> [--repo <專案>]';
+const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] [--skip-labels <label>,...] [--integration <分支>] | claim <n> [--repo <專案>] [--session <id>] [--take-stale] [--integration <分支>] | children <母單> [--repo <專案>] [--ask-prefix <前綴>]... | open-work <n> [--repo <專案>]';
 /** pool() 與 children 共用的 label、blocked-by 欄位片段。 */
 const LABEL_FIELDS = 'labels(first:50){nodes{name}}';
 const BLOCKED_BY_FIELDS = 'blockedBy(first:50){nodes{number state repository{nameWithOwner}}}';
@@ -244,11 +246,13 @@ export function landedOn(integration, log = integrationLog) {
 const landedSha = (n, { assigned, comments }, landed) => landed(n) ?? (assigned ? doneSha(comments, n) : undefined);
 
 /** 每張 Issue 歸到一個桶，優先序見檔頭；landed 是 landedOn 的結果，沒給時沒有 landed 桶。 */
-export function bucketOf(issue, { staleHours = 24, now = Date.now(), landed } = {}) {
+export function bucketOf(issue, { staleHours = 24, now = Date.now(), landed, skipLabels = [] } = {}) {
   const labels = labelsOf(issue);
   if (issue.subIssuesSummary.total > 0) return 'parent';
   if (labels.has('ready-for-human')) return 'human';
   if (labels.has('retro-candidates')) return 'retro-candidates';
+  const skipped = skipLabels.find(name => labels.has(name));
+  if (skipped) return skipped;
   if (issue.assignees.nodes.length) {
     if (landed && landedSha(issue.number, { assigned: true, comments: issue.comments.nodes }, landed)) return 'landed';
     return now - lastActivity(issue) > staleHours * 3600_000 ? 'stale' : 'claimed';
@@ -288,7 +292,9 @@ export function pool(issues, { repo, ...options }) {
     priority: issue.labels.nodes.some(({ name }) => name === 'priority') ? 1 : 0,
     blocks: blockingCount(issue, byNumber, repo),
   }));
-  const rank = row => BUCKETS.indexOf(row.bucket);
+  // --skip-labels 的桶不在 BUCKETS 裡：排在 retro-candidates 之後，彼此依 --skip-labels 的順序。
+  const skipLabels = options.skipLabels ?? [];
+  const rank = row => (BUCKETS.includes(row.bucket) ? BUCKETS.indexOf(row.bucket) : BUCKETS.indexOf('retro-candidates') + (1 + skipLabels.indexOf(row.bucket)) / (skipLabels.length + 1));
   return rows.sort((a, b) => rank(a) - rank(b)
     || (a.bucket === 'ready' && (b.retro - a.retro || b.priority - a.priority || b.blocks - a.blocks))
     || a.issue.number - b.issue.number);
@@ -343,7 +349,7 @@ export function poolLines(issues, { repo, categories = DEFAULT_CATEGORIES, lande
     const prerequisite = prerequisiteOf(issue.body);
     if (prerequisite && !NO_PREREQUISITE.test(prerequisite)) lines.push(`PREREQ ${issue.number} ${prerequisite}`);
   }
-  const missing = missingCategory(issues, categories);
+  const missing = missingCategory(issues, categories, options.skipLabels);
   if (missing.length) lines.push(`NO_CATEGORY ${missing.join(' ')}`);
   return lines;
 }
@@ -352,12 +358,12 @@ export function poolLines(issues, { repo, categories = DEFAULT_CATEGORIES, lande
 export const TRIAGE_STATES = ['needs-triage', 'needs-info', 'ready-for-agent', 'ready-for-human', 'wontfix'];
 export const DEFAULT_CATEGORIES = ['bug', 'enhancement'];
 
-/** 有 triage 狀態卻沒有分類的單，號碼小的先；母單與 retro 候選清單本來就不掛分類，不算。
+/** 有 triage 狀態卻沒有分類的單，號碼小的先；母單、retro 候選清單與 skipLabels（--skip-labels）的單本來就不掛分類，不算。
  * 母單除了 parent 桶看的 sub-issue，也認 `parent` label：子單還沒建好、只掛了 label 的母單同樣不該被要求補分類。 */
-export function missingCategory(issues, categories = DEFAULT_CATEGORIES) {
+export function missingCategory(issues, categories = DEFAULT_CATEGORIES, skipLabels = []) {
   return issues.filter(issue => {
     const labels = labelsOf(issue);
-    if (issue.subIssuesSummary.total > 0 || labels.has('parent') || labels.has('retro-candidates')) return false;
+    if (issue.subIssuesSummary.total > 0 || labels.has('parent') || labels.has('retro-candidates') || skipLabels.some(name => labels.has(name))) return false;
     return TRIAGE_STATES.some(name => labels.has(name)) && !categories.some(name => labels.has(name));
   }).map(({ number }) => number).sort((a, b) => a - b);
 }
@@ -496,13 +502,14 @@ function openWork(n, tracker) {
 }
 
 function main(argv) {
-  let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, session = defaultSession(), takeStale = false, integration;
+  let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, skipLabels = [], session = defaultSession(), takeStale = false, integration;
   const askPrefixes = [];
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--repo' && argv[i + 1]) repo = argv[++i];
     else if (argv[i] === '--stale-hours' && Number(argv[i + 1]) > 0) staleHours = Number(argv[++i]);
     else if (argv[i] === '--categories' && argv[i + 1]) categories = argv[++i].split(',').filter(Boolean);
+    else if (argv[i] === '--skip-labels' && argv[i + 1]) skipLabels = argv[++i].split(',').filter(Boolean);
     else if (argv[i] === '--session' && argv[i + 1]) session = argv[++i];
     else if (argv[i] === '--take-stale') takeStale = true;
     else if (argv[i] === '--integration' && argv[i + 1]) integration = argv[++i];
@@ -520,7 +527,7 @@ function main(argv) {
     if (command === 'open-work') return openWork(n, tracker);
     repo = tracker.repo();
     const issues = tracker.issues(repo);
-    for (const line of poolLines(issues, { repo, staleHours, categories, landed, integration })) console.log(line);
+    for (const line of poolLines(issues, { repo, staleHours, categories, skipLabels, landed, integration })) console.log(line);
     return 0;
   } catch (error) {
     if (!(error instanceof CliError) && !(error instanceof UsageError)) throw error;

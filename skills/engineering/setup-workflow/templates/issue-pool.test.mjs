@@ -252,6 +252,33 @@ test('分類 label 可以用 --categories 覆寫（adapter 的分類 label 不�
   assert.equal(run('--categories', 'type:feature,type:bug').stdout, 'ready #7 標題 7\nready #8 標題 8\nNO_CATEGORY 8\n');
 });
 
+// #326：investing 的 `ci-report` 報告單（每週 CI 健康報告）和 retro-candidates 一樣不會被實作，adapter 以 --skip-labels 宣告，
+// 歸到以該 label 命名的桶（排在 retro-candidates 之後），不進 ready、needs-triage，不印 NO_CATEGORY，指派了也不算 claimed、stale。
+test('--skip-labels 的 label 和 retro-candidates 一樣自成一桶、不進 ready／needs-triage、不印 NO_CATEGORY', () => {
+  const { run } = fakeGh({ issues: [
+    issue(7, { labels: ['ci-report', 'ready-for-agent'] }),
+    issue(8, { labels: ['ci-report', 'needs-triage'] }),
+    issue(9, { labels: ['ci-report'], assignees: ['ron'], assignedAt: hoursAgo(30), commentAt: hoursAgo(25) }),
+    issue(10, { labels: ['wip-log', 'needs-triage'] }),
+    issue(11, { labels: ['bug', 'ready-for-agent'] }),
+    issue(12, { labels: ['retro-candidates'] }),
+    issue(13, { labels: ['bug', 'needs-info'] }),
+  ] });
+  const result = run('--skip-labels', 'ci-report,wip-log');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #11 標題 11\nretro-candidates #12 標題 12\nci-report #7 標題 7\nci-report #8 標題 8\nci-report #9 標題 9\nwip-log #10 標題 10\nneeds-info #13 標題 13\n');
+});
+
+test('沒帶 --skip-labels 時 ci-report 照一般 triage label 分桶、照印 NO_CATEGORY（行為不變）', () => {
+  const { run } = fakeGh({ issues: [issue(7, { labels: ['ci-report', 'ready-for-agent'] }), issue(8, { labels: ['ci-report', 'needs-triage'] })] });
+  assert.equal(run().stdout, 'ready #7 標題 7\nneeds-triage #8 標題 8\nNO_CATEGORY 7 8\n');
+});
+
+test('--skip-labels 沒給值時印用法、exit 2', () => {
+  const { run } = fakeGh();
+  assert.equal(run('--skip-labels').status, 2);
+});
+
 // #352（#324 第 1 項，investing#190）：#133 本文寫 `Operator prerequisite：開跑前由 Operator 確認`，照列 ready，到 worker preflight 才停。
 test('ready 單本文的 Operator prerequisite 不是「無」時另印 PREREQ <n> <內容>；寫「無」、不在 ready 桶的不印', () => {
   const result = fakeGh({ issues: [

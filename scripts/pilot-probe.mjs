@@ -3,8 +3,10 @@
 // 每個 running 成員的 terminal 與 tracker 上的母單，各印一行狀態，不必再手動拼 `orca terminal read` 的 JSON（手拼時漏過 exited 卻沒有結果行的 worker）。
 // 存檔格式照 issue-pilot 的 PILOT-STORE.md；專案不同的值由參數傳入。
 //
-// 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>]
+// 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...]
 //   --integration 整合分支，預設 pilot/integration；--main 主分支，預設 main。讀 running 成員要 ORCA_CLI_COMMAND，沒有時其他檢查照跑。
+//   --skip-labels：adapter 宣告的「不進分級的 label」（逗號分隔，同 issue-pool.mjs 的 --skip-labels，#326）：掛著的單與 retro-candidates 一樣，
+//            不進 POOL_READY／POOL_TRIAGE／COUNTERPART_BARE 的 ready 桶，也不算 DEPS_PROSE「最後做」的新單。沒帶時只有內建的 retro-candidates、parent。
 //   --apply：把這一輪讀到的 `WORKER <n> DONE <sha>`、`STOP <cause>` 寫回 batch checkpoint 的成員列（state `done` 與 candidate SHA、
 //            state `stop`），只改那一列的這兩欄；`merged` 的 batch 印 IN_MAIN 時把 `current: merged` 改成 `pushed`（SHA 與附註不動）。
 //            對不到唯一一列 running 的成員列時不寫檔，印 APPLY_MISS <key> <n> rows <列數>；寫回後再讀一次沒對上時印 APPLY_MISS <key> <n|current> verify
@@ -100,7 +102,7 @@ import { counterparts, declaredProjects } from './pilot-counterpart.mjs';
 
 // 池子摘要要的欄位取 issue-pool 的 POOL_FIELDS（#240）；同名的 blockedBy 在 GraphQL 裡合併成一份選取。
 const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt lastEditedAt blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
-const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>]｜node scripts/pilot-probe.mjs --tail <handle> [--lines <n>]';
+const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...]｜node scripts/pilot-probe.mjs --tail <handle> [--lines <n>]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const TRACKER = join(dirname(fileURLToPath(import.meta.url)), 'gh-tracker.mjs');
 
@@ -330,7 +332,7 @@ export function proseLast(body) {
   return false;
 }
 
-// 不算「最後做」要考慮的新單的 label：retro 候選與母單本身不會被實作（#228）。
+// 不算「最後做」要考慮的新單的 label：retro 候選與母單本身不會被實作（#228）；adapter 以 --skip-labels 再加（#326）。
 const NOT_NEW_LABELS = ['retro-candidates', 'parent'];
 const hasLabel = (issue, names) => issue.labels.nodes.some(({ name }) => names.includes(name));
 
@@ -341,7 +343,8 @@ const hasLabel = (issue, names) => issue.labels.nodes.some(({ name }) => names.i
  * blocked_by 空時以自己的 createdAt 為基準）
  * 依號碼印 `DEPS_PROSE <n> last new #<m> [#<k>…]`，沒有就印 `DEPS_PROSE <n> last ok`（#228：判斷過之後又開的新單沒人發現）。
  */
-export function depsProse(issues, repo) {
+export function depsProse(issues, repo, skipLabels = []) {
+  const notNew = [...NOT_NEW_LABELS, ...skipLabels];
   const waitsOn = (other, n) => other.blockedBy.nodes.some(({ number, repository }) => number === n && repository.nameWithOwner === repo);
   const open = new Set(issues.map(({ number }) => number));
   const out = [];
@@ -353,7 +356,7 @@ export function depsProse(issues, repo) {
     if (!proseLast(issue.body)) continue;
     const since = Math.max(...(sameRepo.length ? sameRepo : [issue]).map(({ createdAt }) => Date.parse(createdAt)));
     const fresh = issues
-      .filter(other => other.number !== issue.number && !blocked.has(other.number) && !hasLabel(other, NOT_NEW_LABELS) && !waitsOn(other, issue.number) && Date.parse(other.createdAt) > since)
+      .filter(other => other.number !== issue.number && !blocked.has(other.number) && !hasLabel(other, notNew) && !waitsOn(other, issue.number) && Date.parse(other.createdAt) > since)
       .map(({ number }) => number)
       .sort((a, b) => a - b);
     out.push(`DEPS_PROSE ${issue.number} last ${fresh.length ? `new ${fresh.map(m => `#${m}`).join(' ')}` : 'ok'}`);
@@ -420,8 +423,8 @@ function applyParentFixes(checkout, fixes) {
  * 池子摘要（#240）：ready 桶裡不在 `batched`（開著的 batch checkpoint 的成員）的 Issue，照 issue-pool 的排序印 `POOL_READY <n>...`；
  * 一張都沒有時印 needs-triage 桶的 `POOL_TRIAGE <n>...`（#357），也沒有才 `POOL_EMPTY`。分桶與排序只用 issue-pool.mjs 的 pool()，不另寫一份。
  */
-export function poolLine(issues, repo, batched = new Set()) {
-  const rows = pool(issues, { repo }).filter(({ issue }) => !batched.has(String(issue.number)));
+export function poolLine(issues, repo, batched = new Set(), skipLabels = []) {
+  const rows = pool(issues, { repo, skipLabels }).filter(({ issue }) => !batched.has(String(issue.number)));
   const bucket = name => rows.filter(row => row.bucket === name).map(({ issue }) => issue.number);
   const [ready, triage] = [bucket('ready'), bucket('needs-triage')];
   if (ready.length) return `POOL_READY ${ready.join(' ')}`;
@@ -432,9 +435,9 @@ export function poolLine(issues, repo, batched = new Set()) {
  * 派工前的裸對應單（#304）：ready 桶或 `batched`（開著的 batch checkpoint 的成員）裡的 Issue，本文的 github.com 對應單命中 adapter 宣告的
  * 對應專案（`projects`，pilot-counterpart.mjs 的 declaredProjects）時印 `COUNTERPART_BARE <n> <ref>`，依號碼；`projects` 空的時候不印。
  */
-export function counterpartLines(issues, repo, batched = new Set(), projects = new Set()) {
+export function counterpartLines(issues, repo, batched = new Set(), projects = new Set(), skipLabels = []) {
   if (!projects.size) return [];
-  const ready = new Set(pool(issues, { repo }).filter(({ bucket }) => bucket === 'ready').map(({ issue }) => issue.number));
+  const ready = new Set(pool(issues, { repo, skipLabels }).filter(({ bucket }) => bucket === 'ready').map(({ issue }) => issue.number));
   return issues.filter(issue => ready.has(issue.number) || batched.has(String(issue.number)))
     .sort((a, b) => a.number - b.number)
     .flatMap(issue => counterparts(issue.body, projects).filter(({ bare }) => bare).map(({ ref }) => `COUNTERPART_BARE ${issue.number} ${ref}`));
@@ -467,8 +470,8 @@ export function humanLandedLines(issues, repo, landed) {
  * blocker 已落地、範圍卻還開著（#359，#338 第 2 項）：issue-pool 的 blockerOpenScope 每一筆印 `BLOCKER_OPEN_SCOPE <n> #<m> <label>`，
  * 依號碼、blocker 順序；`landed` 是 landedOn 的結果，沒給時不印。
  */
-export function blockerOpenScopeLines(issues, repo, landed) {
-  return blockerOpenScope(issues, { repo, landed }).map(({ n, m, label }) => `BLOCKER_OPEN_SCOPE ${n} #${m} ${label}`);
+export function blockerOpenScopeLines(issues, repo, landed, skipLabels = []) {
+  return blockerOpenScope(issues, { repo, landed, skipLabels }).map(({ n, m, label }) => `BLOCKER_OPEN_SCOPE ${n} #${m} ${label}`);
 }
 
 /** 整合分支的 commit（新的先，每個是 [sha, 主旨]），給 landedOn；分支不存在時 undefined。 */
@@ -485,7 +488,7 @@ function integrationLanded(checkout, integration) {
  * 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE、COUNTERPART_BARE、HUMAN_NO_GATE、HUMAN_LANDED、PARENT_* 與池子摘要行（同一次查詢），以及 PARENT_* 對應的 tracker 寫入（不在這裡寫）；
  * `gates` 是 gates.md 開著的 gate（openGates），`landed` 是整合分支的 landedOn（沒有時不印 HUMAN_LANDED）。gh 失敗時只有 DEPS_PROSE_FAILED 與 POOL_FAILED 兩行，不中斷其他檢查。
  */
-export function trackerLines(checkout, batched = new Set(), projects = new Set(), gates = [], landed) {
+export function trackerLines(checkout, batched = new Set(), projects = new Set(), gates = [], landed, skipLabels = []) {
   try {
     const repo = gh(checkout, 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim();
     const [owner, name] = repo.split('/');
@@ -496,7 +499,7 @@ export function trackerLines(checkout, batched = new Set(), projects = new Set()
       ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
     }
     const { lines, fixes } = parentFixes(issues, repo);
-    return { lines: [...depsProse(issues, repo), ...counterpartLines(issues, repo, batched, projects), ...humanNoGateLines(issues, repo, gates), ...humanLandedLines(issues, repo, landed), ...blockerOpenScopeLines(issues, repo, landed), ...lines, poolLine(issues, repo, batched)], fixes, issues };
+    return { lines: [...depsProse(issues, repo, skipLabels), ...counterpartLines(issues, repo, batched, projects, skipLabels), ...humanNoGateLines(issues, repo, gates), ...humanLandedLines(issues, repo, landed), ...blockerOpenScopeLines(issues, repo, landed, skipLabels), ...lines, poolLine(issues, repo, batched, skipLabels)], fixes, issues };
   } catch (error) {
     return { lines: [`DEPS_PROSE_FAILED ${error.message}`, `POOL_FAILED ${error.message}`], fixes: [], issues: [] };
   }
@@ -844,7 +847,7 @@ export async function workerTail(ctx, handle, lines = 40) {
   return (terminal?.tail ?? []).slice(-lines);
 }
 
-export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false, capacity } = {}) {
+export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false, capacity, skipLabels = [] } = {}) {
   const pilot = join(checkout, '.scratch/pilot');
   // 開著的 batch checkpoint 的成員：Pool 不再挑它們，池子摘要也略過。
   const batched = new Set(batchFiles(pilot).map(file => parseBatch(readFileSync(join(pilot, file), 'utf8')))
@@ -853,7 +856,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   const projects = declaredProjects(show(checkout, `refs/heads/${main}`, ADAPTER));
   const gates = openGates(readStore(pilot, 'gates.md'));
   const held = heldIssues(gates);
-  const tracker = trackerLines(checkout, batched, projects, gates, integrationLanded(checkout, integration));
+  const tracker = trackerLines(checkout, batched, projects, gates, integrationLanded(checkout, integration), skipLabels);
   const ahead = adapterAhead(checkout, { integration, main });
   const out = [...checkoutState(checkout, main), ...ahead, ...scriptsAhead(checkout, ahead, { integration, main }), ...hookBehind(checkout, { integration, main }), ...openRows(pilot), ...tracker.lines];
   if (apply) out.push(...applyParentFixes(checkout, tracker.fixes));
@@ -945,12 +948,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       options[flag] = true;
       continue;
     }
-    const name = { '--integration': 'integration', '--main': 'main', '--capacity': 'capacity' }[args[i]];
+    const name = { '--integration': 'integration', '--main': 'main', '--capacity': 'capacity', '--skip-labels': 'skipLabels' }[args[i]];
     const value = args[++i];
     if (!name || !value || value.startsWith('--') || name in options) bad = true;
     else options[name] = value;
   }
   const [checkout] = positional;
+  if ('skipLabels' in options) options.skipLabels = options.skipLabels.split(',').filter(Boolean);
   if (bad || positional.length !== 1 || ('capacity' in options && (!validRepo(options.capacity) || machineCap() === undefined))) {
     console.error(USAGE);
     process.exit(2);
