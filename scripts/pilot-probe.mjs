@@ -51,6 +51,9 @@
 //               coordinator 開 gate 問人；摘要是本文 `… prerequisite：` 那行冒號之後的文字，沒有這行時是標題；依號碼，gh 失敗時不印）｜
 //               HUMAN_LANDED <n> <sha>（#358：同一個桶裡，整合分支已有它的落地 commit（issue-pool 的 landedOn）的單；依號碼，在 HUMAN_NO_GATE 之後；
 //               沒有整合分支或 gh 失敗時不印）
+//   blocker 範圍（#359）：BLOCKER_OPEN_SCOPE <n> #<m> <label>（blocked 桶的 #n，本 repo 開著的 blocker #m 已落地在整合分支（landedOn）、掛 ready-for-agent、
+//               needs-triage 或 ready-for-human，而且 #m 不在 landed 桶（沒指派）或本文最後編輯晚於最後一次指派：#n 不算可派，`(landed …)` 只代表 #m 的舊範圍做完；
+//               判斷是 issue-pool 的 blockerOpenScope，與 blocked 行同一份 blocker 資料；依 #n、blocker 順序，在 HUMAN_LANDED 之後；沒有整合分支或 gh 失敗時不印）
 //   母單（#164）：PARENT_LABEL <n>（開著、或已關閉卻有開著子單的母單，沒有 `parent` label 或還掛 triage label）｜
 //               PARENT_REOPEN <n>（開著的子單的母單 #n 在同一個 repo、已關閉）；各依號碼、每張一次
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
@@ -61,6 +64,8 @@
 //          不是 done 的成員裡有 batch key 那張時（pilot-batch move 會 STOP same-batch，#357）改印 MOVE <key> <done 的成員…>；
 //          開著的 batch 裡 stop 的成員（這一輪剛讀到 STOP 的也算）的 Issue 有 blocked_by、而且每張都已關閉時印 UNBLOCKED <key> <n>
 //          （#357；gh 失敗或成員的 Issue 已關閉時不印）；
+//          開著的 batch 裡 done 的成員（這一輪剛讀到 DONE 的也算）的 Issue 本文最後編輯（lastEditedAt）晚於列的 started 時印 SCOPE_CHANGED <key> <n> <edited at>
+//          （#359：worker 交付的可能是開工前的範圍，Stage 前讀改了什麼；時間照 tracker 原樣，依成員列順序，在 UNBLOCKED 之後；gh 失敗、started 解析不了時不印）；
 //          沒有 done 印 PARKED <key> <n…>（#163：只剩 stop 的 batch 照跑 pilot-land 只得到 STOP member）；
 //          current 是 `staged <sha>` 的 batch，最後一行 regression 不是這個 staged SHA 的 exit 0 時印 RESTAGE <key> regression-failed <code 或 none>
 //          （#191：Regression 沒過、batch 停在 staged，probe 卻什麼都不印；none 是沒有 regression 行、SHA 是先前那次 stage 的，或 SHA 後面沒緊接 exit <code>）；
@@ -88,11 +93,11 @@ import { changedUnits } from './lib/changed-units.mjs';
 import { gateLines, isOpenRequest, now, openGates, parksAllPush, tableCells } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 import { envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
-import { POOL_FIELDS, landedOn, pool, prerequisiteOf } from './issue-pool.mjs';
+import { POOL_FIELDS, blockerOpenScope, landedOn, pool, prerequisiteOf } from './issue-pool.mjs';
 import { counterparts, declaredProjects } from './pilot-counterpart.mjs';
 
 // 池子摘要要的欄位取 issue-pool 的 POOL_FIELDS（#240）；同名的 blockedBy 在 GraphQL 裡合併成一份選取。
-const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
+const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt lastEditedAt blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
 const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>]｜node scripts/pilot-probe.mjs --tail <handle> [--lines <n>]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const TRACKER = join(dirname(fileURLToPath(import.meta.url)), 'gh-tracker.mjs');
@@ -456,6 +461,14 @@ export function humanLandedLines(issues, repo, landed) {
     .map(n => `HUMAN_LANDED ${n} ${landed(n)}`);
 }
 
+/**
+ * blocker 已落地、範圍卻還開著（#359，#338 第 2 項）：issue-pool 的 blockerOpenScope 每一筆印 `BLOCKER_OPEN_SCOPE <n> #<m> <label>`，
+ * 依號碼、blocker 順序；`landed` 是 landedOn 的結果，沒給時不印。
+ */
+export function blockerOpenScopeLines(issues, repo, landed) {
+  return blockerOpenScope(issues, { repo, landed }).map(({ n, m, label }) => `BLOCKER_OPEN_SCOPE ${n} #${m} ${label}`);
+}
+
 /** 整合分支的 commit（新的先，每個是 [sha, 主旨]），給 landedOn；分支不存在時 undefined。 */
 function integrationLanded(checkout, integration) {
   if (!rev(checkout, `refs/heads/${integration}`)) return undefined;
@@ -481,7 +494,7 @@ export function trackerLines(checkout, batched = new Set(), projects = new Set()
       ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
     }
     const { lines, fixes } = parentFixes(issues, repo);
-    return { lines: [...depsProse(issues, repo), ...counterpartLines(issues, repo, batched, projects), ...humanNoGateLines(issues, repo, gates), ...humanLandedLines(issues, repo, landed), ...lines, poolLine(issues, repo, batched)], fixes, issues };
+    return { lines: [...depsProse(issues, repo), ...counterpartLines(issues, repo, batched, projects), ...humanNoGateLines(issues, repo, gates), ...humanLandedLines(issues, repo, landed), ...blockerOpenScopeLines(issues, repo, landed), ...lines, poolLine(issues, repo, batched)], fixes, issues };
   } catch (error) {
     return { lines: [`DEPS_PROSE_FAILED ${error.message}`, `POOL_FAILED ${error.message}`], fixes: [], issues: [] };
   }
@@ -634,6 +647,19 @@ export function unblockedLines(key, active, results, issues) {
       return blockers.length && blockers.every(({ state }) => state === 'CLOSED');
     })
     .map(m => `UNBLOCKED ${key} ${m.n}`);
+}
+
+/**
+ * 開工後改了範圍（#359，#338 第 3 項）：開著的 batch 裡 done 的成員（這一輪剛讀到 DONE 的也算），它的 Issue 本文最後編輯時間（GitHub 的 lastEditedAt）
+ * 晚於成員列的 started 時印 `SCOPE_CHANGED <key> <n> <edited at>`（時間照 tracker 原樣），依成員列的順序：worker 交付的可能是舊範圍，Stage 前要讀改了什麼。
+ * started 解析不了、沒編輯過、gh 失敗（`issues` 空）時不印。
+ */
+export function scopeChangedLines(key, active, results, issues) {
+  const byNumber = new Map(issues.map(issue => [String(issue.number), issue]));
+  return active.filter(m => stateNow(m, results) === 'done')
+    .map(m => ({ n: m.n, started: Date.parse(m.started), edited: byNumber.get(m.n)?.lastEditedAt }))
+    .filter(({ started, edited }) => edited && !Number.isNaN(started) && Date.parse(edited) > started)
+    .map(({ n, edited }) => `SCOPE_CHANGED ${key} ${n} ${edited}`);
 }
 
 /**
@@ -844,7 +870,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     }
     if (apply && results.length) out.push(...applyResults(join(pilot, file), key, results));
     if (/^dispatched\b/.test(current)) out.push(...stageLines(key, active, results));
-    if (!/^closed\b/.test(current)) out.push(...unblockedLines(key, active, results, tracker.issues));
+    if (!/^closed\b/.test(current)) out.push(...unblockedLines(key, active, results, tracker.issues), ...scopeChangedLines(key, active, results, tracker.issues));
     out.push(...restageLines(key, current, regression, regressionExit));
     if (/^(merged|pushed)\b/.test(current)) landing.push({ key, sha, regression, regressionExit, merged: /^merged\b/.test(current) });
   }
