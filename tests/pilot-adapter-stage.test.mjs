@@ -76,7 +76,7 @@ test('Stage、Regression、Integrate 改成呼叫 pilot-land.mjs，不再列手�
     assert.doesNotMatch(line(name), /git -C <stage worktree> merge|`sed /, `**${name}.** 不再列手打的指令`);
   }
   for (const out of ['MERGED <key> <sha>', 'STOP regression <exit>', 'STOP hold', 'STOP drift', 'STOP conflict <n>']) {
-    assert.ok(pilot.includes(`\`${out}`), `pilot.md 要寫出 ${out}`);
+    assert.ok(pilotDocs.some(({ text }) => text.includes(`\`${out}`)), `pilot 各檔要寫出 ${out}`);
   }
 });
 

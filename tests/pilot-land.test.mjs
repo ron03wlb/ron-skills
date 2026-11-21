@@ -28,7 +28,7 @@ exit "$code"
 // 本機環境設的 PILOT_LOAD_MAX（~/.claude/settings.json 的 env 等）不能帶進來，否則 fallback 案例測的不是 3 × 核心數。
 const landEnv = Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'PILOT_LOAD_MAX'));
 
-// ron-skills 的 Stage 與 Push gate 指令帶的專案值（docs/agents/pilot.md 的 Stage、pilot-after-merge.md 的 Push gate，#245）。
+// ron-skills 的 Stage 與 Push gate 指令帶的專案值（docs/agents/pilot-round.md 的 Stage、pilot-after-merge.md 的 Push gate，#245）。
 const PROJECT = ['--check-command', 'bin/check --upstream', '--resolver', 'scripts/pilot-resolve.mjs'];
 
 const ROW = (n, slug, state, temp) => `| ${n} | issue/${n}-${slug} | ${temp}/issue-${n} | term_${n} | 2026-10-31T07:00:00+08:00 | 90m | ${state} | ${state === 'done' ? 'abc1234' : ''} |`;

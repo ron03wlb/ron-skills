@@ -95,3 +95,16 @@ test('#281：L3 的 pilot.md 從 PILOT-TEMPLATE.md 複製填值，範本的每�
   }
   assert.match(read('skills/engineering/issue-run/ADAPTER.md'), /\[PILOT-TEMPLATE\.md\]\(PILOT-TEMPLATE\.md\)/);
 });
+
+// #344：填好的 pilot.md 是 14000 bytes 的必讀核心；骨架本文本身就要在預算內留 2 KB 給填值與專案條目，最長的步驟條目在 PILOT-ROUND-TEMPLATE.md。
+test('#344：PILOT-TEMPLATE 本文在核心預算內留 2 KB，搬出的條目在 PILOT-ROUND-TEMPLATE 有整條、在 PILOT-TEMPLATE 留 pointer', () => {
+  const [comment, body] = read('skills/engineering/issue-run/PILOT-TEMPLATE.md').split('-->');
+  assert.ok(Buffer.byteLength(body) <= 14000 - 2000, `PILOT-TEMPLATE 本文 ${Buffer.byteLength(body)} bytes`);
+  const round = read('skills/engineering/issue-run/PILOT-ROUND-TEMPLATE.md').split('-->')[1];
+  for (const name of new Set([...round.matchAll(/\{\{([^}]+)\}\}/g)].map(match => match[1]))) assert.ok(comment.includes(`{{${name}}}`), `PILOT-TEMPLATE 註解沒說明 {{${name}}}`);
+  for (const entry of ['Pool', 'Dispatch', 'Probe']) {
+    assert.match(round, new RegExp(`^- \\*\\*${entry}\\.\\*\\* (?!See )`, 'm'), `PILOT-ROUND-TEMPLATE 缺 ${entry} 整條`);
+    assert.match(body, new RegExp(`^- \\*\\*${entry}\\.\\*\\* See \`docs/agents/pilot-round\\.md\`.*adapter-line\\.mjs '${entry}'`, 'm'), `PILOT-TEMPLATE 的 ${entry} pointer`);
+  }
+  assert.match(read('skills/engineering/issue-run/ADAPTER.md'), /\[PILOT-ROUND-TEMPLATE\.md\]\(PILOT-ROUND-TEMPLATE\.md\)/);
+});
