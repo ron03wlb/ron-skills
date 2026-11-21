@@ -42,7 +42,7 @@
 
 - **Dispatch steps.** 見 [pilot-exceptions.md](pilot-exceptions.md)：要查 `pilot-dispatch.mjs` 對每個成員依序做什麼（認領檢查、建 worktree、Bare guard、開分頁、送出 `/issue-run <n> --worker <主 checkout>/.scratch/pilot/batch-<key>.md`）與 `STOP <n> not-claimed`、`worktree-branch` 的成因時讀。
 
-- **Dispatch stops.** 見 [pilot-exceptions.md](pilot-exceptions.md)：`pilot-dispatch.mjs` 印成員的 `STOP <n> …`，或 `STOP capacity` 後 stderr 印 `WARN release` 時讀。
+- **Dispatch stops.** 見 [pilot-exceptions.md](pilot-exceptions.md)：`pilot-dispatch.mjs` 印成員的 `STOP <n> …`、`STOP orca-unavailable`，或 `STOP capacity` 後 stderr 印 `WARN release` 時讀。
 
 - **Fresh redispatch.** 見 [pilot-conflict.md](pilot-conflict.md)：Stage 判定同一條目衝突、Probe 印 `WORKER <n> STOP findings after two review cycles`、Probe 印 `UNBLOCKED <key> <n>` 而那個成員是停下等 blocker，或 Regression 失敗只歸因於某個成員時讀。
 
