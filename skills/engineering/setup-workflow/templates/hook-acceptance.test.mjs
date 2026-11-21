@@ -109,12 +109,36 @@ test('案例的 env 併入 hook 的環境變數：依環境啟用的 hook（例�
   assert.throws(() => loadCases(file, dir), /env/);
 });
 
+test('不帶 tool 的事件（UserPromptSubmit、Stop）：stdin 欄位併入 stdin JSON 頂層，<project> 換成 project dir；輸出行的工具欄印 -', t => {
+  const dir = temp(t);
+  mkdirSync(join(dir, '.claude'));
+  // 讀頂層 prompt 的 hook（UserPromptSubmit）與讀 transcript_path 的 hook（Stop）
+  writeFileSync(join(dir, 'prompt.mjs'), "let s = ''; process.stdin.on('data', d => { s += d; }).on('end', () => process.exit(JSON.parse(s).prompt === 'stop' ? 2 : 0));\n");
+  writeFileSync(join(dir, 'stop.mjs'), "import { readFileSync } from 'node:fs';\nlet s = ''; process.stdin.on('data', d => { s += d; }).on('end', () => process.exit(readFileSync(JSON.parse(s).transcript_path, 'utf8').includes('english') ? 2 : 0));\n");
+  writeFileSync(join(dir, 'transcript.jsonl'), 'english\n');
+  writeFileSync(join(dir, '.claude/settings.json'), JSON.stringify({ hooks: {
+    UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/prompt.mjs"' }] }],
+    Stop: [{ hooks: [{ type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/stop.mjs"' }] }],
+  } }));
+  const cases = join(dir, 'cases.json');
+  writeFileSync(cases, JSON.stringify([
+    { event: 'UserPromptSubmit', stdin: { prompt: 'stop' }, expected: 2, label: 'prompt 擋下' },
+    { event: 'UserPromptSubmit', stdin: { prompt: 'go' }, expected: 0, label: 'prompt 放行' },
+    { event: 'Stop', stdin: { transcript_path: '<project>/transcript.jsonl', stop_hook_active: false }, expected: 2, label: 'transcript 擋下' },
+  ]));
+  const result = cli(dir, ['--project-dir', dir, '--cases', cases]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout, 'PASS UserPromptSubmit - expected=2 actual=2 prompt 擋下\nPASS UserPromptSubmit - expected=0 actual=0 prompt 放行\nPASS Stop - expected=2 actual=2 transcript 擋下\nHOOK_ACCEPTANCE PASS 3\n');
+  assert.deepEqual(loadCases(cases, '/m', dir)[2].stdin, { transcript_path: `${dir}/transcript.jsonl`, stop_hook_active: false });
+});
+
 test('loadCases：不是陣列、缺欄位、expected 不是整數都丟錯；<main> 只換字串值', t => {
   const dir = temp(t);
   const write = value => { const file = join(dir, 'c.json'); writeFileSync(file, JSON.stringify(value)); return file; };
   assert.throws(() => loadCases(write({}), dir), /陣列/);
   assert.throws(() => loadCases(write([{ event: 'PreToolUse', tool: 'Bash', input: {}, label: 'x' }]), dir), /expected/);
-  assert.throws(() => loadCases(write([{ event: 'PreToolUse', input: {}, expected: 0, label: 'x' }]), dir), /tool/);
+  assert.throws(() => loadCases(write([{ event: 'PreToolUse', input: {}, expected: 0, label: 'x' }]), dir), /input 要和 tool 一起給/);
+  assert.throws(() => loadCases(write([{ event: 'Stop', stdin: 'x', expected: 0, label: 'x' }]), dir), /stdin/);
   const [item] = loadCases(write([{ event: 'PreToolUse', tool: 'Read', input: { file_path: '<main>/a', limit: 3 }, expected: 0, label: 'x' }]), '/m');
   assert.deepEqual(item.input, { file_path: '/m/a', limit: 3 });
 });

@@ -102,8 +102,8 @@
     },
     "scripts/hook-acceptance.mjs": {
       "template": "skills/engineering/setup-workflow/templates/hook-acceptance.mjs",
-      "commit": "1225a56f5284fffb915e0ef06c378e52ccbf7ca7",
-      "sha256": "a9be10b6d703380107bc0d7850faf9fabdd098c2ba8ab8daf9675d3cbadbfe99"
+      "commit": "bd1c6bf3c3f4026d52b9c6e370fb4115188131ad",
+      "sha256": "a98710c52a337db819c509affe913328951e4d61ab04e09025d86b98bec338a8"
     },
     "scripts/issue-pool.mjs": {
       "template": "skills/engineering/setup-workflow/templates/issue-pool.mjs",

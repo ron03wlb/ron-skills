@@ -1,8 +1,13 @@
 [
-  { "event": "PreToolUse", "tool": "Bash", "input": { "command": "git status --short" }, "expected": 0, "label": "一般指令放行" },
+  { "event": "PreToolUse", "tool": "Bash", "input": { "command": "git status --short" }, "expected": 0, "label": "unbare、zsh-equals、main-checkout：一般指令放行（主 checkout 不是 bare 時 unbare 不印也不擋）" },
   { "event": "PreToolUse", "tool": "Bash", "input": { "command": "echo === && git status" }, "expected": 2, "label": "zsh-equals：以 = 開頭的字（#203）", "env": { "SHELL": "/bin/zsh" } },
   { "event": "PreToolUse", "tool": "Bash", "input": { "command": "echo '===' && git status" }, "expected": 0, "label": "zsh-equals：加引號放行", "env": { "SHELL": "/bin/zsh" } },
   { "event": "PreToolUse", "tool": "Edit", "input": { "file_path": "<main>/CLAUDE.md", "old_string": "a", "new_string": "b" }, "expected": 2, "label": "main-checkout：主 checkout 的追蹤檔不可 Edit（#30）" },
   { "event": "PreToolUse", "tool": "Write", "input": { "file_path": "<main>/.scratch/hook-acceptance.md", "content": "x" }, "expected": 0, "label": "main-checkout：gitignored 的 .scratch 放行" },
-  { "event": "PreToolUse", "tool": "Bash", "input": { "command": "sed -i s/a/b/ <main>/CLAUDE.md" }, "expected": 2, "label": "main-checkout：Bash 的 sed -i 寫主 checkout" }
+  { "event": "PreToolUse", "tool": "Bash", "input": { "command": "sed -i s/a/b/ <main>/CLAUDE.md" }, "expected": 2, "label": "main-checkout：Bash 的 sed -i 寫主 checkout" },
+  { "event": "UserPromptSubmit", "stdin": { "prompt": " !git status" }, "expected": 0, "label": "bang-space：開頭有空白的 ! 只補提示、不擋訊息（#346）" },
+  { "event": "Stop", "stdin": { "transcript_path": "<project>/tests/fixtures/hook-acceptance/english-reply.jsonl", "stop_hook_active": false }, "expected": 2, "label": "language、tab-state：Stop 時英文回覆要求改繁中", "env": { "ORCA_TERMINAL_HANDLE": "" } },
+  { "event": "Stop", "stdin": { "transcript_path": "<project>/tests/fixtures/hook-acceptance/chinese-reply.jsonl", "stop_hook_active": false }, "expected": 0, "label": "language、tab-state：Stop 時繁中回覆放行（沒有 Orca 分頁時 tab-state 不動作）", "env": { "ORCA_TERMINAL_HANDLE": "" } },
+  { "event": "PostToolUse", "tool": "Bash", "input": { "command": "git status" }, "stdin": { "transcript_path": "<project>/tests/fixtures/hook-acceptance/english-progress.jsonl", "tool_use_id": "toolu_hook_acceptance_en", "tool_response": { "stdout": "" } }, "expected": 2, "label": "language：PostToolUse 時工具前的英文段要求改繁中", "env": { "ORCA_TERMINAL_HANDLE": "" } },
+  { "event": "PostToolUseFailure", "tool": "Bash", "input": { "command": "false" }, "stdin": { "transcript_path": "<project>/tests/fixtures/hook-acceptance/chinese-progress.jsonl", "tool_use_id": "toolu_hook_acceptance_zh" }, "expected": 0, "label": "language：PostToolUseFailure 時繁中段放行" }
 ]
