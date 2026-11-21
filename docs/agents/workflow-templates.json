@@ -67,8 +67,8 @@
     },
     "scripts/gh-tracker.mjs": {
       "template": "skills/engineering/setup-workflow/templates/gh-tracker.mjs",
-      "commit": "3d32688b8c25c972e3fc7e1daa6faa57bac3baed",
-      "sha256": "ac307038b74a94a88b279ec492885b94c968bc2e10c67bbcd84859a2b7aa51ca"
+      "commit": "ed0899439ef3b7443a91307ceb8dcd09c53cffcc",
+      "sha256": "a7c0721df2c12dd6d1599f0f26d42db0131beb74e32527fb96c9f17a8f5b3524"
     },
     "scripts/issue-pool.mjs": {
       "template": "skills/engineering/setup-workflow/templates/issue-pool.mjs",
@@ -92,7 +92,7 @@
     },
     "scripts/lib/hosts.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/hosts.mjs",
-      "commit": "d003ad1367c5528cc76dda2ba001472485a4bbce",
+      "commit": "ed0899439ef3b7443a91307ceb8dcd09c53cffcc",
       "sha256": "27903739d0a621c91f571544ec51cd07b96e94484697a6a38f18b4b99864791b"
     },
     "scripts/lib/pilot-store.mjs": {

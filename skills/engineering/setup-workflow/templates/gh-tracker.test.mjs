@@ -22,12 +22,14 @@ Code host https://github.com/other/elsewhere (not the tracker).
 /**
  * 在暫存 repo 的 scripts/ 放正本副本與 lib/hosts.mjs，docs/agents/issue-run.md 寫 adapter（null 時不寫），PATH 上放假 gh：
  * 每次呼叫記一行 JSON argv；`api --hostname <h> repos/<o>/<r>/issues/<n> --jq .id` 回 9000+n（Issue 的 database id），#404 失敗；
- * `api … --method …` 回一大段 issue JSON（同真的 REST 回應，ron-skills #140）。
+ * `api … --method …` 回一大段 issue JSON（同真的 REST 回應，ron-skills #140）；`issue create` 依序回 #500、#501…的網址（計數存在 temp），
+ * 其他 `issue …` 回該 Issue 的網址；參數串含 `fail` 時 exit 4。`temp` 可沿用上一次的暫存 repo（續跑），`files` 先寫進暫存 repo 根目錄。
  */
-function run(t, args, { adapter = ADAPTER('https://github.com/acme/app'), cwd } = {}) {
-  const temp = mkdtempSync(join(realTmpdir(), 'gh-tracker-'));
+function run(t, args, { adapter = ADAPTER('https://github.com/acme/app'), cwd, temp = mkdtempSync(join(realTmpdir(), 'gh-tracker-')), files = {}, fail } = {}) {
   t.after(() => rmSync(temp, { recursive: true, force: true }));
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(temp, name), typeof content === 'string' ? content : JSON.stringify(content));
   mkdirSync(join(temp, 'scripts', 'lib'), { recursive: true });
+  rmSync(join(temp, 'calls.jsonl'), { force: true });
   copyFileSync(template('gh-tracker.mjs'), join(temp, 'scripts', 'gh-tracker.mjs'));
   copyFileSync(template('lib/hosts.mjs'), join(temp, 'scripts', 'lib', 'hosts.mjs'));
   if (adapter !== null) {
@@ -35,12 +37,21 @@ function run(t, args, { adapter = ADAPTER('https://github.com/acme/app'), cwd } 
     writeFileSync(join(temp, 'docs', 'agents', 'issue-run.md'), adapter);
   }
   const bin = join(temp, 'bin');
-  mkdirSync(bin);
+  mkdirSync(bin, { recursive: true });
   const log = join(temp, 'calls.jsonl');
   writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
 const args = process.argv.slice(2);
 require('fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
 if (process.env.GH_HOST || process.env.GH_REPO) require('fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(['ENV', process.env.GH_HOST, process.env.GH_REPO]) + '\\n');
+const fail = process.env.FAKE_GH_FAIL;
+if (fail && args.join(' ').includes(fail)) { console.error('fake gh: fail'); process.exit(4); }
+if (args[0] === 'issue' && args[1] === 'create') {
+  const file = ${JSON.stringify(join(temp, 'created'))};
+  const n = (require('fs').existsSync(file) ? Number(require('fs').readFileSync(file, 'utf8')) : 499) + 1;
+  require('fs').writeFileSync(file, String(n));
+  console.log('Creating issue in acme/app\\n\\nhttps://github.com/acme/app/issues/' + n);
+}
+if (args[0] === 'issue' && args[1] !== 'create') console.log('https://github.com/acme/app/issues/' + args[2]);
 const id = args.join(' ').match(/^api --hostname [^ ]+ repos\\/[^ ]+\\/issues\\/(\\d+) --jq \\.id$/);
 if (id && id[1] === '404') process.exit(1);
 if (id) console.log(9000 + Number(id[1]));
@@ -49,7 +60,7 @@ if (args.includes('--method')) console.log(JSON.stringify({ number: 1, user: { l
   chmodSync(join(bin, 'gh'), 0o755);
   const result = spawnSync('node', ['scripts/gh-tracker.mjs', ...args], {
     cwd: cwd ?? temp, encoding: 'utf8',
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, GH_REPO: 'other/repo', GH_HOST: 'other.example' },
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, GH_REPO: 'other/repo', GH_HOST: 'other.example', FAKE_GH_FAIL: fail ?? '' },
   });
   let calls = [];
   try { calls = readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line)); } catch {}
@@ -172,4 +183,98 @@ test('沒有子命令或子命令不認得：stderr 印用法、exit 2、不呼�
     assert.match(result.stderr, /blocked-by add\|remove <n> <blocker>\.\.\./);
     assert.deepEqual(result.calls, []);
   }
+});
+
+const lookup = n => ['api', '--hostname', 'github.com', `repos/acme/app/issues/${n}`, '--jq', '.id'];
+const BATCH = [
+  { op: 'create', code: 'spec', title: 'Spec', bodyFile: 'spec.md', labels: ['parent'] },
+  { op: 'create', code: 'a', title: 'A', body: 'part a', parent: 'spec', labels: ['ready-for-agent'] },
+  { op: 'create', code: 'b', title: 'B', body: 'part b', parent: 'spec', blockedBy: ['a', '#350'] },
+  { op: 'comment', issue: '#383', body: '拆成 a、b' },
+  { op: 'edit', issue: 'b', addLabels: ['needs-info'], blockedBy: ['#12'] },
+  { op: 'close', issue: '#383', reason: 'completed', comment: '見子單' },
+];
+
+test('batch：依序執行，同批 code 換成單號，設好 parent 與 blocked-by，每步一行結果', t => {
+  const result = run(t, ['batch', 'tickets.json'], { files: { 'tickets.json': BATCH, 'spec.md': 'spec body' } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, [
+    'CREATED spec 500', 'CREATED a 501', 'SUB_ISSUE add 500 501', 'CREATED b 502', 'SUB_ISSUE add 500 502',
+    'BLOCKED_BY add 502 501', 'BLOCKED_BY add 502 350', 'COMMENTED 383', 'EDITED 502', 'BLOCKED_BY add 502 12', 'CLOSED 383', 'BATCH_DONE 6',
+  ].join('\n') + '\n');
+  const repo = ['--repo', 'github.com/acme/app'];
+  assert.deepEqual(result.calls, [
+    ['issue', 'create', `--title=Spec`, `--body-file=${join(result.temp, 'spec.md')}`, '--label=parent', ...repo],
+    ['issue', 'create', '--title=A', '--body=part a', '--label=ready-for-agent', ...repo],
+    lookup(501), ['api', '--hostname', 'github.com', '--method', 'POST', 'repos/acme/app/issues/500/sub_issues', '-F', 'sub_issue_id=9501'],
+    ['issue', 'create', '--title=B', '--body=part b', ...repo],
+    lookup(502), ['api', '--hostname', 'github.com', '--method', 'POST', 'repos/acme/app/issues/500/sub_issues', '-F', 'sub_issue_id=9502'],
+    lookup(501), ['api', '--hostname', 'github.com', '--method', 'POST', 'repos/acme/app/issues/502/dependencies/blocked_by', '-F', 'issue_id=9501'],
+    lookup(350), ['api', '--hostname', 'github.com', '--method', 'POST', 'repos/acme/app/issues/502/dependencies/blocked_by', '-F', 'issue_id=9350'],
+    ['issue', 'comment', '383', '--body=拆成 a、b', ...repo],
+    ['issue', 'edit', '502', '--add-label=needs-info', ...repo],
+    lookup(12), ['api', '--hostname', 'github.com', '--method', 'POST', 'repos/acme/app/issues/502/dependencies/blocked_by', '-F', 'issue_id=9012'],
+    ['issue', 'close', '383', '--comment=見子單', '--reason=completed', ...repo],
+  ]);
+});
+
+test('batch：中途失敗就停、以 gh 的 exit code 結束；重跑只做剩下的步驟', t => {
+  const files = { 'tickets.json': BATCH, 'spec.md': 'spec body' };
+  const first = run(t, ['batch', 'tickets.json'], { files, fail: 'issues/502/dependencies/blocked_by -F issue_id=9350' });
+  assert.equal(first.status, 4);
+  assert.equal(first.stdout, ['CREATED spec 500', 'CREATED a 501', 'SUB_ISSUE add 500 501', 'CREATED b 502', 'SUB_ISSUE add 500 502', 'BLOCKED_BY add 502 501', ''].join('\n'));
+  assert.match(first.stderr, /blocked-by add 502 350 失敗/);
+  const again = run(t, ['batch', 'tickets.json'], { temp: first.temp });
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(again.stdout, ['BLOCKED_BY add 502 350', 'COMMENTED 383', 'EDITED 502', 'BLOCKED_BY add 502 12', 'CLOSED 383', 'BATCH_DONE 6', ''].join('\n'));
+  assert.deepEqual(again.calls.filter(call => call[1] === 'create'), []);
+  const done = run(t, ['batch', 'tickets.json'], { temp: first.temp });
+  assert.equal(done.status, 0, done.stderr);
+  assert.equal(done.stdout, 'BATCH_DONE 6\n');
+  assert.deepEqual(done.calls, []);
+});
+
+test('batch：不合白名單或引用不到的內容 exit 2、不呼叫 gh', t => {
+  for (const [label, steps] of [
+    ['不認得的 op', [{ op: 'transfer', issue: '#1' }]],
+    ['不認得的欄位', [{ op: 'create', title: 'T', body: 'x', repo: 'other/repo' }]],
+    ['comment 帶 create 的欄位', [{ op: 'comment', issue: '#1', body: 'x', title: 'T' }]],
+    ['create 沒有標題', [{ op: 'create', body: 'x' }]],
+    ['create 沒有內文', [{ op: 'create', title: 'T' }]],
+    ['body 與 bodyFile 並用', [{ op: 'comment', issue: '#1', body: 'x', bodyFile: 'spec.md' }]],
+    ['不存在的 bodyFile', [{ op: 'comment', issue: '#1', bodyFile: 'missing.md' }]],
+    ['別的 repo 的單', [{ op: 'comment', issue: 'other/repo#1', body: 'x' }]],
+    ['網址', [{ op: 'close', issue: 'https://github.com/other/repo/issues/1' }]],
+    ['裸數字', [{ op: 'close', issue: 1 }]],
+    ['之後才建立的 code', [{ op: 'comment', issue: 'a', body: 'x' }, { op: 'create', code: 'a', title: 'A', body: 'x' }]],
+    ['重複的 code', [{ op: 'create', code: 'a', title: 'A', body: 'x' }, { op: 'create', code: 'a', title: 'B', body: 'x' }]],
+    ['code 像單號', [{ op: 'create', code: '#5', title: 'A', body: 'x' }]],
+    ['labels 不是字串陣列', [{ op: 'create', title: 'A', body: 'x', labels: 'bug' }]],
+    ['值不是字串', [{ op: 'comment', issue: '#1', body: { x: 1 } }]],
+    ['__proto__', JSON.parse('[{"op":"comment","issue":"#1","body":"x","__proto__":{"repo":"o/r"}}]')],
+    ['不是陣列', { steps: [] }],
+    ['空陣列', []],
+  ]) {
+    const result = run(t, ['batch', 'tickets.json'], { files: { 'tickets.json': steps, 'spec.md': 'x' } });
+    assert.equal(result.status, 2, `${label}：${result.stderr}`);
+    assert.deepEqual(result.calls, [], label);
+  }
+  for (const args of [['batch'], ['batch', 'missing.json'], ['batch', 'tickets.json', 'more.json'], ['batch', 'tickets.json', '--repo', 'o/r']]) {
+    const result = run(t, args, { files: { 'tickets.json': [{ op: 'comment', issue: '#1', body: 'x' }] } });
+    assert.equal(result.status, 2, `${args.join(' ')}：${result.stderr}`);
+    assert.deepEqual(result.calls, [], args.join(' '));
+  }
+  const broken = run(t, ['batch', 'tickets.json'], { files: { 'tickets.json': '{ not json' } });
+  assert.equal(broken.status, 2);
+  assert.deepEqual(broken.calls, []);
+});
+
+test('batch：狀態檔和批次檔對不上（改過步驟順序）時 exit 2、不呼叫 gh', t => {
+  const steps = [{ op: 'create', code: 'a', title: 'A', body: 'x' }, { op: 'comment', issue: 'a', body: 'y' }];
+  const first = run(t, ['batch', 'tickets.json'], { files: { 'tickets.json': steps }, fail: 'issue comment' });
+  assert.equal(first.status, 4);
+  const swapped = run(t, ['batch', 'tickets.json'], { temp: first.temp, files: { 'tickets.json': [{ op: 'comment', issue: '#9', body: 'y' }, ...steps] } });
+  assert.equal(swapped.status, 2, swapped.stderr);
+  assert.match(swapped.stderr, /狀態檔/);
+  assert.deepEqual(swapped.calls, []);
 });
