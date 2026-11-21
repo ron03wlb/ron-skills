@@ -539,7 +539,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const options = {};
   let bad = false;
   for (let i = 0; i < rest.length; i += 2) {
-    const name = { '--branch': 'request', '--load-max': 'loadMax', '--check-command': 'check', '--integration': 'integration', '--main': 'main', '--resolver': 'resolver' }[rest[i]];
+    const name = new Map(Object.entries({ '--branch': 'request', '--load-max': 'loadMax', '--check-command': 'check', '--integration': 'integration', '--main': 'main', '--resolver': 'resolver' })).get(rest[i]);
     if (!name || name in options || rest[i + 1] === undefined) bad = true;
     else options[name] = rest[i + 1];
   }

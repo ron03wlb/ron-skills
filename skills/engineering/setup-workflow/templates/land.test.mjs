@@ -489,6 +489,19 @@ test('本機分支不在、也沒有已合入的 PR：STOP no-branch，不開 PR
 
 // #37：pilot 的 batch 已 push、PR 還開著就中斷（如 CI 等到逾時），checkpoint 還是 `merged <sha>`（LANDED 之後才設 pushed），
 // Probe 印 RESUME_PUSH 後重跑 Push gate：沿用開著的 PR 從等 CI、合併那步接著做，不重開 PR。
+// #430：`arg in VALUE_FLAGS` 會讓 constructor、toString 命中 Object.prototype，被當成帶值旗標吃掉下一個引數。
+test('未知旗標（含 constructor、toString）：用法錯誤 exit 2', () => {
+  const cwd = mkdtempSync(join(realTmpdir(), 'land-usage-'));
+  try {
+    for (const flag of ['constructor', 'toString']) {
+      const result = spawnSync('node', [script, 'integration', flag, 'x'], { cwd, encoding: 'utf8' });
+      assert.equal(result.status, 2, `${flag}：${result.stdout}${result.stderr}`);
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('--keep-branch：PR 開著時中斷，重跑沿用同一個 PR 接著合併', t => {
   const { main, wt, body, sh, land, calls, prs, last, temp } = fixture(t, { checks: [PENDING] });
   sh(main, 'worktree', 'remove', wt);

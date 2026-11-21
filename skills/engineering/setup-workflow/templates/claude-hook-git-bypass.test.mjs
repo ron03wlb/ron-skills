@@ -808,3 +808,56 @@ test('detachReason：帶路徑、切回分支、建分支與字串裡的字樣�
     'git show 7da0a2eae:a.md', 'echo "git checkout 7da0a2eae"', 'grep -n "switch --detach" scripts/x.mjs', 'git worktree add --detach /tmp/x 7da0a2eae',
   ]) assert.equal(detachReason(command), null, command);
 });
+
+// 繞過語料（#412）：每條都是真實會用 --no-verify／commit -n 繞過 hook 的指令形狀，hook 必須全部擋下。
+// 前四條出自 session e07f6cec 的 reviewer 探測（heredoc、python os.system、python subprocess、perl system）。
+// 改 hook（尤其是引號、換行、heredoc 的解析）時，把新發現的繞過形狀加進這個陣列；
+// 不要為了讓測試過而移掉既有條目。目前沒擋住的形狀用 todo 標記，不是刪掉。
+// 目前 hook 沒擋住的形狀放這裡（todo），修好後移進 BYPASS_CORPUS。
+const BYPASS_GAPS = [];
+const BYPASS_CORPUS = [
+  `bash <<'E'\ngit commit -m "a\nb" -n\nE`,
+  `python3 -c "import os; os.system('''git commit -m 'a\nb' -n''')"`,
+  `python3 -c "\nimport subprocess\nsubprocess.run([\n  'git', 'commit',\n  '-n', '-m', 'x',\n])\n"`,
+  `perl -e 'system("git", "commit",\n "-n")'`,
+  `bash <<'E'\ngit commit --no-verify -m x\nE`,
+  `sh <<EOF\ncd wt\ngit commit -m "a\nb\nc" --no-verify\nEOF`,
+  `sh -c 'git commit -m "a\nb" -n'`,
+  `bash -c "git commit -m 'a\nb' --no-verify"`,
+  `git commit -m "line1\nline2\nline3" --no-verify`,
+  `git commit -m "line1\nline2" -n`,
+  `git commit -m x \\\n  --no-verify`,
+  `git commit \\\n  -m x \\\n  -n`,
+  `git add -A && git commit -m "a\nb" --no-verify`,
+  `cd wt && git push --no-verify origin x`,
+  `git commit -m x -n`,
+  // 雙引號內的指令替換之後才接旗標：#339 之前與之後都放行，這份語料找到（#412）。
+  `git commit -m "$(cat <<'EOF'\nfix: x\n\nbody\nEOF\n)" --no-verify`,
+  `git commit -m "$(date)" --no-verify`,
+  'git commit -m "`date`" -n',
+  'git commit -m `date` -n',
+  `git push "$(git remote)" --no-verify`,
+];
+
+test('hook：base 擋的繞過形狀在新版仍要擋（#412）', async t => {
+  for (const command of BYPASS_CORPUS) {
+    await t.test(JSON.stringify(command), () => {
+      assert.notEqual(bypassReason(command), null, 'bypassReason 沒擋');
+      assert.equal(hook(JSON.stringify({ tool_input: { command } })).status, 2, 'hook 沒 exit 2');
+    });
+  }
+  for (const command of BYPASS_GAPS) {
+    await t.test(JSON.stringify(command), { todo: '目前沒擋住（#412）' }, () => {
+      assert.notEqual(bypassReason(command), null);
+    });
+  }
+});
+
+test('bypassReason：不插入替換內容的視圖不誤擋字串裡的字與唯讀查詢（#412）', () => {
+  for (const command of [
+    'git commit -m "$(date)"',
+    'git commit -m "fix $(git log -1 --format=%h) -n"',
+    'git log -n 3 "$(git rev-parse HEAD)"',
+    "git commit -m \"$(cat <<'EOF'\nfix: x -n --no-verify\nEOF\n)\"",
+  ]) assert.equal(bypassReason(command), null, command);
+});

@@ -20,6 +20,7 @@
 | --- | --- | --- | --- |
 | `.claude/settings.json` 的 allow／deny | 本地強制 | agent 的每次工具呼叫是否在放行範圍內；deny 的指令（例如直接開 MR、連資料庫）一律拒絕 | 人在自己的終端做同樣的事不受限；包在放行腳本裡的動作也看不到 |
 | `PreToolUse` hook：擋 zsh 會中止整串指令的字 | 本地強制 | Bash 指令裡沒加引號、以 `=` 開頭的字（zsh EQUALS，`echo ===`）、`--<opt>=` 值或像分支名稱的字裡沒加引號的 `*`／`?`（NOMATCH），以及 bash 的 `$PIPESTATUS`（在 zsh 是空字串）即拒絕，要求加引號或改寫；L1 就接，因為 macOS 預設 shell 是 zsh | 只看指令字串；`eval`、腳本檔裡的同樣寫法抓不到，其他 zsh 陷阱也不在範圍內 |
+| `PreToolUse` hook：擋會靜靜出錯的 Bash 寫法 | 本地強制 | heredoc 分隔字沒加引號（`<<EOF`）且內文含反引號或 `$(`（bash 會把 Markdown 行內碼當命令替換執行），以及 `gh issue view`／`gh pr view` 帶 `--comments` 卻沒帶 `--json`（非 tty 下沒有 title、labels、body）即拒絕，要求改 `<<'EOF'`、用 Write 寫檔再 `--body-file`，或改用 `--json`；L1 就接 | 只看指令字串；寫進腳本檔再執行的同樣寫法抓不到，內文只有 `$VAR` 的 heredoc 放行 |
 | `PreToolUse` hook：擋繞過 git hook | 本地強制 | Bash 指令含 `--no-verify`、`git commit -n`、`-c core.hooksPath=` 即拒絕 | 只比對字串；寫進腳本檔再執行的繞過抓不到 |
 | `PreToolUse` hook：擋改主 checkout | 本地強制 | Edit／Write，以及 Bash 的 `sed -i`、`perl -i`、`>`／`>>` 重導向與 `tee`，會讓本專案主 checkout 的 `git status` 不乾淨就拒絕（追蹤檔，以及沒被 gitignore 的新檔；別的 repo 不管），要求改在 worktree；L3 必接，因為 pilot 的 Probe 看到主 checkout 有改動就停止合併 | Bash 是啟發式辨識：子 shell、`eval`、腳本檔裡的寫入擋不到；解析不了的指令一律放行；目標裡的 `$變數` 先用同一條指令的賦值或環境變數代換，代換不了的（含 `$(pwd)` 以外的 `$(…)`、`$$`、`${X:-y}`）不算目標；`cd`／`git -C` 到代換不了的目錄時照原本的目錄判斷 |
 | hook 驗收（`hook-acceptance.mjs`，檢查入口的一步） | 本地強制 | 以真實 `.claude/settings.json` 的 matcher 跑 repo 自己寫的案例（`scripts/hook-acceptance-cases.json`），核對每個 hook 的 exit code：settings 少帶參數、matcher 寫錯或 hook 檔不在時失敗 | 只驗到 hook 的判斷；權限提示這類只有人看得到的行為，仍要開新的 Claude session 驗；案例沒寫到的輸入不保證 |
