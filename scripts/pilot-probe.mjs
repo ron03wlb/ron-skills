@@ -844,6 +844,51 @@ export function memberOverlaps(checkout, n, branch, options = {}) {
   return out;
 }
 
+const BUDGET_FILE = 'scripts/adapter-size-budget.json';
+
+/** `ref` 上 `path` 的 bytes；沒有這個檔時 0。 */
+function blobSize(checkout, ref, path) {
+  const result = git(checkout, 'cat-file', '-s', `${ref}:${path}`);
+  return result.status === 0 ? Number(result.stdout.trim()) : 0;
+}
+
+/**
+ * 同時進行的成員共用的檔案大小預算（#398）：預算表是整合分支（沒有時主分支）上的 `scripts/adapter-size-budget.json`
+ * （`{ 路徑: bytes }`，check-adapter-size 讀的同一份）。表上每個檔，整合分支的大小加上開著的 batch 裡 running、done 成員各自相對於
+ * 與整合分支的 merge-base 的增量（只看已 commit 的內容，縮小的成員也算進去），超過上限時印 `BUDGET <檔案> <合計> <上限> <成員…>`，
+ * 成員是讓檔案變大的那些（依號碼排序）。沒有成員改這個檔、沒有預算表、本機沒有成員分支時不印；預算表不是物件或上限不是正整數時 throw。
+ */
+export function budgetLines(checkout, batches, options = {}) {
+  const onto = overlapOnto(checkout, options);
+  const text = onto && show(checkout, onto, BUDGET_FILE);
+  if (!text) return [];
+  const table = JSON.parse(text);
+  if (!table || typeof table !== 'object' || Array.isArray(table) || !Object.values(table).every(limit => Number.isInteger(limit) && limit > 0)) {
+    throw new Error(`${BUDGET_FILE} 不是 { 路徑: bytes } 物件（上限要是正整數）`);
+  }
+  const members = [];
+  for (const m of activeMembers(batches)) {
+    const tip = m.branch && rev(checkout, `refs/heads/${m.branch}`);
+    const base = tip && git(checkout, 'merge-base', tip, onto);
+    if (base?.status === 0) members.push({ n: m.n, tip, base: base.stdout.trim() });
+  }
+  const out = [];
+  for (const [path, limit] of Object.entries(table)) {
+    let total = blobSize(checkout, onto, path);
+    const grew = [];
+    let touched = false;
+    for (const { n, tip, base } of members) {
+      const delta = blobSize(checkout, tip, path) - blobSize(checkout, base, path);
+      if (!delta) continue;
+      touched = true;
+      total += delta;
+      if (delta > 0) grew.push(n);
+    }
+    if (touched && total > limit) out.push(['BUDGET', path, total, limit, ...grew].join(' '));
+  }
+  return out;
+}
+
 /** 經過的時間：`<h>h<m>m` 或 `<m>m`；時間解析不了時 `?`。 */
 function age(time, at) {
   const minutes = Math.floor((at - Date.parse(time)) / 60000);
@@ -941,6 +986,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   }
   out.push(...unparkLines(batches));
   out.push(...overlapLines(checkout, batches, { integration, main }));
+  out.push(...budgetLines(checkout, batches, { integration, main }));
   if (landing.length) {
     const fetch = git(checkout, 'fetch', '-q', 'origin');
     if (fetch.status !== 0) out.push(`FETCH_FAILED ${fetch.stderr.trim().split('\n').find(line => line.startsWith('fatal:')) ?? fetch.stderr.trim().split('\n')[0]}`);
