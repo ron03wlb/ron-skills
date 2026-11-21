@@ -102,6 +102,52 @@ test('bypassReason：引號不掩蓋真正的繞過', () => {
   ]) assert.equal(bypassReason(command), reason, command);
 });
 
+// #339：`-n`／`--no-verify` 只在同一行、subcommand 剛好是 commit 時算；`[^;&|]*` 曾跨過換行，`\bcommit\b` 曾命中 commit-tree。
+test('bypassReason：commit-tree 與下一行別的指令的 -n 不接成 git commit -n', () => {
+  for (const command of [
+    'git commit-tree "$(git write-tree)" -p "$base" -m x\nzsh -n g.zsh',
+    'git commit-tree x -p b\nzsh -n g',
+    'git commit-graph write --reachable\nsed -n 1p f',
+    'git commit -qm x\nzsh -n g.zsh',
+    'git commit -qm x\nnode scripts/x.mjs --no-verify-links',
+    'git commit -qm x\ncurl --no-verify https://x',
+    // investing coordinator 66e552ea jsonl 2266（本單原指令）：heredoc 寫 gate 腳本，再 zsh -n 檢查。
+    `cat > .scratch/pilot/gates/G50.zsh <<'EOF'\nbase=$(git rev-parse HEAD)\nnew=$(git commit-tree "$(git write-tree)" -p "$base" -m "$SUBJECT")\nEOF\nzsh -n .scratch/pilot/gates/G50.zsh && echo ok`,
+    // investing retro 1121a：直譯器 here-doc 的測試程式，git 是 Python 函式、-n 在別行。
+    `python3 - <<'E'\ndef git(path, *a): subprocess.run(("git", "-C", path, *a), check=True)\ngit(path, "commit", "-q", "--allow-empty", "-m", "work")\nout = subprocess.run(["sed", "-n", "1p", "f"]).stdout\nprint("a\\nb")\nE`,
+    // investing retro 1121a：heredoc 寫 retro 內文，敘述 git 改名、重設分支。
+    "cat > .scratch/retro.md <<'EOF'\n- git branch -m 改名後 commit 被擋\n- 再 git reset -n 試一次\nEOF",
+  ]) assert.equal(bypassReason(command), null, command);
+});
+
+test('bypassReason：同一個指令的 -n／--no-verify 照攔，含多行訊息與行尾接續', () => {
+  for (const [command, reason] of [
+    ['git commit -n -m x', 'git commit -n'],
+    ['git commit --no-verify -m x', '--no-verify'],
+    ['git -c core.hooksPath=/dev/null commit', '改寫 core.hooksPath'],
+    ['git commit -am x -n', 'git commit -n'],
+    ['git -C wt commit -n -m x', 'git commit -n'],
+    ['git commit-tree x -p b\ngit commit -n -m x', 'git commit -n'],
+    // 引號內的換行是訊息的一部分，不切斷指令
+    ['git commit -m "a\nb" -n', 'git commit -n'],
+    ['git commit -m "a\nb" --no-verify', '--no-verify'],
+    // 行尾反斜線接續仍是同一個指令
+    ['git commit -m x \\\n  -n', 'git commit -n'],
+    ['git commit -m x \\\n  --no-verify', '--no-verify'],
+    // 被執行的 here-doc 與直譯器字串裡的多行訊息（#339 PR review）
+    ["bash <<'E'\ngit commit -m \"a\nb\" -n\nE", 'git commit -n'],
+    ["bash <<'E'\ngit commit -m 'a\nb' --no-verify\nE", '--no-verify'],
+    ["cat <<'E' | sh\ngit commit -m 'a\nb' -n\nE", 'git commit -n'],
+    [`python3 -c "import os; os.system('''git commit -m 'a\nb' -n''')"`, 'git commit -n'],
+    [`python3 -c 'import subprocess; subprocess.run(\"\"\"git commit -m "a\nb" -n\"\"\", shell=True)'`, 'git commit -n'],
+    ["node -e \"require('child_process').execSync(\\`git commit -m 'a\nb' -n\\`)\"", 'git commit -n'],
+    ["python3 - <<'E'\nos.system('''cd x && git commit -m 'a\nb' --no-verify''')\nE", '--no-verify'],
+    // 直譯器的 argv 串列跨行
+    ["python3 -c \"\nimport subprocess\nsubprocess.run([\n  'git', 'commit',\n  '-n', '-m', 'x',\n])\n\"", 'git commit -n'],
+    ["perl -e 'system(\"git\", \"commit\",\n \"-n\")'", 'git commit -n'],
+  ]) assert.equal(bypassReason(command), reason, command);
+});
+
 test('hook：命中時 exit 2 並說明，未命中或輸入不合法時 exit 0 無輸出', () => {
   const denied = hook(JSON.stringify({ tool_input: { command: 'git -c core.hooksPath=/dev/null commit -m x' } }));
   assert.equal(denied.status, 2); assert.match(denied.stderr, /繞過 git hook/);

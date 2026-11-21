@@ -134,13 +134,19 @@ function closingParen(text, start) {
   return -1;
 }
 
+/**
+ * 直譯器程式碼接成一行再比對：BYPASS 的 -n／--no-verify 只看 shell 的同一行（#339），直譯器裡的換行不分隔指令，
+ * argv 串列與字串裡的多行訊息都會跨行（`subprocess.run([⏎'git', 'commit',⏎'-n'])`、`os.system('''git commit -m 'a⏎b' -n''')`，#339 PR review）。
+ */
+const codeView = code => code.replace(/\n/g, ' ');
+
 /** 一段引號內容在比對用文字裡的樣子：會被執行的展開比對；git 的參數（單一個字、core.hooksPath 設定）去引號；其他文字換成 `""`。 */
 function quotedView({ literal, subs }, segment, rest, codeIsData) {
   if (/^\s*core\.hooks/i.test(literal)) return literal;
   if (RUNS_SHELL.test(segment) || FEEDS_SHELL.test(rest)) return ` ; ${commandView(literal, codeIsData)} ; `;
   // `import(…)`／`require(…)` 載入模組、不執行它的 CLI：去掉括號，免得 `(` 被當成段落開頭（retro spay2 db0c0090#2：
   // `node -e` 字串內以動態 import 載入 batch-watch 被當成執行 watcher）；`os.system('x.mjs | tail')` 照常比對。
-  if (RUNS_CODE.test(segment)) return ` ; ${literal.replace(/\b(?:import|require)\s*\(/g, 'import ').replace(/['"`]/g, ' ')} ; `;
+  if (RUNS_CODE.test(segment)) return ` ; ${codeView(literal).replace(/\b(?:import|require)\s*\(/g, 'import ').replace(/['"`]/g, ' ')} ; `;
   const ran = subs.map(sub => ` ; ${commandView(sub, codeIsData)} ; `).join('');
   return (/^[\w./=:@%+,-]+$/.test(literal) ? literal : '""') + ran;
 }
@@ -184,8 +190,11 @@ function commandView(command, codeIsData = false) {
       if (end < 0) return out + command.slice(i);
       const lineEnd = command.indexOf('\n', i);
       const head = command.slice(line, lineEnd);
-      const executed = HEREDOC_SHELL.test(head) || FEEDS_SHELL.test(head) || (!codeIsData && HEREDOC_CODE.test(head));
-      out += executed ? command.slice(i, end) : '\n';
+      // 餵給 shell 的內文再跑一次 commandView：其中引號內的換行也要收掉（#339 PR review：`bash <<'E'` 內多行訊息的 commit -n）。
+      const body = command.slice(i + 1, end).replace(/[^\n]*\n?$/, '');
+      if (HEREDOC_SHELL.test(head) || FEEDS_SHELL.test(head)) out += `\n${commandView(body, codeIsData)}\n`;
+      else if (!codeIsData && HEREDOC_CODE.test(head)) out += `\n${codeView(body)}\n`;
+      else out += '\n';
       delimiters = [];
       i = end;
       line = end;
@@ -208,9 +217,15 @@ function commandView(command, codeIsData = false) {
 const BYPASS = [
   [/(^|[\s;&|(])git\b[^;&|]*\s-c\s*["']?core\.hooks[Pp]ath=/, '改寫 core.hooksPath'],
   [/(^|[\s;&|(])git\b[^;&|]*\sconfig\b(?![^;&|]*\s--(get|get-all|list|unset)\b)[^;&|]*\score\.hooks[Pp]ath\s+[^\s;&|]/, '改寫 core.hooksPath'],
-  [/(^|[\s;&|(])git\b[^;&|]*\s--no-verify\b/, '--no-verify'],
-  [/(^|[\s;&|(])git\b[^;&|]*\bcommit\b[^;&|]*\s-[a-zA-Z]*n[a-zA-Z]*(\s|$)/, 'git commit -n'],
+  // 這兩條只看同一行：換行後是另一個指令（#339：`git commit-tree …` 換行接 `zsh -n g` 被當成 `git commit -n`）；
+  // -n 那條的 subcommand 要剛好是 commit，commit-tree、commit-graph 不算；--no-verify 照舊不限 subcommand（`git push --no-verify` 繞過 pre-push gate）。行尾反斜線接續在 bypassReason 先接成一行（CONTINUATION）。
+  // core.hooksPath 兩條不在 #339 範圍，仍可跨行（寧可多攔）。
+  [/(^|[\s;&|(])git\b[^;&|\n]*\s--no-verify\b/, '--no-verify'],
+  [/(^|[\s;&|(])git\b[^;&|\n]*\bcommit(?![-\w])[^;&|\n]*\s-[a-zA-Z]*n[a-zA-Z]*(\s|$)/, 'git commit -n'],
 ];
+
+// 行尾反斜線接續：shell 當成同一個指令，比對前接成一行，`git commit -m x \<換行> -n` 才不會因為 BYPASS 只看同一行而漏攔。
+const CONTINUATION = /\\\n/g;
 
 // shell 重導（`>`、`>>`、`2>`、`&>`、`>&2`、`<` 及其目標）：`git config core.hooksPath >/dev/null` 是唯讀查詢，
 // 不去掉的話 `>/dev/null` 會被當成設定值（retro spay2 0cd3fdeb#3）。要在指令開頭或空白、分隔符之後才算，
@@ -222,7 +237,7 @@ const REDIRECT = /(?<![^\s;&|(])(?:\d+|&)?(?:>>?|<(?!<))[&|]?\s*[^\s;&|()<>]*/g;
  * @returns {string|null} 命中的繞過方式；未命中為 null
  */
 export function bypassReason(command) {
-  const view = commandView(command).replace(REDIRECT, ' ');
+  const view = commandView(command).replace(CONTINUATION, ' ').replace(REDIRECT, ' ');
   for (const [pattern, reason] of BYPASS) if (pattern.test(view)) return reason;
   return null;
 }
