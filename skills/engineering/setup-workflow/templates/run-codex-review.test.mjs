@@ -39,7 +39,7 @@ function worktree(temp) {
   return repo;
 }
 
-function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit = 0, staleReport = false, rulings, writes = [], outDir = '.scratch/issue-run-1', baseline, checkpoint, capacity = '', spec = 'spec.md', specContent = '# spec\n', checkSpec = false } = {}) {
+function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit = 0, staleReport = false, rulings, writes = [], outDir = '.scratch/issue-run-1', baseline, checkpoint, capacity = '', spec = 'spec.md', specContent = '# spec\n', checkSpec = false, codexHome } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'codex-review-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const bin = join(temp, 'codex'); writeFileSync(bin, FAKE); chmodSync(bin, 0o755);
@@ -79,7 +79,7 @@ function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit 
   if (specContent !== null) { mkdirSync(dirname(join(temp, spec)), { recursive: true }); writeFileSync(join(temp, spec), specContent); }
   const fixedPoint = baseline ?? git(repo, 'rev-parse', '--short', 'HEAD');
   const result = run(temp, [process.execPath, join(source, 'run-codex-review.mjs'), fixedPoint, spec, repo, out, ...extra],
-    { env: { CODEX_BIN: bin, FAKE_ARGV: argvFile, FAKE_LOG: log, FAKE_REPORT: report, FAKE_EXIT: String(exit), FAKE_WRITES: JSON.stringify(writes), FAKE_CAPACITY: capacity, FAKE_CHECK_SPEC: checkSpec ? '1' : '', CODEX_HOME: join(temp, 'codex-home') } });
+    { env: { CODEX_BIN: bin, FAKE_ARGV: argvFile, FAKE_LOG: log, FAKE_REPORT: report, FAKE_EXIT: String(exit), FAKE_WRITES: JSON.stringify(writes), FAKE_CAPACITY: capacity, FAKE_CHECK_SPEC: checkSpec ? '1' : '', CODEX_HOME: codexHome ?? join(temp, 'codex-home') } });
   const models = existsSync(`${argvFile}.models`) ? readFileSync(`${argvFile}.models`, 'utf8').trim().split('\n') : [];
   return { result, repo, temp, out, models, call: existsSync(argvFile) ? JSON.parse(readFileSync(argvFile, 'utf8')) : null };
 }
@@ -173,7 +173,7 @@ test('worktree 不是 git repository 時判定 SNAPSHOT_FAILED，且不呼叫 Co
   const argvFile = join(temp, 'argv.json'); const bin = join(temp, 'codex'); writeFileSync(bin, FAKE); chmodSync(bin, 0o755);
   writeFileSync(join(temp, 'spec.md'), '# spec\n');
   const result = run(temp, [process.execPath, join(source, 'run-codex-review.mjs'), 'abc123', 'spec.md', temp, join(temp, 'out')],
-    { env: { CODEX_BIN: bin, FAKE_ARGV: argvFile, FAKE_LOG: header() } });
+    { env: { CODEX_BIN: bin, FAKE_ARGV: argvFile, FAKE_LOG: header(), CODEX_HOME: join(temp, 'codex-home') } });
   assert.equal(error(result), 'SNAPSHOT_FAILED');
   assert.equal(existsSync(argvFile), false);
 });
@@ -270,7 +270,7 @@ test('額度用完：判定 CODEX_NO_CREDITS，附改用 code-review skill 的�
 
 // 真實形狀：retro spay2 a903a2bb#2（2026-11-12 rollout：secondary used_percent 26、window 10080、resets_at 1795054725）；
 // 2026-11-16 額度用完時的 rollout 則 secondary 為 null、rate_limit_reached_type 為 workspace_member_credits_depleted。
-function quota(t, files) {
+function rolloutHome(t, files) {
   const home = mkdtempSync(join(realTmpdir(), 'codex-quota-')); t.after(() => rmSync(home, { recursive: true, force: true }));
   files.forEach(([name, limits, mtime], index) => {
     const dir = join(home, 'sessions', '2026', '11', String(12 + index)); mkdirSync(dir, { recursive: true });
@@ -278,6 +278,10 @@ function quota(t, files) {
     writeFileSync(file, JSON.stringify({ type: 'session_meta' }) + '\n' + JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', rate_limits: limits } }) + '\n');
     utimesSync(file, mtime, mtime);
   });
+  return home;
+}
+function quota(t, files) {
+  const home = rolloutHome(t, files);
   return run(home, [process.execPath, join(source, 'run-codex-review.mjs'), '--quota'], { env: { CODEX_HOME: home } });
 }
 const WEEKLY = { primary: null, secondary: { used_percent: 26.0, window_minutes: 10080, resets_at: 1795054725 } };
@@ -294,4 +298,23 @@ test('--quota：只有週額度時 reached=none；沒有 rollout 時 CODEX_QUOTA
 test('額度字句只是被引用（非行首）或 Codex 成功結束：不判 CODEX_NO_CREDITS', t => {
   assert.equal(error(review(t, { log: header() + '+ ' + NO_CREDITS, exit: 2 }).result), 'CODEX_EXIT');
   assert.equal(review(t, { log: header() + NO_CREDITS }).result.status, 0);
+});
+
+// retro spay2 710b8f4e#2：額度用完時，空 rulings 先回 RULINGS_EMPTY，補好再跑才撞 CODEX_NO_CREDITS。預檢與 --quota 同源，排在參數檢查之前。
+const FUTURE_WEEKLY = { primary: null, secondary: { used_percent: 100.0, window_minutes: 10080, resets_at: 4102444800 } };
+test('額度預檢：rollout 顯示額度用完時，空 rulings 也先判 CODEX_NO_CREDITS（precheck），且不呼叫 Codex', t => {
+  for (const files of [[['rollout-a.jsonl', FUTURE_WEEKLY, 1000], ['rollout-b.jsonl', DEPLETED, 2000]], [['rollout-b.jsonl', DEPLETED, 2000]]]) {
+    const { result, call } = review(t, { rulings: '', codexHome: rolloutHome(t, files) });
+    const json = JSON.parse(result.stderr.trim());
+    assert.equal(json.error, 'CODEX_NO_CREDITS');
+    assert.equal(json.precheck, true);
+    assert.match(json.hint, /code-review/);
+    assert.match(json.quota, /^CODEX_QUOTA .*reached=workspace_member_credits_depleted$/);
+    assert.equal(call, null);
+  }
+});
+test('額度預檢：週額度重置時間已過或額度未用完時不擋，照常回 RULINGS_EMPTY／呼叫 Codex', t => {
+  assert.equal(error(review(t, { rulings: '', codexHome: rolloutHome(t, [['rollout-a.jsonl', WEEKLY, 1000], ['rollout-b.jsonl', DEPLETED, 2000]]) }).result), 'RULINGS_EMPTY');
+  const ok = review(t, { codexHome: rolloutHome(t, [['rollout-a.jsonl', WEEKLY, 1000]]) });
+  assert.equal(ok.result.status, 0, ok.result.stderr);
 });

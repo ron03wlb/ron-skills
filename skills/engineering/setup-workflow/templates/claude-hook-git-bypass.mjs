@@ -38,6 +38,11 @@
 //   改用 `node scripts/doc-excerpt.mjs '<詞>' <檔案>…`，否則改用 Python（retro spay2 bdabcbed#1：#295 後同一錯又踩兩次，doc-excerpt.mjs 沒人導過去）。
 // 另攔 `while`／`until` 迴圈裡的 `pgrep -f`（內建規則，見 selfMatchLoopReason）：訊息「while／until 迴圈裡的 `pgrep -f` 會比對到執行這個迴圈的 shell 本身」；
 //   actionable：改用 run_in_background 的完成通知，或取 pid 後 `while kill -0 <pid>`（retro spay2 1a01bf03#1：#961 worker 卡 2 小時）。
+// 另攔讓 HEAD 離開分支的 `git checkout <rev>`（不帶路徑，含 `git checkout <rev> --` 後面沒有路徑）與 `git switch --detach`／`-d`、`git checkout --detach`（內建規則，見 detachReason）：
+//   訊息「會讓 HEAD 離開分支（detached HEAD）」；actionable：讀舊版用 `git show <rev>:<path>`（retro spay2 db00b6a5#1：worktree 內 `git checkout -q 7da0a2eae -- 2>/dev/null`
+//   想讀舊檔，HEAD 離開任務分支）。不看所在目錄：主 checkout 的 claude-hook-main-checkout.mjs 放行 `checkout … --` 與非本機分支的 rev，兩邊都會踩到。
+//   本 hook 不呼叫 git，`<rev>` 以字面判斷：7–40 位十六進位、含 `~`／`^`／`@{`（`@{-N}` 同 `-`，不算）、`HEAD` 開頭帶後綴，或 `origin/`、`refs/remotes/`、`refs/tags/` 開頭；
+//   分支名稱、`-`、建分支（`-b`／`-B`／`--orphan`）與帶路徑的 `git checkout <rev> -- <path>`、`git checkout <rev> <path>` 放行。
 // `--background-only` 另有內建項目 BUILTIN_BACKGROUND_ONLY（`orca-session-send.mjs --when-idle`，retro spay2 1a01bf03#8），訊息同 `--background-only`。
 // 用法：node scripts/claude-hook-git-bypass.mjs [--long-wait <spec>]… [--whole-output <spec>]… [--exit-gate <script 名稱>]… [--background-only <spec>]…
 //   spec 是「script 名稱[ 旗標]」，例如 `watch.mjs` 或 `queue.mjs --wait`：帶旗標時同段指令要有該旗標才算。不帶時只攔 git 繞過。
@@ -631,6 +636,46 @@ export function selfMatchLoopReason(command) {
   return false;
 }
 
+// git 的全域選項中接下一個字當參數的。
+const GIT_GLOBAL_WITH_ARG = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
+// 字面上就是 commit 而不是本機分支的 rev。
+const DETACHING_REV = /^(?:[0-9a-f]{7,40}|HEAD[~^@].*|origin\/.+|refs\/(?:remotes|tags)\/.+|.*(?:[~^]|@\{(?!-)).*)$/;
+// shell 重導的字（`2>/dev/null`、`>`、`&>`）：不是 git 的參數；只有運算子時下一個字是目標。
+const REDIRECT_WORD = /^(?:\d+|&)?(?:>>?|<)(?:&?\S*)$/;
+
+/**
+ * 讓 HEAD 離開分支的 git 指令（retro spay2 db00b6a5#1：worktree 內 `git checkout -q 7da0a2eae -- 2>/dev/null` 想讀舊檔，HEAD 離開任務分支）。
+ * `git switch --detach`／`-d`、`git checkout --detach` 一律算；`git checkout` 不帶路徑（沒有 `--` 而只有一個位置參數，或 `--` 後面沒有東西）
+ * 且 rev 字面上是 commit（DETACHING_REV）時算。分支名稱、`-`、建分支、帶路徑的形式放行。引號內文字不算（simpleCommands）。
+ * @param {string} command Bash tool 的完整指令
+ * @returns {string|null} 命中的指令摘要；未命中為 null
+ */
+export function detachReason(command) {
+  for (const raw of simpleCommands(command)) {
+    const words = [];
+    for (let i = 0; i < raw.length; i++) {
+      if (!REDIRECT_WORD.test(raw[i])) words.push(raw[i]);
+      else if (/[<>]$/.test(raw[i])) i++;
+    }
+    let at = 0;
+    while (at < words.length && (LEADING_WORD.test(words[at]) || /^\w+=/.test(words[at]))) at++;
+    if (!/^(?:\S*\/)?git$/.test(words[at] ?? '')) continue;
+    at++;
+    while (at < words.length && words[at].startsWith('-')) at += GIT_GLOBAL_WITH_ARG.has(words[at]) ? 2 : 1;
+    const [sub, ...rest] = words.slice(at);
+    if (sub === 'switch' && rest.some(arg => arg === '--detach' || arg === '-d')) return `git switch ${rest.includes('-d') ? '-d' : '--detach'}`;
+    if (sub !== 'checkout') continue;
+    if (rest.includes('--detach')) return 'git checkout --detach';
+    if (rest.some(arg => ['-b', '-B', '--orphan'].includes(arg) || arg.startsWith('--pathspec-from-file'))) continue;
+    const dash = rest.indexOf('--');
+    const before = (dash < 0 ? rest : rest.slice(0, dash)).filter(arg => !arg.startsWith('-'));
+    const after = dash < 0 ? [] : rest.slice(dash + 1);
+    if (before.length !== 1 || after.length) continue;
+    if (DETACHING_REV.test(before[0])) return `git checkout ${before[0]}${dash < 0 ? '' : ' --'}`;
+  }
+  return null;
+}
+
 /** argv 中所有 `<flag> <value>` 的 value；緊接的是另一個旗標時不算值。 */
 const values = (args, flag) => args.flatMap((arg, i) => (arg === flag && args[i + 1] && !args[i + 1].startsWith('--') ? [args[i + 1]] : []));
 
@@ -656,6 +701,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     deny('拒絕：grep -o 的 pattern 前後都有 `.{0,n}`，Claude Code 的 grep（ugrep）會報 `exceeds complexity limits`、exit 2。'
       + (excerpt ? "改用 `node scripts/doc-excerpt.mjs '<詞>' <檔案>…`（前後各取 60 字，`--width <n>` 調整）。\n"
         : '改用 Python 讀檔，以 `re.finditer` 取比對處前後的字。\n'));
+  }
+  const detach = detachReason(command);
+  if (detach) {
+    deny(`拒絕：\`${detach}\` 會讓 HEAD 離開分支（detached HEAD），之後的 commit 不在任務分支上。只要讀舊版內容用 \`git show <rev>:<path>\``
+      + '（整棵樹用 `git archive <rev> | tar -x -C <暫存目錄>`）；要把檔案還原成舊版用 `git checkout <rev> -- <path>`（帶路徑，HEAD 不動）。\n');
   }
   if (selfMatchLoopReason(command)) {
     deny('拒絕：while／until 迴圈裡的 `pgrep -f` 會比對到執行這個迴圈的 shell 本身（它的命令列含同一段 pattern），迴圈永遠不會結束。'
