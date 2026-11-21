@@ -222,8 +222,8 @@
     },
     "scripts/session-log.mjs": {
       "template": "skills/engineering/setup-workflow/templates/session-log.mjs",
-      "commit": "090832766f762b07e41b2803d9c862c32c57557d",
-      "sha256": "9649661a95e4d7ffe407289b1061aa09a651aed4f058468fca5f83379f3cca6b"
+      "commit": "6eefca70cbcd28df8a94c56d1a42a6ae059be082",
+      "sha256": "4c269f3e54901c4c7ed9af857f010b4618b0ea23b97f8b66656a3535abf6fd63"
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",

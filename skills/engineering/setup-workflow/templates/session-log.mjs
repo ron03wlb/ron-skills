@@ -28,8 +28,8 @@ function parseArgs(argv) {
       if (!match) usage();
       options.lines = [Number(match[1]), Number(match[2])];
     } else if (arg === '--grep') {
-      try { options.grep = new RegExp(argv[++i] ?? '', 'u'); } catch { usage(); }
-      if (!argv[i]) usage();
+      if (!argv[++i]) usage();
+      try { options.grep = new RegExp(argv[i], 'u'); } catch { usage(); }
     } else if (arg === '--max') {
       options.max = Number(argv[++i]);
       if (!Number.isInteger(options.max) || options.max < 1) usage();
@@ -65,8 +65,12 @@ const resultText = content => (typeof content === 'string' ? content
 function readGroups(text) {
   const calls = new Map();
   const results = new Set();
-  const attachments = new Set();
-  const loose = [];
+  const seenBlocking = new Set();
+  const orphans = []; // 找不到對應 tool_use 的結果與 blockingError（例如 Stop hook），依自己的行號排
+  const attach = (id, row) => {
+    const call = id && calls.get(id);
+    if (call) call.rows.push(row); else orphans.push({ line: row[0], rows: [row] });
+  };
   text.split('\n').forEach((raw, index) => {
     const line = index + 1;
     let record;
@@ -81,22 +85,18 @@ function readGroups(text) {
       for (const part of content) {
         if (part.type !== 'tool_result' || results.has(part.tool_use_id)) continue;
         results.add(part.tool_use_id);
-        const row = [line, part.is_error ? 'result(error)' : 'result', JSON.stringify(resultText(part.content))];
-        const call = calls.get(part.tool_use_id);
-        if (call) call.rows.push(row); else loose.push({ line, rows: [row] });
+        attach(part.tool_use_id, [line, part.is_error ? 'result(error)' : 'result', JSON.stringify(resultText(part.content))]);
       }
     } else if (record.type === 'attachment' && record.attachment?.type === 'hook_blocking_error') {
       const key = record.uuid ?? `line ${line}`;
-      if (attachments.has(key)) return;
-      attachments.add(key);
+      if (seenBlocking.has(key)) return;
+      seenBlocking.add(key);
       const { hookName, toolUseID, blockingError } = record.attachment;
       const message = typeof blockingError === 'string' ? blockingError : blockingError?.blockingError;
-      const row = [line, `blockingError ${hookName}`, JSON.stringify(message ?? '')];
-      const call = toolUseID && calls.get(toolUseID);
-      if (call) call.rows.push(row); else loose.push({ line, rows: [row] });
+      attach(toolUseID, [line, `blockingError ${hookName}`, JSON.stringify(message ?? '')]);
     }
   });
-  return [...calls.values(), ...loose].sort((a, b) => a.line - b.line);
+  return [...calls.values(), ...orphans].sort((a, b) => a.line - b.line);
 }
 
 const options = parseArgs(process.argv.slice(2));
