@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // 分頁狀態（GLOSSARY.md「分頁狀態」）：Orca 分頁標題最前面的 `<狀態>｜` 前綴，狀態是處理中、待 Retro、待關閉。
+// 只回答問題、工作區乾淨也沒有 commit 的 session 直接用待關閉，不必為問答跑 /retro（#399）。
 // 換目前分頁（ORCA_TERMINAL_HANDLE）標題的狀態前綴，沒有前綴就補上；agent、skill、pilot script 與 claude-hook-tab-state.mjs 都用它。
 // 目前標題以 Orca 的分頁資料為準：`terminal list --include-visual-layouts` 的 tab title；`terminals[].title` 是程式自己的標題（Claude 的自動標題），不是分頁標題。
 // 每個 handle 最後設定的標題另記在本機 TAB_STATE_DIR（預設 ~/.local/state/orca-tab-titles）的 `<handle>` 檔：本腳本改名前寫入（改名失敗時還原），hook 從 Bash 的
