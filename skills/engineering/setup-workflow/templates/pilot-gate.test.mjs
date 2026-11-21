@@ -148,3 +148,121 @@ test('用法錯誤 exit 2、不建檔：缺欄位、欄位含換行、--how 含 
   assert.equal(run(dir, 'list').stdout, '');
   assert.throws(() => gates(dir));
 });
+
+// --script：Operator 用 `! bash <path>`（或 zsh）執行的 gate 腳本。本機與 CI 不一定有 zsh：bash 一定跑，有 zsh 時加跑。
+const SHELLS = ['bash', ...(spawnSync('zsh', ['-c', 'true']).status === 0 ? ['zsh'] : [])];
+const withScript = (t, dir, body) => {
+  const file = join(dir, 'steps.sh');
+  writeFileSync(file, body);
+  const result = run(dir, 'open', ...OPEN, '--script', file);
+  assert.equal(result.status, 0, result.stderr);
+  return result;
+};
+
+test('open --script：腳本寫到 .scratch/pilot/gates/G<n>.sh，路徑記在段落的 script 欄，先印 GATE_SCRIPT 再印 GATE_OPENED', t => {
+  const dir = checkout(t);
+  const result = withScript(t, dir, 'step 查狀態\necho ok\n');
+  assert.equal(result.stdout, 'GATE_SCRIPT .scratch/pilot/gates/G4.sh\nGATE_OPENED G4\n');
+  const script = readFileSync(join(dir, '.scratch/pilot/gates/G4.sh'), 'utf8');
+  assert.match(script, /^#!\/usr\/bin\/env bash\n/);
+  assert.match(script, /^trap '.*停止：第 .*' ERR$/m);
+  assert.ok(script.includes('step 查狀態\necho ok\n'), '步驟本體原樣保留');
+  assert.match(gates(dir), /- question：怎麼處理衝突？ 執行：! bash \.scratch\/pilot\/gates\/G4\.sh\n/);
+  assert.match(gates(dir), new RegExp(`- parked：batch 13 的 Stage\\n- script：\\.scratch/pilot/gates/G4\\.sh\\n- opened：${TIME}\\n$`));
+  assert.equal(run(dir, 'list').stdout.includes('GATE_MALFORMED G4'), false);
+  assert.ok(openRows(join(dir, '.scratch/pilot')).includes('GATE G4 #13 衝突'));
+});
+
+for (const shell of SHELLS) {
+  test(`open --script（${shell}）：查詢指令回非零時，Operator 看得到停在第幾行、哪一步，後面的步驟不跑`, t => {
+    const dir = checkout(t);
+    withScript(t, dir, 'step 查 PR 狀態\nst="$(sh -c \'echo 未就緒; exit 1\')"\nstep 留言\necho 不該執行\n');
+    const path = join(dir, '.scratch/pilot/gates/G4.sh');
+    const result = spawnSync(shell, [path], { encoding: 'utf8', cwd: realTmpdir() });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout, /▶ 查 PR 狀態/);
+    assert.doesNotMatch(result.stdout, /留言|不該執行/);
+    assert.match(result.stderr, /停止：第 \d+ 行失敗（步驟：查 PR 狀態）/);
+    assert.equal(result.stderr.match(/停止：/g).length, 1, result.stderr);
+    if (shell === 'bash') {
+      const line = readFileSync(path, 'utf8').split('\n').findIndex(text => text.startsWith('st="$(')) + 1;
+      assert.match(result.stderr, new RegExp(`停止：第 ${line} 行失敗`));
+    }
+  });
+
+  test(`open --script（${shell}）：查詢步驟帶 \`|| true\` 時照樣往下跑，自行判斷輸出`, t => {
+    const dir = checkout(t);
+    withScript(t, dir, 'step 查 PR 狀態\nst="$(sh -c \'echo 未就緒; exit 1\')" || true\nstep 判斷\necho "狀態：$st"\n');
+    const result = spawnSync(shell, [join(dir, '.scratch/pilot/gates/G4.sh')], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /▶ 判斷\n狀態：未就緒\n/);
+  });
+
+  test(`open --script（${shell}）：可重跑；跑完一次後再跑不重做步驟，印 GATE_SCRIPT_DONE，在任何目錄都在 checkout 根目錄執行`, t => {
+    const dir = checkout(t);
+    withScript(t, dir, 'step 記一筆\necho once >> ran.txt\n');
+    const path = join(dir, '.scratch/pilot/gates/G4.sh');
+    const first = spawnSync(shell, [path], { encoding: 'utf8', cwd: realTmpdir() });
+    assert.equal(first.status, 0, first.stderr);
+    assert.match(first.stdout, /GATE_SCRIPT_DONE G4\n$/);
+    const second = spawnSync(shell, [path], { encoding: 'utf8', cwd: realTmpdir() });
+    assert.equal(second.status, 0, second.stderr);
+    assert.match(second.stdout, /^GATE_SCRIPT_DONE G4 .*已執行完成/);
+    assert.equal(readFileSync(join(dir, 'ran.txt'), 'utf8'), 'once\n');
+  });
+
+  test(`open --script（${shell}）：步驟本體定義的函式裡失敗也印停止行，只印一次`, t => {
+    const dir = checkout(t);
+    withScript(t, dir, 'merge_pr() {\n  gh_status="$(sh -c \'exit 2\')"\n}\nstep 合入\nmerge_pr\necho 不該執行\n');
+    const result = spawnSync(shell, [join(dir, '.scratch/pilot/gates/G4.sh')], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.doesNotMatch(result.stdout, /不該執行/);
+    assert.equal(result.stderr.match(/停止：第 \d+ 行失敗（步驟：合入）/g)?.length, 1, result.stderr);
+  });
+
+  test(`open --script（${shell}）：步驟本體 cd 到別處時，完成標記仍寫在 checkout 裡，重跑不重做`, t => {
+    const dir = checkout(t);
+    const elsewhere = mkdtempSync(join(realTmpdir(), 'pilot-gate-cd-'));
+    t.after(() => rmSync(elsewhere, { recursive: true, force: true }));
+    withScript(t, dir, `step 換目錄\ncd '${elsewhere}'\necho did >> ran.txt\n`);
+    const path = join(dir, '.scratch/pilot/gates/G4.sh');
+    const first = spawnSync(shell, [path], { encoding: 'utf8' });
+    assert.equal(first.status, 0, first.stderr);
+    assert.match(spawnSync(shell, [path], { encoding: 'utf8' }).stdout, /^GATE_SCRIPT_DONE G4 /);
+    assert.equal(readFileSync(join(elsewhere, 'ran.txt'), 'utf8'), 'did\n');
+  });
+
+  test(`open --script（${shell}）：中途失敗沒有完成標記，修好後重跑從頭執行`, t => {
+    const dir = checkout(t);
+    withScript(t, dir, 'step 檢查\n[ -e ok ] || exit 3\nstep 完成\necho done >> ran.txt\n');
+    const path = join(dir, '.scratch/pilot/gates/G4.sh');
+    assert.equal(spawnSync(shell, [path], { encoding: 'utf8' }).status, 3);
+    writeFileSync(join(dir, 'ok'), '');
+    const again = spawnSync(shell, [path], { encoding: 'utf8' });
+    assert.equal(again.status, 0, again.stderr);
+    assert.equal(readFileSync(join(dir, 'ran.txt'), 'utf8'), 'done\n');
+  });
+}
+
+test('open --script：同一路徑留著舊的完成標記（gates.md 重新編號）時先刪掉，新腳本照常執行', t => {
+  const dir = checkout(t, null);
+  mkdirSync(join(dir, '.scratch/pilot/gates'), { recursive: true });
+  writeFileSync(join(dir, '.scratch/pilot/gates/G1.done'), '2026-01-01T00:00:00+0800\n');
+  withScript(t, dir, 'step 新的\necho new >> ran.txt\n');
+  const result = spawnSync('bash', [join(dir, '.scratch/pilot/gates/G1.sh')], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(dir, 'ran.txt'), 'utf8'), 'new\n');
+});
+
+test('open --script：檔案不存在或旗標重複是用法錯誤 exit 2，不建 gate 也不寫腳本', t => {
+  const dir = checkout(t, null);
+  for (const args of [
+    ['open', ...OPEN, '--script', join(dir, 'missing.sh')],
+    ['open', ...OPEN, '--script'],
+    ['open', ...OPEN, '--script', join(dir, 'a'), '--script', join(dir, 'b')],
+  ]) {
+    assert.equal(run(dir, ...args).status, 2, args.join(' '));
+  }
+  assert.throws(() => gates(dir));
+  assert.throws(() => readFileSync(join(dir, '.scratch/pilot/gates/G1.sh')));
+});

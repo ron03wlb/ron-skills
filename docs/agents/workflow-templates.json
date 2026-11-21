@@ -162,8 +162,8 @@
     },
     "scripts/pilot-gate.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-gate.mjs",
-      "commit": "76eb90190bc130315ec18c68075bc3dc7f3e415c",
-      "sha256": "3377f9674f4c02094fcba31a626b8083c78ae38103869dc3b92dc2f07789189d"
+      "commit": "5f90ad2313e2cb8ec73e7d3c8ea3059604cc0b2b",
+      "sha256": "298fa15c68a53712733eefe096f031028561f0a722501f9da76497d07bf1f7ec"
     },
     "scripts/pilot-handoff.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-handoff.mjs",
