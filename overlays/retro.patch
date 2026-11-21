@@ -1,5 +1,5 @@
 diff --git a/SKILL.md b/SKILL.md
-index 12149ac..e1d0af4 100644
+index 12149ac..3205592 100644
 --- a/SKILL.md
 +++ b/SKILL.md
 @@ -1,7 +1,6 @@
@@ -11,8 +11,12 @@ index 12149ac..e1d0af4 100644
  ---
  
  The user has asked for a **retrospective**. You are suggesting improvements to the coding agent's **environment** to improve future runs.
-@@ -24,6 +23,20 @@ The user has asked for a **retrospective**. You are suggesting improvements to t
+@@ -22,8 +21,24 @@ The user has asked for a **retrospective**. You are suggesting improvements to t
+ - **No-ops**: look for instructions in steering files that don't modify the agent's behavior. _Use when_ the steering files are large and unwieldy.
+ - **Information access**: look for opportunities to increase the agent's access to information. Teeing dev server logs, readonly access to third-party services. _Use when_ a crucial piece of information was not available to the agent.
  
++   **Hook behind.** Before step 4 lists a candidate about a script a `.claude/settings.json` hook runs, check whether the main checkout runs an older copy than the integration branch: the pilot Probe prints `HOOK_BEHIND <file>` for it, or, with the main branch behind the integration branch (`git rev-list --count <main>..<integration>` above 0), `git diff --quiet <main> <integration> -- <file>` exits 1. Then reproduce the failure with the integration branch's version first (`git show <integration>:<file>` into the scratchpad, fed the same input) before reporting it: when that version passes, the fix is already waiting for the main branch, so drop the candidate and say so instead of reporting it again (investing#407 and #424 re-reported hook failures the integration branch had already fixed while the main branch was paused).
++
  4. Present these candidates to the user, in order of severity.
  
 +   **Declared collect.** The **Retro collect** entry that **Collect mode** below reads may declare `Roster command:`, `Collect command:`, and `Close command:` lines, for a project that keeps its candidates outside the tracker; with only some of them, stop and name what is missing, since candidates written one way would be read another. With all three, the collect command picks the route and this session opens no `retro-candidates` Issue: replace `<session>` in it with `$CLAUDE_CODE_SESSION_ID`, run it, and read the first line of its output. `COLLECT <file>`: after presenting the candidates, write them to `<file>` in the format the entry states (the numbered items of **Collect mode** when it states none), tell the user the path, implement nothing, and skip steps 5 and 6. `NORMAL`: this session does not collect, so continue as below and implement, unless **Started by a skill** below applies. On any other first line or a nonzero exit, report it and stop. Step 7 runs once on either route (except under **Started by a skill**), even when the command's later lines also remind you of it. When the repo has `scripts/adapter-line.mjs`, find the entry with `node scripts/adapter-line.mjs "Retro collect"` and read the adapter itself only when it prints `ADAPTER_LINE_NOT_FOUND` (retro spay2 d7ba0654#3: a grep over the adapters returned 17 KB of long lines without the entry).
