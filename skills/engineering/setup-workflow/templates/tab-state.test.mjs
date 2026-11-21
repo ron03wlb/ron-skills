@@ -14,8 +14,9 @@ const SELF = 'term_self';
 // 記錄呼叫的假 Orca CLI：`terminal list` 回本分頁（title 是 Claude 的自動標題；`tabTitle` 是 --include-visual-layouts 回的實際分頁標題）。
 // `failing` 為真時每個呼叫都回錯。標題記錄放在 fixture 的 TAB_STATE_DIR，不碰家目錄。
 // `tabTitle` 有值時 rename 會改掉回報的分頁標題；`stuck` 為真時 rename 回 ok、回報的標題不變（2026-11-02 coordinator 回報改名成功，分頁實際沒變）。
+// 本分頁預設是分頁的第一個 pane（擁有者）；`splitChild` 為真時本 pane 排在別的 pane 之後（orca-session-split 的 split 模式開出來的，#378）。
 // `lagReads` 是改名後還回舊標題的讀取次數。`overwrittenOnce` 為真時第一次 rename 回 ok、標題隨即被別的寫入者蓋回（retro 2de453a3#6：orca-tab-title hook 較晚送出的清標題）。
-function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTitle, slow = '', stuck = false, lagReads = 0, firstRenameFails = false, slowRenames = 0, renameLands = false, overwrittenOnce = false } = {}) {
+function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTitle, slow = '', stuck = false, lagReads = 0, firstRenameFails = false, slowRenames = 0, renameLands = false, overwrittenOnce = false, splitChild = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'tab-state-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const log = join(temp, 'orca.log');
@@ -44,7 +45,7 @@ else if (b === 'list' && fs.existsSync(${JSON.stringify(live)}) && process.argv.
     if (left > 0) fs.writeFileSync(${JSON.stringify(lag)}, String(left - 1));
     else fs.renameSync(${JSON.stringify(pending)}, ${JSON.stringify(live)});
   }
-  reply('list-visual', { visualLayouts: [{ root: { second: { tabs: [{ title: fs.readFileSync(${JSON.stringify(live)}, 'utf8'), panes: { second: { handle: ${JSON.stringify(SELF)} } } }] } } }] });
+  reply('list-visual', { visualLayouts: [{ root: { second: { tabs: [{ title: fs.readFileSync(${JSON.stringify(live)}, 'utf8'), panes: ${JSON.stringify(splitChild ? { first: { handle: 'term_owner' }, second: { handle: SELF } } : { first: { handle: SELF }, second: { handle: 'term_split' } })} }] } } }] });
 }
 else if (b === 'list') reply('list', { terminals: [{ handle: 'term_other', title: '別人' }, { handle: ${JSON.stringify(SELF)}, title: ${JSON.stringify(autoTitle)} }], totalCount: 2 });
 else if (b === 'rename') {
@@ -61,6 +62,35 @@ else if (b === 'rename') {
   });
   return { log, record, recorded, run, calls: () => readFileSync(log, 'utf8') };
 }
+
+// split 出來的子 pane 和 coordinator 同一個分頁：子 session 的 tab-state 不蓋掉擁有者的標題（#378）。
+test('split 出來的子 pane：帶不帶 --topic 都不改名，印 TAB_STATE_SKIP split、exit 0', t => {
+  const { record, recorded, run, calls } = fixture(t, { tabTitle: '處理中｜[維運] issue-pilot coordinator', splitChild: true });
+  record('處理中｜子 session 的舊標題');
+  for (const args of [['處理中', '--topic', '#12 交付'], ['待 Retro']]) {
+    const result = run(args);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, 'TAB_STATE_SKIP split\n');
+  }
+  assert.doesNotMatch(calls(), /terminal rename/);
+  assert.equal(recorded(), '處理中｜子 session 的舊標題');
+});
+
+test('分頁的第一個 pane 帶 --topic：照常改名', t => {
+  const { run, calls } = fixture(t, { tabTitle: '處理中｜舊' });
+  const result = run(['處理中', '--topic', '新主題']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'TAB_STATE 處理中｜新主題\n');
+  assert.match(calls(), /terminal rename --terminal term_self --title 處理中｜新主題/);
+});
+
+test('分頁的第一個 pane 換成處理中（不帶 --topic）：用判斷 split 時讀到的標題，只換前綴、不再讀一次', t => {
+  const { run, calls } = fixture(t, { tabTitle: '待 Retro｜#21 雙池採集｜實作' });
+  const result = run(['處理中']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'TAB_STATE 處理中｜#21 雙池採集｜實作\n');
+  assert.equal(calls(), 'terminal list --include-visual-layouts --json\nterminal rename --terminal term_self --title 處理中｜#21 雙池採集｜實作 --json\nterminal list --include-visual-layouts --json\n');
+});
 
 test('換狀態前綴：以 Orca 實際分頁標題為準，不用過期的記錄', t => {
   const { record, recorded, run } = fixture(t, { tabTitle: '處理中｜新主題' });
@@ -122,7 +152,8 @@ test('--topic：一次設定前綴與主題，不沿用記錄裡上一個 sessio
   const result = run(['處理中', '--topic', '[維運] retro 收集']);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), 'TAB_STATE 處理中｜[維運] retro 收集');
-  assert.equal(calls(), 'terminal rename --terminal term_self --title 處理中｜[維運] retro 收集 --json\nterminal list --include-visual-layouts --json\n', '不讀目前標題，只有改名後讀回');
+  // 改名前那次 list 只用來判斷是不是 split 出來的 pane（#378），標題不取自它也不取自記錄。
+  assert.equal(calls(), 'terminal list --include-visual-layouts --json\nterminal rename --terminal term_self --title 處理中｜[維運] retro 收集 --json\nterminal list --include-visual-layouts --json\n');
   assert.equal(recorded(), '處理中｜[維運] retro 收集');
 });
 

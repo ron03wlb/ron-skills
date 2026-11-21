@@ -14,6 +14,8 @@
 //   `｜規劃｜grilling`）。hook 與 tab-state-finish 直接呼叫 setState，仍只換前綴。
 // 改名後讀回實際分頁標題再回報（2026-11-02：Orca 回 ok、分頁實際沒變，只看回傳就回報了沒發生的事）；只有這個 CLI 入口讀回，hook 與 tab-state-finish 直接呼叫 setState，不多花 Orca 呼叫。
 // stdout：改名成功時印 `TAB_STATE <新標題>`；讀不到分頁（舊版 Orca、連不上、太慢）無從比對，照樣算成功。
+//   本 pane 不是分頁的第一個 pane（orca-session-split 的 split 模式或手動 split 開出來的）時不改名、不寫記錄，只印 `TAB_STATE_SKIP split`、exit 0：
+//   分頁標題一個分頁一份，歸分頁擁有者（#378：worker 的 tab-state --topic 蓋掉 coordinator 分頁的標題）。讀不到分頁時無從判斷，照常改名。
 // stderr：Orca 呼叫失敗時印 `TAB_STATE_FAILED <狀態> <原因>`。逾時時腳本自己讀回實際標題：已生效就算成功（#295：沒印 TAB_STATE 卻改成功、和完全沒改，看起來一樣），
 //   確定沒生效就再送一次（retro spay2 b1549391#4：agent 只能自己 --title 再重跑）；仍逾時才印，這時改名可能已送達，分頁實際標題要另外看。
 //   讀回的標題不符時再送一次、再讀回：別的寫入者可能剛蓋掉（retro 2de453a3#6：orca-tab-title hook 的背景工作在讀到記錄之前就決定要清標題，幾秒後才送出，清掉本腳本剛設的標題）。
@@ -132,6 +134,19 @@ async function liveTab(ctx, handle) {
   }
 }
 
+/** pane 樹（`first` 先於 `second`）的第一個 terminal handle；樹的形狀不認得時為 null。 */
+const firstPane = node => node === null || typeof node !== 'object' ? null
+  : typeof node.handle === 'string' ? node.handle : firstPane(node.first) ?? firstPane(node.second);
+
+/**
+ * `handle` 是不是 split 出來的 pane：分頁的第一個 pane 是分頁擁有者（split 開的新 pane 排在後面），其他 pane 不改分頁標題（#378）。
+ * 讀不到分頁、或認不出第一個 pane 時無從判斷，當作擁有者。
+ */
+export const isSplitChild = (tab, handle) => {
+  const first = tab ? firstPane(tab.panes) : null;
+  return first !== null && first !== handle;
+};
+
 /** Orca 的實際分頁標題；讀不到時為 null。 */
 const liveTitle = async (ctx, handle) => (await liveTab(ctx, handle))?.title ?? null;
 
@@ -221,18 +236,28 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   const handle = process.env.ORCA_TERMINAL_HANDLE;
   if (!handle) process.exit(0);
+  // split 出來的 pane 不改分頁標題：標題歸分頁擁有者（例如 coordinator），子 session 改了就蓋掉它（#378）。
+  const tab = await liveTab({ cli: orcaContext().cli }, handle);
+  if (isSplitChild(tab, handle)) {
+    console.log('TAB_STATE_SKIP split');
+    process.exit(0);
+  }
   try {
     const seen = {};
     const onRename = reply => { seen.rename = reply; };
     const ctx = () => ({ ...orcaContext(), onRename });
     // 離開處理中又沒帶 --topic：先讀目前標題取出主題，之後都當成帶了這個 --topic（拿掉階段、動作與 ⏸，#334）。
     let wanted = topic;
+    // 第一次嘗試沿用上面讀到的分頁標題，不再花一次 `terminal list`；重試才重讀。
+    let known = tab?.title;
     // 改名是冪等的，失敗或逾時就用新的時間上限再送一次：改名可能已送達卻沒寫記錄，`/retro-collect` 讀到舊狀態就不關分頁（1102b 的 #297）。
     // 讀目前標題與改名共用同一個 context，一次嘗試只用一份 ORCA_BUDGET_MS。
     const attempt = async () => {
       const c = ctx();
-      if (wanted === undefined && state !== WORKING) wanted = mainTopic(await currentTitle(c, handle));
-      return setState(c, handle, state, wanted);
+      const current = known;
+      known = undefined;
+      if (wanted === undefined && state !== WORKING) wanted = mainTopic(current ?? await currentTitle(c, handle));
+      return setState(c, handle, state, wanted ?? current);
     };
     const title = await attempt().catch(attempt).catch(error => {
       if (error.name !== 'AbortError') throw error;
