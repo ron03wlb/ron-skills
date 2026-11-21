@@ -29,6 +29,11 @@
 //            它 `## Pilot` 段連到的同目錄 .md 整份都算，改動都在 `- **<名稱>.**` 條目裡時附改動的條目名稱，依名稱排序、以 `,` 分隔，名稱本身可能有空格
 //            （不能有 `,` 或 `｜`）；刪掉或改名的條目也列（取改動前的名稱）；有條目以外的改動或不是 `.md` 時省略名稱欄，表示要讀整份。
 //            ` ｜ ` 之後是讀整合分支那份的指令，不讀整份 diff）
+//   腳本（#358）：SCRIPT_AHEAD <scripts/路徑> run-in <stage worktree>｜SCRIPT_AHEAD <scripts/路徑> sync-main（有 ADAPTER_AHEAD 的那一輪，整合分支那份 adapter 的
+//            Pilot 段與它連到的檔指名的 `scripts/*`（含 `.py`、`.sh`），主 checkout 工作樹缺檔或內容與整合分支不同，而且整合分支那份不比主分支舊；依路徑。
+//            run-in 是分支為整合分支或 pilot/stage-* 的 worktree，在主 checkout 以 `<stage worktree>/scripts/…` 跑；那個 worktree 不存在或也沒有這個檔時是 sync-main）｜
+//            HOOK_BEHIND <scripts/路徑>（主分支落後整合分支時，主分支 `.claude/settings.json` 的 hook 指令引用、整合分支內容不同而且不比主分支舊的檔；
+//            依指令順序，每個檔一次：hook 跑的是主 checkout 的舊版）
 //   開著的列：REQUEST <requests.md 原文>｜GATE <id> <Issue> <question 或段落標題>｜GATE_MALFORMED <id> <把 resolved 寫進別的欄位的那一行>
 //   Issue 依賴：DEPS_PROSE <n> #<m>（開著的 `ready-for-agent` Issue 內文以「依賴」或先後寫法（「排在 #m 之後」「以 #m 為 blocker」「等 #m 合入」）帶出 #m，#m 還開著，blocked_by 卻沒有它；Pool 只讀 blocked_by）｜
 //               DEPS_PROSE <n> last new #<m> [#<k>…]（內文寫「最後做」卻沒號碼，#m… 比 blocked_by 最新一張（空時比自己）還新、開著、不在 blocked_by，
@@ -42,7 +47,9 @@
 //               本文以 github.com 寫法（裸 ref 或 github.com 網址）寫了宣告專案的對應單：那個專案不在 github.com，Close 會 STOP counterpart；
 //               判斷同 pilot-counterpart.mjs 的 --adapter，依號碼、同一張單照本文順序；沒有宣告、gh 失敗時不印）
 //   等人的單（#327）：HUMAN_NO_GATE <n> <摘要>（`ready-for-human` 的單（pool() 的 human 桶）在 gates.md 沒有 Issue 欄是 #n 的開著的 gate：
-//               coordinator 開 gate 問人；摘要是本文 `… prerequisite：` 那行冒號之後的文字，沒有這行時是標題；依號碼，gh 失敗時不印）
+//               coordinator 開 gate 問人；摘要是本文 `… prerequisite：` 那行冒號之後的文字，沒有這行時是標題；依號碼，gh 失敗時不印）｜
+//               HUMAN_LANDED <n> <sha>（#358：同一個桶裡，整合分支已有它的落地 commit（issue-pool 的 landedOn）的單；依號碼，在 HUMAN_NO_GATE 之後；
+//               沒有整合分支或 gh 失敗時不印）
 //   母單（#164）：PARENT_LABEL <n>（開著、或已關閉卻有開著子單的母單，沒有 `parent` label 或還掛 triage label）｜
 //               PARENT_REOPEN <n>（開著的子單的母單 #n 在同一個 repo、已關閉）；各依號碼、每張一次
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
@@ -80,7 +87,7 @@ import { changedUnits } from './lib/changed-units.mjs';
 import { gateLines, isOpenRequest, now, openGates, parksAllPush, tableCells } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 import { ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
-import { POOL_FIELDS, pool, prerequisiteOf } from './issue-pool.mjs';
+import { POOL_FIELDS, landedOn, pool, prerequisiteOf } from './issue-pool.mjs';
 import { counterparts, declaredProjects } from './pilot-counterpart.mjs';
 
 // 池子摘要要的欄位取 issue-pool 的 POOL_FIELDS（#240）；同名的 blockedBy 在 GraphQL 裡合併成一份選取。
@@ -150,6 +157,20 @@ function show(checkout, ref, path) {
 }
 
 /**
+ * 整合分支那份 `path` 不比主分支舊：主分支最後一次改它的 commit 已經在整合分支裡（主分支從沒有這個檔也算）。
+ * 主分支自己改過、整合分支還沒跟上，或兩邊都改過（歷史分岔、分不出誰新）時是 false。`ahead`、`base` 是完整的 ref。
+ */
+function integrationNewer(checkout, ahead, base, path) {
+  const touched = git(checkout, 'log', '-1', '--format=%H', base, '--', path);
+  if (touched.status !== 0) throw new Error(`git log ${base} -- ${path} exit ${touched.status}：${touched.stderr.trim()}`);
+  const last = touched.stdout.trim();
+  if (!last) return true;
+  const ancestor = git(checkout, 'merge-base', '--is-ancestor', last, ahead);
+  if (ancestor.status > 1) throw new Error(`git merge-base --is-ancestor exit ${ancestor.status}：${ancestor.stderr.trim()}`);
+  return ancestor.status === 0;
+}
+
+/**
  * 整合分支上比主分支新的 adapter 檔：整合分支有這個檔、內容與主分支不同，而且主分支最後一次改它的 commit
  * 已經在整合分支裡（主分支從沒有這個檔也算）。主分支自己改過、整合分支還沒跟上時，整合分支那份比較舊，不印；
  * 兩邊都改過（歷史分岔）時分不出誰新，也不印。整合分支刪掉的檔讀不到，不印。沒有整合分支或主分支時不比。
@@ -166,18 +187,70 @@ export function adapterAhead(checkout, { integration = 'pilot/integration', main
     if (!blob || blob === rev(checkout, `${base}:${path}`)) return false;
     // adapter 本身只看 Pilot 段：Review、Permissions 等段落的改動不影響 coordinator（#357）。
     if (path === ADAPTER && pilotSection(show(checkout, ahead, path)) === pilotSection(show(checkout, base, path))) return false;
-    const touched = git(checkout, 'log', '-1', '--format=%H', base, '--', path);
-    if (touched.status !== 0) throw new Error(`git log ${main} -- ${path} exit ${touched.status}：${touched.stderr.trim()}`);
-    const last = touched.stdout.trim();
-    if (!last) return true;
-    const ancestor = git(checkout, 'merge-base', '--is-ancestor', last, ahead);
-    if (ancestor.status > 1) throw new Error(`git merge-base --is-ancestor exit ${ancestor.status}：${ancestor.stderr.trim()}`);
-    return ancestor.status === 0;
+    return integrationNewer(checkout, ahead, base, path);
   }).map(path => {
     const unit = path === ADAPTER ? undefined : changedUnits(checkout, base, ahead, { paths: [path], adjacent: false }).get(path);
     const names = unit && !unit.whole && unit.entries.size ? ` ${[...unit.entries].sort().join(',')}` : '';
     return `ADAPTER_AHEAD ${path}${names} ｜ git -C ${checkout} show ${integration}:${path}`;
   });
+}
+
+// adapter 指名的腳本：`scripts/<路徑>.<副檔名>`，前面不能是路徑字元（`skills/…/scripts/x.mjs` 是正本、`<stage worktree>/scripts/<x>.mjs` 是寫法說明，都不算）。
+const SCRIPT_PATH = String.raw`scripts\/[\w./-]+?\.(?:mjs|cjs|js|py|sh)\b`;
+const ADAPTER_SCRIPT = new RegExp(String.raw`(?<![\w./<>-])` + SCRIPT_PATH, 'g');
+// hook 指令裡的腳本：`$CLAUDE_PROJECT_DIR/scripts/x` 前面是 `/`，所以只排除檔名字元。
+const HOOK_SCRIPT = new RegExp(String.raw`(?<![\w.-])` + SCRIPT_PATH, 'g');
+const scriptRefs = (text, pattern) => [...new Set([...text.matchAll(pattern)].map(([path]) => path))];
+
+/** stage worktree（分支是整合分支或 `pilot/stage-*` 的 linked worktree，同 lib/pilot-store.mjs 的 runInStageWorktree）的路徑；沒有時 undefined。 */
+function stageWorktree(checkout, integration) {
+  const list = git(checkout, 'worktree', 'list', '--porcelain');
+  if (list.status !== 0) throw new Error(`git worktree list exit ${list.status}：${list.stderr.trim()}`);
+  return list.stdout.split(/\n\n+/).slice(1)
+    .map(block => ({ path: block.match(/^worktree (.*)$/m)?.[1], branch: block.match(/^branch refs\/heads\/(.*)$/m)?.[1] }))
+    .find(({ path, branch }) => path && existsSync(path) && (branch === integration || branch?.startsWith('pilot/stage-')))?.path;
+}
+
+/**
+ * `ADAPTER_AHEAD` 那一輪（`adapterLines` 是 adapterAhead 印的行，空時不比），coordinator 照整合分支的 adapter 跑主 checkout 的腳本（#358，#324 第 5 項、#338 第 5 項）：
+ * 整合分支那份 adapter 的 Pilot 段與它連到的檔指名的 `scripts/*`（含 `.py`、`.sh`），整合分支有這個檔、主 checkout 工作樹缺檔或內容不同、
+ * 而且整合分支那份不比主分支舊（integrationNewer）時，依路徑印 `SCRIPT_AHEAD <path> run-in <stage worktree>`；stage worktree 不存在或也沒有這個檔時
+ * 印 `SCRIPT_AHEAD <path> sync-main`（先跑 pilot-land.mjs sync-main 建好、跟上 stage worktree）。缺檔會 MODULE_NOT_FOUND，舊版會靜默做錯（`pilot-watch.mjs`）。
+ */
+export function scriptsAhead(checkout, adapterLines, { integration = 'pilot/integration', main = 'main' } = {}) {
+  if (!adapterLines.length) return [];
+  const [tip, base] = [`refs/heads/${integration}`, `refs/heads/${main}`];
+  const adapter = show(checkout, tip, ADAPTER);
+  const text = [pilotSection(adapter), ...pilotFiles(adapter).map(path => show(checkout, tip, path))].join('\n');
+  const stale = scriptRefs(text, ADAPTER_SCRIPT).sort().filter(path => {
+    if (!rev(checkout, `${tip}:${path}`)) return false;
+    const disk = join(checkout, path);
+    if (existsSync(disk) && readFileSync(disk, 'utf8') === show(checkout, tip, path)) return false;
+    return integrationNewer(checkout, tip, base, path);
+  });
+  if (!stale.length) return [];
+  const stage = stageWorktree(checkout, integration);
+  return stale.map(path => `SCRIPT_AHEAD ${path} ${stage && existsSync(join(stage, path)) ? `run-in ${stage}` : 'sync-main'}`);
+}
+
+/**
+ * 主分支落後整合分支（整合分支有主分支沒有的 commit）時，主分支 `.claude/settings.json` 的 hook 指令引用的 `scripts/` 檔，
+ * 整合分支那份內容不同、而且不比主分支舊時，依指令出現順序印 `HOOK_BEHIND <path>`（#358，#340 第 1 項）：hook 跑的是主 checkout 的舊版，
+ * 已在整合分支修好的 hook 問題不要再回報（investing#407、#424）。settings.json 不存在或解析不了時不印。
+ */
+export function hookBehind(checkout, { integration = 'pilot/integration', main = 'main' } = {}) {
+  const [tip, base] = [`refs/heads/${integration}`, `refs/heads/${main}`];
+  if (!rev(checkout, tip) || !rev(checkout, base)) return [];
+  const count = git(checkout, 'rev-list', '--count', `${base}..${tip}`);
+  if (count.status !== 0) throw new Error(`git rev-list exit ${count.status}：${count.stderr.trim()}`);
+  if (count.stdout.trim() === '0') return [];
+  let settings;
+  try { settings = JSON.parse(show(checkout, base, '.claude/settings.json')); } catch { return []; }
+  const commands = Object.values(settings?.hooks ?? {}).flat().flatMap(group => group?.hooks ?? []).map(hook => hook?.command).filter(command => typeof command === 'string');
+  return scriptRefs(commands.join('\n'), HOOK_SCRIPT).filter(path => {
+    const blob = rev(checkout, `${tip}:${path}`);
+    return blob && blob !== rev(checkout, `${base}:${path}`) && integrationNewer(checkout, tip, base, path);
+  }).map(path => `HOOK_BEHIND ${path}`);
 }
 
 /** `.scratch/pilot/` 裡的 batch checkpoint 檔名，依名稱排序。 */
@@ -371,10 +444,32 @@ export function humanNoGateLines(issues, repo, gates = []) {
 }
 
 /**
- * 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE、COUNTERPART_BARE、HUMAN_NO_GATE、PARENT_* 與池子摘要行（同一次查詢），以及 PARENT_* 對應的 tracker 寫入（不在這裡寫）；
- * `gates` 是 gates.md 開著的 gate（openGates）。gh 失敗時只有 DEPS_PROSE_FAILED 與 POOL_FAILED 兩行，不中斷其他檢查。
+ * 等人的單其實已落地（#358，#338 第 8 項）：pool() 的 human 桶（`ready-for-human`）裡，整合分支已有它的落地 commit（issue-pool 的 landedOn：主旨含 `(#<n>)`，
+ * 或 merge commit 合進 `<n>-` 開頭的分支）的，依號碼印 `HUMAN_LANDED <n> <sha>`。`landed` 是 landedOn 的結果，沒給時不印。
+ * investing#353：#316 的 Operator 腳本早已在整合分支，下一個 session 又請 Operator 跑一次。
  */
-export function trackerLines(checkout, batched = new Set(), projects = new Set(), gates = []) {
+export function humanLandedLines(issues, repo, landed) {
+  if (!landed) return [];
+  return pool(issues, { repo }).filter(({ bucket, issue }) => bucket === 'human' && landed(issue.number))
+    .map(({ issue }) => issue.number).sort((a, b) => a - b)
+    .map(n => `HUMAN_LANDED ${n} ${landed(n)}`);
+}
+
+/** 整合分支的 commit（新的先，每個是 [sha, 主旨]），給 landedOn；分支不存在時 undefined。 */
+function integrationLanded(checkout, integration) {
+  if (!rev(checkout, `refs/heads/${integration}`)) return undefined;
+  return landedOn(integration, ref => {
+    const result = git(checkout, 'log', '--format=%H%x09%s', `refs/heads/${ref}`, '--');
+    if (result.status !== 0) throw new Error(`git log ${ref} exit ${result.status}：${result.stderr.trim()}`);
+    return result.stdout.split('\n').filter(Boolean).map(line => line.split('\t'));
+  });
+}
+
+/**
+ * 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE、COUNTERPART_BARE、HUMAN_NO_GATE、HUMAN_LANDED、PARENT_* 與池子摘要行（同一次查詢），以及 PARENT_* 對應的 tracker 寫入（不在這裡寫）；
+ * `gates` 是 gates.md 開著的 gate（openGates），`landed` 是整合分支的 landedOn（沒有時不印 HUMAN_LANDED）。gh 失敗時只有 DEPS_PROSE_FAILED 與 POOL_FAILED 兩行，不中斷其他檢查。
+ */
+export function trackerLines(checkout, batched = new Set(), projects = new Set(), gates = [], landed) {
   try {
     const repo = gh(checkout, 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim();
     const [owner, name] = repo.split('/');
@@ -385,7 +480,7 @@ export function trackerLines(checkout, batched = new Set(), projects = new Set()
       ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
     }
     const { lines, fixes } = parentFixes(issues, repo);
-    return { lines: [...depsProse(issues, repo), ...counterpartLines(issues, repo, batched, projects), ...humanNoGateLines(issues, repo, gates), ...lines, poolLine(issues, repo, batched)], fixes, issues };
+    return { lines: [...depsProse(issues, repo), ...counterpartLines(issues, repo, batched, projects), ...humanNoGateLines(issues, repo, gates), ...humanLandedLines(issues, repo, landed), ...lines, poolLine(issues, repo, batched)], fixes, issues };
   } catch (error) {
     return { lines: [`DEPS_PROSE_FAILED ${error.message}`, `POOL_FAILED ${error.message}`], fixes: [], issues: [] };
   }
@@ -710,8 +805,9 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     .filter(({ current }) => !/^closed\b/.test(current)).flatMap(({ members }) => members.map(({ n }) => n)));
   // 對應專案的宣告取主分支的 adapter（主 checkout 平常就在主分支；整合分支上較新的版本由 ADAPTER_AHEAD 提醒）。
   const projects = declaredProjects(show(checkout, `refs/heads/${main}`, ADAPTER));
-  const tracker = trackerLines(checkout, batched, projects, openGates(readStore(pilot, 'gates.md')));
-  const out = [...checkoutState(checkout, main), ...adapterAhead(checkout, { integration, main }), ...openRows(pilot), ...tracker.lines];
+  const tracker = trackerLines(checkout, batched, projects, openGates(readStore(pilot, 'gates.md')), integrationLanded(checkout, integration));
+  const ahead = adapterAhead(checkout, { integration, main });
+  const out = [...checkoutState(checkout, main), ...ahead, ...scriptsAhead(checkout, ahead, { integration, main }), ...hookBehind(checkout, { integration, main }), ...openRows(pilot), ...tracker.lines];
   if (apply) out.push(...applyParentFixes(checkout, tracker.fixes));
   const landing = [];
   const batches = [];

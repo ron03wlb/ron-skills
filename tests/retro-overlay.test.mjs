@@ -60,6 +60,9 @@ test('retro overlay 收集模式：每個 session 把候選開成一張 retro-ca
   assert.doesNotMatch(step, /retro-collect\.mjs|--role/, '收集模式不能再依賴收集腳本');
   // #156：handle 只是給 /retro-collect 收完關分頁的記錄，沒有 Orca 也照樣開單。
   assert.match(step, /starts with an `Orca: <handle>` line when `ORCA_TERMINAL_HANDLE` is set/);
+  // #369：從聊天視窗開的 retro 單沒有可對應的行，收集端只能印 NO_ORCA（investing#382）。
+  assert.match(step, /`Chat: <\$CLAUDE_CODE_SESSION_ID>` line when it is not/, '沒有 handle 時第一行要寫 Chat: 行');
+  assert.ok(step.indexOf('`Orca: <handle>`') < step.indexOf('`Chat: <$CLAUDE_CODE_SESSION_ID>`'), '有 handle 時仍寫 Orca: 行，Chat: 只是退路');
   assert.match(step, /one Issue labelled `retro-candidates`/, '候選清單不能掛 retro：pilot 會把 retro 單當一般 Issue 派出去');
   assert.match(step, /Implement nothing/);
   assert.match(step, /\/retro-collect/);
@@ -125,4 +128,23 @@ test('retro overlay 拿掉 disable-model-invocation，description 限定只在�
   // 防遞迴：收集者自己的 retro 單帶標記，coordinator 的 Retro trigger 不算它。
   const collect = skill.split('\n\n').find(paragraph => paragraph.includes('**Collect mode.**'));
   assert.match(collect, /`From: retro-collect` line when this session ran `\/retro-collect`/);
+});
+
+// #358（#340 第 1 項）：main 暫停時 hook 跑主 checkout 的舊版 script，retro 把整合分支早已修好的 hook 問題重複回報（investing#407、#424）。
+// 重現要排在列出候選之前（步驟 4），否則照順序讀會先回報才重現。
+test('retro overlay：候選牽涉 HOOK_BEHIND 的 hook script 時，先在整合分支版重現再列出', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'retro-overlay-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(upstream, dir, { recursive: true });
+  const applied = spawnSync('git', ['apply', patch], { cwd: dir, encoding: 'utf8', env });
+  assert.equal(applied.status, 0, applied.stderr);
+
+  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
+  const behind = skill.split('\n\n').find(paragraph => paragraph.includes('**Hook behind.**'));
+  assert.ok(behind, 'overlay 沒有 Hook behind 段落');
+  assert.match(behind, /`HOOK_BEHIND <file>`/);
+  assert.match(behind, /\.claude\/settings\.json/);
+  assert.match(behind, /integration branch's version/);
+  assert.match(behind, /reproduce/);
+  assert.ok(skill.indexOf('**Hook behind.**') < skill.indexOf('4. Present these candidates'), '重現要排在步驟 4 列出候選之前');
 });

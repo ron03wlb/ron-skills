@@ -1455,3 +1455,125 @@ test('ready-for-human Issue 沒有對應的開放 gate 時印 HUMAN_NO_GATE <n> 
     'HUMAN_NO_GATE 190 要人做的事',
   ]);
 });
+
+// #358（#324 第 5 項、#338 第 5 項）：ADAPTER_AHEAD 時 coordinator 照整合分支的 adapter 在主 checkout 跑腳本，
+// 缺檔得 MODULE_NOT_FOUND（investing blocked-by-sync.mjs），舊版靜默做錯（`campaign-due.py` 讀不懂 6 欄、`pilot-watch.mjs` 多個 --batch 只看最後一個）。
+test('ADAPTER_AHEAD 時 adapter 指名、主 checkout 缺檔或內容不同的 scripts/* 印 SCRIPT_AHEAD，有 stage worktree 時附 run-in', t => {
+  const { repo, git, probe, temp } = fixture(t);
+  const commit = (files, message) => {
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(join(repo, path, '..'), { recursive: true });
+      writeFileSync(join(repo, path), text);
+      git('add', path);
+    }
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', message);
+  };
+  const rules = version => `# pilot\n\n- **Watch.** ${version} \`node scripts/pilot-watch.mjs --batch <key>\`。\n\n- **Project tick hooks.** \`python3 scripts/campaign-due.py\`、\`node scripts/blocked-by-sync.mjs --apply\`、\`node scripts/same.mjs\`；正本在 \`skills/x/scripts/other.mjs\`，舊版改跑 \`node <stage worktree>/scripts/<x>.mjs\`。\n`;
+  commit({
+    'docs/agents/issue-run.md': PILOT_SECTION,
+    'docs/agents/pilot-rules.md': rules('v1'),
+    'scripts/pilot-watch.mjs': '// v1\n',
+    'scripts/campaign-due.py': '# v1\n',
+    'scripts/same.mjs': '// same\n',
+  }, 'base');
+  git('switch', '-q', '-c', 'pilot/integration');
+  // 只改腳本、adapter 沒變：coordinator 照 main 的 adapter 跑 main 的腳本，不印。
+  commit({ 'scripts/pilot-watch.mjs': '// v2 --tail\n', 'scripts/campaign-due.py': '# v2 6 欄\n', 'scripts/blocked-by-sync.mjs': '// new\n' }, 'scripts');
+  git('switch', '-q', 'main');
+  assert.deepEqual(lines(probe()).filter(line => line.startsWith('SCRIPT_AHEAD')), []);
+
+  git('switch', '-q', 'pilot/integration');
+  commit({ 'docs/agents/pilot-rules.md': rules('v2') }, 'adapter');
+  git('switch', '-q', 'main');
+  let result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), [
+    aheadLine(repo, 'docs/agents/pilot-rules.md', 'Watch'),
+    'SCRIPT_AHEAD scripts/blocked-by-sync.mjs sync-main',
+    'SCRIPT_AHEAD scripts/campaign-due.py sync-main',
+    'SCRIPT_AHEAD scripts/pilot-watch.mjs sync-main',
+  ]);
+
+  // main 自己改過（整合分支那份比較舊）的腳本不印。
+  commit({ 'scripts/campaign-due.py': '# main hotfix\n' }, 'main hotfix');
+  const stage = join(temp, 'stage');
+  git('worktree', 'add', '-q', stage, 'pilot/integration');
+  result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result).filter(line => line.startsWith('SCRIPT_AHEAD')), [
+    `SCRIPT_AHEAD scripts/blocked-by-sync.mjs run-in ${stage}`,
+    `SCRIPT_AHEAD scripts/pilot-watch.mjs run-in ${stage}`,
+  ]);
+});
+
+// #358（#340 第 1 項）：main 暫停時 `.claude/settings.json` 的 hook 跑主 checkout 的舊版 script，已在整合分支修好的問題被 retro 重複回報（investing#407、#424）。
+test('main 落後整合分支、hook 指令引用的 scripts/ 檔內容不同時印 HOOK_BEHIND <檔案>；相同或 main 不落後時不印', t => {
+  const { repo, git, probe } = fixture(t);
+  const commit = (files, message) => {
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(join(repo, path, '..'), { recursive: true });
+      writeFileSync(join(repo, path), text);
+      git('add', path);
+    }
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', message);
+  };
+  const hook = command => ({ type: 'command', command });
+  commit({
+    '.claude/settings.json': JSON.stringify({ hooks: {
+      PreToolUse: [{ matcher: 'Bash', hooks: [hook('python3 "$CLAUDE_PROJECT_DIR/scripts/guard_git.py"'), hook('node "$CLAUDE_PROJECT_DIR/scripts/lang.mjs"')] }],
+      Stop: [{ hooks: [hook('node "$CLAUDE_PROJECT_DIR/scripts/lang.mjs"')] }],
+    } }, null, 2),
+    'scripts/guard_git.py': '# v1\n',
+    'scripts/lang.mjs': '// v1\n',
+    'scripts/not-a-hook.mjs': '// v1\n',
+  }, 'base');
+  git('branch', 'pilot/integration');
+  const hookLines = () => {
+    const result = probe();
+    assert.equal(result.status, 0, result.stderr);
+    return lines(result).filter(line => line.startsWith('HOOK_BEHIND'));
+  };
+  assert.deepEqual(hookLines(), []);
+
+  // main 落後，但 hook 檔沒變：不印。
+  git('switch', '-q', 'pilot/integration');
+  commit({ 'scripts/not-a-hook.mjs': '// v2\n' }, 'other');
+  git('switch', '-q', 'main');
+  assert.deepEqual(hookLines(), []);
+
+  git('switch', '-q', 'pilot/integration');
+  commit({ 'scripts/guard_git.py': '# v2 No closing quotation fixed\n' }, 'fix hook');
+  git('switch', '-q', 'main');
+  assert.deepEqual(hookLines(), ['HOOK_BEHIND scripts/guard_git.py']);
+
+  // main 跟上之後不落後：不印。
+  git('merge', '-q', '--ff-only', 'pilot/integration');
+  assert.deepEqual(hookLines(), []);
+});
+
+// #358（#338 第 8 項，investing#353 第 2 項）：#316 的 Operator 腳本早已合入整合分支，Issue 仍 ready-for-human，下一個 session 又請 Operator 跑一次。
+test('ready-for-human 的單已落地在整合分支時印 HUMAN_LANDED <n> <sha>；沒落地或不是 ready-for-human 的不印', t => {
+  const human = ['ready-for-human'];
+  const { repo, git, probe } = fixture(t, { issues: [
+    { ...issue(316, '跑 Operator 腳本', { labels: human }), title: 'Operator 腳本' },
+    { ...issue(317, '還沒做', { labels: human }), title: '還沒做' },
+    issue(318, 'agent 單'),
+  ] });
+  git('switch', '-q', '-c', 'pilot/integration');
+  writeFileSync(join(repo, 'op.sh'), 'echo op\n');
+  git('add', 'op.sh');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'Operator 腳本 (#316)');
+  const sha316 = git('rev-parse', 'HEAD');
+  git('switch', '-q', '-c', 'issue/318-x', 'main');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'agent');
+  git('switch', '-q', 'pilot/integration');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '-q', '--no-ff', '-m', "Merge branch 'issue/318-x' into pilot/stage-318", 'issue/318-x');
+  git('switch', '-q', 'main');
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(lines(result), [
+    'HUMAN_NO_GATE 316 Operator 腳本',
+    'HUMAN_NO_GATE 317 還沒做',
+    `HUMAN_LANDED 316 ${sha316}`,
+  ]);
+});
