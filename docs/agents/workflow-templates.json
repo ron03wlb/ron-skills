@@ -47,8 +47,8 @@
     },
     "scripts/claude-hook-tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-tab-state.mjs",
-      "commit": "5f90ad2313e2cb8ec73e7d3c8ea3059604cc0b2b",
-      "sha256": "be03220c45b7b43815cfc8a3f61e5931ad2245edf2459f81306b4a86f7219581"
+      "commit": "d003ad1367c5528cc76dda2ba001472485a4bbce",
+      "sha256": "5f23f9a46df31457aa7cbfbc323459c4cb16a05f460ba8a11aa67fef69bdc0e4"
     },
     "scripts/claude-hook-unbare.sh": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-unbare.sh",
@@ -217,8 +217,8 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "5f90ad2313e2cb8ec73e7d3c8ea3059604cc0b2b",
-      "sha256": "cf719a6b5d6f1eccdf39c00e4848c42f0a6bd53d50e7f599425cacea5a2b8edd"
+      "commit": "d003ad1367c5528cc76dda2ba001472485a4bbce",
+      "sha256": "82dde93be27a3e04e794027f92f51de670384a5c438dbaaddcf1d9fca1fa3a24"
     },
     "scripts/token-usage.mjs": {
       "template": "skills/engineering/setup-workflow/templates/token-usage.mjs",

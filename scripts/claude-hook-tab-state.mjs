@@ -7,12 +7,14 @@
 // - Stop：最後一段 assistant 文字命中 Stop 觸發條件就換狀態；接著檢查標題，沒有 `<狀態>｜` 前綴就自行設為處理中、exit 0（retro e87d365c#5：exit 2 只為要 agent 跑一次 tab-state，多花一輪）。
 //   只檢查格式，不判斷狀態對不對；stop_hook_active 為 true（已因 Stop hook 續跑一次）時不檢查。
 //   補前綴蓋不掉既有狀態：標題以狀態名開頭但分隔符不對（`待 Retro|…`），或記錄的標題是處理中以外的狀態（別的 hook 蓋掉實際標題，或 Stop 觸發條件剛換狀態但分頁沒跟上）時不改名。
-//   這兩種情況、改名失敗、讀回仍沒有前綴時 exit 2，stderr 交回 agent 改名。
+//   這兩種情況、改名失敗、讀回仍沒有前綴時 exit 2，stderr 交回 agent 改名；session 只回答問題（input.cwd 的工作區乾淨、transcript 沒有 commit）時
+//   訊息多一句指向待關閉（#399：問答 session 選了待 Retro，等於要使用者為一則問答跑 /retro）。
 // 預設觸發條件見 DEFAULT_TRIGGERS；`/retro` 的待關閉由 retro 最後一步自己呼叫 tab-state，記錄的標題已是待關閉時觸發條件不再降回待 Retro（#327）。專案可以在 `docs/agents/tab-state.json`
 // 新增、覆寫或停用觸發條件：`{ "triggers": { "<名稱>": { "event": "PostToolUse"|"Stop", "match": "<regex，逐行比對>", "skipCommand": "<regex>", "state": "<狀態>" } | null } }`，
 // 同名覆寫、null 停用；PostToolUse 的 match 比對 Bash 的 stdout，Stop 的比對最後一段 assistant 文字；
 // 選填的 skipCommand 命中 Bash 指令時不觸發（Stop 沒有指令，不看它）。檔案不存在或不是合法 JSON 就用預設值。
 // 沒有 ORCA_TERMINAL_HANDLE、輸入不合法、Orca 呼叫失敗時一律 exit 0 不輸出。
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -84,16 +86,38 @@ export function renamedTitle(command, handle) {
   return title;
 }
 
-/** transcript 最後一段 assistant 文字。 */
-function lastAssistantText(path) {
-  let text = '';
+/** transcript 每段 assistant 訊息的內容區塊。 */
+function* assistantBlocks(path) {
   for (const line of readFileSync(path, 'utf8').split('\n')) {
     let entry;
     try { entry = JSON.parse(line); } catch { continue; }
-    if (entry.type !== 'assistant' || !Array.isArray(entry.message?.content)) continue;
-    for (const block of entry.message.content) if (block.type === 'text' && block.text.trim()) text = block.text;
+    if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) yield* entry.message.content;
   }
+}
+
+/** transcript 最後一段 assistant 文字。 */
+function lastAssistantText(path) {
+  let text = '';
+  for (const block of assistantBlocks(path)) if (block.type === 'text' && block.text.trim()) text = block.text;
   return text;
+}
+
+// 會留下 commit 的 Bash 指令：`git [-C <dir>|-c <k=v>]… commit`，或交付用的 land.mjs。
+const COMMITS = /\bgit(?:\s+-[Cc]\s+\S+)*\s+commit\b|\bland\.mjs\b/;
+
+/** session 只回答問題：`cwd` 的工作區乾淨，transcript 也沒有會 commit 的 Bash 指令。判斷不了（不是 git repo、讀不到 transcript）時傳回 false。 */
+export function answerOnly(cwd, transcriptPath) {
+  if (!cwd || !transcriptPath) return false;
+  const status = spawnSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8', timeout: 10000 });
+  if (status.status !== 0 || status.stdout.trim()) return false;
+  try {
+    for (const block of assistantBlocks(transcriptPath)) {
+      if (block.type === 'tool_use' && block.name === 'Bash' && COMMITS.test(String(block.input?.command ?? ''))) return false;
+    }
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 /** 標題 `title` 沒有前綴時補上處理中；補上且讀回有前綴才傳回 true。傳回 false 時未改名或改名沒生效，由 agent 決定（見檔頭）。 */
@@ -136,7 +160,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         if (!hasState(title) && !await addWorkingPrefix(ctx, handle, title)) {
           process.stderr.write(`分頁狀態：目前分頁標題「${title}」開頭沒有狀態前綴（${STATES.map(s => `${s}｜`).join('、')}）。`
             + '請用 `node scripts/tab-state.mjs <狀態>` 補上前綴，或以 `node scripts/tab-state.mjs <狀態> --topic "<主題>"` 照 adapter Tab state 段的標題格式重設；'
-            + '還在處理（含等使用者回答或核准）用處理中，工作已交付、等使用者跑 /retro 用待 Retro，/retro 已結束用待關閉。\n');
+            + '還在處理（含等使用者回答或核准）用處理中，工作已交付、等使用者跑 /retro 用待 Retro，/retro 已結束用待關閉。'
+            + (answerOnly(input.cwd, input.transcript_path)
+              ? '這個 session 的工作區乾淨、沒有 commit：只回答問題、沒有交付東西時用 `node scripts/tab-state.mjs 待關閉`，不必為問答跑 /retro。' : '')
+            + '\n');
           process.exit(2);
         }
       }

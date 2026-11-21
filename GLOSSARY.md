@@ -79,5 +79,5 @@ session 的工作已經做完，等使用者在這個分頁跑 `/retro`。adapte
 _Avoid_: 完成、done
 
 **待關閉**:
-session 的 `/retro` 已經結束，分頁可以關。
+session 的 `/retro` 已經結束，或 session 只回答問題（工作區乾淨、沒有 commit，不經待 Retro），分頁可以關。
 _Avoid_: 可關閉、closed
