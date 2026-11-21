@@ -1251,6 +1251,27 @@ test('沒有 ready 單但有 needs-triage 單時印 POOL_TRIAGE <n>...，略過�
   assert.deepEqual(poolOutput(result), ['POOL_TRIAGE 5 12']);
 });
 
+// #326：adapter 以 --skip-labels 宣告的 label（investing 的 `ci-report`）和 retro-candidates 一樣：不進 POOL_READY／POOL_TRIAGE，不算「最後做」的新單。
+test('--skip-labels 的單不進 POOL_READY、POOL_TRIAGE，也不算「最後做」的新單；沒帶旗標時照算', t => {
+  const { probe } = fixture(t, { issues: [
+    issue(80, '最後做。'),
+    issue(81, '', { labels: ['ci-report', 'ready-for-agent'] }),
+    issue(82, '', { labels: ['ci-report', 'needs-triage'] }),
+  ] });
+  const skipped = probe({ args: ['--skip-labels', 'ci-report'] });
+  assert.equal(skipped.status, 0, skipped.stderr);
+  assert.deepEqual(lines(skipped), ['DEPS_PROSE 80 last ok']);
+  assert.deepEqual(poolOutput(skipped), ['POOL_READY 80']);
+  const plain = probe();
+  assert.deepEqual(lines(plain), ['DEPS_PROSE 80 last new #81 #82']);
+  assert.deepEqual(poolOutput(plain), ['POOL_READY 80 81']);
+});
+
+test('--skip-labels 沒給值時印用法、exit 2', t => {
+  const { probe } = fixture(t);
+  assert.equal(probe({ args: ['--skip-labels'] }).status, 2);
+});
+
 // #357（#325 第 2 項）：batch-138 唯一成員 #138 是 stop（等 #136），#136 結案後 probe 仍只印 `PARKED 138 138`，
 // coordinator 讀前任 decisions.md 才知道要 fresh 重派。stop 成員的 blocker 全關時印 UNBLOCKED <key> <n>。
 test('stop 成員的 blocker 全關時印 UNBLOCKED <key> <n>；還有開著的 blocker、沒有 blocker、不是 stop、batch 已關都不印', t => {

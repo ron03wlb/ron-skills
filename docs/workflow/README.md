@@ -42,7 +42,7 @@
 | git 流程 | 從 `main` 開 Issue 分支，人或 `land.mjs` push、開 PR／MR、合併 | Worktrees and checkpoint、Delivery、Evidence and closing |
 | 整合分支 | `implement-spec` 的整合分支；L3 是 `pilot/integration` | Worktrees and checkpoint、Pilot |
 | 母單提示 | `/issue-queue` 對母單列出提示（有 `scripts/parent-hints.mjs` 時由它產生）並逐張確認 | Issue queue（`Parent hints: off` 關閉） |
-| 桶名 | `issue-pool.mjs` 的十二個桶（`landed` 只在帶 `--integration` 時出現），分類 label 是 `bug`、`enhancement` | Pool（`Categories: <label>,...` 換分類 label）；桶名與分桶規則寫在腳本裡，要不同的桶得先改 ron-skills 的正本再重新複製（直接改副本，`/setup-workflow health` 會列成 `local-modified`，要求先帶回正本） |
+| 桶名 | `issue-pool.mjs` 的十二個桶（`landed` 只在帶 `--integration` 時出現），分類 label 是 `bug`、`enhancement` | Pool（`Categories: <label>,...` 換分類 label；`Skip labels: <label>,...` 宣告和 `retro-candidates` 一樣不進分級的 label，例如定期報告單，各自成一個以 label 命名的桶）；其餘桶名與分桶規則寫在腳本裡，要不同的桶得先改 ron-skills 的正本再重新複製（直接改副本，`/setup-workflow health` 會列成 `local-modified`，要求先帶回正本） |
 | 認領時限 | 已指派 24 小時沒有新留言或新指派就列為 `stale`，不自動釋放 | Pool（`Claim timeout: <h> hours`） |
 | worker cap | 沒有通用預設：L3 的 coordinator 照 Pilot 段 Defaults 寫的上限派 worker；`/issue-queue` 讀不到上限時（L1、L2 沒有 Pilot 段，或段裡沒寫），上限行顯示 `不限` | Pilot 的 Defaults |
 
