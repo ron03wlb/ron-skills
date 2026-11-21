@@ -51,5 +51,8 @@ test('字串與註解裡的 git 呼叫不算，argv 陣列與 template 指令稿
   assert.equal(spawnsGit("const s = \"execFileSync('git', [])\"; // spawnSync('git')\n"), false);
   assert.equal(spawnsGit("run(repo, ['git', 'status']);\n"), true);
   assert.equal(spawnsGit("write(`execFileSync('git', ['x'])`);\n"), true);
+  assert.equal(spawnsGit('const fx = `python3 - <<\'E\'\\ndef git(path, *a): subprocess.run(["git", "-C", path, *a], check=True)\\nE`;\n'), false, 'template 內他語言指令稿的 ["git", …] 不算 spawn（#412）');
+  assert.equal(spawnsGit("spawnSync('git', ['-C', p]);\nconst fx = `echo ${x}`;\n"), true, '真正的 spawn 仍抓得到');
+  assert.equal(spawnsGit("const fx = `${run(['git', 'status'])}`;\n"), true, '${…} 內的程式碼仍要看');
   assert.equal(missingIsolation("spawnSync('git', []);\n"), false, '沒用 child_process 的檔不算');
 });

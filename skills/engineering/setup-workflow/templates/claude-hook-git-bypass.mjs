@@ -146,13 +146,13 @@ function closingParen(text, start) {
 const codeView = code => code.replace(/\n/g, ' ');
 
 /** 一段引號內容在比對用文字裡的樣子：會被執行的展開比對；git 的參數（單一個字、core.hooksPath 設定）去引號；其他文字換成 `""`。 */
-function quotedView({ literal, subs }, segment, rest, codeIsData) {
+function quotedView({ literal, subs }, segment, rest, codeIsData, inlineSubs) {
   if (/^\s*core\.hooks/i.test(literal)) return literal;
-  if (RUNS_SHELL.test(segment) || FEEDS_SHELL.test(rest)) return ` ; ${commandView(literal, codeIsData)} ; `;
+  if (RUNS_SHELL.test(segment) || FEEDS_SHELL.test(rest)) return ` ; ${commandView(literal, codeIsData, inlineSubs)} ; `;
   // `import(…)`／`require(…)` 載入模組、不執行它的 CLI：去掉括號，免得 `(` 被當成段落開頭（retro spay2 db0c0090#2：
   // `node -e` 字串內以動態 import 載入 batch-watch 被當成執行 watcher）；`os.system('x.mjs | tail')` 照常比對。
   if (RUNS_CODE.test(segment)) return ` ; ${codeView(literal).replace(/\b(?:import|require)\s*\(/g, 'import ').replace(/['"`]/g, ' ')} ; `;
-  const ran = subs.map(sub => ` ; ${commandView(sub, codeIsData)} ; `).join('');
+  const ran = inlineSubs ? subs.map(sub => ` ; ${commandView(sub, codeIsData)} ; `).join('') : '';
   return (/^[\w./=:@%+,-]+$/.test(literal) ? literal : '""') + ran;
 }
 
@@ -164,7 +164,7 @@ function quotedView({ literal, subs }, segment, rest, codeIsData) {
  * 那是另一種語言，字串不是指令（retro spay2 86eda4c4#3：`s="['node x.mjs … | tail']"` 整行原樣比對，`s="['node ` 還被當成環境變數指派）。
  * 直譯器的 -c／-e 內容照常比對（`python3 -c "os.system('x.mjs | tail')"` 是一行寫完的真實呼叫，PR #314 的 review）。
  */
-function commandView(command, codeIsData = false) {
+function commandView(command, codeIsData = false, inlineSubs = true) {
   let out = '';
   let segment = 0;
   let line = 0;
@@ -177,7 +177,7 @@ function commandView(command, codeIsData = false) {
     } else if (c === "'" || c === '"') {
       const quoted = (c === "'" ? singleQuoted : doubleQuoted)(command, i);
       if (!quoted) return out + command.slice(i);
-      out += quotedView(quoted, out.slice(segment), command.slice(quoted.end), codeIsData);
+      out += quotedView(quoted, out.slice(segment), command.slice(quoted.end), codeIsData, inlineSubs);
       i = quoted.end;
     } else if (c === '#' && /[\s;&|(]/.test(command[i - 1] ?? ' ')) {
       const newline = command.indexOf('\n', i);
@@ -197,7 +197,7 @@ function commandView(command, codeIsData = false) {
       const head = command.slice(line, lineEnd);
       // 餵給 shell 的內文再跑一次 commandView：其中引號內的換行也要收掉（#339 PR review：`bash <<'E'` 內多行訊息的 commit -n）。
       const body = command.slice(i + 1, end).replace(/[^\n]*\n?$/, '');
-      if (HEREDOC_SHELL.test(head) || FEEDS_SHELL.test(head)) out += `\n${commandView(body, codeIsData)}\n`;
+      if (HEREDOC_SHELL.test(head) || FEEDS_SHELL.test(head)) out += `\n${commandView(body, codeIsData, inlineSubs)}\n`;
       else if (!codeIsData && HEREDOC_CODE.test(head)) out += `\n${codeView(body)}\n`;
       else out += '\n';
       delimiters = [];
@@ -205,9 +205,9 @@ function commandView(command, codeIsData = false) {
       line = end;
       segment = out.length;
     } else if (c === '`') {
-      out += ' ; ';
+      out += inlineSubs ? ' ; ' : ' ';
       i++;
-      segment = out.length;
+      if (inlineSubs) segment = out.length;
     } else {
       out += c;
       i++;
@@ -242,8 +242,12 @@ const REDIRECT = /(?<![^\s;&|(])(?:\d+|&)?(?:>>?|<(?!<))[&|]?\s*[^\s;&|()<>]*/g;
  * @returns {string|null} 命中的繞過方式；未命中為 null
  */
 export function bypassReason(command) {
-  const view = commandView(command).replace(CONTINUATION, ' ').replace(REDIRECT, ' ');
-  for (const [pattern, reason] of BYPASS) if (pattern.test(view)) return reason;
+  // 兩份視圖：替換內容插回原位（抓 `$(…)` 裡的 git），以及不插（雙引號內的 `$(…)`、反引號不切斷外層指令，
+  // `git commit -m "$(cat <<'EOF' … EOF⏎)" --no-verify` 的旗標才和 git 同段；#339 之前與之後都放行，#412 的繞過語料找到）。
+  for (const inlineSubs of [true, false]) {
+    const view = commandView(command, false, inlineSubs).replace(CONTINUATION, ' ').replace(REDIRECT, ' ');
+    for (const [pattern, reason] of BYPASS) if (pattern.test(view)) return reason;
+  }
   return null;
 }
 

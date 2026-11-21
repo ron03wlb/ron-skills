@@ -489,7 +489,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--keep-branch') options.keepBranch = true;
-    else if (arg in VALUE_FLAGS) {
+    else if (Object.hasOwn(VALUE_FLAGS, arg)) {
       if (argv[i + 1] === undefined) return null;
       options[VALUE_FLAGS[arg]] = argv[++i];
     } else if (!arg.startsWith('-') && !options.branch) options.branch = arg;

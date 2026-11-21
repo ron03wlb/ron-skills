@@ -1057,13 +1057,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   let bad = false;
   for (let i = 0; i < args.length; i++) {
     if (!args[i].startsWith('--')) { positional.push(args[i]); continue; }
-    const flag = { '--apply': 'apply', '--status': 'status' }[args[i]];
+    const flag = new Map(Object.entries({ '--apply': 'apply', '--status': 'status' })).get(args[i]);
     if (flag) {
       if (flag in options) bad = true;
       options[flag] = true;
       continue;
     }
-    const name = { '--integration': 'integration', '--main': 'main', '--capacity': 'capacity', '--skip-labels': 'skipLabels' }[args[i]];
+    const name = new Map(Object.entries({ '--integration': 'integration', '--main': 'main', '--capacity': 'capacity', '--skip-labels': 'skipLabels' })).get(args[i]);
     const value = args[++i];
     if (!name || !value || value.startsWith('--') || name in options) bad = true;
     else options[name] = value;

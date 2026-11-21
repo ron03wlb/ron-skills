@@ -8,7 +8,7 @@ macOS, WSL2, Linux（母單 #82 決策 R1-Q1；原生 Windows 不支援）。本
 
 ## Tracker
 
-[issue-tracker.md](issue-tracker.md)。讀 Issue 一律用 `--json`：`gh issue view <n> --comments` 在非 tty 環境不會輸出任何東西。
+[issue-tracker.md](issue-tracker.md)。讀 Issue 一律用 `--json`：`gh issue view <n> --comments` 在非 tty 環境只印 metadata 與留言、沒有 body（#428，`claude-hook-bash-pitfalls.mjs` 會擋）。
 
 寫入目標是 https://github.com/ron03wlb/ron-skills ：`scripts/gh-tracker.mjs` 從這一段讀主機與 repo，段裡的 GitHub 專案網址只能指向這一個專案（多一個或少了它都 exit 2，#244）。
 
@@ -40,7 +40,7 @@ Counterpart projects: `spay/spay2`
 
 ## Checks
 
-只有一條：`bin/check`。開發中和寫 brief、驗收條件時都只引用這條，不要自己拼 `node --test …`。單一測試檔可以用 `node --test tests/<name>.test.mjs`。成功時最後一行是 `CHECK_PASS tests <a>+<b>+…`，失敗時是 `CHECK_FAIL <步驟> [<失敗的測試>｜…]`（步驟是 `docs-rules`（只讀文件與清單的規則，不到兩秒，排在整條測試之前）、`tests`、`template-tests`、`fake-orca-macos`，或測試之前失敗的那條指令）：只讀最後一行就知道哪裡壞，不要為了找測試名稱整條重跑存 log（#267）。`bin/check`、`git commit`（pre-commit 跑 `bin/check`）、`land.mjs` 一律用 Bash 的 `run_in_background`，高負載時整條要二十幾分鐘，不要先撞 Bash 逾時才轉背景（#297：load 22～62 時 23 分鐘）。`bin/check` 通過後記下工作樹的 tree hash，pre-commit 遇到同一棵樹就跳過（`scripts/check-stamp.mjs`），所以先跑 `bin/check` 再 commit 只跑一次；acceptance、`land.mjs`、CI 永遠真的跑。行為不變的重構，以同一條 `bin/check` 在 base 上為綠當作 baseline。
+只有一條：`bin/check`。開發中和寫 brief、驗收條件時都只引用這條，不要自己拼 `node --test …`。單一測試檔可以用 `node --test tests/<name>.test.mjs`。成功時最後一行是 `CHECK_PASS tests <a>+<b>+…`，失敗時是 `CHECK_FAIL <步驟> [<失敗的測試>｜…]`（步驟是 `docs-rules`（只讀文件與清單的規則，不到兩秒，排在整條測試之前）、`tests`、`template-tests`、`fake-orca-macos`，或測試之前失敗的那條指令）：只讀最後一行就知道哪裡壞，不要為了找測試名稱整條重跑存 log（#267）。`bin/check`、`git commit`（pre-commit 跑 `bin/check`）、`land.mjs` 一律用 Bash 的 `run_in_background`，高負載時整條要二十幾分鐘，不要先撞 Bash 逾時才轉背景（#297：load 22～62 時 23 分鐘）。`bin/check` 通過後記下工作樹的 tree hash，pre-commit 遇到同一棵樹就跳過（`scripts/check-stamp.mjs`），所以先跑 `bin/check` 再 commit 只跑一次；檢查途中改檔安全，那棵樹不會被記下，不必中止（#412）；acceptance、`land.mjs`、CI 永遠真的跑。行為不變的重構，以同一條 `bin/check` 在 base 上為綠當作 baseline。
 
 `docs/agents/workflow-templates.json` 列出的 `scripts/` 檔是 setup-workflow 正本（`skills/engineering/setup-workflow/templates/`）的副本，不直接改，也不手動 `cp` 或手算 sha256：改正本、`git add` 後跑 `node skills/engineering/setup-workflow/scripts/copy-templates.mjs . --staged --no-tests <名稱>`，它複製副本並更新清單裡的 sha256，同一個 commit 一起交（只改正本的 commit 過不了 pre-commit 的 `tests/template-copies.test.mjs`，retro spay2 b949589b#3）（#201：兩次 retro 都先 `cp`，第一次 `bin/check` 才在 `tests/template-copies.test.mjs` 報 sha256 不符，各多跑一輪）。
 
@@ -54,7 +54,7 @@ candidate 是分支 tip。acceptance 是在 candidate SHA、工作樹乾淨時�
 
 ## Evidence and closing
 
-證據貼成 Issue 留言（candidate SHA、指令與 exit code、findings）。
+證據貼成 Issue 留言（candidate SHA、指令與 exit code、findings）。內文用 Write 寫進 scratchpad 再交給 `--body-file`：沒加引號的 `<<EOF` 會把內文的行內碼當命令執行（#444，同一支 hook 會擋）。
 
 單獨跑的 `/issue-run` 在 acceptance 通過、證據貼好之後自己落地，不等人：把 PR body（`/pr` 格式，每張 Issue 一行 `Closes #<n>`）寫進 scratchpad，用 Bash `timeout: 600000` 跑 `node scripts/land.mjs <candidate 所在分支> --title '<標題>' --body-file <檔> --check-command 'bin/check --upstream'`。它 push、開 PR、等 CI、以 merge commit 合併，再移除該分支的 worktree、刪本機與 `origin` 分支、讓主 checkout 的 `main` 跟上；多張 ticket 時，各 ticket 的 worktree 在 `LANDED` 之後另外移除（Orca 建的用 `"$ORCA_CLI_COMMAND" worktree rm --worktree path:<path>`，會一起刪掉分支；其餘用 `git worktree remove` 加 `git branch -d`）。讀最後一行，每種結果行怎麼處理在 [issue-run-landing.md](issue-run-landing.md) 的 `## land.mjs 結果行`，用 `node scripts/adapter-line.mjs 'land.mjs 結果行'` 只取那一節；`LANDED <pr> <merge sha>` 是落地完成，其他 `STOP` 照該節處理或停下回報人，不硬合。
 

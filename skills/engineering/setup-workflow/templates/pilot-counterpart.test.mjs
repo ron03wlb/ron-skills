@@ -82,3 +82,12 @@ test('--adapter：裸 ref 命中宣告的專案時多印 COUNTERPART_BARE；網�
   writeFileSync(adapter, '# adapter\n');
   assert.equal(spawnSync('node', [SCRIPT, '--adapter', adapter], { input: body, encoding: 'utf8' }).stdout, run(body).stdout);
 });
+
+// #430：旗標表是 object literal 時，`constructor`、`toString` 會命中 Object.prototype 而不是被當成未知旗標。
+test('未知旗標（含 constructor、toString）：用法錯誤 exit 2', () => {
+  for (const flag of ['bogus', 'constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    const result = spawnSync('node', [SCRIPT, flag, 'x'], { input: '', encoding: 'utf8' });
+    assert.equal(result.status, 2, `${flag}：${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /用法/);
+  }
+});
