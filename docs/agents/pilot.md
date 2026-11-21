@@ -78,4 +78,6 @@
 
 - **Project tick hooks.** 預設：沒有。
 
+- **Memory audit.** `Memory audit days: 7`。Probe 印 `MEMORY_AUDIT_DUE` 時，當輪在主 checkout 跑它箭頭後的指令，處理照 issue-pilot 的 PILOT-STORE.md `memory-audit.md` 段（#347）。
+
 - **Retro collect.** 見 [pilot-retro-collect.md](pilot-retro-collect.md)：`/retro-collect` 讀那裡的同名條目；`/retro` 只看這一條在不在，決定要不要進收集模式。

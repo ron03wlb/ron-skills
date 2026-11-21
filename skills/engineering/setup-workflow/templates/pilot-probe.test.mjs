@@ -114,7 +114,7 @@ ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? 
   if (guard !== undefined || world !== undefined || tracker !== undefined) {
     const scripts = join(temp, 'scripts');
     mkdirSync(join(scripts, 'lib'), { recursive: true });
-    const names = ['pilot-probe.mjs', 'pilot-capacity.mjs', 'pilot-counterpart.mjs', 'orca-session-send.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'lib/pilot-store.mjs', 'lib/changed-units.mjs', ...(tracker === undefined ? [] : ['gh-tracker.mjs'])];
+    const names = ['pilot-probe.mjs', 'pilot-capacity.mjs', 'pilot-counterpart.mjs', 'memory-audit.mjs', 'orca-session-send.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'lib/pilot-store.mjs', 'lib/changed-units.mjs', ...(tracker === undefined ? [] : ['gh-tracker.mjs'])];
     for (const name of names) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
     if (guard !== undefined) {
       writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
@@ -1375,6 +1375,23 @@ test('adapter 宣告 Counterpart projects 時，ready 單與開著的 batch 成�
   const result = probe();
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(lines(result).filter(line => !before.includes(line)), ['COUNTERPART_BARE 7 acme/app#70', 'COUNTERPART_BARE 8 acme/app#80']);
+});
+
+test('adapter 的 Pilot 段連到的檔宣告 Memory audit days 時，沒紀錄或逾期印 MEMORY_AUDIT_DUE，間隔內不印（#347）', t => {
+  const { probe, repo, git } = fixture(t);
+  const due = line => line.startsWith('MEMORY_AUDIT_DUE ');
+  assert.deepEqual(lines(probe()).filter(due), [], '沒有 adapter：不印');
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  writeFileSync(join(repo, 'docs/agents/issue-run.md'), '# adapter\n\n## Pilot\n\n見 [coordinator.md](coordinator.md)。\n');
+  writeFileSync(join(repo, 'docs/agents/coordinator.md'), '- **Memory audit.** `Memory audit days: 7`：Probe 印 MEMORY_AUDIT_DUE 時跑。\n');
+  git('add', 'docs');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'adapter');
+  assert.deepEqual(lines(probe()).filter(due), ['MEMORY_AUDIT_DUE ?d last=none → node scripts/memory-audit.mjs --run']);
+  const record = join(repo, '.scratch/pilot/memory-audit.md');
+  writeFileSync(record, '2020-01-01 MEMORY_AUDIT items=0\n');
+  assert.match(lines(probe()).filter(due).join('\n'), /^MEMORY_AUDIT_DUE \d+d last=2020-01-01 → node scripts\/memory-audit\.mjs --run$/);
+  writeFileSync(record, `2020-01-01 MEMORY_AUDIT items=0\n${new Date().toISOString().slice(0, 10)} MEMORY_AUDIT items=0\n`);
+  assert.deepEqual(lines(probe()).filter(due), [], '今天跑過：不印');
 });
 
 test('adapter 沒有宣告 Counterpart projects 時不印 COUNTERPART_BARE', t => {
