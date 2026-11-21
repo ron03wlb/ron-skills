@@ -168,6 +168,7 @@ test('鎖被占用時 move 等持鎖者寫完才讀，兩邊的修改都留著',
   const file = join(pilot, 'batch-123-124.md');
   holdLock(file);
   const child = spawn('node', [SCRIPT, dir, 'move', '123-124', '124', '--state', 'stop'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => child.kill());
   let stdout = '';
   child.stdout.on('data', chunk => { stdout += chunk; });
   const exited = once(child, 'exit');
