@@ -196,9 +196,10 @@ export function adapterAhead(checkout, { integration = 'pilot/integration', main
 }
 
 // adapter 指名的腳本：`scripts/<路徑>.<副檔名>`，前面不能是路徑字元（`skills/…/scripts/x.mjs` 是正本、`<stage worktree>/scripts/<x>.mjs` 是寫法說明，都不算）。
-const ADAPTER_SCRIPT = /(?<![\w./<>-])scripts\/[\w./-]+?\.(?:mjs|cjs|js|py|sh)\b/g;
+const SCRIPT_PATH = String.raw`scripts\/[\w./-]+?\.(?:mjs|cjs|js|py|sh)\b`;
+const ADAPTER_SCRIPT = new RegExp(String.raw`(?<![\w./<>-])` + SCRIPT_PATH, 'g');
 // hook 指令裡的腳本：`$CLAUDE_PROJECT_DIR/scripts/x` 前面是 `/`，所以只排除檔名字元。
-const HOOK_SCRIPT = /(?<![\w.-])scripts\/[\w./-]+?\.(?:mjs|cjs|js|py|sh)\b/g;
+const HOOK_SCRIPT = new RegExp(String.raw`(?<![\w.-])` + SCRIPT_PATH, 'g');
 const scriptRefs = (text, pattern) => [...new Set([...text.matchAll(pattern)].map(([path]) => path))];
 
 /** stage worktree（分支是整合分支或 `pilot/stage-*` 的 linked worktree，同 lib/pilot-store.mjs 的 runInStageWorktree）的路徑；沒有時 undefined。 */
@@ -211,13 +212,13 @@ function stageWorktree(checkout, integration) {
 }
 
 /**
- * `ADAPTER_AHEAD` 那一輪（`ahead` 是 adapterAhead 印的行，空時不比），coordinator 照整合分支的 adapter 跑主 checkout 的腳本（#358，#324 第 5 項、#338 第 5 項）：
+ * `ADAPTER_AHEAD` 那一輪（`adapterLines` 是 adapterAhead 印的行，空時不比），coordinator 照整合分支的 adapter 跑主 checkout 的腳本（#358，#324 第 5 項、#338 第 5 項）：
  * 整合分支那份 adapter 的 Pilot 段與它連到的檔指名的 `scripts/*`（含 `.py`、`.sh`），整合分支有這個檔、主 checkout 工作樹缺檔或內容不同、
  * 而且整合分支那份不比主分支舊（integrationNewer）時，依路徑印 `SCRIPT_AHEAD <path> run-in <stage worktree>`；stage worktree 不存在或也沒有這個檔時
  * 印 `SCRIPT_AHEAD <path> sync-main`（先跑 pilot-land.mjs sync-main 建好、跟上 stage worktree）。缺檔會 MODULE_NOT_FOUND，舊版會靜默做錯（`pilot-watch.mjs`）。
  */
-export function scriptsAhead(checkout, ahead, { integration = 'pilot/integration', main = 'main' } = {}) {
-  if (!ahead.length) return [];
+export function scriptsAhead(checkout, adapterLines, { integration = 'pilot/integration', main = 'main' } = {}) {
+  if (!adapterLines.length) return [];
   const [tip, base] = [`refs/heads/${integration}`, `refs/heads/${main}`];
   const adapter = show(checkout, tip, ADAPTER);
   const text = [pilotSection(adapter), ...pilotFiles(adapter).map(path => show(checkout, tip, path))].join('\n');
@@ -468,7 +469,7 @@ function integrationLanded(checkout, integration) {
  * 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE、COUNTERPART_BARE、HUMAN_NO_GATE、HUMAN_LANDED、PARENT_* 與池子摘要行（同一次查詢），以及 PARENT_* 對應的 tracker 寫入（不在這裡寫）；
  * `gates` 是 gates.md 開著的 gate（openGates），`landed` 是整合分支的 landedOn（沒有時不印 HUMAN_LANDED）。gh 失敗時只有 DEPS_PROSE_FAILED 與 POOL_FAILED 兩行，不中斷其他檢查。
  */
-export function trackerLines(checkout, batched = new Set(), projects = new Set(), gates = [], landed = undefined) {
+export function trackerLines(checkout, batched = new Set(), projects = new Set(), gates = [], landed) {
   try {
     const repo = gh(checkout, 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim();
     const [owner, name] = repo.split('/');
