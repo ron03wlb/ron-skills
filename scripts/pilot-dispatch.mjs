@@ -565,7 +565,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (args[i] === '--again') { bad ||= 'again' in given; given.again = true; continue; }
     if (args[i] === '--allow-overlap') { bad ||= 'allowOverlap' in given; given.allowOverlap = true; continue; }
     if (args[i] === '--capacity') { bad ||= 'capacity' in given; given.capacity = true; continue; }
-    const name = { '--integration': 'integration', '--stuck-after': 'stuckAfter', '--fresh': 'fresh', '--note': 'note', '--repo-cap': 'repoCap' }[args[i]];
+    const name = new Map(Object.entries({ '--integration': 'integration', '--stuck-after': 'stuckAfter', '--fresh': 'fresh', '--note': 'note', '--repo-cap': 'repoCap' })).get(args[i]);
     const value = args[++i];
     if (!name || !value || value.startsWith('--') || name in given) bad = true;
     else given[name] = value;

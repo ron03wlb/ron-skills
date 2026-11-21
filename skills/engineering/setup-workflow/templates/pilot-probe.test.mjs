@@ -786,7 +786,7 @@ test('--integration、--main 換掉整合分支與主分支', t => {
 
 test('參數錯誤時 exit 2', t => {
   const { probe } = fixture(t);
-  for (const args of [['--integration'], ['--bogus', 'x'], ['--main', 'a', '--main', 'b'], ['--integration', '--main']]) {
+  for (const args of [['--integration'], ['--bogus', 'x'], ['constructor', 'x'], ['--toString', 'x'], ['--main', 'a', '--main', 'b'], ['--integration', '--main']]) {
     const result = probe({ args });
     assert.equal(result.status, 2, `${args.join(' ')}：${result.stdout}${result.stderr}`);
     assert.match(result.stderr, /^用法：/);

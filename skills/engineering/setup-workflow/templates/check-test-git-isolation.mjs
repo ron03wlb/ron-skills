@@ -87,12 +87,13 @@ function tokens(text) {
  * （exec／execSync 為 'git …' 指令字串），或 argv 陣列字面值第一個元素是 'git'（交給包裝 spawn 的 helper，如 run(repo, ['git', …])）。
  * 引號字串與註解內文不算：#653 的 findLeaks 測試資料 "execFileSync('git', …)" 從不執行。
  */
-export function spawnsGit(text) {
+export function spawnsGit(text, inScript = false) {
   const { list, scripts } = tokens(text);
-  return scripts.some(spawnsGit) || list.some((token, k) => {
+  return scripts.some(script => spawnsGit(script, true)) || list.some((token, k) => {
     const next = list[k + 1];
     const arg = list[k + 2];
-    if (token.kind === 'punc' && token.value === '[') return next?.kind === 'str' && next.value === 'git';
+    // template 字面值是別種語言的指令稿時（如 python heredoc 的 ["git", "-C", …]），陣列字面值不是交給 spawn 的 argv，只認 JS 的 spawn 呼叫（#412）。
+    if (token.kind === 'punc' && token.value === '[') return !inScript && next?.kind === 'str' && next.value === 'git';
     if (token.kind !== 'id' || next?.kind !== 'punc' || next.value !== '(' || arg?.kind !== 'str') return false;
     if (SPAWN_CALLS.has(token.value)) return arg.value === 'git';
     return SHELL_CALLS.has(token.value) && /^git(?:\s|$)/.test(arg.value);

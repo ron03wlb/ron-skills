@@ -210,6 +210,17 @@ test('--resolver 指向不存在的模組：用法錯誤 exit 2，什麼都不�
   assert.equal(f.read(), before);
 });
 
+// #430：旗標表是 object literal 時，`constructor`、`toString` 會命中 Object.prototype 而不是被當成未知旗標。
+test('未知旗標（含 constructor、toString）：用法錯誤 exit 2，什麼都不動', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
+  const before = f.read();
+  for (const flag of ['--bogus', 'constructor', 'toString']) {
+    const result = f.land(f.key, flag, 'x');
+    assert.equal(result.status, 2, `${flag}：${result.stdout}${result.stderr}`);
+  }
+  assert.equal(f.read(), before);
+});
+
 test('sync-main --main：讓整合分支包含 origin/<主分支>，落後時快轉', t => {
   const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
   const origin = join(f.temp, 'origin.git');

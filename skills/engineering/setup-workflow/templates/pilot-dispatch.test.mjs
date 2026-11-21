@@ -615,7 +615,7 @@ test('--integration 換掉 worktree 的 base 與表頭的整合分支，--stuck-
 
 test('參數錯誤時 exit 2，不派工', t => {
   const { dispatch, calls } = fixture(t);
-  for (const args of [['46', '46:x', '--integration'], ['46', '46:x', '--stuck-after', '2h'], ['46', '46:x', '--bogus', 'y'], ['46', '46:x', '--integration', 'a', '--integration', 'b'], ['46', '46:x', '--integration', '--stuck-after']]) {
+  for (const args of [['46', '46:x', '--integration'], ['46', '46:x', '--stuck-after', '2h'], ['46', '46:x', '--bogus', 'y'], ['46', '46:x', 'constructor', 'y'], ['46', '46:x', 'toString', 'y'], ['46', '46:x', '--integration', 'a', '--integration', 'b'], ['46', '46:x', '--integration', '--stuck-after']]) {
     const result = dispatch(args);
     assert.equal(result.status, 2, `${args.join(' ')}：${result.stdout}${result.stderr}`);
     assert.match(result.stderr, /^用法：/);

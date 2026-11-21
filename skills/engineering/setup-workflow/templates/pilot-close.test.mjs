@@ -249,7 +249,7 @@ test('adapter 沒宣告（只在文字裡提到）或宣告的路徑沒被刪：
 
 test('沒有 --repo、--repo 格式不對或 --main 不是分支名稱：用法錯誤 exit 2，什麼都不動', t => {
   const f = fixture(t);
-  for (const extra of [[], ['--repo', 'acme'], ['--repo', 'a/b/c/d'], ['--repo', 'acme/app', '--main', '-x'], ['--repo', 'acme/app', '--bogus', '1'], ['--repo', 'acme/app', '--protect-path', '--main']]) {
+  for (const extra of [[], ['--repo', 'acme'], ['--repo', 'a/b/c/d'], ['--repo', 'acme/app', '--main', '-x'], ['--repo', 'acme/app', '--bogus', '1'], ['--repo', 'acme/app', 'constructor', 'x'], ['--repo', 'acme/app', 'toString', 'x'], ['--repo', 'acme/app', '--protect-path', '--main']]) {
     const result = f.close(...extra);
     assert.equal(result.status, 2, `${extra.join(' ')}\n${result.stdout}${result.stderr}`);
     assert.match(result.stderr, /用法/);

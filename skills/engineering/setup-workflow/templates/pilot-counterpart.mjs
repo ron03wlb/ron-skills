@@ -63,7 +63,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const args = process.argv.slice(2);
   const options = {};
   for (let i = 0; i < args.length; i += 2) {
-    const name = { '--adapter': 'adapter', '--file': 'file' }[args[i]];
+    const name = new Map(Object.entries({ '--adapter': 'adapter', '--file': 'file' })).get(args[i]);
     if (!name || name in options || !args[i + 1]) {
       console.error('用法：node scripts/pilot-counterpart.mjs [--adapter <adapter 檔>] [--file <交接檔>] < Issue 本文');
       process.exit(2);

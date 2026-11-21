@@ -287,7 +287,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       config.protectPaths.push(rest[i + 1]);
       continue;
     }
-    const name = { '--repo': 'repo', '--main': 'main' }[rest[i]];
+    const name = new Map(Object.entries({ '--repo': 'repo', '--main': 'main' })).get(rest[i]);
     if (!name || name in options || rest[i + 1] === undefined) bad = true;
     else options[name] = rest[i + 1];
   }

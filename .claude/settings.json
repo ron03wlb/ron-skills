@@ -18,6 +18,10 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/scripts/claude-hook-zsh-equals.mjs\""
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/claude-hook-bash-pitfalls.mjs\""
           }
         ]
       },
