@@ -130,6 +130,11 @@
       "commit": "18445356b0e22d38101073fbb4e16360c1e0f3d9",
       "sha256": "3e5db11b40e187cbbb728d34d2493725658693dbefc6fe5274dfa0fa98002192"
     },
+    "scripts/memory-audit.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/memory-audit.mjs",
+      "commit": "1ff7f31bf2a2ff556a9261703fb5710bf8f3e260",
+      "sha256": "764808e2238baa0d003097a0838f1231decf7ad9fa940b0a470019130ae33c4f"
+    },
     "scripts/orca-session-send.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-send.mjs",
       "commit": "a8a620c5d09cd1fcb02d5ab36a539de2c8c49fa1",
@@ -212,8 +217,8 @@
     },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",
-      "commit": "a8a620c5d09cd1fcb02d5ab36a539de2c8c49fa1",
-      "sha256": "5d8ebfe2ce7e98341c9c0564e70cc51bf2850e1d8bf3756b423324d330f8f7e3"
+      "commit": "1ff7f31bf2a2ff556a9261703fb5710bf8f3e260",
+      "sha256": "5f015c35431c21e87c27f14d4807a35f1e1dfd6d31a3b2c0aecd94f7ffd94684"
     },
     "scripts/pilot-register.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-register.mjs",

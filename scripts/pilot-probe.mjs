@@ -91,6 +91,9 @@
 //   落後主分支：BEHIND_MAIN <落後數> <origin/主分支 SHA>（整合分支沒有包含 origin/<主分支>，例如 retro 直接合進主分支之後；
 //          比的是本機最後一次 fetch 的 origin ref，有 merged／pushed 的 batch 時在這一輪的 fetch 之後比；兩個 ref 有一個不存在時不印。
 //          #268：沒有這一行時 coordinator 要自己算 rev-list 才知道要 sync-main，漏掉就在舊 tip 上 stage，到 Push gate 才 STOP behind-main）
+//   Memory audit（#347）：MEMORY_AUDIT_DUE <天數|?>d last=<YYYY-MM-DD|none> → node scripts/memory-audit.mjs --run（主分支的 adapter 或它 Pilot 段連到的檔
+//          宣告 `Memory audit days: <n>`，而 .scratch/pilot/memory-audit.md 最後一筆距今 n 天以上或沒有紀錄；判斷是同目錄 memory-audit.mjs 的 memoryAuditLine；
+//          沒宣告時不印；在 BEHIND_MAIN 之後）
 //   全機上限：CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP、OVER_CAP <合計> <上限>（帶 --capacity 時，見上）
 // exit：0 印完；2 用法錯誤；3 `--apply` 的 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，該 batch 沒寫、其他行照印，#345）；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS、PARENT_APPLY_FAILED 等）。
 import { spawnSync } from 'node:child_process';
@@ -103,6 +106,7 @@ import { orca } from './orca-session-send.mjs';
 import { envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 import { POOL_FIELDS, blockerOpenScope, landedOn, pool, prerequisiteOf } from './issue-pool.mjs';
 import { counterparts, declaredProjects } from './pilot-counterpart.mjs';
+import { MEMORY_AUDIT_FILE, declaredDays, memoryAuditLine } from './memory-audit.mjs';
 
 // 池子摘要要的欄位取 issue-pool 的 POOL_FIELDS（#240）；同名的 blockedBy 在 GraphQL 裡合併成一份選取。
 const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt lastEditedAt blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
@@ -948,6 +952,12 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     }
   }
   out.push(...behindMain(checkout, { integration, main }));
+  // Memory audit（#347）：間隔取主分支的 adapter 與它 Pilot 段連到的檔裡的 `Memory audit days: <n>`，沒宣告不印
+  const adapter = show(checkout, `refs/heads/${main}`, ADAPTER);
+  const days = declaredDays([adapter, ...pilotFiles(adapter).map(path => show(checkout, `refs/heads/${main}`, path))].join('\n'));
+  const record = join(checkout, MEMORY_AUDIT_FILE);
+  const memoryAudit = memoryAuditLine(existsSync(record) ? readFileSync(record, 'utf8') : null, days);
+  if (memoryAudit) out.push(memoryAudit);
   if (capacity) {
     out.push(...envMissingLines());
     const { total, cap } = report(ledgerPath(), capacity, running);
