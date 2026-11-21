@@ -21,8 +21,8 @@ function extract(text, name) {
   return result.stdout.trimEnd();
 }
 
-test('條目之間沒有空行分隔時只讀到該條目（issue-run.md 的分頁狀態）', () => {
-  const adapter = read('docs/agents/issue-run.md');
+test('條目之間沒有空行分隔時只讀到該條目（issue-run-tab-state.md 的分頁狀態）', () => {
+  const adapter = read('docs/agents/issue-run-tab-state.md');
   const entry = adapter.match(/^- \*\*待 Retro\.\*\*.*$/m)?.[0];
   assert.ok(entry);
   assert.equal(extract(adapter, '待 Retro'), entry);

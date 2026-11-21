@@ -29,6 +29,8 @@ Edit the "Label in our tracker" column to match whatever vocabulary you actually
 
 標 `ready-for-agent` 之前，先照 [issue-run.md](issue-run.md#readiness) 的 **Readiness** 檢查驗收與做法用到的輸入取得到；取不到的維持 `needs-info`。
 
+驗收裡「改 `skills/engineering/setup-workflow/templates/` 的正本與測試，`scripts/` 副本用 `copy-templates.mjs` 同步」這一項，只在 `node scripts/worktree-overlap.mjs <要改的檔>…` 印 `TEMPLATE_COPY` 時才寫；沒印就不是範本副本，寫了 worker 得先查清單、記一條 ruling 才知道不適用（#438：#380 的 `scripts/sync-skills.mjs` 不在 `docs/agents/workflow-templates.json`）。
+
 ## `parent` label
 
 帶 `parent` label 的 issue 是母單（見 [issue-tracker.md](issue-tracker.md#母單)）：`/triage` 不把它放進 Unlabeled 桶，也不給它掛上表中任何 triage label。母單的 label 由 pilot 的 Reconcile 整理（[pilot.md](pilot.md) 的 **Probe**）。

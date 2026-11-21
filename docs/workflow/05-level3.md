@@ -105,7 +105,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 L1／L2 的 review 是 Claude 的 `code-review` skill。L3 在 adapter 的 Review 段加上 Codex 的 runner，只做 code review，用在兩個地方：
 
 - **跨模型挑戰**：兩輪 review 後仍有爭議的 finding，或高風險 Issue 上的 finding，同一個問題分別問 Claude 與 Codex，報告兩邊同意與分歧之處再決定。
-- **worker 的最後一輪**：兩輪修正後，在最終 candidate 上用 adapter 的 review 指令（有 Codex runner 時就是它）跑一輪只審不修；P2 以上只要有一項不是兩輪修正時已經裁定的產品取捨，就先把這些發現逐條寫進 checkpoint 的 `final review-only round` 段，再 `STOP`，原因寫 `findings after two review cycles`，coordinator 重派一個 worker（ron-skills 先以不帶 `--note` 的 `pilot-dispatch.mjs --fresh` 產生整併範圍草稿：prior SHA、共同改過的檔與條目、最後一輪 review-only 原文，coordinator 只補「怎麼整併」）；否則 P3 記進 rulings 後照常 `DONE`，兩輪修正時的產品取捨以 `confirm` 裁定隨結果交回，結案前由你確認。adapter 沒有確認 gate 時，只要兩輪修正時有過產品取捨，就算這一輪沒再列出，也 `STOP`，原因寫 `decision <摘要>`，coordinator 開 gate。
+- **worker 的最後一輪**：兩輪修正後，在最終 candidate 上用 adapter 的 review 指令（有 Codex runner 時就是它）跑一輪只審不修；P2 以上只要有一項不是兩輪修正時已經裁定的產品取捨，就先把這些發現逐條寫進 checkpoint 的 `final review-only round` 段，再 `STOP`，原因寫 `findings after two review cycles`，coordinator 重派一個 worker（ron-skills 先以不帶 `--note` 的 `pilot-dispatch.mjs --fresh` 產生整併範圍草稿：prior SHA、共同改過的檔與條目、最後一輪 review-only 原文，coordinator 只補「怎麼整併」）；否則 P3 記進 rulings 後照常 `DONE`，兩輪修正時的產品取捨以 `confirm` 裁定隨結果交回，結案前由你確認。adapter 沒有確認 gate 時，只要兩輪修正時有過產品取捨，就算這一輪沒再列出，也 `STOP`，原因寫 `decision <摘要>`，coordinator 開 gate。每一輪修正只改阻擋的發現，不阻擋的建議轉 follow-up，不在同一輪順手做：順手的改動沒有自己的 review 就進到最後一輪。
 
 Codex 呼叫失敗時改用 `code-review` skill，並在報告註明 Codex 不可用。
 
