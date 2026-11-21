@@ -45,6 +45,7 @@
 //
 // 全機上限（#178）：帶 --capacity 時，動手前先以同目錄 pilot-capacity.mjs 的 check 合計全機帳本、加上這次要派的人數（--fresh 是 1）：
 //   超過 $PILOT_MACHINE_WORKER_CAP 就只印 `STOP capacity <合計>/<上限>`、exit 4，不寫 checkpoint、不建 worktree、不開分頁；沒超過先印 `CAPACITY ok <合計>/<上限>`。
+//   $PILOT_MACHINE_WORKER_CAP 空白時先印 `CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP`，照預設 4 比（#396）。
 //   沒帶時不讀帳本。帳本的本 repo 那一列由 pilot-probe.mjs --capacity 每輪更新，所以派工前要先跑過這一輪的 probe。
 //   有成員 DISPATCHED 時（#353），最後以帳本本 repo 那一列的現值加上派出人數改寫那一列（pilot-capacity 的 report，讀寫在同一把鎖裡），
 //   印 `REPORTED <repo> <running> <合計>/<上限>`：同一輪連續兩次 dispatch，第二次的合計就含第一次的成員。<repo> 是主 checkout 的目錄名，
@@ -60,7 +61,7 @@
 //       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--repo-cap <n>] [--integration <分支>] [--stuck-after <分鐘>m]
 //       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--integration <分支>]（草稿，不需要 ORCA_CLI_COMMAND）
 //   --integration worktree 的 base 與表頭的整合分支，預設 pilot/integration；--stuck-after 成員行的 stuck-after，預設 90m。
-// stdout：容量行（CAPACITY ok repo …、CAPACITY ok …，或 STOP capacity repo …、STOP capacity … 接 RELEASED <n>）、最後的 REPORTED <repo> …（見上）；
+// stdout：容量行（CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP、CAPACITY ok repo …、CAPACITY ok …，或 STOP capacity repo …、STOP capacity … 接 RELEASED <n>）、最後的 REPORTED <repo> …（見上）；
 //   stderr 另有 WARN release …、WARN capacity-report …。每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、worktree-branch、create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
 //   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop；running、overlap 的 STOP 不改寫那一列；
@@ -75,7 +76,7 @@ import { claimedBy, defaultSession } from './issue-pool.mjs';
 import { orca, sendToSession } from './orca-session-send.mjs';
 import { closeIfAllMoved } from './lib/pilot-store.mjs';
 import { changedUnits, memberOverlaps, parseBatch } from './pilot-probe.mjs';
-import { check as capacityCheck, ledgerPath, machineCap, report as capacityReport } from './pilot-capacity.mjs';
+import { envMissingLines, check as capacityCheck, ledgerPath, machineCap, report as capacityReport } from './pilot-capacity.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
 
 const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--repo-cap <n>] [--integration <分支>] [--stuck-after <分鐘>m]（需要 ORCA_CLI_COMMAND）\n'
@@ -547,6 +548,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       console.log(`CAPACITY ok repo ${total}/${repoCap}`);
     }
     if (given.capacity) {
+      for (const line of envMissingLines()) console.log(line);
       const { ok, total, cap } = capacityCheck(ledgerPath(), members.length);
       if (!ok) stopCapacity(`STOP capacity ${total}/${cap}`);
       console.log(`CAPACITY ok ${total}/${cap}`);

@@ -175,6 +175,20 @@ test('--capacity：帳本合計加上這批人數超過上限時 STOP capacity�
   assert.deepEqual(lines(uncapped), ['DISPATCHED 133 term_133']);
 });
 
+// #396：--capacity 時 $PILOT_MACHINE_WORKER_CAP 空白，先印 CAPACITY_ENV_MISSING 再照預設 4 檢查。
+test('--capacity：$PILOT_MACHINE_WORKER_CAP 空白時先印 CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP，照預設 4 比', t => {
+  const { temp, dispatch } = fixture(t);
+  const ledger = join(temp, 'pilot-workers.tsv');
+  writeFileSync(ledger, `acme\t3\t${new Date().toISOString()}\n`);
+  const blank = { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '' };
+  const over = dispatch(['23-133', '23:pilot-probe', '133:pilot-dispatch', '--capacity'], blank);
+  assert.equal(over.status, 4, over.stdout + over.stderr);
+  assert.deepEqual(lines(over), ['CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP', 'STOP capacity 5/4']);
+  const ok = dispatch(['23', '23:pilot-probe', '--capacity'], blank);
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.deepEqual(lines(ok), ['CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP', 'CAPACITY ok 4/4', 'DISPATCHED 23 term_23', 'REPORTED repo 1 4/4']);
+});
+
 // #353：帳本只在 Probe 寫入時，同一輪連續兩次 dispatch 的第二次看不到第一次的成員。
 // 帶 --capacity 派出成員後，以帳本本 repo（主 checkout 目錄名）的現值加上這次派出的人數改寫那一列，印 REPORTED。
 test('--capacity：派出後把本 repo 的帳本列加上派出人數，第二次 dispatch 的合計含第一次的成員；沒帶旗標不寫帳本', t => {
