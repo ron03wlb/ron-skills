@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // pilot 的人工 gate（PILOT-STORE.md 的 `.scratch/pilot/gates.md`）：開、解、列出 gate，coordinator 不手改檔案（手寫曾把 resolved 寫進別的欄位，probe 才有 GATE_MALFORMED）。
-// 用法：node scripts/pilot-gate.mjs <checkout> open --title <text> --issue <text> --question <text> --options <text> --default <text> --parked <text> [--script <file>]
+// 用法：node scripts/pilot-gate.mjs <checkout> open --title <text> --issue <text> --question <text> --options <text> --default <text> --parked <text> [--hold <n>] [--script <file>]
 //       node scripts/pilot-gate.mjs <checkout> resolve <G<n>> --how <text>
 //       node scripts/pilot-gate.mjs <checkout> list
 // stdout：open 以表格與段落中最大的 G<n> 加一為 id，附加 `## G<n> <title>` 段落（六個欄位，`- opened：<time>`），檔案不存在或是空的就先寫 `# Gates`；印 `GATE_OPENED G<n>`。
@@ -10,15 +10,17 @@
 //   question 欄尾端自動補上 ` 執行：! bash <path>`（開 gate 前還不知道 G<n>）；同一路徑留著的舊 `G<n>.done` 先刪掉。
 //   步驟本體每步先 `step <說明>`（印 `▶ <說明>`），只讀狀態的查詢寫成 `x="$(<指令>)" || true` 再自己判斷輸出，改狀態的步驟先查狀態、已做過就跳過，中途失敗重跑才不會重做。跑完寫 `G<n>.done`（以 checkout 的絕對路徑，本體 cd 到別處也一樣）、印 `GATE_SCRIPT_DONE G<n>`；
 //   之後再跑只印 `GATE_SCRIPT_DONE G<n> <完成時間> 已執行完成…`、exit 0，不重做步驟；中途失敗沒有標記，重跑從頭執行。
+//   帶 --hold <n> 時段落在 opened（與 script）前多一個 `- hold：#<n>` 欄位：gate 擋住的 batch 成員 #n。gate 未解前 pilot-probe 對 done 的 #n 印 `HELD <n> G<k>`、
+//   不印 STAGEABLE，pilot-land 印 `STOP held <n> G<k>`、不 stage；resolve 之後恢復（#367：investing#320 等 G28 時 probe 仍印 STAGEABLE 320）。
 //   resolve 在該段落最後一個 `- ` 欄位之後插入 `- resolved <time> <how>`（表格列則把 status 欄換成 `resolved <time> <how>`），印 `GATE_RESOLVED G<n>`；
 //   gate 已 resolved 印 `STOP G<n> resolved`、找不到印 `STOP G<n> missing`，都不改檔。
 //   list 印開著的 gate，與 pilot-probe 的 `GATE …`、`GATE_MALFORMED <id> <行>` 相同（沒有就不輸出）。
-// exit：0 成功；4 STOP；2 用法錯誤（每個旗標給一次；欄位不能空白、含換行或三個連續空白，--how 也不能含 `|`；--script 的檔案要存在），不寫任何檔。
+// exit：0 成功；4 STOP；2 用法錯誤（每個旗標給一次；欄位不能空白、含換行或三個連續空白，--how 也不能含 `|`；--hold 是正整數、不帶 #；--script 的檔案要存在），不寫任何檔。
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gateLines, gateRow, gateSections, isField, isResolvedRow, isResolvedSection, now, storeDir, usage } from './lib/pilot-store.mjs';
 
-const USAGE = '用法：node scripts/pilot-gate.mjs <checkout> open --title <text> --issue <text> --question <text> --options <text> --default <text> --parked <text> [--script <file>] | <checkout> resolve <G<n>> --how <text> | <checkout> list';
+const USAGE = '用法：node scripts/pilot-gate.mjs <checkout> open --title <text> --issue <text> --question <text> --options <text> --default <text> --parked <text> [--hold <n>] [--script <file>] | <checkout> resolve <G<n>> --how <text> | <checkout> list';
 // 旗標名與段落欄位名：只有 Issue 的大小寫不同。
 // gate 腳本與完成標記的目錄，相對於 checkout。
 const SCRIPT_DIR = '.scratch/pilot/gates';
@@ -75,7 +77,8 @@ function gateScript(id, title, steps) {
 if (command === 'list' && !rest.length) {
   for (const line of gateLines(read())) console.log(line);
 } else if (command === 'open') {
-  const values = parseFlags(rest, ['title', ...FIELDS.map(([name]) => name)], ['script']);
+  const values = parseFlags(rest, ['title', ...FIELDS.map(([name]) => name)], ['hold', 'script']);
+  if (values.hold !== undefined && !/^[1-9]\d*$/.test(values.hold)) usage(USAGE, `--hold 要是 Issue 號碼（正整數，不帶 #）：${values.hold}`);
   if (values.script !== undefined && !existsSync(values.script)) usage(USAGE, `--script 的檔案不存在：${values.script}`);
   const steps = values.script === undefined ? undefined : readFileSync(values.script, 'utf8');
   mkdirSync(storeDir(checkout), { recursive: true });
@@ -95,7 +98,7 @@ if (command === 'list' && !rest.length) {
     values.question = `${values.question} 執行：! bash ${script}`;
   }
   if (!text.trim()) writeFileSync(file, '');
-  appendFileSync(file, `${prefix}${[`## ${id} ${values.title}`, ...FIELDS.map(([name, label]) => `- ${label}：${values[name]}`), ...(script ? [`- script：${script}`] : []), `- opened：${now()}`].join('\n')}\n`);
+  appendFileSync(file, `${prefix}${[`## ${id} ${values.title}`, ...FIELDS.map(([name, label]) => `- ${label}：${values[name]}`), ...(values.hold ? [`- hold：#${values.hold}`] : []), ...(script ? [`- script：${script}`] : []), `- opened：${now()}`].join('\n')}\n`);
   if (script) console.log(`GATE_SCRIPT ${script}`);
   console.log(`GATE_OPENED ${id}`);
 } else if (command === 'resolve' && /^G[1-9]\d*$/.test(rest[0] ?? '')) {

@@ -91,6 +91,24 @@ test('預設 regression 指令是 bin/check；--check-command 以 sh 跑指定�
   assert.equal(custom.checks(), 'check --upstream\n');
 });
 
+// #367：gate 用 `- hold：#<n>` 擋住的成員不能被 stage；resolved 之後照常落地。
+test('done 成員被開著的 gate hold 住：STOP held <n> G<k>、exit 4，不 stage、不跑 Regression；gate resolved 後 MERGED', t => {
+  const f = fixture(t, { members: [{ n: 320, files: { 'a.txt': 'a\n' } }] });
+  const tip = git(f.repo, 'rev-parse', 'pilot/integration');
+  const gate = resolved => `# Gates\n\n## G28 #320 等人決定\n- Issue：#320\n- parked：batch 320 的 Stage\n- hold：#320\n- opened：2026-11-18T11:00:00+08:00\n${resolved}`;
+  write(f.repo, { '.scratch/pilot/gates.md': gate('') });
+  const held = f.land(f.key);
+  assert.equal(held.status, 4, held.stdout + held.stderr);
+  assert.equal(held.last, 'STOP held 320 G28');
+  assert.equal(f.checks(), '');
+  assert.match(f.read(), /^current: dispatched /m);
+  assert.equal(git(f.repo, 'rev-parse', 'pilot/integration'), tip);
+  write(f.repo, { '.scratch/pilot/gates.md': gate('- resolved 2026-11-18T12:00:00+08:00 選 A\n') });
+  const landed = f.land(f.key);
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.match(landed.last, /^MERGED 320 [0-9a-f]{40}$/);
+});
+
 test('--integration：stage 從指定的整合分支開、MERGED 後快轉它', t => {
   const f = fixture(t, { members: [{ n: 3, files: { 'c.txt': 'c\n' } }], integration: 'trunk/integration' });
   const result = f.land(f.key, '--integration', 'trunk/integration');
