@@ -57,6 +57,8 @@ node scripts/check-portability.mjs
 node scripts/check-test-git-isolation.mjs skills/engineering/setup-workflow/templates
 # skill script 的 main guard 要先 realpath argv[1]，否則經 ~/.claude/skills 的 symlink 執行時靜靜 exit 0（4a8c831 修 day-sessions.mjs，#329 ci.mjs 又踩一次）。templates/ 另由 tests/template-main-guard.test.mjs 管。
 node scripts/check-main-guard.mjs
+# adapter 必讀核心（issue-run.md、pilot.md）各 14000 bytes、拆出檔 58000 bytes，預算表 scripts/adapter-size-budget.json（#344）；通過時不印，失敗時印超過的檔與拆檔提示。
+node scripts/check-adapter-size.mjs > /dev/null
 # 只讀文件與清單的規則不到兩秒，在整條測試之前先跑：副本與 sha256（#267：第四次踩到）、pilot.md 大小、docs/agents 的裸 gh 寫入與 allow 規則清單（#274：改 adapter 文字等一分鐘才報，
 # 本機只跑 check-coordinator-permissions.mjs 看不到 allow 清單那條，開了 PR #280 才在 CI 失敗）。通過時不印（整組測試裡會再跑一次），失敗時印 node 的 failing tests 段。
 step=docs-rules

@@ -1,5 +1,5 @@
 // ron-skills 專屬的 pilot-land resolver（setup-workflow 正本 scripts/pilot-land.mjs 的 `--resolver`，#245）：
-// Stage 與 sync-main 的衝突，正本只自己解 workflow-templates.json 的 restamp；其他檔交給這支照 docs/agents/pilot.md 的 Stage 條目允許的解法解：
+// Stage 與 sync-main 的衝突，正本只自己解 workflow-templates.json 的 restamp；其他檔交給這支照 docs/agents/pilot-round.md 的 Stage 條目允許的解法解：
 //   additions  每個衝突 hunk 的 base 是空的（兩邊只在既有檔案的同一處新增，沒有相同的非空行或同名條目）：依號碼兩段都留下；
 //   entries    每個衝突 hunk 裡兩邊改的是不同的 `- **<名稱>.**` 條目：各取改過的那一版（#45）；
 //   rows       衝突 hunk 三份的行都是 Markdown 表格列（`|` 開頭）、以第一格為鍵兩邊改的是不同列：各取各的版本、
