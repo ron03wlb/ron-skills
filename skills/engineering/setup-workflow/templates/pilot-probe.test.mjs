@@ -273,6 +273,23 @@ test('dispatched 的 batch 每個成員都 done 時才印 STAGEABLE <key>；有 
   assert.ok(out.includes('MOVE 24-25 24'), out.join('\n'));
 });
 
+// #367（investing#320 等 G28）：成員都 done，但 G28 開著、hold 住 #320，舊版照印 STAGEABLE 320，coordinator 就 stage 了等人決定的成員。
+test('done 成員被開著的 gate hold 住時印 HELD <n> G<k>、不印 STAGEABLE；gate resolved 後恢復 STAGEABLE', t => {
+  const { batch, probe, pilot } = fixture(t);
+  batch('320', 'dispatched 2026-11-18T10:00:00+08:00', [{ n: 320, state: 'done', candidate: 'abc1234' }]);
+  batch('321-322', 'dispatched 2026-11-18T10:00:00+08:00', [{ n: 321, state: 'done', candidate: 'abc1234' }, { n: 322, state: 'stop' }]);
+  const gate = (id, n, resolved = '') => `## ${id} #${n} 等人決定\n- Issue：#${n}\n- question：選哪個？\n- options：1. A；2. B\n- default：A\n- parked：batch ${n} 的 Stage\n- hold：#${n}\n- opened：2026-11-18T11:00:00+08:00\n${resolved}`;
+  writeFileSync(join(pilot, 'gates.md'), `# Gates\n\n${gate('G28', 320)}\n${gate('G29', 321)}`);
+  let out = lines(probe());
+  assert.ok(out.includes('HELD 320 G28'), out.join('\n'));
+  assert.ok(!out.includes('STAGEABLE 320'), out.join('\n'));
+  assert.ok(out.includes('HELD 321 G29') && out.includes('MOVE 321-322 322'), out.join('\n'));
+  writeFileSync(join(pilot, 'gates.md'), `# Gates\n\n${gate('G28', 320, '- resolved 2026-11-18T12:00:00+08:00 選 A\n')}`);
+  out = lines(probe());
+  assert.ok(out.includes('STAGEABLE 320'), out.join('\n'));
+  assert.ok(!out.some(line => line.startsWith('HELD ')), out.join('\n'));
+});
+
 // #191：batch 94 停在 `current: staged`，兩次 Regression 都 exit 1（計時測試在高負載下 flake），成員 done；
 // probe 對 staged 的 batch 什麼都不印，接手的 coordinator 照 probe 行動就漏掉它。最後一行 regression 不是 staged SHA 的 exit 0
 // （exit 不是 0、沒寫 exit、SHA 是先前那次 stage 的，或根本沒有這行）時印 RESTAGE <key> regression-failed <code 或 none>。

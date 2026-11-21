@@ -61,6 +61,8 @@
 //                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）
 //   batch：dispatched 的 batch 沒有 running 成員時（這一輪剛讀到 DONE／STOP 的照結果算；moved（含 `moved batch-<n>`）的成員已移到別的 batch，不算）：
 //          每個成員都 done 印 STAGEABLE <key>；有 done 也有 stop、parked 印 MOVE <key> <不是 done 的成員…>（先用 pilot-batch 移走）；
+//          done 的成員被 gates.md 開著的 gate 以 `- hold：#<n>` hold 住（pilot-gate open --hold）時，每個先印 HELD <n> <gate id>（依成員列順序），
+//          這時不印 STAGEABLE（pilot-land 會 STOP held）；MOVE、PARKED 照印；gate resolved 後恢復（#367）；
 //          不是 done 的成員裡有 batch key 那張時（pilot-batch move 會 STOP same-batch，#357）改印 MOVE <key> <done 的成員…>；
 //          開著的 batch 裡 stop 的成員（這一輪剛讀到 STOP 的也算）的 Issue 有 blocked_by、而且每張都已關閉時印 UNBLOCKED <key> <n>
 //          （#357；gh 失敗或成員的 Issue 已關閉時不印）；
@@ -90,7 +92,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
-import { gateLines, isOpenRequest, now, openGates, parksAllPush, tableCells } from './lib/pilot-store.mjs';
+import { gateLines, heldIssues, isOpenRequest, now, openGates, parksAllPush, tableCells } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 import { envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 import { POOL_FIELDS, blockerOpenScope, landedOn, pool, prerequisiteOf } from './issue-pool.mjs';
@@ -623,16 +625,18 @@ const stateNow = (m, results) => (m.state === 'running' && results.find(r => r.n
  * 還有 running 時不印；每個成員都 done 印 STAGEABLE；有 done 也有其他狀態（stop、parked）印 MOVE <key> <其他成員…>，先移走它們才 stage；
  * 其他成員裡有 batch key 那張時改列 done 的成員（pilot-batch 不能把 key 移出自己的 batch，#357）；
  * 沒有 done 印 PARKED <key> <n…>（pilot-land 對它只會 STOP member）。
+ * `held`（heldIssues 的結果，#367）裡的 done 成員各先印 `HELD <n> <gate id>`，有 HELD 時不印 STAGEABLE；MOVE、PARKED 照印。
  */
-export function stageLines(key, active, results) {
+export function stageLines(key, active, results, held = new Map()) {
   const states = active.map(m => ({ n: m.n, state: stateNow(m, results) }));
   if (!states.length || states.some(m => m.state === 'running')) return [];
+  const heldLines = states.filter(m => m.state === 'done' && held.has(m.n)).map(m => `HELD ${m.n} ${held.get(m.n)}`);
   const others = states.filter(m => m.state !== 'done').map(m => m.n);
-  if (!others.length) return [`STAGEABLE ${key}`];
+  if (!others.length) return heldLines.length ? heldLines : [`STAGEABLE ${key}`];
   if (others.length === states.length) return [`PARKED ${key} ${others.join(' ')}`];
   // pilot-batch.mjs 不能把 batch key 那張移出自己的 batch（same-batch，#357）：它沒 done 時改列可以移走的 done 成員。
   const movable = others.includes(key) ? states.filter(m => m.state === 'done').map(m => m.n) : others;
-  return [`MOVE ${key} ${movable.join(' ')}`];
+  return [...heldLines, `MOVE ${key} ${movable.join(' ')}`];
 }
 
 /**
@@ -847,7 +851,9 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     .filter(({ current }) => !/^closed\b/.test(current)).flatMap(({ members }) => members.map(({ n }) => n)));
   // 對應專案的宣告取主分支的 adapter（主 checkout 平常就在主分支；整合分支上較新的版本由 ADAPTER_AHEAD 提醒）。
   const projects = declaredProjects(show(checkout, `refs/heads/${main}`, ADAPTER));
-  const tracker = trackerLines(checkout, batched, projects, openGates(readStore(pilot, 'gates.md')), integrationLanded(checkout, integration));
+  const gates = openGates(readStore(pilot, 'gates.md'));
+  const held = heldIssues(gates);
+  const tracker = trackerLines(checkout, batched, projects, gates, integrationLanded(checkout, integration));
   const ahead = adapterAhead(checkout, { integration, main });
   const out = [...checkoutState(checkout, main), ...ahead, ...scriptsAhead(checkout, ahead, { integration, main }), ...hookBehind(checkout, { integration, main }), ...openRows(pilot), ...tracker.lines];
   if (apply) out.push(...applyParentFixes(checkout, tracker.fixes));
@@ -869,7 +875,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
       out.push(`WORKER ${member.n} ${state}`);
     }
     if (apply && results.length) out.push(...applyResults(join(pilot, file), key, results));
-    if (/^dispatched\b/.test(current)) out.push(...stageLines(key, active, results));
+    if (/^dispatched\b/.test(current)) out.push(...stageLines(key, active, results, held));
     if (!/^closed\b/.test(current)) out.push(...unblockedLines(key, active, results, tracker.issues), ...scopeChangedLines(key, active, results, tracker.issues));
     out.push(...restageLines(key, current, regression, regressionExit));
     if (/^(merged|pushed)\b/.test(current)) landing.push({ key, sha, regression, regressionExit, merged: /^merged\b/.test(current) });
