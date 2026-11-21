@@ -64,7 +64,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Integration branch | 本機整合分支的名稱、怎麼開、合進主線後怎麼跟上 |
 | Pool | 挑單的查詢與排序；被擋住或已在其他批次的單怎麼濾掉 |
 | Batch | 批次 checkpoint 由哪個步驟建立；檔名、欄位與狀態值照 [`PILOT-STORE.md`](../../skills/engineering/issue-pilot/PILOT-STORE.md) |
-| Brief check | 拒絕缺欄位 brief 的指令（goal、scope、acceptance、verify、timebox、forbidden、report、standing orders 路徑） |
+| Brief check | 拒絕缺欄位 brief 的指令（goal、scope、acceptance、verify、timebox、forbidden、report、standing orders 路徑）；有 setup-workflow 正本時用 `brief-check`，`--skeleton` 印可直接填的骨架 |
 | Dispatch | 開 worktree 與 terminal 並送出 `/issue-run <n> --worker …` 的指令 |
 | Watch | 唯讀讀取 worker 畫面的指令；最後一行 `DONE`／`STOP` 就是做完 |
 | Agent rows | 每個派出的 agent 記在哪 |
