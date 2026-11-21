@@ -97,8 +97,8 @@
     },
     "scripts/lib/pilot-store.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/pilot-store.mjs",
-      "commit": "7ee0a2369ca29b4e333deabda3d931ce61cebb27",
-      "sha256": "56b3a5d375d46e6d604ad192edd53489d003707594bbdb704cff69c033c68d1e"
+      "commit": "17f0cc77bd3ca25f1b73766fcc44f6b677dcb6a4",
+      "sha256": "b1e0a1c0d40a7e75a7fc5839e2762cf090642ba1e3937bb1fa9223a560cf54b5"
     },
     "scripts/lib/protected-paths.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/protected-paths.mjs",
