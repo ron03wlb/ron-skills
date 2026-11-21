@@ -3,6 +3,6 @@
   {"__typename": "WorkItemWidgetAssignees", "assignees": {"nodes": [{"username": "ron"}]}},
   {"__typename": "WorkItemWidgetHierarchy", "hasChildren": false},
   {"__typename": "WorkItemWidgetLinkedItems", "linkedItems": {"nodes": [{"linkType": "is_blocked_by", "workItem": {"iid": "5", "state": "CLOSED", "namespace": {"fullPath": "acme/app"}}}]}},
-  {"__typename": "WorkItemWidgetNotes", "comments": {"nodes": [{"createdAt": "2026-10-30T22:29:03Z"}]}, "activity": {"nodes": [{"createdAt": "2026-10-30T22:29:05Z", "body": "assigned to @ron"}]}},
-  {"__typename": "WorkItemWidgetDescription"}
+  {"__typename": "WorkItemWidgetNotes", "comments": {"nodes": [{"createdAt": "2026-10-30T22:29:03Z", "body": "認領：host-a／sess-a"}]}, "activity": {"nodes": [{"createdAt": "2026-10-30T22:29:05Z", "body": "assigned to @ron"}]}},
+  {"__typename": "WorkItemWidgetDescription", "description": "Operator prerequisite：無"}
 ]}]}}}}

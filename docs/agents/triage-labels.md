@@ -23,7 +23,7 @@ Edit the "Label in our tracker" column to match whatever vocabulary you actually
 | `bug`                      | `bug`                | Something is broken           |
 | `enhancement`              | `enhancement`        | New feature or improvement    |
 
-`scripts/issue-pool.mjs` 對有狀態 label 卻沒有這兩個分類的開著的單印 `NO_CATEGORY <n>`（見 [pilot.md](pilot.md) 的 **Pool**）；分類 label 改名時，Pool 的指令加上 `--categories <label>,<label>`。
+`scripts/issue-pool.mjs` 對有狀態 label 卻沒有這兩個分類的開著的單印一行 `NO_CATEGORY <n> <n>…`（見 [pilot.md](pilot.md) 的 **Pool**）；分類 label 改名時，Pool 的指令加上 `--categories <label>,<label>`。
 
 ## `ready-for-agent` 的輸入條件
 

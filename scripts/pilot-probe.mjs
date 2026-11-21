@@ -80,7 +80,7 @@ import { changedUnits } from './lib/changed-units.mjs';
 import { gateLines, isOpenRequest, now, openGates, parksAllPush, tableCells } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 import { ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
-import { POOL_FIELDS, pool } from './issue-pool.mjs';
+import { POOL_FIELDS, pool, prerequisiteOf } from './issue-pool.mjs';
 import { counterparts, declaredProjects } from './pilot-counterpart.mjs';
 
 // 池子摘要要的欄位取 issue-pool 的 POOL_FIELDS（#240）；同名的 blockedBy 在 GraphQL 裡合併成一份選取。
@@ -361,13 +361,13 @@ export function counterpartLines(issues, repo, batched = new Set(), projects = n
 
 /**
  * 等人的單沒人問（#327 第 2 項）：pool() 的 human 桶（`ready-for-human`）裡，`gates`（openGates 的結果）沒有一個開著的 gate 的 Issue 欄是 `#<n>` 的，
- * 依號碼印 `HUMAN_NO_GATE <n> <摘要>`；摘要取本文第一行 `… prerequisite：` 冒號之後的文字，沒有這行就取標題。
+ * 依號碼印 `HUMAN_NO_GATE <n> <摘要>`；摘要取本文第一行 `… prerequisite：` 冒號之後的文字（issue-pool 的 prerequisiteOf，與 PREREQ 共用），沒有這行就取標題。
  */
 export function humanNoGateLines(issues, repo, gates = []) {
   const gated = new Set(gates.flatMap(({ issue }) => refs(String(issue))));
   return pool(issues, { repo }).filter(({ bucket, issue }) => bucket === 'human' && !gated.has(issue.number))
     .map(({ issue }) => issue).sort((a, b) => a.number - b.number)
-    .map(issue => `HUMAN_NO_GATE ${issue.number} ${(issue.body ?? '').match(/^.*\bprerequisite\s*[：:]\s*(\S.*?)\s*$/im)?.[1] ?? issue.title ?? ''}`.trimEnd());
+    .map(issue => `HUMAN_NO_GATE ${issue.number} ${prerequisiteOf(issue.body) ?? issue.title ?? ''}`.trimEnd());
 }
 
 /**
