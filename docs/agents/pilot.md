@@ -76,7 +76,7 @@
 
 - **Close.** 見 [pilot-after-merge.md](pilot-after-merge.md)：Push gate 印 `LANDED`，或 Probe 印 `IN_MAIN` 時讀。
 
-- **Handoff.** 見 [pilot-after-merge.md](pilot-after-merge.md)：Defaults 的 handoff 條件達到（合入 2 批或 compaction）時讀。
+- **Handoff.** 見 [pilot-after-merge.md](pilot-after-merge.md)：Defaults 的 handoff 條件達到（Probe 印 `HANDOFF_DUE` 或 compaction）時讀。
 
 - **Project tick hooks.** 預設：沒有。
 

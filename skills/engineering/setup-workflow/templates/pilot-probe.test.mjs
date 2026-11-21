@@ -137,8 +137,9 @@ ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? 
   return { repo, pilot, origin, git, log, batch, probe, probeEnv, cli, temp, pilotBatch, ghLog: join(temp, 'gh.log') };
 }
 
-// 池子摘要（POOL_EMPTY｜POOL_READY｜POOL_FAILED，#240）每次都印一行；其他測試只看自己的行，比對前去掉它，池子的測試另外看 stdout。
-const rest = result => result.stdout.split('\n').filter(line => !/^POOL_/.test(line)).join('\n');
+// 池子摘要（POOL_EMPTY｜POOL_READY｜POOL_FAILED，#240）與 HANDOFF_COUNT（#368）每次都印一行；其他測試只看自己的行，比對前去掉它們，
+// 池子與交接計數的測試另外看 stdout。
+const rest = result => result.stdout.split('\n').filter(line => !/^(POOL_|HANDOFF_COUNT )/.test(line)).join('\n');
 const lines = result => rest(result).trim().split('\n');
 
 // 重現過的錯：TUI 畫了框線時結果行尾端帶空白和 `│`，不先去掉就比對不到 DONE。
@@ -2016,4 +2017,78 @@ test('pilot-batch resume 之後：started 是現在，Probe 印 RUNNING 不印 S
   assert.equal(result.status, 0, result.stderr);
   assert.ok(lines(result).includes('WORKER 385 RUNNING 0'), result.stdout);
   assert.equal(readFileSync(file, 'utf8'), before);
+});
+
+// #368：交接門檻（合入 2 批）原本由 coordinator 自己數；investing 66e552ea 把前任派的 381、383 算進來，誤判已達門檻。
+// probe 以 coordinator 檔的 pid 在 sessions.md 找本 session 的 start 行，只數成員 started 不早於它、已合入的 batch。
+const handoffOutput = result => result.stdout.split('\n').filter(line => /^HANDOFF_/.test(line));
+const PRIOR_START = '2026-11-20T08:00:00+08:00';
+const SESSION_START = '2026-11-20T12:00:00+08:00';
+function handoffFixture(t, { sessions = true, coordinator = true } = {}) {
+  const f = fixture(t);
+  if (coordinator) writeFileSync(join(f.pilot, 'coordinator'), `pid 4242   loop yes   since ${SESSION_START}   name coord-2\n`);
+  if (sessions) writeFileSync(join(f.pilot, 'sessions.md'), [
+    `${PRIOR_START}   session old-coord   pid 1111   coord-1`,
+    `2026-11-20T03:59:58.000Z   handoff from-session old-coord → terminal term_x   reason 合入 2 批`,
+    `${SESSION_START}   session new-coord   pid 4242   coord-2`,
+    '',
+  ].join('\n'));
+  const landed = (key, current, started) => {
+    f.batch(key, current, [{ n: key, started, state: 'done', candidate: SHA }]);
+    writeFileSync(join(f.pilot, `batch-${key}.md`), `${readFileSync(join(f.pilot, `batch-${key}.md`), 'utf8')}regression: ${SHA} exit 0\n`);
+  };
+  return { ...f, landed };
+}
+
+test('HANDOFF_COUNT 只數本 session 派工、已合入的 batch；達門檻印 HANDOFF_DUE', t => {
+  const { landed, batch, probe } = handoffFixture(t);
+  landed('81', 'closed', '2026-11-20T09:00:00+08:00');
+  landed('83', `pushed ${SHA}`, '2026-11-20T10:00:00+08:00');
+  landed('90', 'closed', '2026-11-20T12:30:00+08:00');
+  landed('91', `merged ${SHA}`, '2026-11-20T13:00:00+08:00');
+  batch('92', 'dispatched 2026-11-20T13:30:00+08:00', [{ n: 92, started: '2026-11-20T13:30:00+08:00' }]);
+  batch('93', 'closed moved', [{ n: 93, started: '2026-11-20T13:40:00+08:00', state: 'moved batch-92' }]);
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(handoffOutput(result), ['HANDOFF_COUNT 2/2', 'HANDOFF_DUE']);
+});
+
+test('只有前任派的 batch 不計入：HANDOFF_COUNT 0/2，不印 HANDOFF_DUE', t => {
+  const { landed, probe } = handoffFixture(t);
+  landed('81', 'closed', '2026-11-20T09:00:00+08:00');
+  landed('83', `pushed ${SHA}`, '2026-11-20T10:00:00+08:00');
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(handoffOutput(result), ['HANDOFF_COUNT 0/2']);
+});
+
+test('沒有 sessions.md、coordinator 檔，或 sessions.md 沒有這個 pid 的 start 行時印 HANDOFF_COUNT 0/<門檻>、不報錯', t => {
+  for (const options of [{ sessions: false }, { coordinator: false }]) {
+    const { landed, probe } = handoffFixture(t, options);
+    landed('90', 'closed', '2026-11-20T12:30:00+08:00');
+    const result = probe();
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(handoffOutput(result), ['HANDOFF_COUNT 0/2'], JSON.stringify(options));
+  }
+  const { landed, pilot, probe } = handoffFixture(t);
+  writeFileSync(join(pilot, 'coordinator'), `pid 5555   loop yes   since ${SESSION_START}   name coord-3\n`);
+  landed('90', 'closed', '2026-11-20T12:30:00+08:00');
+  assert.deepEqual(handoffOutput(probe()), ['HANDOFF_COUNT 0/2']);
+});
+
+test('pid 被重用、start 行早於 coordinator 檔的 since 時以 since 為準：之間派的 batch 不算', t => {
+  const { landed, pilot, probe } = handoffFixture(t);
+  writeFileSync(join(pilot, 'coordinator'), `pid 4242   loop yes   since 2026-11-20T13:00:00+08:00   name coord-3\n`);
+  landed('90', 'closed', '2026-11-20T12:30:00+08:00');
+  landed('91', `merged ${SHA}`, '2026-11-20T13:30:00+08:00');
+  assert.deepEqual(handoffOutput(probe()), ['HANDOFF_COUNT 1/2']);
+});
+
+test('--handoff-after <n> 帶入門檻；不是正整數時是用法錯誤', t => {
+  const { landed, probe } = handoffFixture(t);
+  landed('90', 'closed', '2026-11-20T12:30:00+08:00');
+  landed('91', `merged ${SHA}`, '2026-11-20T13:00:00+08:00');
+  assert.deepEqual(handoffOutput(probe({ args: ['--handoff-after', '3'] })), ['HANDOFF_COUNT 2/3']);
+  assert.deepEqual(handoffOutput(probe({ args: ['--handoff-after', '1'] })), ['HANDOFF_COUNT 2/1', 'HANDOFF_DUE']);
+  for (const bad of ['0', 'x', '1.5']) assert.equal(probe({ args: ['--handoff-after', bad] }).status, 2, bad);
 });
