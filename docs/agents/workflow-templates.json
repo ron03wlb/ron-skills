@@ -130,6 +130,11 @@
       "commit": "de46b4f57675a89453dc74bd6b0f5e91dd7119ad",
       "sha256": "27903739d0a621c91f571544ec51cd07b96e94484697a6a38f18b4b99864791b"
     },
+    "scripts/lib/merge-tree.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/lib/merge-tree.mjs",
+      "commit": "924f809f1df6f4d6759e584afc382b8aaa9c344e",
+      "sha256": "db576b80539b966cd54f3b55aeb82809f2ee95f704aa04c192ccf94eb666134b"
+    },
     "scripts/lib/pilot-store.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/pilot-store.mjs",
       "commit": "279780b2a20dd6172def7a8180fc9a50c62baf8e",
@@ -232,8 +237,8 @@
     },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",
-      "commit": "b8c5f810e0775342bb56f6c0a3c3f07e7a00bdd4",
-      "sha256": "b9ac7450b9205db68bb822f6a7d278e98f8048381c9fc8550d4919e414f320a5"
+      "commit": "924f809f1df6f4d6759e584afc382b8aaa9c344e",
+      "sha256": "4030b23b88d9a7fea02385282b2896b1838331fd19fa5e074081adeff5abe79c"
     },
     "scripts/pilot-register.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-register.mjs",
@@ -277,8 +282,8 @@
     },
     "scripts/worktree-overlap.mjs": {
       "template": "skills/engineering/setup-workflow/templates/worktree-overlap.mjs",
-      "commit": "7f95836c6cd67d8f08d599cc90240d214a4da129",
-      "sha256": "fb21531028af3b65788e44adc380f124ac4e1066c049557f212879b511c9bed1"
+      "commit": "924f809f1df6f4d6759e584afc382b8aaa9c344e",
+      "sha256": "13c39ec1f37c5d05cad0dffb7b8fa47ad7667b33388c20aeb59702eec5a2fa57"
     }
   },
   "source": "ron03wlb/ron-skills"

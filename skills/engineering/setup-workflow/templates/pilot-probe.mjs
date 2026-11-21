@@ -67,6 +67,10 @@
 //                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）
 //   batch：dispatched 的 batch 沒有 running 成員時（這一輪剛讀到 DONE／STOP 的照結果算；moved（含 `moved batch-<n>`）的成員已移到別的 batch，不算）：
 //          每個成員都 done 印 STAGEABLE <key>；有 done 也有 stop、parked 印 MOVE <key> <不是 done 的成員…>（先用 pilot-batch 移走）；
+//          STAGEABLE 之後緊接 CONFLICT <key> <n> <m|integration> <檔…>（#376：done 成員的本機分支兩兩、再各自對整合分支（沒有時主分支）的 tip
+//          以 lib/merge-tree.mjs 試合併，有衝突的每一對一行，號碼小的在前、檔依路徑排序；是 git 合併真的會衝突的檔，pilot-land 的解法
+//          （restamp、--resolver）解不掉的就會 STOP conflict 在這些檔；
+//          本機沒有分支的成員、git 低於 2.38 或判斷不了的一對不印）；
 //          done 的成員被 gates.md 開著的 gate 以 `- hold：#<n>` hold 住（pilot-gate open --hold）時，每個先印 HELD <n> <gate id>（依成員列順序），
 //          這時不印 STAGEABLE（pilot-land 會 STOP held）；MOVE 照印、排在 HELD 之後（PARKED 沒有 done 成員，不會有 HELD）；gate resolved 後恢復（#367）；
 //          不是 done 的成員裡有 batch key 那張時（pilot-batch move 會 STOP same-batch，#357）改印 MOVE <key> <done 的成員…>；
@@ -105,6 +109,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
+import { mergeConflicts } from './lib/merge-tree.mjs';
 import { CheckpointLocked, gateLines, heldIssues, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 import { envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
@@ -896,6 +901,25 @@ export function budgetLines(checkout, batches, options = {}) {
   return out;
 }
 
+/**
+ * STAGEABLE batch 的試合併（#376，#338 第 4 項）：done 成員（`active` 的順序，依號碼）的本機分支 tip 兩兩以 lib/merge-tree.mjs 試合併，
+ * 有衝突印 `CONFLICT <key> <n> <m> <檔…>`（號碼小的在前）；再拿每個成員試合併整合分支（沒有時主分支）的 tip，有衝突印
+ * `CONFLICT <key> <n> integration <檔…>`。檔依路徑排序。本機沒有分支的成員、git 判斷不了（低於 2.38、沒有共同祖先）的那一對略過。
+ * 只在印了 STAGEABLE 時呼叫，所以成員都是 done、tip 都已 commit。
+ */
+export function conflictLines(checkout, key, active, options = {}) {
+  const onto = overlapOnto(checkout, options);
+  const members = [...active].sort((a, b) => Number(a.n) - Number(b.n))
+    .map(m => ({ n: m.n, tip: m.branch && rev(checkout, `refs/heads/${m.branch}`) })).filter(m => m.tip);
+  const line = (n, m, files) => (files?.length ? [['CONFLICT', key, n, m, ...files].join(' ')] : []);
+  const out = [];
+  members.forEach((a, i) => {
+    for (const b of members.slice(i + 1)) out.push(...line(a.n, b.n, mergeConflicts(checkout, a.tip, b.tip)));
+  });
+  if (onto) for (const m of members) out.push(...line(m.n, 'integration', mergeConflicts(checkout, m.tip, onto)));
+  return out;
+}
+
 /** 經過的時間：`<h>h<m>m` 或 `<m>m`；時間解析不了時 `?`。 */
 function age(time, at) {
   const minutes = Math.floor((at - Date.parse(time)) / 60000);
@@ -984,7 +1008,11 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
       out.push(`WORKER ${member.n} ${state}`);
     }
     if (apply && results.length) out.push(...applyResults(join(pilot, file), key, results));
-    if (/^dispatched\b/.test(current)) out.push(...stageLines(key, active, results, held));
+    if (/^dispatched\b/.test(current)) {
+      const stage = stageLines(key, active, results, held);
+      out.push(...stage);
+      if (stage.includes(`STAGEABLE ${key}`)) out.push(...conflictLines(checkout, key, active, { integration, main }));
+    }
     if (!/^closed\b/.test(current)) out.push(...unblockedLines(key, active, results, tracker.issues), ...scopeChangedLines(key, active, results, tracker.issues));
     // 只有 staged 而且留了標記的 batch 才查行程（ps），其他 batch 不多花一次 spawn。
     const liveLandSha = /^staged\b/.test(current) && regressing && landAlive(regressing.pid) ? regressing.sha : undefined;

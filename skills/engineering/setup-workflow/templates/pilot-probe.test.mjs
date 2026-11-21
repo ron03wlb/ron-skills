@@ -119,7 +119,7 @@ ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? 
   if (guard !== undefined || world !== undefined || tracker !== undefined) {
     const scripts = join(temp, 'scripts');
     mkdirSync(join(scripts, 'lib'), { recursive: true });
-    const names = ['pilot-probe.mjs', 'pilot-capacity.mjs', 'pilot-counterpart.mjs', 'memory-audit.mjs', 'orca-session-send.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'lib/pilot-store.mjs', 'lib/changed-units.mjs', ...(tracker === undefined ? [] : ['gh-tracker.mjs'])];
+    const names = ['pilot-probe.mjs', 'pilot-capacity.mjs', 'pilot-counterpart.mjs', 'memory-audit.mjs', 'orca-session-send.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'lib/pilot-store.mjs', 'lib/changed-units.mjs', 'lib/merge-tree.mjs', ...(tracker === undefined ? [] : ['gh-tracker.mjs'])];
     for (const name of names) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
     if (guard !== undefined) {
       writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
@@ -1183,6 +1183,51 @@ test('在同一處各加新條目、或改到相鄰條目的相接行時，算�
   memberBranch(repo, git, 11, 'pilot/integration', { 'docs/tight.md': tight.replace('關單。', '關單（#11）。') });
   batch('8-11', 'dispatched 2026-10-31T00:00:00+08:00', [8, 9, 10, 11].map(n => ({ n, state: 'done', candidate: SHA })));
   assert.deepEqual(overlapOf(probe()), ['OVERLAP 8 9 1 files **Probe.**', 'OVERLAP 10 11 1 files **Handoff.** **Close.**']);
+});
+
+// #376（#338 第 4 項）：Probe 對 326、345-398 印 STAGEABLE，stage 後兩批都 STOP conflict，衝突來自整合分支；OVERLAP 只說改到同一處，
+// 要等 pilot-land 跑完才知道真的衝突。STAGEABLE 的 batch 以 lib/merge-tree.mjs 兩兩試合併 done 成員，也拿每個成員試合併整合分支。
+const conflictOf = result => result.stdout.split('\n').filter(line => line.startsWith('CONFLICT '));
+
+test('STAGEABLE 的 batch：done 成員兩兩衝突印 CONFLICT <key> <n> <m> <檔…>，和整合分支衝突印 CONFLICT <key> <n> integration <檔…>', t => {
+  const { repo, git, batch, probe } = rulesFixture(t);
+  const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+  const at = (n, text) => `${lines.map((line, i) => (i === n - 1 ? `${line} ${text}` : line)).join('\n')}\n`;
+  git('switch', '-q', 'pilot/integration');
+  for (const path of ['tool.mjs', 'b.mjs', 'c.mjs']) writeFileSync(join(repo, path), `${lines.join('\n')}\n`);
+  git('add', '.');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'files');
+  git('switch', '-q', 'main');
+  // #8、#9 改 tool.mjs 同一行 → 衝突；b.mjs 兩邊都改、隔得遠 → 合得起來（OVERLAP 會印，CONFLICT 不印）。
+  memberBranch(repo, git, 8, 'pilot/integration', { 'tool.mjs': at(10, '#8'), 'b.mjs': at(2, '#8'), 'c.mjs': at(5, '#8') });
+  memberBranch(repo, git, 9, 'pilot/integration', { 'tool.mjs': at(10, '#9'), 'b.mjs': at(28, '#9') });
+  // 成員開出之後整合分支改了 c.mjs 同一行：#8 和整合分支衝突，#9 沒改 c.mjs。
+  git('switch', '-q', 'pilot/integration');
+  writeFileSync(join(repo, 'c.mjs'), at(5, 'integration'));
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-am', 'integration moved');
+  git('switch', '-q', 'main');
+  batch('8-9', 'dispatched 2026-10-31T00:00:00+08:00', [8, 9].map(n => ({ n, state: 'done', candidate: SHA })));
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  const out = result.stdout.split('\n');
+  assert.ok(out.includes('STAGEABLE 8-9'), result.stdout);
+  assert.deepEqual(conflictOf(result), ['CONFLICT 8-9 8 9 tool.mjs', 'CONFLICT 8-9 8 integration c.mjs']);
+  // CONFLICT 緊接在 STAGEABLE 之後。
+  assert.equal(out[out.indexOf('STAGEABLE 8-9') + 1], 'CONFLICT 8-9 8 9 tool.mjs');
+});
+
+test('不是 STAGEABLE 的 batch（還有 running 成員）不試合併；成員都合得起來時不印 CONFLICT', t => {
+  const { repo, git, batch, probe } = rulesFixture(t);
+  memberBranch(repo, git, 8, 'pilot/integration', { 'tool.mjs': 'a\n' });
+  memberBranch(repo, git, 9, 'pilot/integration', { 'tool.mjs': 'b\n' });
+  memberBranch(repo, git, 10, 'pilot/integration', { 'x.mjs': 'x\n' });
+  memberBranch(repo, git, 11, 'pilot/integration', { 'y.mjs': 'y\n' });
+  batch('8-9', 'dispatched 2026-10-31T00:00:00+08:00', [{ n: 8, state: 'done', candidate: SHA }, { n: 9, state: 'running' }]);
+  batch('10-11', 'dispatched 2026-10-31T00:00:00+08:00', [10, 11].map(n => ({ n, state: 'done', candidate: SHA })));
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.split('\n').includes('STAGEABLE 10-11'), result.stdout);
+  assert.deepEqual(conflictOf(result), []);
 });
 
 // 開單時依賴只寫在內文（「依賴 #87」）、沒建 blocked_by，Pool 只讀 blocked_by，會把兩組同時派出（#94）。
