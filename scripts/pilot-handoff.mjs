@@ -16,7 +16,7 @@
 //   --to          交給已經開著的 session：本 repo 任一 worktree 上 handle 相同，或標題去掉分頁狀態前綴與 `[類別] ` 後相同的分頁，不開新分頁。
 //                 標題比對 Orca 的自動標題與 tab-state.mjs 記錄的標題（Orca 讀不回 rename 設的標題）。
 //   --held-check  adapter 指定的「整合分支合併進行中」檢查，在主 checkout 以 shell 執行：exit 0 合併中、1 沒有、其他無法判斷；沒帶就不檢查。
-// stdout 最後一行：HANDED_OFF <terminal handle>，或 STOP <原因>（not-coordinator、held-merge、held-check、to-not-found、to-ambiguous、to-self、
+// stdout 最後一行：HANDED_OFF <terminal handle> [name <name>]（name 是接手 session 經 pilot-register 寫進 coordinator 檔的 `name` 欄，沒有就省略），或 STOP <原因>（not-coordinator、held-merge、held-check、to-not-found、to-ambiguous、to-self、
 //   create、tui-timeout、send、orca、pid-timeout、timeout、signal）。
 // stderr：交接完成時提醒停掉本 session 的 watcher。
 // exit：0 交接完成；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
@@ -53,13 +53,17 @@ function worktrees() {
   return result.stdout.split('\n').filter(line => line.startsWith('worktree ')).map(line => line.slice('worktree '.length));
 }
 
-/** 等 coordinator 檔出現別人的 `pid ` 行；逾時傳回 false，中止時丟出 AbortError。 */
+/** coordinator 行的 `name` 欄（pilot-register 寫在行尾）；沒有時傳回 undefined。 */
+const nameOf = text => text.match(/   name (.+)$/m)?.[1].trim() || undefined;
+
+/** 等 coordinator 檔出現別人的 `pid ` 行，傳回當時的檔案內容；逾時傳回 null，中止時丟出 AbortError。 */
 async function waitNewCoordinator(file, pid, signal) {
   const deadline = Date.now() + WAIT_MS;
   for (;;) {
-    const owner = (existsSync(file) ? readFileSync(file, 'utf8') : '').match(/^pid (\d+)\b/m)?.[1];
-    if (owner && owner !== pid) return true;
-    if (Date.now() >= deadline) return false;
+    const text = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    const owner = text.match(/^pid (\d+)\b/m)?.[1];
+    if (owner && owner !== pid) return text;
+    if (Date.now() >= deadline) return null;
     await sleep(POLL_MS, undefined, { signal });
   }
 }
@@ -150,7 +154,7 @@ async function handoff(cli, paths, { session, pid, reason, heldCheck, to }, sign
   let target;
   if (to) {
     try {
-      target = await resolveTarget(cli, paths, to, { self: process.env.ORCA_TERMINAL_HANDLE, name: original.match(/   name (.+)$/m)?.[1].trim() }, signal);
+      target = await resolveTarget(cli, paths, to, { self: process.env.ORCA_TERMINAL_HANDLE, name: nameOf(original) }, signal);
     } catch (error) {
       return `STOP ${signal.aborted ? signal.reason : `orca ${error.message}`}`;
     }
@@ -185,14 +189,18 @@ async function handoff(cli, paths, { session, pid, reason, heldCheck, to }, sign
     if (sent.stop) return stop(sent.stop);
   }
   const receiver = target?.handle ?? handle;
+  let taken;
   try {
-    if (!await waitNewCoordinator(file, pid, signal)) return stop(`pid-timeout ${receiver}`);
+    taken = await waitNewCoordinator(file, pid, signal);
+    if (taken === null) return stop(`pid-timeout ${receiver}`);
   } catch (error) {
     return stop(error.message);
   }
   // 契約（PILOT-STORE.md）：handoff 行只在交接完成後附加；STOP 時不記，否則照常繼續的自己會被判為已退役。
   appendFileSync(join(main, '.scratch/pilot/sessions.md'), `${new Date().toISOString()}   handoff from-session ${session} → terminal ${receiver}   reason ${reason}\n`);
-  return `HANDED_OFF ${receiver}`;
+  // 接手 session 經 pilot-register 寫入的 name，讓別的 session 不必另查就能 SendMessage；舊格式的 coordinator 檔沒有 name，照舊只印 handle。
+  const name = nameOf(taken);
+  return `HANDED_OFF ${receiver}${name ? ` name ${name}` : ''}`;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

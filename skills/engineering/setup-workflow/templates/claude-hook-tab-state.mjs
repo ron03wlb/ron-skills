@@ -21,8 +21,8 @@ import { STATES, currentTitle, hasState, orcaContext, recordTitle, recordedTitle
 export const DEFAULT_TRIGGERS = {
   // land.mjs 合入後的最後一行；pilot 的 coordinator 以 `--keep-branch` 落地整合分支，它還在運作，不算
   landed: { event: 'PostToolUse', match: '^LANDED \\S+ [0-9a-f]{7,40}$', skipCommand: '--keep-branch\\b', state: '待 Retro' },
-  // pilot-handoff.mjs 交接完成，舊 coordinator 退役
-  'pilot-handoff': { event: 'PostToolUse', match: '^HANDED_OFF \\S+$', state: '待 Retro' },
+  // pilot-handoff.mjs 交接完成，舊 coordinator 退役（行尾可能帶接手 session 的 `name <name>`，#372）
+  'pilot-handoff': { event: 'PostToolUse', match: '^HANDED_OFF \\S+( name .+)?$', state: '待 Retro' },
   // L3 worker 寫出 DONE 結果行
   'worker-done': { event: 'Stop', match: '^DONE \\d+ [0-9a-f]{7,40}$', state: '待 Retro' },
 };

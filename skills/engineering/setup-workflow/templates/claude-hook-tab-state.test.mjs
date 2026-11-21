@@ -64,12 +64,14 @@ test('Bash 輸出 LANDED：分頁轉成待 Retro，其他文字不動', t => {
   assert.equal(recorded(), '待 Retro｜#21 雙池採集｜收尾｜land');
 });
 
-test('pilot-handoff 印 HANDED_OFF：舊 coordinator 分頁轉成待 Retro', t => {
-  const { record, recorded, hook } = fixture(t);
-  record('處理中｜[維運] issue-pilot coordinator');
-  assert.equal(hook(bash('node scripts/pilot-handoff.mjs --session s --pid 1 --reason x', 'HANDED_OFF term_new\n')).status, 0);
-  assert.equal(recorded(), '待 Retro｜[維運] issue-pilot coordinator');
-});
+for (const line of ['HANDED_OFF term_new', 'HANDED_OFF term_new name ron-skills-ac']) {
+  test(`pilot-handoff 印 ${line}：舊 coordinator 分頁轉成待 Retro`, t => {
+    const { record, recorded, hook } = fixture(t);
+    record('處理中｜[維運] issue-pilot coordinator');
+    assert.equal(hook(bash('node scripts/pilot-handoff.mjs --session s --pid 1 --reason x', `${line}\n`)).status, 0);
+    assert.equal(recorded(), '待 Retro｜[維運] issue-pilot coordinator');
+  });
+}
 
 test('其他 Bash 輸出、其他工具：不呼叫 Orca', t => {
   const { record, hook, calls } = fixture(t);
