@@ -65,6 +65,19 @@ test('open：沒有 gates.md 時先寫 `# Gates` 標題，編號從 G1 起', t =
   assert.match(gates(dir), /^# Gates\n\n## G1 #13 衝突\n- Issue：/);
 });
 
+// #367（investing#320 等 G28）：gate 擋住的 batch 成員要記在 gate 上，probe 才不會在 gate 未解時印 STAGEABLE。
+test('open --hold <n>：段落在 opened 之前多一個 `- hold：#<n>` 欄位；n 不是正整數或重複是用法錯誤', t => {
+  const dir = checkout(t, null);
+  const result = run(dir, 'open', ...OPEN, '--hold', '320');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'GATE_OPENED G1\n');
+  assert.match(gates(dir), new RegExp(`\\n- parked：batch 13 的 Stage\\n- hold：#320\\n- opened：${TIME}\\n$`));
+  for (const hold of [['--hold', '#320'], ['--hold', '0'], ['--hold', 'x'], ['--hold', '1', '--hold', '2']]) {
+    const bad = checkout(t, null);
+    assert.equal(run(bad, 'open', ...OPEN, ...hold).status, 2, hold.join(' '));
+  }
+});
+
 test('open：編號取表格與段落中最大的 G<n> 加一，不重用', t => {
   const dir = checkout(t, `${GATES}\n## G9 舊的\n- opened：2026-10-30T23:00:00+08:00\n- resolved 2026-10-30T23:10:00+08:00 已解\n`);
   assert.equal(run(dir, 'open', ...OPEN).stdout, 'GATE_OPENED G10\n');
