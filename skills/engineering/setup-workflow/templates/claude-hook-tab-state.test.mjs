@@ -9,11 +9,13 @@ import { git } from './test/repo-fixture.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-tab-state.mjs', import.meta.url));
+const tabStateScript = fileURLToPath(new URL('./tab-state.mjs', import.meta.url));
 const SELF = 'term_self';
 const SHA = '4b14f45a922942987473d3a1b9358740c2409777';
 
 // 專案目錄（放 docs/agents/tab-state.json）、記錄呼叫的假 Orca CLI 與 TAB_STATE_DIR。
 // `terminal list` 回本分頁，title 是 Claude 的自動標題；`tabTitle` 是 Orca 分頁資料（--include-visual-layouts）裡的實際標題；`failing` 為真時每個 Orca 呼叫都回錯；`renameFails` 只讓改名回錯；`stuckTab` 時改名回 ok、分頁實際不變。
+// 本分頁放在 panes.first：與樣本合併後放 second 的話 first 是樣本的 term_sample，tab-state.mjs 的 isSplitChild 會當成 split pane 而不改名（#421）。
 function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, config, tabTitle, renameFails = false, stuckTab = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'claude-hook-tab-state-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
@@ -31,7 +33,7 @@ const fs = require('fs'); const [, b] = process.argv.slice(2); const arg = k => 
 fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 ${orcaReplySource()}
 if (${failing}) fail('runtime_unavailable');
-else if (b === 'list' && fs.existsSync(${JSON.stringify(tab)}) && process.argv.includes('--include-visual-layouts')) reply('list-visual', { visualLayouts: [{ root: { second: { tabs: [{ title: fs.readFileSync(${JSON.stringify(tab)}, 'utf8'), panes: { second: { handle: ${JSON.stringify(SELF)} } } }] } } }] });
+else if (b === 'list' && fs.existsSync(${JSON.stringify(tab)}) && process.argv.includes('--include-visual-layouts')) reply('list-visual', { visualLayouts: [{ root: { second: { tabs: [{ title: fs.readFileSync(${JSON.stringify(tab)}, 'utf8'), panes: { first: { handle: ${JSON.stringify(SELF)} } } }] } } }] });
 else if (b === 'list') reply('list', { terminals: [{ handle: ${JSON.stringify(SELF)}, title: ${JSON.stringify(autoTitle)} }], totalCount: 1 });
 else if (b === 'rename' && ${renameFails}) fail('rename_failed');
 else if (b === 'rename') {
@@ -43,15 +45,19 @@ else if (b === 'rename') {
   const transcript = join(temp, 'transcript.jsonl');
   const record = (title, handle = SELF) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, handle), title); };
   const recorded = (handle = SELF) => existsSync(join(dir, handle)) ? readFileSync(join(dir, handle), 'utf8') : null;
+  const env = extra => ({ ...process.env, ORCA_CLI_COMMAND: cli, ORCA_TERMINAL_HANDLE: SELF, TAB_STATE_DIR: dir, CLAUDE_PROJECT_DIR: project, ...extra });
   const hook = (input, extra = {}) => spawnSync('node', [script], {
-    input: typeof input === 'string' ? input : JSON.stringify({ cwd: project, transcript_path: transcript, ...input }), encoding: 'utf8',
-    env: { ...process.env, ORCA_CLI_COMMAND: cli, ORCA_TERMINAL_HANDLE: SELF, TAB_STATE_DIR: dir, CLAUDE_PROJECT_DIR: project, ...extra },
+    input: typeof input === 'string' ? input : JSON.stringify({ cwd: project, transcript_path: transcript, ...input }), encoding: 'utf8', env: env(extra),
+  });
+  // agent 自己跑的 `node scripts/tab-state.mjs <狀態>`（/retro 最後一步切待關閉、回頭再做時切處理中）；讀回輪詢縮短，MISMATCH 不必等 5 秒。
+  const tabState = (...args) => spawnSync('node', [tabStateScript, ...args], {
+    encoding: 'utf8', env: env({ TAB_STATE_VERIFY_MS: '300', TAB_STATE_VERIFY_RETRY_MS: '50' }),
   });
   const say = text => writeFileSync(transcript, [
     { type: 'user', message: { role: 'user', content: '/issue-run 126 --worker x' } },
     { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } },
   ].map(entry => JSON.stringify(entry)).join('\n'));
-  return { project, transcript, record, recorded, hook, say, calls: () => readFileSync(log, 'utf8'), tabNow: () => readFileSync(tab, 'utf8') };
+  return { project, transcript, record, recorded, hook, tabState, say, calls: () => readFileSync(log, 'utf8'), tabNow: () => readFileSync(tab, 'utf8') };
 }
 
 const bash = (command, stdout) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, tool_response: { stdout, stderr: '' } });
@@ -259,6 +265,40 @@ test('Stop：分頁已是待關閉（retro 已跑完）時，DONE 結果行與 L
   assert.equal(hook(bash('node scripts/land.mjs issue/327-x --title x --body-file b.md', `LANDED 130 ${SHA}\n`)).status, 0);
   assert.equal(recorded(), '待關閉｜#327 自動 retro');
   assert.doesNotMatch(calls(), /rename/);
+});
+
+// #421（investing#515）：retro 結束那一輪，Stop hook 讀到的最後一段文字仍是先前的 DONE 結果行（retro 總結還沒寫進 transcript）。
+// 待 Retro → /retro 切待關閉 → Stop 讀到過時的 DONE：標題維持待關閉；讀回落後（MISMATCH，實際分頁仍是待 Retro）時也一樣。
+test('Stop：待 Retro → 待關閉之後，過時的 DONE 結果行不改回待 Retro（含讀回落後）', t => {
+  for (const stuckTab of [false, true]) {
+    const f = fixture(t, { tabTitle: '處理中｜#421 分頁狀態｜收尾｜候選', stuckTab });
+    f.record('處理中｜#421 分頁狀態｜收尾｜候選');
+    f.say(`摘要……\n\nDONE 421 ${SHA}`);
+    assert.equal(f.hook({ hook_event_name: 'Stop', stop_hook_active: false }).status, 0);
+    assert.equal(f.recorded(), '待 Retro｜#421 分頁狀態｜收尾｜候選', `stuckTab=${stuckTab}`);
+    const closed = f.tabState('待關閉');
+    assert.equal(closed.status, stuckTab ? 1 : 0, closed.stderr);
+    assert.equal(f.recorded(), '待關閉｜#421 分頁狀態', `stuckTab=${stuckTab}`);
+    const renames = f.calls().match(/rename/g).length;
+    const result = f.hook({ hook_event_name: 'Stop', stop_hook_active: false });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(f.recorded(), '待關閉｜#421 分頁狀態', `stuckTab=${stuckTab}`);
+    assert.equal(f.calls().match(/rename/g).length, renames, `Stop 不再改名，stuckTab=${stuckTab}`);
+  }
+});
+
+// 經過處理中才可以再轉待 Retro：待關閉的分頁回頭再做（切回處理中）之後，新的 DONE 照常轉成待 Retro。
+test('Stop：待關閉 → 處理中 → DONE 結果行：照常轉成待 Retro', t => {
+  const f = fixture(t, { tabTitle: '待關閉｜#421 分頁狀態' });
+  f.record('待關閉｜#421 分頁狀態');
+  const working = f.tabState('處理中');
+  assert.equal(working.status, 0, working.stderr);
+  assert.equal(f.recorded(), '處理中｜#421 分頁狀態');
+  f.say(`摘要……\n\nDONE 421 ${SHA}`);
+  const result = f.hook({ hook_event_name: 'Stop', stop_hook_active: false });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(f.recorded(), '待 Retro｜#421 分頁狀態');
+  assert.equal(f.tabNow(), '待 Retro｜#421 分頁狀態');
 });
 
 // #399：只回答問題的 session（工作區乾淨、session 沒有 commit）不該被引去待 Retro，等於要使用者為一則問答跑 /retro。
