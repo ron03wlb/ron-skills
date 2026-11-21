@@ -199,6 +199,9 @@ function runBatch(args) {
     let saved;
     try { saved = JSON.parse(readFileSync(stateFile, 'utf8')); } catch (error) { fail(`狀態檔 ${stateFile} 不是合法 JSON：${error.message}`); }
     if (!saved || typeof saved.created !== 'object' || !Array.isArray(saved.done) || !saved.done.every(key => typeof key === 'string')) fail(`狀態檔 ${stateFile} 格式不對（要有 created 物件與 done 字串陣列）`);
+    // 單號會進 gh 的參數與 REST 路徑：狀態檔被改過時，非 create 步驟的鍵或不是正整數的值（路徑、網址、旗標）一律不收（審查 #401）。
+    const forged = Object.entries(saved.created).find(([i, n]) => steps[i]?.op !== 'create' || !Number.isSafeInteger(n) || n < 1);
+    if (Array.isArray(saved.created) || forged) fail(`狀態檔 ${stateFile} 的 created 要是 create 步驟索引對正整數單號，收到：${JSON.stringify(forged ?? saved.created)}`);
     Object.assign(state, { created: saved.created, done: saved.done });
     const stale = state.done.find(key => { const [i] = key.split(' '); return !steps[i] || !(key === steps[i].sig || key.startsWith(`${steps[i].sig} `)); });
     if (stale) fail(`狀態檔 ${stateFile} 記的步驟「${stale}」和批次檔對不上：批次檔在中斷後改過步驟順序或內容；改回原樣再跑，或刪掉狀態檔從頭來`);
