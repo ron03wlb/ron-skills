@@ -5,6 +5,11 @@
       "commit": "3c410e3f8b337e43289045f974f0d43533071a0b",
       "sha256": "8fd75828d44eebabd91d2b3779be4cad695d1ecf6b6b54f7e88ec635f9c8b2ad"
     },
+    "scripts/brief-check.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/brief-check.mjs",
+      "commit": "7ee0a2369ca29b4e333deabda3d931ce61cebb27",
+      "sha256": "6a4a103536f7a4d56d16ff51d7a590ba62d964678249db70d9031dc666e59024"
+    },
     "scripts/check-claude-settings.mjs": {
       "template": "skills/engineering/setup-workflow/templates/check-claude-settings.mjs",
       "commit": "ada628ad8ff233f859b6e1cd3cdb9965b4629871",
@@ -34,6 +39,11 @@
       "template": "skills/engineering/setup-workflow/templates/check-test-git-isolation.mjs",
       "commit": "774f7b44ee01e33305be974d55c6837733d406a0",
       "sha256": "69cf719f01762c207468037bf9628b8df242508e149344a3c52abc94ea93d604"
+    },
+    "scripts/claude-hook-bang-space.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/claude-hook-bang-space.mjs",
+      "commit": "7ee0a2369ca29b4e333deabda3d931ce61cebb27",
+      "sha256": "18f4f4a701a76790da205f1ca5bc2a7fc9bb265d2962f099c545ecf0a595a191"
     },
     "scripts/claude-hook-language.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-language.mjs",
