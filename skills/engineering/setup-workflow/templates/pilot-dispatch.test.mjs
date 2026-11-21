@@ -146,7 +146,7 @@ else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
   if (guard !== undefined || tracker) {
     const scripts = join(temp, 'scripts');
     mkdirSync(join(scripts, 'lib'), { recursive: true });
-    for (const name of ['pilot-dispatch.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'orca-session-send.mjs', 'orca-worktree-create.mjs', 'pilot-probe.mjs', 'pilot-capacity.mjs', 'pilot-counterpart.mjs', 'memory-audit.mjs', 'lib/changed-units.mjs', 'lib/pilot-store.mjs', 'tab-state.mjs', 'gh-tracker.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+    for (const name of ['pilot-dispatch.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'orca-session-send.mjs', 'orca-worktree-create.mjs', 'pilot-probe.mjs', 'pilot-capacity.mjs', 'pilot-counterpart.mjs', 'memory-audit.mjs', 'lib/changed-units.mjs', 'lib/merge-tree.mjs', 'lib/pilot-store.mjs', 'tab-state.mjs', 'gh-tracker.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
     if (guard !== undefined) {
       writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
       chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
