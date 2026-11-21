@@ -90,6 +90,8 @@
 //          兩個成員改到同一個檔，或整合分支自成員的 merge-base 以來也改了它改的檔；`.md` 檔的改動都在 `- **<名稱>.**` 條目裡時細到條目，
 //          相接的行與同一處的插入也算，git 合併時會衝突；同一對只印一行，後面列重疊的條目名稱，#176：條目不帶檔名、不同檔的同名條目只列一次，
 //          名稱可能有空格，以 `**`…`.**` 切分；數量固定寫 files，1 也是）
+//   預算：BUDGET <檔案> <合計> <上限> <成員…>（#398：整合分支（沒有時主分支）上 scripts/adapter-size-budget.json 列的檔，整合分支的大小加上
+//          同一批成員已 commit 的增量超過上限時印，列出讓它變大的成員；沒有預算表不印，表不是 { 路徑: 正整數 } 時 exit 1）
 //   落後主分支：BEHIND_MAIN <落後數> <origin/主分支 SHA>（整合分支沒有包含 origin/<主分支>，例如 retro 直接合進主分支之後；
 //          比的是本機最後一次 fetch 的 origin ref，有 merged／pushed 的 batch 時在這一輪的 fetch 之後比；兩個 ref 有一個不存在時不印。
 //          #268：沒有這一行時 coordinator 要自己算 rev-list 才知道要 sync-main，漏掉就在舊 tip 上 stage，到 Push gate 才 STOP behind-main）
@@ -782,14 +784,19 @@ function overlapLine(n, m, a, b) {
 const overlapOnto = (checkout, { integration = 'pilot/integration', main = 'main' } = {}) =>
   [`refs/heads/${integration}`, `refs/heads/${main}`].find(ref => rev(checkout, ref));
 
-/** 分支已 commit 的內容相對於與 `onto` 的 merge-base 改了哪些檔或條目：`{ base, units }`；本機沒有這個分支或沒有共同祖先時傳回 undefined。 */
-function branchUnits(checkout, onto, branch) {
+/** 本機分支的 tip 與它和 `onto` 的 merge-base：`{ tip, base }`；本機沒有這個分支或沒有共同祖先時傳回 undefined，git 失敗時 throw。 */
+function branchBase(checkout, onto, branch) {
   const tip = branch && rev(checkout, `refs/heads/${branch}`);
   if (!tip) return undefined;
   const base = git(checkout, 'merge-base', tip, onto);
   if (base.status > 1) throw new Error(`git merge-base ${branch} exit ${base.status}：${base.stderr.trim()}`);
-  if (base.status) return undefined;
-  return { base: base.stdout.trim(), units: changedUnits(checkout, base.stdout.trim(), tip) };
+  return base.status ? undefined : { tip, base: base.stdout.trim() };
+}
+
+/** 分支已 commit 的內容相對於與 `onto` 的 merge-base 改了哪些檔或條目：`{ base, units }`；本機沒有這個分支或沒有共同祖先時傳回 undefined。 */
+function branchUnits(checkout, onto, branch) {
+  const found = branchBase(checkout, onto, branch);
+  return found && { base: found.base, units: changedUnits(checkout, found.base, found.tip) };
 }
 
 /** 開著的 batch（current 不是 closed）裡 running 或 done 的成員列，同一個 Issue 只取第一列。 */
@@ -866,12 +873,7 @@ export function budgetLines(checkout, batches, options = {}) {
   if (!table || typeof table !== 'object' || Array.isArray(table) || !Object.values(table).every(limit => Number.isInteger(limit) && limit > 0)) {
     throw new Error(`${BUDGET_FILE} 不是 { 路徑: bytes } 物件（上限要是正整數）`);
   }
-  const members = [];
-  for (const m of activeMembers(batches)) {
-    const tip = m.branch && rev(checkout, `refs/heads/${m.branch}`);
-    const base = tip && git(checkout, 'merge-base', tip, onto);
-    if (base?.status === 0) members.push({ n: m.n, tip, base: base.stdout.trim() });
-  }
+  const members = activeMembers(batches).map(m => ({ n: m.n, ...branchBase(checkout, onto, m.branch) })).filter(m => m.tip);
   const out = [];
   for (const [path, limit] of Object.entries(table)) {
     let total = blobSize(checkout, onto, path);
