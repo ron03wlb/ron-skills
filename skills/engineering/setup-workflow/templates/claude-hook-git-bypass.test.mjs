@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BUILTIN_BACKGROUND_ONLY, backgroundJobReason, bypassReason, chainedHandoff, chainedLongWaitReason, chainedNote, exitGateReason, foregroundReason, probeFilterReason, selfMatchLoopReason, wideGrepReason, writesFile } from './claude-hook-git-bypass.mjs';
+import { BUILTIN_BACKGROUND_ONLY, backgroundJobReason, bypassReason, chainedHandoff, chainedLongWaitReason, chainedNote, detachReason, exitGateReason, foregroundReason, probeFilterReason, selfMatchLoopReason, wideGrepReason, writesFile } from './claude-hook-git-bypass.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-git-bypass.mjs', import.meta.url));
@@ -785,4 +785,26 @@ test('hook：orca-session-send.mjs --when-idle 是內建 background-only，前�
   assert.equal(call(WHEN_IDLE, { run_in_background: true }).status, 0);
   assert.equal(call('node scripts/orca-session-send.mjs --terminal t --prompt x').status, 0);
   assert.equal(call('grep -n -- "--when-idle" scripts/orca-session-send.mjs').status, 0);
+});
+
+// 真實指令：retro spay2 db00b6a5#1（worktree 內想讀舊檔，HEAD 離開任務分支；舊碼 rc=0）。
+const DETACH_INCIDENT = 'git checkout -q 7da0a2eae -- 2>/dev/null';
+
+test('hook：不帶路徑的 git checkout <rev>（含 -- 後無路徑）與 switch --detach 不需參數就 exit 2，訊息指向 git show <rev>:<path>', () => {
+  const call = command => hook(JSON.stringify({ tool_input: { command } }));
+  for (const command of [DETACH_INCIDENT, 'cd /w/feature-ron-issue-1 && git checkout 7da0a2eae', 'git -C wt switch --detach HEAD', 'git switch -d main',
+    'git checkout --detach', 'git checkout HEAD~1', 'git checkout main@{2}', 'git checkout origin/main --', 'git checkout -q abcdef1 > /dev/null']) {
+    const denied = call(command);
+    assert.equal(denied.status, 2, command);
+    assert.match(denied.stderr, /^拒絕：`git (?:checkout|switch)[^`]*` 會讓 HEAD 離開分支（detached HEAD）/, command);
+    assert.match(denied.stderr, /`git show <rev>:<path>`/, command);
+  }
+  assert.equal(detachReason(DETACH_INCIDENT), 'git checkout 7da0a2eae --');
+});
+
+test('detachReason：帶路徑、切回分支、建分支與字串裡的字樣不攔', () => {
+  for (const command of ['git checkout 7da0a2eae -- a.md', 'git checkout 7da0a2eae a.md b.md', 'git checkout -- a.md', 'git checkout main',
+    'git checkout feature/ron/1 --', 'git checkout -', 'git checkout @{-1}', 'git checkout -b x 7da0a2eae', 'git switch -c x 7da0a2eae', 'git switch main',
+    'git show 7da0a2eae:a.md', 'echo "git checkout 7da0a2eae"', 'grep -n "switch --detach" scripts/x.mjs', 'git worktree add --detach /tmp/x 7da0a2eae',
+  ]) assert.equal(detachReason(command), null, command);
 });

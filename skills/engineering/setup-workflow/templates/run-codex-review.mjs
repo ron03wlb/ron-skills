@@ -6,6 +6,7 @@
 // reached 不是 none 或 used_percent 達 100 時本輪改用 code-review skill），找不到任何 rollout 時印 `CODEX_QUOTA_UNKNOWN`；皆 exit 0。
 // used_percent／window_minutes／resets_at 取最新一筆帶 secondary（週額度）的 rate_limits，reached 取最新一筆 rate_limits（額度用完時 secondary 為 null）。
 // 週額度不會補充（retro spay2 a903a2bb#2：舊提示「請使用者補額度」產生使用者永遠不會做的 HUMAN_TODO 511），CODEX_NO_CREDITS 的 hint 改為等週額度重置並附同一份額度資訊。
+// 同一份額度資訊在 USAGE 之後、spec／rulings 檢查之前先判一次：判定額度用完時 CODEX_NO_CREDITS 帶 precheck: true，不呼叫 Codex。
 // rulings：已裁決項目（接受為已知限制或不修，各附理由）；重新審查時帶入，避免重提已裁決的 finding。
 // spec 與 rulings 以 runner 自己的 cwd 解析成絕對路徑再放進 prompt：Codex 的 cwd 是 worktree，相對路徑會對 worktree 解析而找不到
 // （retro fc336d0c#1：主 checkout 傳 `.scratch/retro/plan-1106a.md`，Spec 段整段沒審卻回 OK）。spec 不存在或為空時判 SPEC_MISSING；rulings 不存在判 RULINGS_MISSING，存在但為空判 RULINGS_EMPTY（actionable，JSON 帶 next：寫入裁定或刪檔後不帶 rulings 重跑），皆不呼叫 Codex
@@ -125,6 +126,14 @@ function expectedBaseline(dir, wt) {
 if (process.argv[2] === '--quota') { process.stdout.write(quotaLine(codexQuota()) + '\n'); process.exit(0); }
 const [baseline, specArg, worktree, outDir, rulingsArg] = process.argv.slice(2);
 if (!baseline || !specArg || !worktree || !outDir) fail('USAGE', { usage: 'run-codex-review.mjs <baseline> <spec> <worktree> <out-dir> [rulings]' });
+// 額度預檢排在 spec／rulings 等參數檢查之前（retro spay2 710b8f4e#2：空 rulings 先回 RULINGS_EMPTY，補好再跑才撞 CODEX_NO_CREDITS，多跑一輪）。
+// 只讀本機 rollout（與 --quota 同源，不呼叫 Codex、不連網）：reached 不是 none 或週額度達 100%，且週額度重置時間未知或還沒到時才判定；
+// 重置時間已過的舊紀錄不擋，交給執行後的 log 判定。
+const preQuota = codexQuota();
+const resetPassed = preQuota && preQuota.resets_at !== '?' && Date.parse(preQuota.resets_at) <= Date.now();
+if (preQuota && (preQuota.reached !== 'none' || Number(preQuota.used_percent) >= 100) && !resetPassed) {
+  fail('CODEX_NO_CREDITS', { precheck: true, hint: 'Codex 週額度用完，重跑無用：改用 code-review skill 審查，等週額度重置（不會補充）', quota: quotaLine(preQuota) });
+}
 const spec = resolve(specArg); const rulings = rulingsArg && resolve(rulingsArg);
 const missing = file => !existsSync(file) || statSync(file).size === 0;
 if (missing(spec)) fail('SPEC_MISSING', { spec });
