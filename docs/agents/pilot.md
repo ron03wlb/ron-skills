@@ -44,7 +44,7 @@
 
 - **Scope supplement.** 見 [pilot-exceptions.md](pilot-exceptions.md)：Dispatch 之後要給 worker 補範圍時讀。
 
-- **Watch.** `node scripts/pilot-probe.mjs --tail <handle>`（畫面最後 40 行，`--lines <n>` 可調；不依賴 `jq`，#295；worker 的摘要和結果行都在這 40 行裡）：畫面最後一行是 `DONE <n> <sha>` 或 `STOP <n> <cause>` 就是做完了；`status: exited` 但沒有這行就是卡住。stuck-after 預設 90 分鐘，等累積了實際跑的時間再調。沒有背景 watcher 指令：worker 還在跑時，coordinator 每次被叫醒都 read 一次，以 1200 秒排下一次喚醒。
+- **Watch.** worker 在跑時以 `run_in_background` 起 `node scripts/pilot-watch.mjs --batch <key>`（每批一個）：啟動前的結果行不算，新的 `DONE <n> <sha>`／`STOP <n> <cause>` 印 `RESULT <key> <handle> <行>`，terminal 結束而無新結果印 `EXITED <key> <handle>`（卡住），即結束；接著跑 Probe（`--apply`），還有 running 就再起。解析與 Probe 的 `WORKER` 共用，不另寫（#325、#355）。看畫面：`node scripts/pilot-probe.mjs --tail <handle>`。stuck-after 預設 90 分鐘，仍以 1200 秒排下次喚醒。
 
 - **Agent rows.** 記在 batch checkpoint 的成員行（見 Batch）；worker 自己開的 subagent 不另外記。
 
