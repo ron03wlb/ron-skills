@@ -88,13 +88,13 @@
 //          比的是本機最後一次 fetch 的 origin ref，有 merged／pushed 的 batch 時在這一輪的 fetch 之後比；兩個 ref 有一個不存在時不印。
 //          #268：沒有這一行時 coordinator 要自己算 rev-list 才知道要 sync-main，漏掉就在舊 tip 上 stage，到 Push gate 才 STOP behind-main）
 //   全機上限：CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP、OVER_CAP <合計> <上限>（帶 --capacity 時，見上）
-// exit：0 印完；2 用法錯誤；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS、PARENT_APPLY_FAILED 等）。
+// exit：0 印完；2 用法錯誤；3 `--apply` 的 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，該 batch 沒寫、其他行照印，#345）；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS、PARENT_APPLY_FAILED 等）。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
-import { gateLines, heldIssues, isOpenRequest, now, openGates, parksAllPush, tableCells } from './lib/pilot-store.mjs';
+import { CheckpointLocked, gateLines, heldIssues, isOpenRequest, now, openGates, parksAllPush, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 import { envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 import { POOL_FIELDS, blockerOpenScope, landedOn, pool, prerequisiteOf } from './issue-pool.mjs';
@@ -593,26 +593,30 @@ function mergedNotInMain(checkout, integration, key, regression, regressionExit)
  * `--apply`：把這一輪讀到的結果寫回成員列。重讀檔案，只認號碼相同、state 還是 running 的那一列，
  * 以 `|` 切開後只換 state 與 candidate 兩格（其他格與其他行的 byte 都不動）；DONE 寫 `done` 與 SHA，STOP 寫 `stop`、candidate 不動。
  * 寫完再讀一次比對，傳回沒寫進去的 APPLY_MISS 行（手寫 sed 對不到列時沒有輸出也沒報錯，coordinator 的 retro）。
+ * 讀改寫在 checkpoint 鎖內（#345）；等到逾時傳回 `CHECKPOINT_LOCKED …` 一行，不寫檔。
  */
 export function applyResults(file, key, results) {
-  const lines = readFileSync(file, 'utf8').split('\n');
   const misses = [];
   const written = [];
-  for (const { n, state, sha } of results) {
-    const rows = lines.flatMap((line, i) => {
-      const cells = tableCells(line);
-      return cells.length >= 8 && cells[0] === n && cells[6] === 'running' ? [i] : [];
-    });
-    if (rows.length !== 1) { misses.push(`APPLY_MISS ${key} ${n} rows ${rows.length}`); continue; }
-    // `split('|')` 的第 0 段是行首 `|` 之前的空字串，所以 tableCells 的第 6、7 格（state、candidate）在這裡是第 7、8 段。
-    const parts = lines[rows[0]].split('|');
-    parts[7] = ` ${state} `;
-    if (sha) parts[8] = ` ${sha} `;
-    lines[rows[0]] = parts.join('|');
-    written.push({ n, state, sha });
-  }
+  const locked = lockedLine(() => updateCheckpoint(file, text => {
+    const lines = text.split('\n');
+    for (const { n, state, sha } of results) {
+      const rows = lines.flatMap((line, i) => {
+        const cells = tableCells(line);
+        return cells.length >= 8 && cells[0] === n && cells[6] === 'running' ? [i] : [];
+      });
+      if (rows.length !== 1) { misses.push(`APPLY_MISS ${key} ${n} rows ${rows.length}`); continue; }
+      // `split('|')` 的第 0 段是行首 `|` 之前的空字串，所以 tableCells 的第 6、7 格（state、candidate）在這裡是第 7、8 段。
+      const parts = lines[rows[0]].split('|');
+      parts[7] = ` ${state} `;
+      if (sha) parts[8] = ` ${sha} `;
+      lines[rows[0]] = parts.join('|');
+      written.push({ n, state, sha });
+    }
+    return written.length ? lines.join('\n') : undefined;
+  }));
+  if (locked) return locked;
   if (!written.length) return misses;
-  writeFileSync(file, lines.join('\n'));
   const { members } = parseBatch(readFileSync(file, 'utf8'));
   for (const { n, state, sha } of written) {
     if (!members.some(m => m.n === n && m.state === state && (!sha || m.candidate === sha))) misses.push(`APPLY_MISS ${key} ${n} verify`);
@@ -694,9 +698,20 @@ export function unparkLines(batches) {
     .map(m => `UNPARK ${m.n}`);
 }
 
+/** 跑 fn；checkpoint 鎖等到逾時時傳回 `[CHECKPOINT_LOCKED …]`，其他錯誤照丟（#345：其他 probe 行照印，exit 3）。 */
+function lockedLine(fn) {
+  try {
+    fn();
+  } catch (error) {
+    if (error instanceof CheckpointLocked) return [error.message];
+    throw error;
+  }
+}
+
 /** `--apply`：已進 origin/<主分支> 的 `merged` batch 改成 `pushed`，SHA 與附註照留（Push gate 印 LANDED 之後沒人寫，coordinator 的 retro）。 */
 function applyPushed(file, key) {
-  writeFileSync(file, readFileSync(file, 'utf8').replace(/^(current:[ \t]*)merged\b/m, '$1pushed'));
+  const locked = lockedLine(() => updateCheckpoint(file, text => text.replace(/^(current:[ \t]*)merged\b/m, '$1pushed')));
+  if (locked) return locked;
   return /^pushed\b/.test(parseBatch(readFileSync(file, 'utf8')).current) ? [] : [`APPLY_MISS ${key} current verify`];
 }
 
@@ -962,6 +977,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     const out = await probe({ cli }, checkout, options);
     for (const line of out) console.log(line);
+    if (out.some(line => line.startsWith('CHECKPOINT_LOCKED '))) process.exit(3);
     if (out.some(line => /^(APPLY_MISS|PARENT_APPLY_FAILED) /.test(line))) process.exit(1);
   } catch (error) {
     console.error(error.message);

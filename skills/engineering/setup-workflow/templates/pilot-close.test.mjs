@@ -23,7 +23,7 @@ function git(cwd, ...args) {
  * `protectedFile`：base 多一個 private/a.txt，成員把它刪掉；傳函式時改由它在成員分支上改動（會接著 commit）。
  * `adapter`：base 帶的 docs/agents/issue-run.md 內容（#303：保護路徑由 adapter 宣告）。
  */
-function fixture(t, { main = 'main', tracker = false, protectedFile = false, adapter = null } = {}) {
+function fixture(t, { main = 'main', tracker = false, protectedFile = false, adapter = null, extraEnv = {} } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-close-template-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const origin = join(temp, 'origin.git');
@@ -60,7 +60,7 @@ function fixture(t, { main = 'main', tracker = false, protectedFile = false, ada
 
   const scripts = join(repo, 'scripts');
   mkdirSync(join(scripts, 'lib'), { recursive: true });
-  for (const name of ['pilot-close.mjs', 'pilot-counterpart.mjs', 'lib/hosts.mjs', 'lib/protected-paths.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+  for (const name of ['pilot-close.mjs', 'pilot-counterpart.mjs', 'lib/hosts.mjs', 'lib/pilot-store.mjs', 'lib/protected-paths.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
   writeFileSync(join(scripts, 'pilot-unbare.sh'), '#!/bin/sh\nexit 0\n');
   chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
   const log = join(temp, 'calls.log');
@@ -94,7 +94,7 @@ else { console.error('fake gh: unknown ' + args.join(' ')); process.exit(1); }
 `);
   chmodSync(gh, 0o755);
   const close = (...extra) => spawnSync('node', [join(scripts, 'pilot-close.mjs'), '12', '5', sha, ...extra], {
-    cwd: repo, encoding: 'utf8', timeout: 60000, env: { ...env, PATH: `${join(temp, 'bin')}:${env.PATH}`, ORCA_CLI_COMMAND: 'false' },
+    cwd: repo, encoding: 'utf8', timeout: 60000, env: { ...env, PATH: `${join(temp, 'bin')}:${env.PATH}`, ORCA_CLI_COMMAND: 'false', ...extraEnv },
   });
   return {
     repo, origin, sha, close,
@@ -256,4 +256,16 @@ test('沒有 --repo、--repo 格式不對或 --main 不是分支名稱：用法�
   }
   assert.deepEqual(f.calls(), []);
   assert.match(f.checkpoint(), /^current: pushed /m);
+});
+
+// #345：最後的 `current: closed` 走 checkpoint 鎖；手動 pilot-batch 持鎖到逾時時印 CHECKPOINT_LOCKED、exit 3，不印 CLOSED。
+test('checkpoint 被活著的 pid 鎖住到逾時：最後一行 CHECKPOINT_LOCKED、exit 3，current: 沒寫成 closed', t => {
+  const f = fixture(t, { extraEnv: { PILOT_STORE_LOCK_TIMEOUT_MS: '200' } });
+  const file = join(f.repo, '.scratch/pilot/batch-12.md');
+  const holder = `pid=${process.pid} at=2026-11-21T00:00:00.000Z test`;
+  writeFileSync(`${file}.lock`, `${holder}\n`);
+  const result = f.close('--repo', 'acme/app');
+  assert.equal(result.status, 3, result.stdout + result.stderr);
+  assert.equal(lines(result).at(-1), `CHECKPOINT_LOCKED ${file}.lock ${holder}`);
+  assert.doesNotMatch(f.checkpoint(), /^current: closed$/m);
 });
