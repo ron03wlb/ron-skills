@@ -61,7 +61,7 @@ if (a === 'worktree' && b === 'create') {
   const n = arg('--issue'); const mode = modes[n] ?? 'ok'; const path = ${JSON.stringify(root)} + '/' + arg('--name');
   if (mode !== 'fail') execFileSync('git', ['-C', ${JSON.stringify(repo)}, 'worktree', 'add', '-q', '-b', arg('--branch'), path, arg('--base-branch')], { stdio: 'ignore' });
   if (mode === 'bare') execFileSync('git', ['-C', ${JSON.stringify(repo)}, 'config', 'core.bare', 'true']);
-  if (mode === 'ok' || mode === 'bare') console.log(JSON.stringify({ ok: true, result: { worktree: { path } } }));
+  if (mode === 'ok' || mode === 'bare' || mode === 'lost') console.log(JSON.stringify({ ok: true, result: { worktree: { path } } }));
   else fail(mode === 'late' ? 'request_timeout' : 'invalid_argument');
 }
 else if (b === 'create') {
@@ -87,7 +87,8 @@ else if (b === 'wait') reply('wait', { wait: { satisfied: true } });
 else if (b === 'send') { fs.appendFileSync(${JSON.stringify(log)} + '.sent', arg('--text') + '\\n'); reply('send', { send: { accepted: true } }); }
 else if (b === 'read') {
   const sent = ${JSON.stringify(log)} + '.sent';
-  reply('read', { terminal: { tail: [fs.existsSync(sent) ? fs.readFileSync(sent, 'utf8').trim().split('\\n').pop() : '❯'], draft: '' } });
+  const lost = modes[arg('--terminal').replace(/^term_/, '')] === 'lost';
+  reply('read', { terminal: { tail: [fs.existsSync(sent) && !lost ? fs.readFileSync(sent, 'utf8').trim().split('\\n').pop() : '❯'], draft: '' } });
 }
 else fail('unknown');
 `);
@@ -359,6 +360,20 @@ test('batch checkpoint：寫表頭（current dispatched、pilot/integration 的 
     `\\| 46 \\| issue/46-pilot-dispatch \\|  \\|  \\| ${ISO} \\| 90m \\| stop \\| \\|`,
     '$',
   ].join('\n')));
+});
+
+// #354：send 確認不了時 worker 可能其實已在跑，記成 stop 會讓 coordinator 重派、把 `/issue-run` 再排進佇列；交給 Probe 判定。
+test('STOP send：成員列保持 running 並記下 handle；重跑時分頁還開著就 STOP running、不再送', t => {
+  const { dispatch, checkpoint, root, log } = fixture(t, { modes: { 46: 'lost' } });
+  const result = dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(result.stdout, /^STOP 46 send term_46$/m);
+  assert.match(checkpoint('23-46'), new RegExp(`\\| 46 \\| issue/46-pilot-dispatch \\| ${root}/issue-46 \\| term_46 \\| ${ISO} \\| 90m \\| running \\|`));
+  const sends = () => readFileSync(log, 'utf8').split('\n').filter(line => line.startsWith('terminal send ') && line.includes('term_46')).length;
+  const before = sends();
+  const again = dispatch(['23-46', '46:pilot-dispatch']);
+  assert.match(again.stdout, /^STOP 46 running term_46$/m);
+  assert.equal(sends(), before);
 });
 
 test('重跑同一個 batch：已有的成員行就地換掉，其他列不動', t => {
