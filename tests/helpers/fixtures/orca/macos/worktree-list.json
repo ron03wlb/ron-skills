@@ -1,0 +1,91 @@
+{
+  "worktrees": [
+    {
+      "id": "sample",
+      "identity": {
+        "key": "sample",
+        "executionHostId": "local",
+        "instanceId": "sample"
+      },
+      "instanceId": "sample",
+      "repoId": "sample",
+      "projectId": "sample",
+      "hostId": "local",
+      "projectHostSetupId": "sample",
+      "creatorProvenance": {
+        "kind": "host"
+      },
+      "path": "/Users/user/workspaces/issue-1",
+      "head": "sample",
+      "branch": "refs/heads/issue/1-sample",
+      "isBare": false,
+      "isMainWorktree": false,
+      "displayName": "sample",
+      "displayNameMode": "fixed",
+      "comment": "",
+      "linkedIssue": 1,
+      "linkedPR": null,
+      "linkedLinearIssue": null,
+      "linkedLinearIssueWorkspaceId": null,
+      "linkedLinearIssueOrganizationUrlKey": null,
+      "linkedGitLabMR": null,
+      "linkedGitLabIssue": null,
+      "linkedBitbucketPR": null,
+      "linkedAzureDevOpsPR": null,
+      "linkedGiteaPR": null,
+      "linkedWorkItem": null,
+      "linkedItems": [
+        {
+          "provider": "github",
+          "type": "issue",
+          "number": 1,
+          "title": "sample"
+        }
+      ],
+      "linkedTaskSourceContext": null,
+      "isArchived": false,
+      "isUnread": false,
+      "isPinned": false,
+      "sortOrder": 1795230208504,
+      "lastActivityAt": 1795232182799,
+      "createdAt": 1795232182799,
+      "cliProvenance": {
+        "kind": "created-by-cli",
+        "createdAt": 1795232152404,
+        "callerTerminalHandle": "sample"
+      },
+      "baseRef": "pilot/integration",
+      "workspaceStatus": "in-progress",
+      "parentWorktreeId": "sample",
+      "childWorktreeIds": [],
+      "lineage": {
+        "worktreeId": "sample",
+        "worktreeInstanceId": "sample",
+        "parentWorktreeId": "sample",
+        "parentWorktreeInstanceId": "sample",
+        "origin": "cli",
+        "capture": {
+          "source": "env-workspace",
+          "confidence": "inferred"
+        },
+        "createdByTerminalHandle": "sample",
+        "createdAt": 1795232182801
+      },
+      "git": {
+        "path": "/Users/user/workspaces/issue-1",
+        "head": "sample",
+        "branch": "refs/heads/issue/1-sample",
+        "isBare": false,
+        "isMainWorktree": false
+      }
+    }
+  ],
+  "hostScope": {
+    "hostIds": [
+      "local"
+    ],
+    "omittedHostIds": []
+  },
+  "totalCount": 1,
+  "truncated": false
+}

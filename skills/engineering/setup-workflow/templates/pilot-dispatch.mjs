@@ -15,6 +15,11 @@
 // worktree 有沒有建好只看目錄存在、`git worktree list` 裡有這個分支，不信 create 回傳的 ok（曾經建好卻回 "ok": false）。
 // create 之前（#353）：`git worktree list` 裡已有目錄名是 `issue-<n>`、分支卻不是成員分支的 worktree（舊流程留下的），交給 Orca 只會去重出 `issue-<n>-2`：
 // 印 `STOP <n> worktree-branch <路徑> <分支>`（detached 時分支寫 `(detached)`），不呼叫 create、不開分頁，成員列記 stop。--fresh 不 create，不受影響。
+// Orca 可用（#394）：容量檢查之後、寫 checkpoint 與動任何成員之前（一般派工與帶 --note 的 --fresh；草稿不用 Orca）先跑一次 `worktree list --json`，
+// 失敗（exit 非 0 或 ok 不是 true）就只印 `STOP orca-unavailable <訊息第一個非空行>`、exit 4：什麼都不建、不寫 checkpoint，認領也保留（下一輪原樣重跑）。
+// 登記（#394）：worktree 確認建好之後、`terminal create` 之前，輪詢 `worktree list --json` 直到列出這個路徑（WSL 上 Orca 回 `\\wsl.localhost\<distro>\…` 的 UNC 路徑，
+// 反斜線換成斜線後比尾段），最多 PILOT_DISPATCH_REGISTER_MS（預設 60000）、間隔 PILOT_DISPATCH_REGISTER_POLL_MS（預設 2000）；到上限沒列出時 stderr 印 `WARN orca-register <路徑>`，仍照樣 `terminal create`。
+// 剛建好的 worktree Orca 可能還在背景登記，`terminal create` 回 `selector_not_found`：再輪詢一次後重試一次，仍失敗才 `STOP <n> terminal …`。
 // 所有子行程的 stdin 都接 /dev/null：Orca CLI 會吃掉 stdin，`while read` 迴圈因此只派到第一個成員。
 // 總時間有上限（比照 pilot-handoff.mjs）：Bash 工具最多等 600 秒，被殺就來不及寫 checkpoint，所以預算到了（timeout）或收到 SIGTERM、SIGINT（signal <名稱>）
 // 都中止進行中的步驟，進行中與還沒派的成員都 STOP 並寫進 checkpoint。預設預算 510 秒，加上收尾的 git 與寫檔，在 540 秒內結束。
@@ -61,16 +66,17 @@
 //       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--repo-cap <n>] [--integration <分支>] [--stuck-after <分鐘>m]
 //       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--integration <分支>]（草稿，不需要 ORCA_CLI_COMMAND）
 //   --integration worktree 的 base 與表頭的整合分支，預設 pilot/integration；--stuck-after 成員行的 stuck-after，預設 90m。
-// stdout：容量行（CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP、CAPACITY ok repo …、CAPACITY ok …，或 STOP capacity repo …、STOP capacity … 接 RELEASED <n>）、最後的 REPORTED <repo> …（見上）；
-//   stderr 另有 WARN release …、WARN capacity-report …。每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、worktree-branch、create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
+// stdout：容量行（CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP、CAPACITY ok repo …、CAPACITY ok …，或 STOP capacity repo …、STOP capacity … 接 RELEASED <n>）、Orca 不能用時唯一的成員外 STOP orca-unavailable <第一行>（見上）、最後的 REPORTED <repo> …（見上）；
+//   stderr 另有 WARN release …、WARN capacity-report …、WARN orca-register …。每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、worktree-branch、create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
 //   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop；running、overlap 的 STOP 不改寫那一列；
 //   send 的 STOP 記 running：worker 可能其實已在跑，交給 Probe 判定，#354），STOP 原因只在 stdout。
 //   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
-// exit：0 全部派出（草稿：寫好）；4 有成員 STOP；2 用法錯誤（含草稿帶了派工旗標）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
+// exit：0 全部派出（草稿：寫好）；4 有成員 STOP（或 STOP capacity、STOP orca-unavailable）；2 用法錯誤（含草稿帶了派工旗標）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { claimedBy, defaultSession } from './issue-pool.mjs';
 import { orca, sendToSession } from './orca-session-send.mjs';
@@ -87,6 +93,11 @@ const WORKTREE_CREATE = fileURLToPath(new URL('./orca-worktree-create.mjs', impo
 const TRACKER = fileURLToPath(new URL('./gh-tracker.mjs', import.meta.url));
 const BUDGET_MS = Number(process.env.PILOT_DISPATCH_BUDGET_MS || 510000);
 const DEADLINE = Date.now() + BUDGET_MS;
+// 上限用 ??：0 是合法值（只查一次，測試用），間隔與預算的 || 則把 0 當成沒設。
+const REGISTER_MS = Number(process.env.PILOT_DISPATCH_REGISTER_MS ?? 60000);
+const REGISTER_POLL_MS = Number(process.env.PILOT_DISPATCH_REGISTER_POLL_MS || 2000);
+/** Orca 還沒登記 worktree 時 `terminal create` 的 error code（orca-session-send 的 orca() 以它當錯誤訊息）。 */
+const SELECTOR_NOT_FOUND = 'selector_not_found';
 
 /** 同步跑子行程；stdin 一律接 /dev/null。 */
 function run(command, args, options = {}) {
@@ -116,6 +127,42 @@ function worktreeNamed(main, name) {
   return result.stdout.split(/\n\n+/).slice(1)
     .map(block => ({ path: block.match(/^worktree (.*)$/m)?.[1], branch: block.match(/^branch refs\/heads\/(.*)$/m)?.[1] }))
     .find(w => w.path && basename(w.path) === name && existsSync(w.path));
+}
+
+/**
+ * Orca 能不能用（#394）：跑一次 `worktree list --json`，能用傳回 undefined，不能用傳回訊息的第一個非空行（Orca 的 error code，或 stderr、stdout）。
+ * spawnSync 期間總預算的計時器不會觸發，所以自己限時（60 秒與剩餘預算取小）。
+ */
+function orcaUnavailable(cli) {
+  const listed = run(cli, ['worktree', 'list', '--json'], { timeout: Math.max(1, Math.min(60000, DEADLINE - Date.now())) });
+  let body;
+  try { body = JSON.parse(listed.stdout); } catch { body = undefined; }
+  if (listed.status === 0 && body?.ok === true) return undefined;
+  const text = body?.ok === false ? `${body.error?.code ?? body.error?.message ?? ''}` : `${listed.stderr ?? ''}\n${listed.stdout ?? ''}`;
+  return text.split('\n').map(line => line.trim()).find(Boolean) ?? `exit ${listed.status ?? listed.error?.code}`;
+}
+
+/** Orca 回的 worktree 路徑是不是 `path`：WSL 上是 `\\wsl.localhost\<distro>\…` 的 UNC，反斜線換成斜線後比尾段。 */
+function sameWorktreePath(orcaPath, path) {
+  const posix = String(orcaPath ?? '').replace(/\\/g, '/');
+  return posix === path || (posix.startsWith('//') && path.startsWith('/') && posix.endsWith(path));
+}
+
+/** 輪詢 Orca `worktree list` 直到列出 `worktree`，最多 REGISTER_MS；列出傳回 true，到上限時 stderr 印 `WARN orca-register <路徑>` 並傳回 false。Orca 一時失敗當作還沒列出；`signal` 中止時丟錯。 */
+async function awaitRegistered(ctx, worktree) {
+  const until = Date.now() + REGISTER_MS;
+  for (;;) {
+    try {
+      if ((await orca(ctx, 'worktree', 'list')).worktrees?.some(({ path }) => sameWorktreePath(path, worktree))) return true;
+    } catch (error) {
+      if (ctx.signal.aborted) throw error;
+    }
+    if (Date.now() + REGISTER_POLL_MS > until) {
+      console.error(`WARN orca-register ${worktree}`);
+      return false;
+    }
+    await sleep(REGISTER_POLL_MS, undefined, { signal: ctx.signal });
+  }
 }
 
 /** 本 repo 開著（current 不是 closed）的 batch checkpoint 裡 running 的列數；`skip` 裡的 Issue（這次要派的成員）不算。只讀。 */
@@ -306,8 +353,19 @@ async function dispatchMember(cli, main, checkpoint, integration, { n, branch },
   }
   const title = withState(`#${n}`, '處理中');
   let handle;
+  const createTerminal = () => orca(ctx, 'terminal', 'create', '--worktree', `path:${worktree}`, '--title', title, '--command', 'claude');
   try {
-    handle = (await orca(ctx, 'terminal', 'create', '--worktree', `path:${worktree}`, '--title', title, '--command', 'claude')).terminal.handle;
+    await awaitRegistered(ctx, worktree);
+    let opened;
+    try {
+      opened = await createTerminal();
+    } catch (error) {
+      // Orca 還在背景登記剛建好的 worktree（#394）：等它列出來再試一次。
+      if (signal.aborted || error.message !== SELECTOR_NOT_FOUND) throw error;
+      await awaitRegistered(ctx, worktree);
+      opened = await createTerminal();
+    }
+    handle = opened.terminal.handle;
     // Orca 讀不回 create 設的標題，worker 的 tab-state 靠這份記錄（scripts/tab-state.mjs）。
     recordTitle(handle, title);
   } catch (error) {
@@ -552,6 +610,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const { ok, total, cap } = capacityCheck(ledgerPath(), members.length);
       if (!ok) stopCapacity(`STOP capacity ${total}/${cap}`);
       console.log(`CAPACITY ok ${total}/${cap}`);
+    }
+    // Orca 整個不能用（#394）：什麼都不建，認領保留給下一輪原樣重跑。
+    const unavailable = orcaUnavailable(cli);
+    if (unavailable) {
+      console.log(`STOP orca-unavailable ${unavailable}`);
+      clearTimeout(budget);
+      process.exit(4);
     }
     // 派出後把派出人數加進帳本本 repo 那一列（#353）；寫不進去只警告。
     const reportDispatched = count => {

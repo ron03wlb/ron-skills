@@ -23,14 +23,18 @@ const git = (cwd, ...args) => {
 //   ok      建好 worktree、回 ok:true；
 //   late    建好 worktree，卻回 ok:false（2026-10-30 實際發生：worktree 已建好、create 回 "ok": false）；
 //   fail    回 ok:false、不建 worktree；
-//   bare    同 ok，另把主 checkout 設成 bare（Orca 從 WSL 建 worktree 的副作用）。
+//   bare    同 ok，另把主 checkout 設成 bare（Orca 從 WSL 建 worktree 的副作用）；
+//   selector     同 ok，但第一次 `terminal create` 回 selector_not_found（#394：Orca 還沒登記剛建好的 worktree）；
+//   unregistered 同 ok，但 create 之後前兩次 `worktree list` 不列它，列出之前 `terminal create` 都回 selector_not_found。
+// `worktree list` 以真實樣本（worktree-list.json）列出 fixture 的每個 worktree，WSL 樣本時路徑寫成 Orca 在 WSL 回的 UNC 形式（`\\wsl.localhost\Ubuntu\…`）。
+// `orcaDown` 為真時 `worktree list` 在 stderr 印兩行訊息、exit 1，不印 JSON（#394：Orca CLI 整個不能用）。
 // `guard` 是 Bare guard（pilot-unbare.sh）的內容：有給時把 dispatch 與它的相依複製到暫存的 scripts/，guard 放在旁邊。
 // 每次呼叫都把 stdin 讀光並記下讀到幾個位元組：Orca CLI 會吃掉 stdin，`while read` 迴圈因此只派到第一個成員。
 // `waitHangs` 為真時 `terminal wait` 永遠不回。
 // `claims[<n>]` 是那張 Issue 原有的留言（排在 comments.json 之前）；沒給時是一則這個 session（SESSION）的認領留言。
 // `tracker` 為真時也把 dispatch 與相依複製到暫存的 scripts/，旁邊放 gh-tracker.mjs 與指向 acme/app 的 docs/agents/issue-run.md；
 // 假 gh 的 `issue edit <n> --remove-assignee=@me` 從 assignees.json 拿掉 me（每張 Issue 起始都指派給 me），`editFails` 列的 Issue 改成失敗。
-function fixture(t, { modes = {}, waitHangs = false, guard, claims = {}, tracker = false, editFails = [] } = {}) {
+function fixture(t, { modes = {}, waitHangs = false, guard, claims = {}, tracker = false, editFails = [], orcaDown = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-dispatch-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
@@ -57,7 +61,22 @@ fs.appendFileSync(${JSON.stringify(log)} + '.stdin', stdin + '\\n');
 ${orcaReplySource()}
 const modes = ${JSON.stringify(modes)};
 const terminals = ${JSON.stringify(terminals)};
-if (a === 'worktree' && b === 'create') {
+// 成員 n 的 worktree 已被 Orca 登記：unregistered 要等 create 之後第三次 worktree list。
+const registered = n => {
+  if (modes[n] !== 'unregistered') return true;
+  const logged = fs.readFileSync(${JSON.stringify(log)}, 'utf8').split('\\n');
+  const created = logged.findIndex(line => line.startsWith('worktree create ') && line.includes('--issue ' + n + ' '));
+  return created >= 0 && logged.slice(created).filter(line => line.startsWith('worktree list ')).length >= 3;
+};
+if (a === 'worktree' && b === 'list') {
+  if (${orcaDown}) { console.error('Push-Location : 找不到路徑 C:\\\\Orca\\\\resources\\\\bin\\n位於 orca-wsl-bridge.ps1:71'); process.exit(1); }
+  const listed = execFileSync('git', ['-C', ${JSON.stringify(repo)}, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' }).split(/\\n\\n+/)
+    .map(block => block.match(/^worktree (.*)$/m)?.[1]).filter(Boolean)
+    .filter(path => registered(path.match(/\\/issue-(\\d+)$/)?.[1]));
+  const unc = path => ${JSON.stringify((process.env.FAKE_ORCA_PLATFORM ?? 'wsl') === 'wsl')} ? '\\\\\\\\wsl.localhost\\\\Ubuntu' + path.replace(/\\//g, '\\\\') : path;
+  reply('worktree-list', { worktrees: listed.map(path => ({ path: unc(path) })), totalCount: listed.length });
+}
+else if (a === 'worktree' && b === 'create') {
   const n = arg('--issue'); const mode = modes[n] ?? 'ok'; const path = ${JSON.stringify(root)} + '/' + arg('--name');
   if (mode !== 'fail') execFileSync('git', ['-C', ${JSON.stringify(repo)}, 'worktree', 'add', '-q', '-b', arg('--branch'), path, arg('--base-branch')], { stdio: 'ignore' });
   if (mode === 'bare') execFileSync('git', ['-C', ${JSON.stringify(repo)}, 'config', 'core.bare', 'true']);
@@ -69,6 +88,8 @@ else if (b === 'create') {
   const terms = fs.existsSync(terminals) ? JSON.parse(fs.readFileSync(terminals, 'utf8')) : [];
   const base = 'term_' + arg('--title').replace(/^.*#/, '');
   const count = fs.readFileSync(${JSON.stringify(log)}, 'utf8').split('\\n').filter(line => line.startsWith('terminal create ') && line.includes('#' + base.slice(5) + ' ')).length;
+  const n = base.slice(5);
+  if ((modes[n] === 'selector' && count === 1) || !registered(n)) { fail('selector_not_found'); process.exit(0); }
   const handle = count > 1 ? base + '_' + count : base;
   fs.writeFileSync(terminals, JSON.stringify([...terms, { handle, worktreePath: arg('--worktree').replace(/^path:/, '') }]));
   reply('create', { terminal: { handle } });
@@ -131,7 +152,7 @@ else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
   }
   const dispatch = (args, extra = {}) => spawnSync('node', [dispatchScript, ...args], {
     cwd: repo, encoding: 'utf8', input: 'leftover-line\nanother-line\n', timeout: 60000,
-    env: { ...env, PATH: `${bin}:${env.PATH}`, CLAUDE_CODE_SESSION_ID: SESSION, ORCA_CLI_COMMAND: cli, ORCA_BIN: '', ...FAST, TAB_STATE_DIR: join(root, 'titles'), ...extra },
+    env: { ...env, PATH: `${bin}:${env.PATH}`, CLAUDE_CODE_SESSION_ID: SESSION, ORCA_CLI_COMMAND: cli, ORCA_BIN: '', ...FAST, PILOT_DISPATCH_REGISTER_POLL_MS: '1', TAB_STATE_DIR: join(root, 'titles'), ...extra },
   });
   const checkpoint = key => readFileSync(join(repo, `.scratch/pilot/batch-${key}.md`), 'utf8');
   const calls = () => readFileSync(log, 'utf8');
@@ -309,6 +330,52 @@ test('create 回 ok:false 但 worktree 已建好：以目錄與 git worktree lis
   assert.equal(sent().trim(), `/issue-run 46 --worker ${repo}/.scratch/pilot/batch-46.md`);
   // Orca 讀不回 create 設的標題：worker 的 tab-state 要靠這份記錄（scripts/tab-state.mjs）。
   assert.equal(readFileSync(join(root, 'titles/term_46'), 'utf8'), '處理中｜#46');
+});
+
+// #394：剛建好的 worktree Orca 還沒登記，`terminal create` 回 selector_not_found；同一個 key 原樣重跑就派得出去。
+test('terminal create 第一次回 selector_not_found：輪詢 worktree list 後重試一次，照樣派出', t => {
+  const { repo, dispatch, calls, sent } = fixture(t, { modes: { 46: 'selector' } });
+  const result = dispatch(['46', '46:pilot-dispatch']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(lines(result).pop(), /^DISPATCHED 46 term_46(_2)?$/);
+  assert.equal(calls().match(/^terminal create /gm).length, 2);
+  assert.equal(sent().trim(), `/issue-run 46 --worker ${repo}/.scratch/pilot/batch-46.md`);
+});
+
+test('create 之後 Orca 還沒列出新 worktree：輪詢 worktree list 直到出現才 terminal create', t => {
+  const { dispatch, calls } = fixture(t, { modes: { 46: 'unregistered' } });
+  const result = dispatch(['46', '46:pilot-dispatch']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(lines(result).pop(), 'DISPATCHED 46 term_46');
+  const after = calls().slice(calls().indexOf('worktree create '));
+  assert.equal(after.match(/^terminal create /gm).length, 1);
+  assert.equal(after.slice(0, after.indexOf('terminal create ')).match(/^worktree list /gm).length, 3);
+});
+
+test('輪詢到上限仍沒登記：照樣 terminal create，重試一次仍 selector_not_found 時 STOP terminal', t => {
+  const { root, dispatch, calls, checkpoint } = fixture(t, { modes: { 46: 'unregistered' } });
+  const result = dispatch(['46', '46:pilot-dispatch'], { PILOT_DISPATCH_REGISTER_MS: '0' });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(lines(result).pop(), 'STOP 46 terminal selector_not_found');
+  assert.match(result.stderr, new RegExp(`^WARN orca-register ${root}/issue-46$`, 'm'));
+  assert.equal(calls().match(/^terminal create /gm).length, 2);
+  assert.match(checkpoint('46'), /^\| 46 \| .* \| stop \| \|$/m);
+});
+
+// #394：Orca CLI 整個不能用時，以前只印成某個成員的 `STOP <n> create <亂碼>`，coordinator 另查 git 才確定什麼都沒建。
+test('Orca worktree list 失敗：STOP orca-unavailable 帶第一行、exit 4，不建 worktree、分支、checkpoint，也不放掉認領', t => {
+  const { repo, root, dispatch, calls, ghCalls } = fixture(t, { orcaDown: true });
+  const result = dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['STOP orca-unavailable Push-Location : 找不到路徑 C:\\Orca\\resources\\bin']);
+  assert.deepEqual(calls().trim().split('\n'), ['worktree list --json']);
+  assert.equal(git(repo, 'branch', '--list', 'issue/*'), '');
+  assert.equal(existsSync(join(root, 'issue-23')), false);
+  assert.equal(existsSync(join(repo, '.scratch/pilot/batch-23-46.md')), false);
+  assert.doesNotMatch(ghCalls(), /^issue edit /m);
+  const fresh = dispatch(['46', '--fresh', '46:pilot-dispatch', '--note', join(repo, 'README.md')]);
+  assert.equal(fresh.status, 4, fresh.stdout + fresh.stderr);
+  assert.deepEqual(lines(fresh), ['STOP orca-unavailable Push-Location : 找不到路徑 C:\\Orca\\resources\\bin']);
 });
 
 // 記錄只是輔助：寫不進去（TAB_STATE_DIR 是檔案）時照樣派出，不能變成沒有 handle 的 STOP、留下關不掉的分頁。
@@ -495,8 +562,8 @@ test('重派的成員與 running 成員改同一個條目：STOP overlap，不�
   const result = fx.dispatch(['46', '46:pilot-dispatch']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.deepEqual(lines(result), ['STOP 46 overlap 23 docs/pilot.md:Probe']);
-  // 只多了唯讀的 `terminal list`（確認舊分頁是不是還在跑），沒有 close、create、send。
-  assert.equal(fx.calls().replace(/^terminal list .*\n/gm, ''), fx.before.calls.replace(/^terminal list .*\n/gm, ''));
+  // 只多了唯讀的 `terminal list`（確認舊分頁是不是還在跑）與 `worktree list`（Orca 可用，#394），沒有 close、create、send。
+  assert.equal(fx.calls().replace(/^(terminal|worktree) list .*\n/gm, ''), fx.before.calls.replace(/^(terminal|worktree) list .*\n/gm, ''));
   assert.deepEqual(fx.open(), fx.before.open);
   assert.equal(git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch'), fx.head);
   assert.equal(fx.checkpoint('46'), fx.before.batch);
@@ -524,8 +591,8 @@ test('--fresh 的對象與 done（未合入）成員改同一個條目：STOP ov
   const result = fx.dispatch(['46', '--fresh', '46:pilot-dispatch', '--note', fx.note]);
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.deepEqual(lines(result), ['STOP 46 overlap 23 docs/pilot.md:Probe']);
-  // 只多了唯讀的 `terminal list`（確認舊分頁是不是還在跑），沒有 close、create、send。
-  assert.equal(fx.calls().replace(/^terminal list .*\n/gm, ''), fx.before.calls.replace(/^terminal list .*\n/gm, ''));
+  // 只多了唯讀的 `terminal list`（確認舊分頁是不是還在跑）與 `worktree list`（Orca 可用，#394），沒有 close、create、send。
+  assert.equal(fx.calls().replace(/^(terminal|worktree) list .*\n/gm, ''), fx.before.calls.replace(/^(terminal|worktree) list .*\n/gm, ''));
   assert.equal(git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch'), fx.head);
   assert.equal(git(fx.repo, 'branch', '--list', '*-prior*'), '');
   assert.equal(fx.checkpoint('46'), fx.before.batch);
