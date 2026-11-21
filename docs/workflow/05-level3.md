@@ -29,7 +29,7 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 4. **Pick 挑單**：worker 數低於上限時，依 adapter 的 Pool 規則挑下一批；`needs-triage` 的單先照 Readiness 補齊。
 5. **Dispatch 派工**：每張開一個 worktree 與 terminal，執行 `/issue-run <n> --worker <batch checkpoint>`。
 6. **Land 落地**：整批成員都 `DONE` 或 `STOP` 後，在批次分支依號碼合入、在 staged SHA 跑回歸、通過才合進整合分支，然後照 Push gate 交出 push 指令；adapter 允許時自己 push、開 PR／MR、合併，接著結案。
-7. **Report and sleep**：重產 `status.md`，有需要人做的事才通知；排下一次喚醒（有 worker 在跑時 1200 秒，閒置時 1800 到 3600 秒）。
+7. **Report and sleep**：重產 `status.md`，有需要人做的事才通知；這一輪還有可做的事（可 stage 的批次、可挑的單、待收的 worker 結果）時不用會阻塞的 `AskUserQuestion` 問 gate，交接也一樣：未回覆的 gate 寫在交接訊息第一行（`OPEN_GATES <G…> → <新 coordinator 分頁>`），由下一任通知、在它的 session 回答；排下一次喚醒（有 worker 在跑時 1200 秒，閒置時 1800 到 3600 秒）。
 
 它的狀態全在磁碟上（`.scratch/pilot/` 與各批次 checkpoint），不靠對話記憶：
 

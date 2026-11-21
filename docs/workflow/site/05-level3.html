@@ -39,7 +39,7 @@
 <li><strong>Pick 挑單</strong>：worker 數低於上限時，依 adapter 的 Pool 規則挑下一批；<code>needs-triage</code> 的單先照 Readiness 補齊。</li>
 <li><strong>Dispatch 派工</strong>：每張開一個 worktree 與 terminal，執行 <code>/issue-run &lt;n&gt; --worker &lt;batch checkpoint&gt;</code>。</li>
 <li><strong>Land 落地</strong>：整批成員都 <code>DONE</code> 或 <code>STOP</code> 後，在批次分支依號碼合入、在 staged SHA 跑回歸、通過才合進整合分支，然後照 Push gate 交出 push 指令；adapter 允許時自己 push、開 PR／MR、合併，接著結案。</li>
-<li><strong>Report and sleep</strong>：重產 <code>status.md</code>，有需要人做的事才通知；排下一次喚醒（有 worker 在跑時 1200 秒，閒置時 1800 到 3600 秒）。</li>
+<li><strong>Report and sleep</strong>：重產 <code>status.md</code>，有需要人做的事才通知；這一輪還有可做的事（可 stage 的批次、可挑的單、待收的 worker 結果）時不用會阻塞的 <code>AskUserQuestion</code> 問 gate，交接也一樣：未回覆的 gate 寫在交接訊息第一行（<code>OPEN_GATES &lt;G…&gt; → &lt;新 coordinator 分頁&gt;</code>），由下一任通知、在它的 session 回答；排下一次喚醒（有 worker 在跑時 1200 秒，閒置時 1800 到 3600 秒）。</li>
 </ol>
 <p>它的狀態全在磁碟上（<code>.scratch/pilot/</code> 與各批次 checkpoint），不靠對話記憶：</p>
 <div class="table-wrap"><table><thead><tr><th>檔案</th><th>內容</th></tr></thead><tbody><tr><td><code>preferences.md</code></td><td>standing orders：worker 上限、批次大小、誰合入、誰 push</td></tr><tr><td><code>gates.md</code></td><td>等人回覆的問題、選項、已套用的預設</td></tr><tr><td><code>decisions.md</code></td><td>每個決定的理由、證據、結果</td></tr><tr><td><code>status.md</code></td><td>從 checkpoint 重產的現況，不手寫</td></tr><tr><td><code>requests.md</code></td><td>其他 session 轉來的請求（插單、hold、stop）</td></tr><tr><td><code>sessions.md</code></td><td>每個 coordinator session 一行，給 <code>/retro</code> 找紀錄</td></tr></tbody></table></div>
