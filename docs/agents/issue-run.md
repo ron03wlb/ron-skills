@@ -18,7 +18,7 @@ macOS, WSL2, Linux（母單 #82 決策 R1-Q1；原生 Windows 不支援）。本
 
 程式碼 host 是 `github`（`github.com`，`origin` 為 `ron03wlb/ron-skills`），CLI 是 `gh`，和 tracker 同一個 host。PR 的開、讀、等 CI、合併照 [HOSTS.md](../../skills/engineering/setup-workflow/HOSTS.md) 的 GitHub 欄（`gh pr create`、`gh pr view`、`gh pr checks --watch`、`gh pr merge --merge --match-head-commit <sha>`），平常不手打：交付指令是 `node scripts/land.mjs <branch> --body-file <file> --check-command 'bin/check --upstream'`，步驟與結果行見 [Evidence and closing](#evidence-and-closing)。CI 設定在 `.github/workflows/checks.yml`，跑 `bin/check --upstream`。
 
-**CI 執行端**：預設是遠端（GitHub Actions）。只有遠端沒啟動時（帳務、沒有 runner：`land.mjs` 印 `STOP ci-not-started`）才改用本機：在要合併的 tip SHA、工作樹乾淨時跑 `node scripts/land.mjs <branch> --local-checks <sha> --check-command 'bin/check --upstream'`，它把 SHA 與結果行留言在 PR。遠端已經啟動而失敗的，不改用本機。
+**CI 執行端**：預設是遠端（GitHub Actions）；`land.mjs` 印 `STOP ci-not-started` 時照 [issue-run-landing.md](issue-run-landing.md) 的 `## CI 執行端` 改用本機。
 
 ## Readiness
 
@@ -56,16 +56,7 @@ candidate 是分支 tip。acceptance 是在 candidate SHA、工作樹乾淨時�
 
 證據貼成 Issue 留言（candidate SHA、指令與 exit code、findings）。
 
-單獨跑的 `/issue-run` 在 acceptance 通過、證據貼好之後自己落地，不等人：把 PR body（`/pr` 格式，每張 Issue 一行 `Closes #<n>`）寫進 scratchpad，用 Bash `timeout: 600000` 跑 `node scripts/land.mjs <candidate 所在分支> --title '<標題>' --body-file <檔> --check-command 'bin/check --upstream'`。它 push、開 PR、等 CI、以 merge commit 合併，再移除該分支的 worktree、刪本機與 `origin` 分支、讓主 checkout 的 `main` 跟上；多張 ticket 時，各 ticket 的 worktree 在 `LANDED` 之後另外移除（Orca 建的用 `"$ORCA_CLI_COMMAND" worktree rm --worktree path:<path>`，會一起刪掉分支；其餘用 `git worktree remove` 加 `git branch -d`）。讀最後一行：
-
-- `LANDED <pr> <merge sha>`：對每張 Issue 留言 PR 與 merge SHA，還開著的再關閉。
-- `PR_UPDATED <pr>`（進度行）：PR 已開著，帶的 `--title`、`--body-file` 已更新上去；接手別人開的 PR 時也一樣（#300）。`STOP pr-edit <pr> <原因>`：更新失敗，沒有合併；停下回報人。
-- `RESTAMPED <pr> <sha>`（進度行，不是最後一行）：PR 和 `main` 衝突、衝突檔只有戳記檔（`scripts/restamp.mjs` 的 `STAMP_FILES`：`scripts/workflow-doc-sync.json`、`docs/agents/workflow-templates.json`），它已把 `origin/main` 合入分支、取目標分支版本重產站台並 restamp、commit、在新 tip 跑過 `--check-command` 並重新 push，接著照常等 CI、合併（衝突在等 CI 之前判斷，只等一輪；等 CI 期間 `main` 又前進而合併被拒時同樣合入、再驗一輪，合入沒有衝突時印 `MAIN_MERGED` 而不是 `RESTAMPED`；Bash 逾時被中斷時重跑同一條指令，分支已含 `origin/main` 就不再 restamp）；證據留言的 candidate SHA 補上這個新 tip（#173）。
-- `STOP merge <pr> conflict <檔案…>`：還有戳記檔以外的衝突，已 `merge --abort`，分支停在原來的 tip；停下回報人。`STOP restamp-checks-failed <sha> exit <code> <log>`：restamp 後的檢查沒過，合併 commit 只留在本機分支、沒有 push；停下回報人，不要直接重跑（重跑會把這個沒過檢查的 commit 推上去，只剩 CI 把關）。`STOP restamp-checks-timeout <sha> <log>`：檢查跑到 `LAND_LOCAL_CHECKS_TIMEOUT_MS`（預設 420 秒）被中止，結果未知，不是沒過：在該 SHA 的 worktree 跑過 `--check-command`，通過才重跑 land 指令（重跑不會再驗這個 commit，直接 push），沒過就停下回報人（#297）。`STOP local-checks-timeout <sha> <log>` 同樣是結果未知：把 `LAND_LOCAL_CHECKS_TIMEOUT_MS` 調大後重跑。
-- `STOP checks-timeout`：重跑同一條指令。
-- `WARN main-not-synced <原因>` 接 `WARN skills-not-updated <merge sha>`（進度行）：PR 已合入，但主 checkout 沒跟上，也沒跑 `bin/sync-skills`，已安裝的 skill 還是舊版。原因是 `快轉會刪掉被保護的路徑 <檔…>` 或提到 `Protected paths:` 時不要自己快轉：那些檔在 adapter 的 `Protected paths:` 宣告裡（[ADAPTER.md](../../skills/engineering/issue-run/ADAPTER.md) 的 Delivery 段），把檔案和這行交給人（#303）；其他原因時，主 checkout 清乾淨後自己 `git merge --ff-only origin/main` 再跑 `bin/sync-skills`（#297）；本機 `main` 有別的 session 還沒 push 的 commit、和 `origin/main` 分岔時，快轉一定失敗：不要 reset、rebase 主 checkout，回報那幾個 commit（`git log --oneline origin/main..main`），由提交它們的 session rebase 後落地（#306）。
-- `STOP worktree-rm`：PR 已經合入，只剩收尾沒做完；照常留言、關單，再回報人處理 worktree。
-- 其他 `STOP <原因>`（如 `ci-failed`、`merge`）或 exit 1：停下回報人，不硬合。
+單獨跑的 `/issue-run` 在 acceptance 通過、證據貼好之後自己落地，不等人：把 PR body（`/pr` 格式，每張 Issue 一行 `Closes #<n>`）寫進 scratchpad，用 Bash `timeout: 600000` 跑 `node scripts/land.mjs <candidate 所在分支> --title '<標題>' --body-file <檔> --check-command 'bin/check --upstream'`。它 push、開 PR、等 CI、以 merge commit 合併，再移除該分支的 worktree、刪本機與 `origin` 分支、讓主 checkout 的 `main` 跟上；多張 ticket 時，各 ticket 的 worktree 在 `LANDED` 之後另外移除（Orca 建的用 `"$ORCA_CLI_COMMAND" worktree rm --worktree path:<path>`，會一起刪掉分支；其餘用 `git worktree remove` 加 `git branch -d`）。讀最後一行，每種結果行怎麼處理在 [issue-run-landing.md](issue-run-landing.md) 的 `## land.mjs 結果行`，用 `node scripts/adapter-line.mjs 'land.mjs 結果行'` 只取那一節；`LANDED <pr> <merge sha>` 是落地完成，其他 `STOP` 照該節處理或停下回報人，不硬合。
 
 pilot 底下的 worker 不落地：push、開 PR、合併與關單都由 coordinator 照 [pilot-after-merge.md](pilot-after-merge.md) 的 Push gate 與 Close 做。
 
@@ -80,4 +71,4 @@ pilot 底下的 worker 不落地：push、開 PR、合併與關單都由 coordin
 
 ## Pilot
 
-給 `/issue-pilot` coordinator 的設定在 [pilot.md](pilot.md)，每輪都整份讀；只在某些情況用到的條目拆在 [pilot-after-merge.md](pilot-after-merge.md)、[pilot-conflict.md](pilot-conflict.md)、[pilot-exceptions.md](pilot-exceptions.md)、[pilot-retro-collect.md](pilot-retro-collect.md)，pilot.md 的同名條目是一行 pointer，寫明什麼情況才讀（#166）。條目之間空一行，讓改不同條目的修改落在不同的 hunk（#45）；比對整合分支上的 adapter 時，這幾份都要一起比。條目都是單行（**Probe lines.** 約 10 KB），`head` 限行數擋不住單行長度：找某個詞用 `node scripts/doc-excerpt.mjs '<regex>' <檔案>...` 只取前後文（例如 Probe 印的 `BEHIND_MAIN` 怎麼處理，不必整條讀 **Probe lines.**），不要直接 `grep -n`（#274：三個 grep 印了 56 KB），`grep -o '.\{0,60\}…'` 在 ugrep 會報 `exceeds complexity limits`（#295）。分支與 worktree 的整體狀態用 `node scripts/branch-audit.mjs`（唯讀，#287）。
+給 `/issue-pilot` coordinator 的設定在 [pilot.md](pilot.md)，每輪都整份讀（必讀核心）；每輪步驟的整條在 [pilot-round.md](pilot-round.md)，只在某些情況用到的條目拆在 [pilot-after-merge.md](pilot-after-merge.md)、[pilot-conflict.md](pilot-conflict.md)、[pilot-exceptions.md](pilot-exceptions.md)、[pilot-retro-collect.md](pilot-retro-collect.md)，pilot.md 的同名條目是一行 pointer，寫明哪一步或什麼情況才讀，用 `node scripts/adapter-line.mjs '<條目名>'` 只取那一條（#166、#344）。條目之間空一行，讓改不同條目的修改落在不同的 hunk（#45）；比對整合分支上的 adapter 時，這幾份都要一起比。條目都是單行（**Probe lines.** 約 10 KB），`head` 限行數擋不住單行長度：找某個詞用 `node scripts/doc-excerpt.mjs '<regex>' <檔案>...` 只取前後文（例如 Probe 印的 `BEHIND_MAIN` 怎麼處理，不必整條讀 **Probe lines.**），不要直接 `grep -n`（#274：三個 grep 印了 56 KB），`grep -o '.\{0,60\}…'` 在 ugrep 會報 `exceeds complexity limits`（#295）。分支與 worktree 的整體狀態用 `node scripts/branch-audit.mjs`（唯讀，#287）。

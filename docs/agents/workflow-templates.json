@@ -1,5 +1,10 @@
 {
   "copies": {
+    "scripts/adapter-line.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/adapter-line.mjs",
+      "commit": "1cb4a0cda63dea614722076262d0a68eb642b3d2",
+      "sha256": "8dba66c2d1dd61e85dc14134f375765430e61446236db56d030312e016228f76"
+    },
     "scripts/agent-model-audit.mjs": {
       "template": "skills/engineering/setup-workflow/templates/agent-model-audit.mjs",
       "commit": "3c410e3f8b337e43289045f974f0d43533071a0b",
@@ -9,6 +14,11 @@
       "template": "skills/engineering/setup-workflow/templates/brief-check.mjs",
       "commit": "7ee0a2369ca29b4e333deabda3d931ce61cebb27",
       "sha256": "6a4a103536f7a4d56d16ff51d7a590ba62d964678249db70d9031dc666e59024"
+    },
+    "scripts/check-adapter-size.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/check-adapter-size.mjs",
+      "commit": "1cb4a0cda63dea614722076262d0a68eb642b3d2",
+      "sha256": "da24b4932b97fbdc6c40e0d80271de45d03ed6766189d8433caaf69f4268b318"
     },
     "scripts/check-claude-settings.mjs": {
       "template": "skills/engineering/setup-workflow/templates/check-claude-settings.mjs",

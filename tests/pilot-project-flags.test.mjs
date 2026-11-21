@@ -1,11 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { pilotDocs } from './helpers/pilot-docs.mjs';
 
 // #245：pilot-land、pilot-close 改成 setup-workflow 正本的副本後，ron-skills 的專案值改由參數給。少了旗標時指令照樣跑完：
 // pilot-land 改跑 `bin/check`（沒有 --upstream，看不到 overlay 漂移）、條目衝突與流程站戳記都變成 STOP conflict；pilot-close 沒有 --repo 就 exit 2。
 // 所以 adapter 裡每一條這兩支的指令都要帶上 ron-skills 的值。
-const FILES = ['docs/agents/pilot.md', 'docs/agents/pilot-after-merge.md', 'docs/agents/pilot-exceptions.md', 'docs/agents/pilot-conflict.md'];
+// Pilot 段連到的每份都掃（#344 拆出 pilot-round.md 時，寫死的清單會漏掉搬過去的 Stage）。
+const FILES = pilotDocs.map(({ path }) => path);
 const LAND_FLAGS = "--check-command 'bin/check --upstream' --resolver scripts/pilot-resolve.mjs";
 const CLOSE_FLAGS = '--repo ron03wlb/ron-skills';
 
