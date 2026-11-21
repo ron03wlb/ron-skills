@@ -26,9 +26,15 @@ test('wizard overlay 的第 3 步要精靈直接讀 export 行與秘密存放處
   const paragraph = step3.split('\n\n').find(text => /zsh -i/.test(text));
   assert.ok(paragraph, '第 3 步沒有提到 zsh -i');
   assert.match(paragraph, /bash -i/);
-  assert.match(paragraph, /`export`/);
+  assert.match(paragraph, /`export VAR=…` line/);
+  assert.match(paragraph, /`ask` or `ask_secret` for it/, '找不到值時沒有退回 ask／ask_secret');
   assert.match(paragraph, /~\/\.zshrc/);
+  assert.match(paragraph, /never start an interactive shell/);
+  assert.match(paragraph, /\$\{VAR:-\}/, '沒有先用繼承的環境變數');
+  assert.match(paragraph, /never `source` or `eval`/, '讀 export 行不能 source／eval，否則又執行 rc 檔');
   assert.match(paragraph, /security find-generic-password/);
-  assert.match(paragraph, /environment variable/i);
-  assert.match(paragraph, /\b(never|not|don't)\b/i);
+  assert.match(paragraph, /secret-tool lookup/);
+  assert.match(paragraph, /`VAR=value cmd` prefix, never as a command-line argument/);
+  // 寫 stage 之前就要讀到這條限制：排在「Hold the bar」之前。
+  assert.ok(step3.indexOf(paragraph) < step3.indexOf('Hold the bar'), '限制段落排在 Hold the bar 之後');
 });
