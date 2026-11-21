@@ -10,6 +10,9 @@
 //   running     成員列還有 running 時先用 Probe 的 workerState（pilot-probe.mjs）讀一次畫面（#361：pilot-watch 已印 DONE、checkpoint 還記 running）：
 //               每個 running 成員都讀到結果行時印 `WORKER <n> DONE <sha>`／`WORKER <n> STOP <cause>`，照 probe --apply 寫回成員列（done 與 candidate、stop）再繼續；
 //               有一個還在工作、讀不到 terminal 或沒有 ORCA_CLI_COMMAND 時印 `STOP member <n> running (<WORKER 狀態>)，先跑 pilot-probe.mjs --apply`，成員列都不改。
+//   先同步      要重新 stage（不是 RESUME）、主 checkout 有 origin remote 時，load 關卡之後先照 sync-main 讓整合分支包含 origin/<主分支>（#366）：
+//               已包含不印任何行；落後或分叉時同步後印 `SYNCED <sha> ff|<CHECK_PASS 行>`，再從新的 tip stage；
+//               同步失敗印 sync-main 的 STOP 行（`STOP conflict sync-main …`、`STOP regression sync-main <exit>`、`STOP drift`、`STOP load …`、`STOP git fetch …`），不 stage。
 //   Stage       stage worktree 要乾淨；`switch -C pilot/stage-<key> <integration tip>`，依號碼 `merge --no-ff` 每個 done 成員。
 //               衝突時，衝突檔先交給 resolver 的 resolveFile 解（沒有 resolver 就解不了），最後重算戳記檔：
 //                 docs/agents/workflow-templates.json（copy-templates.mjs 的副本清單，每個導入 repo 都有）由本檔的 restampManifest 重算，
@@ -426,13 +429,25 @@ async function land(key, loadMax) {
   const blocked = members.find(m => held.has(String(m.n)));
   if (blocked) throw new Stop(`held ${blocked.n} ${held.get(String(blocked.n))}`);
 
-  const tip = must(main, 'rev-parse', config.integration);
+  let tip = must(main, 'rev-parse', config.integration);
   const [, staged, onto] = checkpoint.current.match(/^staged ([0-9a-f]{40}) onto ([0-9a-f]{40})\b/) ?? [];
   const resume = staged && onto === tip && checkpoint.regression?.startsWith(`${staged} exit 0`)
     && gitIn(main, 'rev-parse', '-q', '--verify', `refs/heads/${branch}`).stdout.trim() === staged
     && sameMembers(main, checkpoint.members, staged, tip);
-  if (!resume) loadGate(loadMax);
-  const tree = stageWorktree(main) ?? createStageWorktree(main, key);
+  const getTree = () => stageWorktree(main) ?? createStageWorktree(main, key);
+  if (!resume) {
+    loadGate(loadMax);
+    // #366：要 stage 時先讓整合分支包含 origin/<主分支>（同 sync-main），否則 Push gate 才 STOP behind-main、Regression 再跑一次（investing#313）。
+    // RESUME 不同步：staged SHA 已驗過，落後時照舊交給 Push gate 的 sync-main。沒有 origin remote 時沒有可落後的對象。
+    if (gitIn(main, 'remote', 'get-url', 'origin').status === 0) {
+      const synced = syncMain(loadMax, main, getTree);
+      if (synced.moved) {
+        console.log(`SYNCED ${synced.value}`);
+        tip = must(main, 'rev-parse', config.integration);
+      }
+    }
+  }
+  const tree = getTree();
   if (must(tree, 'status', '--porcelain')) throw new Stop(`dirty ${tree}`);
   let sha;
   if (resume) {
@@ -458,24 +473,27 @@ async function land(key, loadMax) {
 
 const SYNC_BRANCH = 'pilot/stage-sync-main';
 
-/** sync-main：讓整合分支包含 origin/<主分支>（Push gate 的 STOP behind-main，#193）；傳回 SYNCED 行 `<sha> <說明>`，其他結果丟 Stop。 */
-function syncMain(loadMax) {
-  const main = mainCheckout();
+/**
+ * sync-main：讓整合分支包含 origin/<主分支>（Push gate 的 STOP behind-main，#193；batch 要 stage 前也呼叫，#366）。
+ * 傳回 `{ value, moved }`：value 是 SYNCED 行 `<sha> <說明>`，moved 是整合分支有沒有前進；其他結果丟 Stop。
+ * getTree 取 stage worktree（沒有時建立），只在要動整合分支時才呼叫。
+ */
+function syncMain(loadMax, main = mainCheckout(), getTree = () => stageWorktree(main) ?? createStageWorktree(main, 'sync-main')) {
   must(main, 'fetch', '-q', 'origin');
   const tip = must(main, 'rev-parse', config.integration);
   const upstream = must(main, 'rev-parse', `origin/${config.main}`);
   const ancestor = (a, b) => gitIn(main, 'merge-base', '--is-ancestor', a, b).status === 0;
-  if (ancestor(upstream, tip)) return `${tip} current`;
+  if (ancestor(upstream, tip)) return { value: `${tip} current`, moved: false };
   const behind = ancestor(tip, upstream);
   // 分叉時要跑 Regression：和 batch 的 Stage 一樣，建 stage worktree、切分支之前先過 load 關卡（#178），STOP load 時什麼都不動。
   if (!behind) loadGate(loadMax);
-  const tree = stageWorktree(main) ?? createStageWorktree(main, 'sync-main');
+  const tree = getTree();
   if (must(tree, 'status', '--porcelain')) throw new Stop(`dirty ${tree}`);
   // 只是落後（retro 直接落地進 main）：快轉到 CI 已驗過的 origin/main，不必再跑 Regression；merged batch 這時都已在 origin/main。
   if (behind) {
     must(tree, 'switch', '-q', config.integration);
     must(tree, 'merge', '--ff-only', '-q', upstream);
-    return `${upstream} ff`;
+    return { value: `${upstream} ff`, moved: true };
   }
   must(tree, 'switch', '-q', '-C', SYNC_BRANCH, tip);
   // 合入先記下的 SHA，不是 ref：上面的祖先判斷用的是它，期間別處 fetch 讓 origin/main 前進也合同一個。
@@ -490,7 +508,7 @@ function syncMain(loadMax) {
   must(tree, 'switch', '-q', config.integration);
   must(tree, 'merge', '--ff-only', '-q', SYNC_BRANCH);
   must(tree, 'branch', '-d', SYNC_BRANCH);
-  return pass ? `${sha} ${pass}` : sha;
+  return { value: pass ? `${sha} ${pass}` : sha, moved: true };
 }
 
 /**
@@ -543,7 +561,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     // `sync-main --branch …` 已被上面 req-<n> 的檢查擋成用法錯誤。
     if (key === 'sync-main') {
-      console.log(`SYNCED ${syncMain(Number(loadMax))}`);
+      console.log(`SYNCED ${syncMain(Number(loadMax)).value}`);
       process.exit(0);
     }
     if (request) openRequest(key, request, Number(loadMax));
