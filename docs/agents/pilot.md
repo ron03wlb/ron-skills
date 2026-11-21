@@ -56,7 +56,7 @@
 
 - **Probe.** 見 [pilot-round.md](pilot-round.md)：每輪 Reconcile 跑 Probe 前讀（Entry 時取一次，之後條目沒改就不必重取）；整條用 `node scripts/adapter-line.mjs 'Probe'` 取。
 
-- **Probe lines.** 見 [pilot-exceptions.md](pilot-exceptions.md)：Probe 印了 Probe 條目沒處理的行（如 `OVERLAP`、`MOVE`、`PARKED`、`UNPARK`、`UNBLOCKED`、`ADAPTER_AHEAD`、`SCRIPT_AHEAD`、`HOOK_BEHIND`、`BLOCKER_OPEN_SCOPE`、`SCOPE_CHANGED`、`DEPS_PROSE`、`RESTAGE`、`PUSH_PARKED`）時讀。
+- **Probe lines.** 見 [pilot-exceptions.md](pilot-exceptions.md)：Probe 印了 Probe 條目沒處理的行（如 `OVERLAP`、`MOVE`、`PARKED`、`UNPARK`、`UNBLOCKED`、`ADAPTER_AHEAD`、`SCRIPT_AHEAD`、`HOOK_BEHIND`、`BLOCKER_OPEN_SCOPE`、`SCOPE_CHANGED`、`DEPS_PROSE`、`RESTAGE`、`REGRESSING`、`PUSH_PARKED`）時讀。
 
 - **Hold flag.** 見 [pilot-exceptions.md](pilot-exceptions.md)：Probe 印 `HOLD`，或要設、清、看 hold 時讀。
 

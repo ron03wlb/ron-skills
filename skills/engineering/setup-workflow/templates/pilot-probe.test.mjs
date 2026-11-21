@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 import { applyResults, changedUnits } from './pilot-probe.mjs';
@@ -318,6 +318,48 @@ test('staged 的 batch 最後一行 regression 不是 staged SHA 的 exit 0：�
     'RESTAGE 99 regression-failed none',
   ], out.join('\n'));
   assert.ok(!out.some(line => /^STAGEABLE 9\d$/.test(line)), out.join('\n'));
+});
+
+// #361：pilot-land 寫了 staged、Regression 還在跑（6 次再現），沒有 regression 行時 RESTAGE … none 分不出 land 還活著。
+// land 在 checkpoint 留 `regressing: <staged sha> pid <pid>`：那個 pid 還是 pilot-land 時印 REGRESSING <key> <sha>，不印 RESTAGE；
+// pid 已不在（land 被中斷）、標記的 SHA 是先前那次 stage 的時照舊 RESTAGE … none；regression 非 0 仍 RESTAGE，exit 0 不印。
+test('staged、沒有 regression 行、land 還活著：印 REGRESSING，land 不在時仍 RESTAGE none', async t => {
+  const { batch, probe, pilot, temp } = fixture(t);
+  const staged = 'd4a2f71' + '0'.repeat(33);
+  const earlier = '0b8077b' + '0'.repeat(33);
+  const onto = '4c080c6' + '0'.repeat(33);
+  // 活著的 land：命令列帶 pilot-land 的 node 行程；不是 land 的活行程：同一支 node 但命令列沒有 pilot-land。
+  const sleeper = name => {
+    const file = join(temp, name);
+    writeFileSync(file, 'setTimeout(() => {}, 60000);\n');
+    const child = spawn(process.execPath, [file], { stdio: 'ignore' });
+    t.after(() => child.kill());
+    return child.pid;
+  };
+  const land = sleeper('pilot-land.mjs');
+  const other = sleeper('other.mjs');
+  const gone = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout;
+  const append = (key, rows) => writeFileSync(join(pilot, `batch-${key}.md`), readFileSync(join(pilot, `batch-${key}.md`), 'utf8') + rows.map(row => `${row}\n`).join(''));
+  const staging = (key, rows) => {
+    batch(key, `staged ${staged} onto ${onto}`, [{ n: Number(key), state: 'done', candidate: 'abc1234' }]);
+    append(key, rows);
+  };
+  staging('91', [`regressing: ${staged} pid ${land}`]);
+  staging('92', [`regression: ${earlier} exit 1`, `regressing: ${staged} pid ${land}`]);
+  staging('93', [`regressing: ${staged} pid ${gone}`]);
+  staging('94', [`regressing: ${staged} pid ${other}`]);
+  staging('95', [`regressing: ${earlier} pid ${land}`]);
+  staging('96', [`regression: ${staged} exit 1`, `regressing: ${staged} pid ${land}`]);
+  staging('97', [`regression: ${staged} exit 0 CHECK_PASS tests 1`]);
+  const out = lines(probe());
+  assert.deepEqual(out.filter(line => /^(RESTAGE|REGRESSING) /.test(line)), [
+    `REGRESSING 91 ${staged}`,
+    `REGRESSING 92 ${staged}`,
+    'RESTAGE 93 regression-failed none',
+    'RESTAGE 94 regression-failed none',
+    'RESTAGE 95 regression-failed none',
+    'RESTAGE 96 regression-failed 1',
+  ], out.join('\n'));
 });
 
 // 舊格式 `pushed` 的 batch 在 checkpoint 只剩 `regression: <sha>` 指出合入的內容（Integrate 是 ff-only，staged SHA 就是 pilot/integration 的 tip）；

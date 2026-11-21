@@ -830,9 +830,12 @@ test('checkpoint 沒有 current: 行：STOP checkpoint，不 stage', t => {
   assert.equal(f.tip(), before);
 });
 
+// #361：running 成員先讀畫面；讀不到（這裡沒有 ORCA_CLI_COMMAND）時 STOP 並提示 probe --apply，成員列不動。讀到結果的情況在正本的 pilot-land.test.mjs。
 test('還有 running 或 stop 成員：STOP member，不 stage', t => {
   const running = fixture(t, { members: [TWO[0], { ...TWO[1], state: 'running' }] });
-  assert.equal(running.land().last, 'STOP member 2 running');
+  const before = running.read();
+  assert.equal(running.land({ ORCA_CLI_COMMAND: '' }).last, 'STOP member 2 running (STUCK no-orca)，先跑 pilot-probe.mjs --apply');
+  assert.equal(running.read(), before);
   const stopped = fixture(t, { members: [TWO[0], { ...TWO[1], state: 'stop' }] });
   assert.equal(stopped.land().last, 'STOP member 2 stop');
   assert.equal(stopped.checks(), 0);
