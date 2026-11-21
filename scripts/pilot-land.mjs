@@ -7,12 +7,16 @@
 //   --main <分支>           sync-main 要跟上的 origin/<分支>（預設 main）；
 //   --resolver <模組>       可選的專案衝突解法模組，相對本檔所在目錄的上一層（副本在 scripts/，就是 repo 根），或絕對路徑；不存在就是用法錯誤。
 // 全部在 stage worktree 做（分支是整合分支或 pilot/stage-* 的那個 worktree；沒有就用 Orca 建 pilot-stage，再跑旁邊的 pilot-unbare.sh 當 Bare guard）：
+//   running     成員列還有 running 時先用 Probe 的 workerState（pilot-probe.mjs）讀一次畫面（#361：pilot-watch 已印 DONE、checkpoint 還記 running）：
+//               每個 running 成員都讀到結果行時印 `WORKER <n> DONE <sha>`／`WORKER <n> STOP <cause>`，照 probe --apply 寫回成員列（done 與 candidate、stop）再繼續；
+//               有一個還在工作、讀不到 terminal 或沒有 ORCA_CLI_COMMAND 時印 `STOP member <n> running (<WORKER 狀態>)，先跑 pilot-probe.mjs --apply`，成員列都不改。
 //   Stage       stage worktree 要乾淨；`switch -C pilot/stage-<key> <integration tip>`，依號碼 `merge --no-ff` 每個 done 成員。
 //               衝突時，衝突檔先交給 resolver 的 resolveFile 解（沒有 resolver 就解不了），最後重算戳記檔：
 //                 docs/agents/workflow-templates.json（copy-templates.mjs 的副本清單，每個導入 repo 都有）由本檔的 restampManifest 重算，
 //                 resolver 的 STAMP_FILES 交給它的 restamp(tree, files)；解法名稱是 resolver 加進 kinds 的名稱，戳記檔加 `restamp`，以 + 相連。
 //               有一個檔解不了就 `merge --abort`，印 STOP conflict。
-//               staged SHA 與 stage 時的 integration tip 寫成 checkpoint 的 `current: staged <sha> onto <tip>`。
+//               staged SHA 與 stage 時的 integration tip 寫成 checkpoint 的 `current: staged <sha> onto <tip>`，同一次寫入留 land 存活標記
+//               `regressing: <sha> pid <本行程 pid>`（#361：Probe 看到標記的 pid 還是 pilot-land 時印 REGRESSING，不印 RESTAGE … none）。
 //   held 關卡   成員都 done 之後、load 關卡之前：<主 checkout>/.scratch/pilot/gates.md 開著的 gate 以 `- hold：#<n>` hold 住 done 成員 #n
 //               （pilot-gate open --hold）時印 `STOP held <n> <gate id>`（依成員列順序取第一個），stage worktree、checkpoint 與整合分支都不動；
 //               gate resolve 之後重跑同一行（#367：investing#320 等 G28 時仍可被 stage）。RESUME 也經過這一關。
@@ -21,7 +25,7 @@
 //               下一輪重跑同一行就接著做（ron-skills #178：同時跑 8 個 worker 時 load 約 90，檢查時間加倍，計時測試失敗）。
 //               門檻依序取 --load-max <n>、$PILOT_LOAD_MAX，都沒有時 3 × os.availableParallelism()；$PILOT_LOAD_NOW 取代實測值（測試用）。
 //   Regression  在 staged SHA 跑 Regression 指令，完整輸出寫到 <主 checkout>/.scratch/pilot/reg-<key>.log，
-//               checkpoint 追加 `regression: <sha> exit <code>`（通過、而且輸出最後一行以 `CHECK_PASS ` 開頭時附上那一行）。
+//               checkpoint 追加 `regression: <sha> exit <code>`（通過、而且輸出最後一行以 `CHECK_PASS ` 開頭時附上那一行），同一次寫入拿掉 regressing 標記。
 //   hold        <主 checkout>/.scratch/pilot/hold 存在就停。
 //   Integrate   整合分支的 tip 要還是 stage 時記下的那個（不數 parent：ron-skills batch-40-51 用 `$SHA^1` 誤判兩個成員的 batch）；
 //               `switch <整合分支>`、`merge --ff-only`、`branch -d` stage 分支，`current:` 寫成 `merged <sha>`。
@@ -54,7 +58,8 @@
 //     依號碼先合入、自己的分支改過這個檔的成員）、`integration`（成員開分支之後整合分支改過），或以 + 相連的多個來源（`member 79+integration`、`member 1+member 3`），
 //     都看不出來（不該發生）時是 `unknown`；種類是 resolver 的 conflictKind，沒有時 `code`（程式檔）或 `other`。
 //     例：`STOP conflict 108 scripts/lib/hosts.mjs=member 79:code docs/notes.md=integration:other`。以及 `STOP checkpoint …`、`STOP member <n> <state>`、`STOP dirty <worktree>`、
-//   `STOP no-stage-worktree`、`STOP create …`、`STOP merge <n> …`、`STOP git …`、`STOP load <load> <門檻>`。之前的行：`STAGED <key> <sha> onto <tip>`、
+//   `STOP no-stage-worktree`、`STOP create …`、`STOP merge <n> …`、`STOP git …`、`STOP load <load> <門檻>`，
+//   `STOP member <n> running (<WORKER 狀態>)，先跑 pilot-probe.mjs --apply`。之前的行：`WORKER <n> DONE <sha>`、`WORKER <n> STOP <cause>`（讀畫面寫回的 running 成員）、`STAGED <key> <sha> onto <tip>`、
 //   `RESUME <key> <sha>`、`RESOLVED <n> <解法> <檔案…>`，Bare guard 還原主 checkout 時的 `UNBARE <主 checkout>`。
 // exit：0 MERGED；4 STOP；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤；1 其他失敗（程式錯誤，不印 STOP）。
 import { spawnSync } from 'node:child_process';
@@ -63,7 +68,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { availableParallelism, loadavg } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { exitIfLocked, heldIssues, openGates, runInStageWorktree, updateCheckpoint } from './lib/pilot-store.mjs';
+import { CheckpointLocked, dropRegressing, exitIfLocked, heldIssues, openGates, runInStageWorktree, updateCheckpoint } from './lib/pilot-store.mjs';
 
 const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--check-command <指令>] [--integration <分支>] [--main <分支>] [--resolver <模組>] [--load-max <n>] | sync-main [同上選項，不含 --branch]（--branch 時 key 是 req-<n>；門檻預設 $PILOT_LOAD_MAX，再來 3 × 核心數；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
 const LOAD = /^\d+(\.\d+)?$/;
@@ -179,9 +184,27 @@ function setCurrent(file, value) {
   if (readCheckpoint(file).current !== value) throw new Stop(`checkpoint ${file} 的 current: 沒寫成 ${value}`);
 }
 
-/** 追加 `regression:` 行；寫完再讀一次，最後一個 regression 行不是它就 STOP。 */
+/**
+ * 寫 `current: staged <sha> onto <tip>`，同一次寫入把 land 存活標記換成 `regressing: <sha> pid <本行程>`（#361：Probe 據此印 REGRESSING，
+ * 不把還在跑的 Regression 印成 RESTAGE … none）；寫完再讀一次，兩行有一行不對就 STOP。
+ */
+function markStaged(file, sha, tip) {
+  const value = `staged ${sha} onto ${tip}`;
+  const mark = `regressing: ${sha} pid ${process.pid}`;
+  updateCheckpoint(file, text => {
+    const rest = dropRegressing(text).replace(/^current:.*$/m, `current: ${value}`);
+    return `${rest}${rest.endsWith('\n') ? '' : '\n'}${mark}\n`;
+  });
+  const after = readFileSync(file, 'utf8');
+  if (readCheckpoint(file).current !== value || !after.split('\n').includes(mark)) throw new Stop(`checkpoint ${file} 的 current: 沒寫成 ${value}`);
+}
+
+/** 追加 `regression:` 行，同一次寫入拿掉 land 存活標記；寫完再讀一次，最後一個 regression 行不是它就 STOP。 */
 function appendRegression(file, value) {
-  updateCheckpoint(file, text => `${text}${text.endsWith('\n') ? '' : '\n'}regression: ${value}\n`);
+  updateCheckpoint(file, text => {
+    const rest = dropRegressing(text);
+    return `${rest}${rest.endsWith('\n') ? '' : '\n'}regression: ${value}\n`;
+  });
   if (readCheckpoint(file).regression !== value) throw new Stop(`checkpoint ${file} 的 regression: 沒寫成 ${value}`);
 }
 
@@ -357,15 +380,42 @@ function sameMembers(main, members, staged, tip) {
   return members.every(({ branch, state }) => (state === 'done' ? within(branch, staged) : !within(branch, staged) || within(branch, tip)));
 }
 
+/**
+ * running 成員先讀一次畫面（#361：pilot-watch 已印 DONE，checkpoint 卻要等下一輪 probe --apply 才改）：用 Probe 的 workerState 讀，
+ * 每個 running 成員都讀到結果行時印 `WORKER <n> DONE <sha>`／`WORKER <n> STOP <cause>`，照 probe --apply 寫回成員列；
+ * 有一個還在工作或讀不到就 `STOP member <n> running (<worker 狀態>)，先跑 pilot-probe.mjs --apply`，成員列都不改。
+ */
+async function readRunning(file, key) {
+  // 用到時才載入：restamp.mjs 等只 import restampManifest 的腳本不必帶上 pilot-probe.mjs 與它的整串相依（land-restamp 測試只複製部分腳本）。
+  const { applyResults, parseBatch, workerState } = await import('./pilot-probe.mjs');
+  const running = parseBatch(readFileSync(file, 'utf8')).members.filter(m => m.state === 'running');
+  if (!running.length) return;
+  const results = [];
+  for (const member of running) {
+    const state = await workerState({ cli: process.env.ORCA_CLI_COMMAND }, member);
+    const [, kind, value] = state.match(/^(DONE|STOP) (.+)$/) ?? [];
+    if (!kind) throw new Stop(`member ${member.n} running (${state})，先跑 pilot-probe.mjs --apply`);
+    results.push({ n: member.n, state: kind === 'DONE' ? 'done' : 'stop', sha: kind === 'DONE' ? value : undefined, line: `WORKER ${member.n} ${state}` });
+  }
+  for (const { line } of results) console.log(line);
+  const misses = applyResults(file, key, results);
+  const locked = misses.find(line => line.startsWith('CHECKPOINT_LOCKED '));
+  if (locked) throw new CheckpointLocked(locked);
+  if (misses.length) throw new Stop(`checkpoint ${misses.join(' ')}`);
+}
+
 /** 整個流程；傳回 MERGED 的 SHA，其他結果丟 Stop。 */
-function land(key, loadMax) {
+async function land(key, loadMax) {
   const main = mainCheckout();
   const file = join(main, `.scratch/pilot/batch-${key}.md`);
-  const checkpoint = readCheckpoint(file);
+  const first = readCheckpoint(file);
   const branch = `pilot/stage-${key}`;
-  const merged = checkpoint.current.match(/^merged ([0-9a-f]{40})\b/)?.[1];
+  const merged = first.current.match(/^merged ([0-9a-f]{40})\b/)?.[1];
   if (merged && gitIn(main, 'merge-base', '--is-ancestor', merged, config.integration).status === 0) return merged;
-  if (!/^(dispatched|staged)\b/.test(checkpoint.current)) throw new Stop(`checkpoint current: ${checkpoint.current}`);
+  if (!/^(dispatched|staged)\b/.test(first.current)) throw new Stop(`checkpoint current: ${first.current}`);
+  await readRunning(file, key);
+  // readRunning 可能剛把 running 列寫回 done／stop：之後一律看重讀的這一份。
+  const checkpoint = readCheckpoint(file);
   const pending = checkpoint.members.find(m => m.state !== 'done' && !m.state?.startsWith('moved'));
   if (pending) throw new Stop(`member ${pending.n} ${pending.state}`);
   const members = checkpoint.members.filter(m => m.state === 'done');
@@ -390,7 +440,7 @@ function land(key, loadMax) {
     console.log(`RESUME ${key} ${sha}`);
   } else {
     sha = stage(tree, key, members, tip);
-    setCurrent(file, `staged ${sha} onto ${tip}`);
+    markStaged(file, sha, tip);
     console.log(`STAGED ${key} ${sha} onto ${tip}`);
     const { code, line } = regression(main, tree, key, sha);
     appendRegression(file, line);
@@ -497,7 +547,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       process.exit(0);
     }
     if (request) openRequest(key, request, Number(loadMax));
-    console.log(`MERGED ${key} ${land(key, Number(loadMax))}`);
+    console.log(`MERGED ${key} ${await land(key, Number(loadMax))}`);
   } catch (error) {
     if (!(error instanceof Stop)) {
       exitIfLocked(error);
