@@ -31,6 +31,8 @@ Project settings for the user-level `/issue-pilot` coordinator (`/loop /issue-pi
 
 - **Integration branch.** Local `pilot/integration`, made from `{{main}}` by `/setup-workflow`. It moves only in the stage worktree. To make it contain `origin/{{main}}` (after a branch landed straight into `{{main}}`, or on `land.mjs`'s `STOP behind-main`), run `node scripts/pilot-land.mjs sync-main --main {{main}} --check-command '{{check}}'` in the main checkout with Bash `timeout: 600000`: it fast-forwards when it can, otherwise merges `origin/{{main}}` on `pilot/stage-sync-main` and runs the regression first.
 
+[optional: - **Adapter ref.** `origin/pilot/integration`: another machine pushes the integration branch, so the coordinator and `pilot-probe` read this adapter from that ref, fetched first.]
+
 - **Stage worktree.** `<stage worktree>` is the worktree in `git -C <main checkout> worktree list --porcelain` whose branch is `pilot/integration` or `pilot/stage-*`. `pilot-land.mjs` creates it through Orca (`pilot-stage`) when there is none. The main checkout stays on `{{main}}`: the coordinator only fetches, reads state, and fast-forwards `{{main}}` there.
 
 - **Pool.** See `docs/agents/pilot-round.md`: read at Pick, when choosing the next batch; fetch only this entry with `node scripts/adapter-line.mjs 'Pool'`.
