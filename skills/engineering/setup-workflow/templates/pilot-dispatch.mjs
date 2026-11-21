@@ -63,7 +63,8 @@
 // stdout：容量行（CAPACITY ok repo …、CAPACITY ok …，或 STOP capacity repo …、STOP capacity … 接 RELEASED <n>）、最後的 REPORTED <repo> …（見上）；
 //   stderr 另有 WARN release …、WARN capacity-report …。每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、worktree-branch、create、unbare、terminal、tui-timeout、send、orca、timeout、signal）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
-//   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop；running、overlap 的 STOP 不改寫那一列），STOP 原因只在 stdout。
+//   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop；running、overlap 的 STOP 不改寫那一列；
+//   send 的 STOP 記 running：worker 可能其實已在跑，交給 Probe 判定，#354），STOP 原因只在 stdout。
 //   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
 // exit：0 全部派出（草稿：寫好）；4 有成員 STOP；2 用法錯誤（含草稿帶了派工旗標）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
@@ -164,6 +165,15 @@ function freshHeader(main, checkpoint, key, integration) {
   const sha = run('git', ['-C', main, 'rev-parse', '--short', integration]).stdout.trim();
   writeFileSync(checkpoint, readFileSync(checkpoint, 'utf8')
     .replace(/^current:.*$/m, `current: dispatched ${now()}`).replace(/^integration:.*$/m, `integration: ${integration} @ ${sha}`));
+}
+
+/**
+ * 成員列的 state：派出或 `STOP send` 記 running，其他 STOP 記 stop。
+ * `STOP send` 時 worker 可能其實已收下 prompt 在跑（#354），記成 stop 會讓 coordinator 重派、把 `/issue-run` 再排進佇列；
+ * 記 running 交給 pilot-probe.mjs 判定，重跑 dispatch 時分頁還開著就 `STOP <n> running`、不再送。
+ */
+function rowState(stop) {
+  return !stop || stop.startsWith('send ') ? 'running' : 'stop';
 }
 
 /** 把成員行的 state 欄改成 `state`；沒有這一行就不動。改完成員全是 moved 時 `current:` 寫成 `closed moved`（同 pilot-batch，#205）。 */
@@ -562,7 +572,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       }
       // 重疊已在 refresh 比對過；這時的分支是剛從整合分支開的，沒有改動可比。
       const result = await dispatchMember(cli, main, ready.checkpoint, options.integration, member, controller.signal, true);
-      writeRow(ready.checkpoint, member.n, [member.branch, result.worktree ?? ready.worktree, result.handle ?? '', started, options.stuckAfter, result.stop ? 'stop' : 'running']);
+      writeRow(ready.checkpoint, member.n, [member.branch, result.worktree ?? ready.worktree, result.handle ?? '', started, options.stuckAfter, rowState(result.stop)]);
       console.log(result.stop ? `STOP ${member.n} ${result.stop}` : `DISPATCHED ${member.n} ${result.handle}\nPRIOR ${member.n} ${ready.prior} ${ready.sha}`);
       reportDispatched(result.stop ? 0 : 1);
       clearTimeout(budget);
@@ -576,7 +586,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const started = now();
       const result = await dispatchMember(cli, main, checkpoint, options.integration, member, controller.signal, Boolean(given.allowOverlap));
       stopped ||= Boolean(result.stop);
-      if (!result.keep) writeRow(checkpoint, member.n, [member.branch, result.worktree ?? '', result.handle ?? '', started, options.stuckAfter, result.stop ? 'stop' : 'running']);
+      if (!result.keep) writeRow(checkpoint, member.n, [member.branch, result.worktree ?? '', result.handle ?? '', started, options.stuckAfter, rowState(result.stop)]);
       console.log(result.stop ? `STOP ${member.n} ${result.stop}` : `DISPATCHED ${member.n} ${result.handle}`);
       if (!result.stop) dispatched++;
     }

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // 把 prompt 送進既有的 Orca Claude terminal（例如派工送 `/issue-run`、交接送 `/loop /issue-pilot`），並確認已開始處理。
 // 不用裸 `terminal send`：它會回 accepted，文字卻停在輸入框沒提交，重送又會黏成兩份。
-// 步驟：等 TUI 閒置（兩輪）→ 送出並讀畫面確認 prompt 開頭或 `esc to interrupt` 出現，沒出現就延後重送。
+// 步驟：等 TUI 閒置（兩輪）→ 送出並讀畫面確認 prompt 開頭、`esc to interrupt` 或工作中的 spinner 出現，沒出現就延後重送；
+// 重送前再讀一次畫面，worker 已在工作就算送達、不重送（#354：spinner 沒有 `esc to interrupt`、prompt 行被長回應擠出畫面，
+// 確認逾時後再送兩次，排成兩行 `❯ /issue-run …`）。
 // 送出前先讀 composer：先前裸 `terminal send` 留下未提交的同一段 prompt 時只補 Enter，不再黏成兩份。
 // session 仍在忙時 tui-idle 不成立，兩輪逾時即 STOP tui-timeout，不把 prompt 排進忙碌中的 turn。
 // `--queue` 給忙碌中的 session 補送（例如 Dispatch 之後補範圍，#133）：不等 tui-idle，直接送出排到下一輪；
@@ -33,6 +35,13 @@ const CONFIRM_POLLS = 5;
 const SEND_DELAYS = [0, Number(process.env.SESSION_SEND_RESEND_MS || 5000), Number(process.env.SESSION_SEND_LATE_RESEND_MS || 30000)];
 
 /**
+ * Claude TUI 工作中的 spinner 行，如 `✳ Fiddle-faddling… (1m 32s · ↓ 1.2k tokens)`：符號、動詞加 `…`、括號裡以經過時間或 `esc` 開頭。
+ * 不一定帶 `esc to interrupt`（#354 的真實畫面，#323 第 3 項 11-15 留言）。已結束那一輪的 `✻ Cogitated for 46s` 沒有 `…`，
+ * 一般輸出的清單行（`* 項目… (見下)`）括號裡不是時間，都不算。
+ */
+export const SPINNER = /^\s*[·✢✳✶✻✽*]\s+\S[^…]*…\s*\((?:\d|esc\b)/u;
+
+/**
  * Orca CLI 呼叫；回傳 JSON 的 result，失敗丟出含錯誤碼的 Error。
  * `signal` 中止時殺掉 CLI 並丟出 AbortError（呼叫者用它限制總時間、處理 SIGTERM）。
  */
@@ -58,22 +67,33 @@ export async function waitTuiReady(ctx, handle) {
 
 /**
  * 送出 prompt 並確認進了 Claude：TUI 剛就緒時 Orca 會回 accepted 卻吞掉輸入。
- * 畫面出現 prompt 開頭或 `esc to interrupt` 才算送達；否則依 SEND_DELAYS 重送。送不出或三次都沒送達傳回 false。
+ * 畫面出現 prompt 開頭、`esc to interrupt` 或工作中的 spinner（SPINNER）才算送達；否則依 SEND_DELAYS 重送，重送前再讀一次畫面，已送達就不重送。
+ * 送不出或三次都沒送達傳回 false。
  * 第一次送出前先讀一次 composer 的 `draft`（缺省視為空），已有同一段文字時只補 Enter，並在 stderr 印 `DRAFT_SUBMIT <handle>`。
  */
 export async function sendPrompt(ctx, handle, text) {
-  const landed = tail => tail.some(line => line.includes(promptHead(text)) || line.includes('esc to interrupt'));
-  let draft = (await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal?.draft ?? '';
+  // 讀一次畫面：draft（缺省視為空）與是否已送達。文字還在輸入框（draft 含 prompt 開頭）時，畫面上那一行只是輸入框，不算送達。
+  const readScreen = async () => {
+    const { tail = [], draft = '' } = (await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal ?? {};
+    const landed = tail.some(line => line.includes(promptHead(text)) || line.includes('esc to interrupt') || SPINNER.test(line));
+    return { draft: draft ?? '', landed: landed && resendInput(draft ?? '', text)[1] !== '' };
+  };
+  let { draft } = await readScreen();
   if (resendInput(draft, text)[1] === '') console.error(`DRAFT_SUBMIT ${handle}`);
   for (const delay of SEND_DELAYS) {
-    if (delay) await sleep(delay, undefined, { signal: ctx.signal });
+    if (delay) {
+      await sleep(delay, undefined, { signal: ctx.signal });
+      // 重送前再讀一次：worker 可能在等待期間才開始工作，這時重送只會排進佇列。
+      const screen = await readScreen();
+      if (screen.landed) return true;
+      draft = screen.draft;
+    }
     if (!(await orca(ctx, 'terminal', 'send', '--terminal', handle, ...resendInput(draft, text))).send?.accepted) return false;
     for (let poll = 0; poll < CONFIRM_POLLS; poll++) {
       await sleep(CONFIRM_MS, undefined, { signal: ctx.signal });
-      const screen = (await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal ?? {};
-      draft = screen.draft ?? '';
-      // 文字還在輸入框（draft 含 prompt 開頭）時，畫面上那一行只是輸入框，不算送達。
-      if (landed(screen.tail ?? []) && resendInput(draft, text)[1] !== '') return true;
+      const screen = await readScreen();
+      if (screen.landed) return true;
+      draft = screen.draft;
     }
   }
   return false;
