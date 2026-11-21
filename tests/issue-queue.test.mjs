@@ -82,12 +82,18 @@ test('第 3 條提示引用的 proseDeps 在 pilot-probe 正本裡存在', async
   assert.deepEqual(proseDeps('依賴 ①（#103）；提示第 3 條沿用 #94 的實作。'), [103]);
 });
 
-// 新 session 實跑 /issue-queue 時，`node -e` 匯入 pilot-probe.mjs 會拋錯：它載入的 orca-session-send.mjs 在頂層讀
-// `process.argv[1]`，`-e` 底下沒有這個值。所以要從暫存的 .mjs 檔匯入。
-test('第 3 條提示從暫存腳本檔匯入 proseDeps，不用 node -e', () => {
+// #370：第 6 步原本要 agent 每次手寫 prose-deps.mjs 加 shell 迴圈逐張查（retro 64746047：30 張子單要數分鐘），改跑 parent-hints.mjs。
+// `Parent hints: off` 的跳過要排在跑腳本之前；沒有這支腳本的 repo 照五類規則讀；SKILL 列的提示行名稱和正本印的一致。
+test('第 6 步先看 Parent hints: off，再跑 parent-hints.mjs，沒有時照五類讀，提示行名稱與正本一致', () => {
   const hints = paragraph('**Parent hints.**');
   assert.doesNotMatch(hints, /node[^`]*\s-e\s/);
-  assert.match(hints, /prose-deps\.mjs/);
+  assert.ok(hints.indexOf('`Parent hints: off`') < hints.indexOf('node scripts/parent-hints.mjs'), 'off 的跳過要排在跑腳本之前');
+  assert.match(hints, /Without the script/);
+  assert.match(hints, /never write a `prose-deps\.mjs`/);
+  const script = readFileSync(new URL('../skills/engineering/setup-workflow/templates/parent-hints.mjs', import.meta.url), 'utf8');
+  const kinds = text => [...new Set(text.match(/PARENT_[A-Z_]+/g))].sort();
+  assert.deepEqual(kinds(hints), kinds(script.split('\nimport ')[0]));
+  assert.equal(kinds(hints).length, 6);
 });
 
 // 第 1 輪 review：/triage 是 user-invoked，要直接讀它的檔；wontfix 也是 triage 的出口；N 用指令數，實跑時目測數錯（8 張印成 7）；
