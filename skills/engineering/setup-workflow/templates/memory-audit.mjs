@@ -58,9 +58,12 @@ export function mainCheckout(cwd = process.cwd()) {
   return gitDir.endsWith('/.git') ? dirname(gitDir) : gitDir.replace(/\.git$/, '');
 }
 
-/** 目錄中的 `*.md`（不含 `.` 開頭者），依名稱排序。 */
-const memoryFiles = dir => readdirSync(dir, { withFileTypes: true })
+/** 目錄列表（Dirent）中的 `*.md`（不含 `.` 開頭者），依名稱排序。 */
+const memoryFiles = entries => entries
   .filter(entry => entry.isFile() && entry.name.endsWith('.md') && !entry.name.startsWith('.')).map(entry => entry.name).sort();
+
+/** 目錄列表（Dirent[]）；audit 的 listDir 預設值，測試注入以模擬大小寫不敏感的檔案系統。 */
+export const listMemoryDir = dir => readdirSync(dir, { withFileTypes: true });
 
 /** 去掉 `.md` 後不分大小寫同名的檔恰有一個時回其檔名，否則 null。 */
 export function uniqueMatch(target, files) {
@@ -126,10 +129,15 @@ export function dirProblem(dir) {
 
 /**
  * 稽核（唯讀）→ { lines, warns, counts, summary }。
- * @param {{ dir: string, root: string, now: Date, state?: (n: number, root: string) => 'closed'|'open'|null }} options
+ * 連結目標在不在一律對 listDir 的檔名做大小寫敏感比對、不用 existsSync：APFS 等大小寫不敏感的檔案系統上
+ * `existsSync('Open.md')` 會找到 `open.md`，Linux 與 macOS 結果就不同（PR 477 checks-macos）。
+ * @param {{ dir: string, root: string, now: Date, state?: (n: number, root: string) => 'closed'|'open'|null,
+ *   listDir?: (dir: string) => import('node:fs').Dirent[] }} options
  */
-export function audit({ dir, root, now, state = trackerState }) {
-  const files = memoryFiles(dir);
+export function audit({ dir, root, now, state = trackerState, listDir = listMemoryDir }) {
+  const entries = listDir(dir);
+  const names = new Set(entries.map(entry => entry.name));
+  const files = memoryFiles(entries);
   const index = readFileSync(join(dir, INDEX), 'utf8');
   const lines = index.split('\n');
   const found = { index_over: [], long: [], orphan: [], broken: [], until_closed: [], dated_stale: [] };
@@ -140,13 +148,13 @@ export function audit({ dir, root, now, state = trackerState }) {
   const linked = new Set([...index.matchAll(INDEX_LINK)].map(match => match[1]));
   for (const name of files) if (name !== INDEX && !linked.has(name)) found.orphan.push(`ORPHAN_FILE ${name}`);
   lines.forEach((line, at) => {
-    for (const match of line.matchAll(INDEX_LINK)) if (!existsSync(join(dir, match[1]))) found.broken.push(`BROKEN_LINK ${INDEX}:${at + 1} ${match[1]}`);
+    for (const match of line.matchAll(INDEX_LINK)) if (!names.has(match[1])) found.broken.push(`BROKEN_LINK ${INDEX}:${at + 1} ${match[1]}`);
   });
   const others = files.filter(file => file !== INDEX);
   for (const name of files) {
     readFileSync(join(dir, name), 'utf8').split('\n').forEach((line, at) => {
       for (const match of line.matchAll(WIKI_LINK)) {
-        if (!existsSync(join(dir, `${match[1]}.md`)) && uniqueMatch(match[1], others)) found.broken.push(`BROKEN_LINK ${name}:${at + 1} ${match[0]}`);
+        if (!names.has(`${match[1]}.md`) && uniqueMatch(match[1], others)) found.broken.push(`BROKEN_LINK ${name}:${at + 1} ${match[0]}`);
       }
     });
   }

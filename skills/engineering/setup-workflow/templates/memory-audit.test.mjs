@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { declaredDays, memoryAuditLine, memoryDirFor } from './memory-audit.mjs';
+import { audit, declaredDays, listMemoryDir, memoryAuditLine, memoryDirFor } from './memory-audit.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./memory-audit.mjs', import.meta.url));
@@ -46,8 +46,8 @@ test('乾淨的 memory 目錄只印 MEMORY_AUDIT items=0', t => {
   assert.equal(result.stdout, 'MEMORY_AUDIT items=0\n');
 });
 
-test('每一類問題各印一行，最後是摘要（#347）', t => {
-  const { write, run } = fixture(t, { closed: [12] });
+/** #347 的每類問題各一的 memory 目錄（含 [[Open]] 對 open.md）。 */
+function writeEveryKind(write) {
   const long = `- [Long](long.md) — ${'字'.repeat(90)}`;
   write('MEMORY.md', [
     long,
@@ -61,19 +61,38 @@ test('每一類問題各印一行，最後是摘要（#347）', t => {
   ].join('\n'));
   for (const name of ['long.md', 'until.md', 'open.md', 'dated.md', 'recent.md', 'soon.md']) write(name, 'x\n');
   write('orphan.md', '見 [[Open]] 與 [[not-written-yet]]\n');
+}
+
+/** writeEveryKind 的預期輸出（INDEX_OVER 行另比對）。 */
+const EVERY_KIND = [
+  'INDEX_LINE_LONG line=1 len=110 limit=100',
+  'ORPHAN_FILE orphan.md',
+  'BROKEN_LINK MEMORY.md:2 gone.md',
+  'BROKEN_LINK orphan.md:1 [[Open]]',
+  'UNTIL_CLOSED line=3 #12',
+  'DATED_STALE line=5 date=09-01 age=81d',
+  'MEMORY_AUDIT items=7 index_over=1 long=1 orphan=1 broken=2 until_closed=1 dated_stale=1',
+];
+
+test('每一類問題各印一行，最後是摘要（#347）', t => {
+  const { write, run } = fixture(t, { closed: [12] });
+  writeEveryKind(write);
   const result = run();
   assert.equal(result.status, 0, result.stderr);
   const [first, ...rest] = result.stdout.trim().split('\n');
   assert.match(first, /^INDEX_OVER size=6\d{3} limit=6000$/);
-  assert.deepEqual(rest, [
-    'INDEX_LINE_LONG line=1 len=110 limit=100',
-    'ORPHAN_FILE orphan.md',
-    'BROKEN_LINK MEMORY.md:2 gone.md',
-    'BROKEN_LINK orphan.md:1 [[Open]]',
-    'UNTIL_CLOSED line=3 #12',
-    'DATED_STALE line=5 date=09-01 age=81d',
-    'MEMORY_AUDIT items=7 index_over=1 long=1 orphan=1 broken=2 until_closed=1 dated_stale=1',
-  ]);
+  assert.deepEqual(rest, EVERY_KIND);
+});
+
+test('大小寫不敏感的檔案系統（APFS）上 [[Open]] 對 open.md 仍算斷連結：比對目錄列表、不靠檔案存不存在（#347）', t => {
+  const { root, dir, write } = fixture(t);
+  writeEveryKind(write);
+  // 模擬 APFS：Open.md 在磁碟上「存在」（existsSync 回 true），目錄列表卻只有 open.md
+  write('Open.md', 'x\n');
+  const listDir = path => listMemoryDir(path).filter(entry => entry.name !== 'Open.md');
+  const result = audit({ dir, root, now: new Date(NOW), state: n => (n === 12 ? 'closed' : 'open'), listDir });
+  assert.match(result.lines[0], /^INDEX_OVER size=6\d{3} limit=6000$/);
+  assert.deepEqual([...result.lines.slice(1), ...result.warns, result.summary], EVERY_KIND);
 });
 
 test('查不到的單印 WARN tracker-unreachable、不算結案；本機 Markdown tracker 一律查不到', t => {
