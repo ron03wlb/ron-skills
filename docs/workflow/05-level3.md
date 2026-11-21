@@ -29,7 +29,7 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 4. **Pick 挑單**：worker 數低於上限時，依 adapter 的 Pool 規則挑下一批；`needs-triage` 的單先照 Readiness 補齊。
 5. **Dispatch 派工**：每張開一個 worktree 與 terminal，執行 `/issue-run <n> --worker <batch checkpoint>`。
 6. **Land 落地**：整批成員都 `DONE` 或 `STOP` 後，在批次分支依號碼合入、在 staged SHA 跑回歸、通過才合進整合分支，然後照 Push gate 交出 push 指令；adapter 允許時自己 push、開 PR／MR、合併，接著結案。
-7. **Report and sleep**：重產 `status.md`，有需要人做的事才通知；這一輪還有可做的事（可 stage 的批次、可挑的單、待收的 worker 結果）時不用會阻塞的 `AskUserQuestion` 問 gate，交接也一樣：未回覆的 gate 寫在交接訊息第一行（`OPEN_GATES <G…> → <新 coordinator 分頁>`），由下一任通知、在它的 session 回答；排下一次喚醒（有 worker 在跑時 1200 秒，閒置時 1800 到 3600 秒）。
+7. **Report and sleep**：重產 `status.md`，有需要人做的事才通知；這一輪還有可做的事（可 stage 的批次、可挑的單、待收的 worker 結果）時不用會阻塞的 `AskUserQuestion` 問 gate，交接也一樣：未回覆的 gate 寫在交接訊息第一行（`OPEN_GATES <G…> → <新 coordinator 分頁>`），由下一任通知、在它的 session 回答；排下一次喚醒（有 worker 在跑時 1200 秒，閒置時 1800 秒；連續閒置兩次以上時，adapter 有 **Idle wait** 就改在背景跑它、不排 `ScheduleWakeup`，probe、gate 檔或整合分支有變化或到上限時間才結束並喚醒，被它喚醒的那一輪照 `/loop` 一輪處理、需要定時喚醒時以同一個 `/loop` 指令排 `ScheduleWakeup`，它出錯時排 1800 秒；adapter 沒有這一條時排 3600 秒；交接時一起停掉）。
 
 它的狀態全在磁碟上（`.scratch/pilot/` 與各批次 checkpoint），不靠對話記憶：
 
@@ -92,6 +92,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | --- | --- |
 | 派工 | 三步：`orca worktree create`（不帶 `--repo`、不帶 `--agent`）→ `orca terminal create --command claude` → 用會確認送達的送出腳本送 `/issue-run <n> --worker <checkpoint>`；worktree 路徑與 terminal handle 記進批次 checkpoint；`worktree create` 之後確認主 checkout 沒有被設成 bare（見 [08 常見坑](08-pitfalls.md)） |
 | 監看 | 背景跑 `node scripts/pilot-watch.mjs --batch <key>`（可帶多批）：啟動後才出現的 `DONE <n> <sha>`、`STOP <n> <原因>` 印 `RESULT`，terminal 已結束但沒有新結果行印 `EXITED`（卡住），印完就結束；看畫面用 `node scripts/pilot-probe.mjs --tail <handle>` |
+| 閒置等待 | 背景跑 `node scripts/pilot-idle-wait.mjs <主 checkout>`：每 300 秒讀只讀的 probe、`.scratch/pilot/gates.md` 與整合分支 HEAD，和第一輪比出現新的 probe 行、gate 檔或 HEAD 變了就印 `WAKE …` 結束，3600 秒沒變印 `IDLE_TIMEOUT` 結束 |
 | 結案 | `orca worktree rm` 移除 worktree，Orca 不會留下孤兒紀錄；rm 之後確認主 checkout 沒有被設成 bare（見 [08 常見坑](08-pitfalls.md)） |
 | 每個 tick | coordinator 每次被叫醒先確認主 checkout 沒有被設成 bare：Orca 的 worktree 操作可能稍後才改動 `core.bare`（見 [08 常見坑](08-pitfalls.md)） |
 | 分頁狀態 | 每個分頁標題以 `處理中｜`、`待 Retro｜` 或 `待關閉｜` 開頭（[分頁狀態](../../GLOSSARY.md#分頁狀態)）：派工與交接開出的分頁先是處理中；單獨跑的 `/issue-run` 合入（`LANDED`；coordinator 以 `--keep-branch` 落地不算）、worker 寫出 `DONE`（早於 coordinator 合入）、coordinator 交接完成（`HANDED_OFF`）時 hook 自動換成待 Retro；`/retro` 結束時自己換成待關閉，分頁由人關。只回答問題（工作區乾淨、沒有 commit）的 session 不經待 Retro，直接用待關閉（#399）。adapter 有 Retro collect 條目時，worker 在寫 `DONE` 前、coordinator 在交接後自己跑 `/retro`，hook 不會把已是待關閉的分頁降回待 Retro（#327）。切換用 `scripts/tab-state.mjs`，格式、改名時機與轉換條件寫在 adapter 的分頁狀態（Tab state）段 |
