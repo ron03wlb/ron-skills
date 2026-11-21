@@ -195,6 +195,21 @@ test('--capacity <repo> 把在跑的成員數寫進帳本，合計超過上限�
   assert.equal(probe({ args: ['--capacity', 'acme'], extraEnv: { ...extraEnv, PILOT_MACHINE_WORKER_CAP: 'x' } }).status, 2);
 });
 
+// #396：$PILOT_MACHINE_WORKER_CAP 空白時照預設 4 寫帳本，但先印 CAPACITY_ENV_MISSING，不再默默用預設值。
+test('--capacity 時 $PILOT_MACHINE_WORKER_CAP 空白印 CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP；有值時不印', t => {
+  const { batch, probe, repo } = fixture(t, { screens: { term_1: { status: 'running', tail: ['❯'] } } });
+  batch('1', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 1 }]);
+  const ledger = join(repo, '..', 'pilot-workers.tsv');
+  const blank = probe({ args: ['--capacity', 'acme'], extraEnv: { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '' } });
+  assert.equal(blank.status, 0, blank.stderr);
+  assert.ok(lines(blank).includes('CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP'), blank.stdout);
+  assert.match(readFileSync(ledger, 'utf8'), /^acme\t1\t/);
+  const set = probe({ args: ['--capacity', 'acme'], extraEnv: { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '4' } });
+  assert.ok(!lines(set).some(line => line.startsWith('CAPACITY_ENV_MISSING')), set.stdout);
+  const plain = probe({ extraEnv: { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '' } });
+  assert.ok(!lines(plain).some(line => line.startsWith('CAPACITY_ENV_MISSING')), '沒帶 --capacity 不檢查');
+});
+
 // 真實 Orca CLI 會吃掉 stdin；呼叫時 stdin 一律接 /dev/null，假 Orca 讀光 stdin 也只會讀到空的。
 test('呼叫 orca 時不把 stdin 交給它，每個成員都讀得到', t => {
   const { batch, probe, log } = fixture(t, { screens: {
