@@ -42,7 +42,36 @@ const SEND_DELAYS = [0, Number(process.env.SESSION_SEND_RESEND_MS || 5000), Numb
 export const SPINNER = /^\s*[·✢✳✶✻✽*]\s+\S[^…]*…\s*\((?:\d|esc\b)/u;
 
 /**
- * Orca CLI 呼叫；回傳 JSON 的 result，失敗丟出含錯誤碼的 Error。
+ * 把 JSON 字串值裡未跳脫的控制字元改成 \u00XX、不成立的反斜線跳脫改成 `\\`；字串外的內容不動。
+ * `terminal read --screen` 的 tail 帶反斜線（Windows 路徑、ANSI 殘留）時 Orca 印出的 JSON 會有這兩種錯（investing#204，#355）；
+ * 正常輸出時 JSON.parse 直接成功，用不到這一步。
+ */
+export function repairJson(text) {
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (!inString) {
+      out += c;
+      if (c === '"') inString = true;
+      continue;
+    }
+    if (c === '\\') {
+      const next = text[i + 1];
+      if (next !== undefined && '"\\/bfnrt'.includes(next)) { out += c + next; i++; continue; }
+      if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(text.slice(i + 2, i + 6))) { out += text.slice(i, i + 6); i += 5; continue; }
+      out += '\\\\';
+      continue;
+    }
+    if (c === '"') { inString = false; out += c; continue; }
+    const code = c.charCodeAt(0);
+    out += code < 0x20 ? `\\u${code.toString(16).padStart(4, '0')}` : c;
+  }
+  return out;
+}
+
+/**
+ * Orca CLI 呼叫；回傳 JSON 的 result，失敗丟出含錯誤碼的 Error。輸出不是合法 JSON 時先以 repairJson 修過再解析一次。
  * `signal` 中止時殺掉 CLI 並丟出 AbortError（呼叫者用它限制總時間、處理 SIGTERM）。
  */
 export async function orca({ cli, signal }, ...args) {
@@ -52,7 +81,9 @@ export async function orca({ cli, signal }, ...args) {
   child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
   const status = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
   let body;
-  try { body = JSON.parse(stdout); } catch { throw new Error((stderr || stdout || '').trim().split('\n').pop() || `exit ${status}`); }
+  try { body = JSON.parse(stdout); } catch {
+    try { body = JSON.parse(repairJson(stdout)); } catch { throw new Error((stderr || stdout || '').trim().split('\n').pop() || `exit ${status}`); }
+  }
   if (!body.ok) throw new Error(body.error?.code ?? body.error?.message ?? 'orca 失敗');
   return body.result;
 }
