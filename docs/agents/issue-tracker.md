@@ -24,7 +24,7 @@ Reads infer the repo from `git remote -v`; `gh` does this automatically when run
 
 When set to `yes`, PRs run through the same labels and states as issues, using the `gh pr` equivalents:
 
-- **Read a PR**: `gh pr view <number> --comments` and `gh pr diff <number>` for the diff.
+- **Read a PR**: `gh pr view <number> --json number,title,body,comments,reviews` and `gh pr diff <number>` for the diff. Not `--comments` without `--json`: off a tty it prints no body, and `scripts/claude-hook-bash-pitfalls.mjs` blocks it (#428).
 - **List external PRs for triage**: `gh api --paginate 'repos/{owner}/{repo}/pulls?state=open' --jq '.[] | select(.author_association | IN("OWNER","MEMBER","COLLABORATOR") | not) | {number, title, author: .user.login, author_association, labels: [.labels[].name]}'`.
 - **Comment / label / close**: `gh pr comment`, `gh pr edit --add-label`/`--remove-label`, `gh pr close`.
 
