@@ -102,7 +102,7 @@ test('#344：PILOT-TEMPLATE 本文在核心預算內留 2 KB，搬出的條目�
   assert.ok(Buffer.byteLength(body) <= 14000 - 2000, `PILOT-TEMPLATE 本文 ${Buffer.byteLength(body)} bytes`);
   const round = read('skills/engineering/issue-run/PILOT-ROUND-TEMPLATE.md').split('-->')[1];
   for (const name of new Set([...round.matchAll(/\{\{([^}]+)\}\}/g)].map(match => match[1]))) assert.ok(comment.includes(`{{${name}}}`), `PILOT-TEMPLATE 註解沒說明 {{${name}}}`);
-  for (const entry of ['Pool', 'Dispatch', 'Probe']) {
+  for (const entry of ['Pool', 'Dispatch', 'Probe', 'Brief check', 'Triage brief']) {
     assert.match(round, new RegExp(`^- \\*\\*${entry}\\.\\*\\* (?!See )`, 'm'), `PILOT-ROUND-TEMPLATE 缺 ${entry} 整條`);
     assert.match(body, new RegExp(`^- \\*\\*${entry}\\.\\*\\* See \`docs/agents/pilot-round\\.md\`.*adapter-line\\.mjs '${entry}'`, 'm'), `PILOT-TEMPLATE 的 ${entry} pointer`);
   }
