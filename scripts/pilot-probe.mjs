@@ -4,7 +4,7 @@
 // 每個 running 成員的 terminal 與 tracker 上的母單，各印一行狀態，不必再手動拼 `orca terminal read` 的 JSON（手拼時漏過 exited 卻沒有結果行的 worker）。
 // 存檔格式照 issue-pilot 的 PILOT-STORE.md；專案不同的值由參數傳入。
 //
-// 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>]
+// 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>] [--worker-state <路徑>]
 //   --integration 整合分支，預設 pilot/integration；--main 主分支，預設 main。讀 running 成員要 ORCA_CLI_COMMAND，沒有時其他檢查照跑。
 //   --skip-labels：adapter 宣告的「不進分級的 label」（逗號分隔，同 issue-pool.mjs 的 --skip-labels，#326）：掛著的單與 retro-candidates 一樣，
 //            不進 POOL_READY／POOL_TRIAGE／COUNTERPART_BARE 的 ready 桶，也不算 DEPS_PROSE「最後做」的新單。沒帶時只有內建的 retro-candidates、parent。
@@ -23,6 +23,8 @@
 //            $PILOT_MACHINE_WORKER_CAP 空白時在這之前印 CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP，照預設 4 算（#396）。
 //            <repo> 空白或帶 tab、換行，或上限不是正整數時是用法錯誤（exit 2）。
 //   --handoff-after <n>（#368）：交接門檻，本 coordinator session 合入幾批就交接（adapter 的 Defaults 帶入），預設 2；不是正整數時是用法錯誤（exit 2）。
+//   --worker-state <路徑>（#466）：worker checkpoint 的路徑，`<worktree>`、`<n>` 換成成員列的 worktree 與號碼，預設 `<worktree>/.scratch/issue-run-<n>/state.md`；
+//            terminal 已結束卻沒有結果行時讀它，見下面的 WORKER … from-state。
 //   --tail <handle> [--lines <n>]（取代主 checkout 引數，只做這件事）：印那個 worker 分頁畫面的最後 n 行（預設 40），給 Watch 用，不必手拼 JSON 或依賴 jq（#295）；
 //            沒有 ORCA_CLI_COMMAND 或讀不到時 stderr 說明、exit 1。
 //   --apply、--status 都不改其他輸出行，stdout 與不帶旗標時相同（APPLY_MISS、PARENT_APPLY_FAILED 除外）。
@@ -43,7 +45,9 @@
 //            run-in 是分支為整合分支或 pilot/stage-* 的 worktree，在主 checkout 以 `<stage worktree>/scripts/…` 跑；那個 worktree 不存在或也沒有這個檔時是 sync-main）｜
 //            HOOK_BEHIND <scripts/路徑>（主分支落後整合分支時，主分支 `.claude/settings.json` 的 hook 指令引用、整合分支內容不同而且不比主分支舊的檔；
 //            依指令順序，每個檔一次：hook 跑的是主 checkout 的舊版）
-//   開著的列：REQUEST <requests.md 原文>｜GATE <id> <Issue> <question 或段落標題>｜GATE_MALFORMED <id> <把 resolved 寫進別的欄位的那一行>
+//   開著的列：REQUEST <requests.md 原文>｜GATE <id> <Issue> <question 或段落標題>｜GATE_MALFORMED <id> <把 resolved 寫進別的欄位的那一行>｜
+//            GATE_RESOLVED <id> by <resolver|?> <how>（#466：`## G<n>` 段落的 `- by：` 是 sessions.md 的 coordinator session，已 resolved、沒有 `- applied`，
+//            `- resolver：` 不在（`?`）或不是 coordinator session：別的 session 或 bot 代為解了，coordinator 套用答案後跑 pilot-gate.mjs applied；依檔案順序，在 GATE 行之後）
 //   Issue 依賴：DEPS_PROSE <n> #<m>（開著的 `ready-for-agent` Issue 內文以「依賴」或先後寫法（「排在 #m 之後」「以 #m 為 blocker」「等 #m 合入」）帶出 #m，#m 還開著，blocked_by 卻沒有它；Pool 只讀 blocked_by）｜
 //               DEPS_PROSE <n> last new #<m> [#<k>…]（內文寫「最後做」卻沒號碼，#m… 比 blocked_by 最新一張（空時比自己）還新、開著、不在 blocked_by，
 //                 retro-candidates、母單與已在等 #n 的單不算；要等哪些由 coordinator 判斷）｜DEPS_PROSE <n> last ok（同上但沒有這種新單，不必處理）｜
@@ -65,6 +69,8 @@
 //   母單（#164）：PARENT_LABEL <n>（開著、或已關閉卻有開著子單的母單，沒有 `parent` label 或還掛 triage label）｜
 //               PARENT_REOPEN <n>（開著的子單的母單 #n 在同一個 repo、已關閉）；各依號碼、每張一次
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
+//                 WORKER <n> DONE <sha> from-state（#466：terminal 已結束、畫面沒有結果行，worker checkpoint 最後一行 `State:` 是 `done, candidate <sha>`
+//                 而 sha 等於成員 worktree 的 HEAD；<sha> 是完整的 HEAD，--apply 與 DONE 一樣寫回）｜
 //                 WORKER <n> STUCK exited|stuck-after <分鐘>|orca <錯誤碼>|no-orca|checkpoint <欄位> <值>
 //                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）
 //                 畫面上沒有自己的結果行（捲走、terminal 已結束或讀不到）時，改用 pilot-watch.mjs 記下的 `.scratch/pilot/results/<handle>`
@@ -121,7 +127,7 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
 import { mergeConflicts } from './lib/merge-tree.mjs';
-import { CheckpointLocked, gateLines, heldIssues, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
+import { CheckpointLocked, gateLines, heldIssues, resolvedGateLines, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
 import { orca } from './orca-session-send.mjs';
 import { envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 import { POOL_FIELDS, blockerOpenScope, landedOn, mainPause, pool, prerequisiteOf } from './issue-pool.mjs';
@@ -130,7 +136,7 @@ import { MEMORY_AUDIT_FILE, declaredDays, memoryAuditLine } from './memory-audit
 
 // 池子摘要要的欄位取 issue-pool 的 POOL_FIELDS（#240）；同名的 blockedBy 在 GraphQL 裡合併成一份選取。
 const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt lastEditedAt blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
-const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>]｜node scripts/pilot-probe.mjs --tail <handle> [--lines <n>]';
+const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>] [--worker-state <路徑>]｜node scripts/pilot-probe.mjs --tail <handle> [--lines <n>]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const TRACKER = join(dirname(fileURLToPath(import.meta.url)), 'gh-tracker.mjs');
 
@@ -323,10 +329,10 @@ const readStore = (pilot, name) => (existsSync(join(pilot, name)) ? readFileSync
 /** requests.md 還開著的行（原文去掉首尾空白）：最後一個 `source` 欄之後沒標 `applied`／`declined`（請求內文提到這兩個字或 source 都不算）。 */
 const openRequests = pilot => readStore(pilot, 'requests.md').split('\n').filter(isOpenRequest).map(line => line.trim());
 
-/** requests.md 與 gates.md 還開著的列。 */
+/** requests.md 與 gates.md 還開著的列，與別人代為 resolve、還沒套用的 gate（GATE_RESOLVED，#466）。 */
 export function openRows(pilot) {
   const out = openRequests(pilot).map(line => `REQUEST ${line}`);
-  out.push(...gateLines(readStore(pilot, 'gates.md')));
+  out.push(...gateLines(readStore(pilot, 'gates.md')), ...resolvedGateLines(readStore(pilot, 'gates.md'), readStore(pilot, 'sessions.md')));
   return out;
 }
 
@@ -641,9 +647,38 @@ export function savedResult(pilot, member) {
   return resultLine([line], member.n, member.resumed);
 }
 
+/** worker checkpoint 的預設路徑（issue-run ADAPTER.md 的預設 checkpoint）；`--worker-state` 可換，`<worktree>`、`<n>` 是成員列的 worktree 與號碼。 */
+export const WORKER_STATE = '<worktree>/.scratch/issue-run-<n>/state.md';
+
+/**
+ * 分頁已結束卻沒有結果行時，從 worker 的 checkpoint 讀結果（#466 第 2 項，investing#445）：檔案裡最後一行 `State:`（行首可有 `- `／`* `）
+ * 是 `done, candidate <sha>`，而且 sha 等於成員 worktree 的 HEAD（前綴相符）時傳回完整的 HEAD；其他情況（檔案或 worktree 不在、最後的 State 不是 done、
+ * worker 之後又 commit 了）傳回 undefined。
+ */
+export function stateResult(member, pattern = WORKER_STATE) {
+  if (!member.worktree || !existsSync(member.worktree)) return undefined;
+  const file = pattern.replaceAll('<worktree>', member.worktree).replaceAll('<n>', member.n);
+  let text;
+  try { text = readFileSync(file, 'utf8'); } catch { return undefined; }
+  const last = [...text.matchAll(/^[ \t]*(?:[-*][ \t]+)?State:[ \t]*(.*)$/gm)].at(-1)?.[1];
+  const sha = last?.match(/^done,\s*candidate\s+([0-9a-f]{7,40})\b/)?.[1];
+  if (!sha) return undefined;
+  const head = git(member.worktree, 'rev-parse', '--verify', '-q', 'HEAD');
+  const full = head.status === 0 ? head.stdout.trim() : '';
+  return full && full.startsWith(sha) ? full : undefined;
+}
+
+/** workerState 的狀態行 → { kind（DONE｜STOP）, sha（DONE 的 SHA，不含後面的 `from-state`）, cause }；不是結果時 {}。 */
+export function workerResult(state) {
+  const [, kind, value] = state.match(/^(DONE|STOP) (.+)$/) ?? [];
+  if (!kind) return {};
+  return kind === 'DONE' ? { kind, sha: value.split(' ')[0] } : { kind, cause: value };
+}
+
 /**
  * 一個 running 成員的狀態行（不含 `WORKER <n> ` 前綴）。`ctx.cli` 缺省時（沒有 ORCA_CLI_COMMAND）讀不到 terminal。
  * `saved` 是 savedResult 的結果：畫面上沒有結果行（讀不到、terminal 已結束、還在跑）時以它為準（#413）。
+ * terminal 已結束、畫面與 saved 都沒有結果行時再讀 worker checkpoint（stateResult，路徑 `ctx.workerState`），讀到時是 `DONE <sha> from-state`（#466）。
  */
 export async function workerState(ctx, member, now = Date.now(), saved = null) {
   if (!ctx.cli) return saved ?? 'STUCK no-orca';
@@ -657,7 +692,10 @@ export async function workerState(ctx, member, now = Date.now(), saved = null) {
   const result = resultLine(terminal.tail ?? [], member.n, member.resumed);
   if (result) return result;
   if (saved) return saved;
-  if (terminal.status === 'exited') return 'STUCK exited';
+  if (terminal.status === 'exited') {
+    const sha = stateResult(member, ctx.workerState);
+    return sha ? `DONE ${sha} from-state` : 'STUCK exited';
+  }
   const started = Date.parse(member.started);
   if (Number.isNaN(started)) return `STUCK checkpoint started ${member.started}`;
   const limit = member.stuckAfter.match(/^(\d+)m$/)?.[1];
@@ -1073,8 +1111,8 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     // 已 closed 的 batch 沒有在跑的 worker：殘留的 running 列不讀 terminal、不算容量（#295：batch-53-55 的兩列印 STUCK orca terminal_handle_stale，帳本記 2）。
     for (const member of /^closed\b/.test(current) ? [] : members.filter(m => m.state === 'running')) {
       const state = await workerState(ctx, member, Date.now(), savedResult(pilot, member));
-      const [, kind, value] = state.match(/^(DONE|STOP) (.+)$/) ?? [];
-      if (kind) results.push({ n: member.n, state: kind === 'DONE' ? 'done' : 'stop', sha: kind === 'DONE' ? value : undefined });
+      const { kind, sha } = workerResult(state);
+      if (kind) results.push({ n: member.n, state: kind === 'DONE' ? 'done' : 'stop', sha });
       // terminal 已結束（STUCK exited）的成員不佔機器，不算容量（#408：investing 的 437 exited 仍被算進帳本，派工印 STOP capacity 4/3）。
       else if (state !== 'STUCK exited') running++;
       out.push(`WORKER ${member.n} ${state}`);
@@ -1168,7 +1206,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       options[flag] = true;
       continue;
     }
-    const name = new Map(Object.entries({ '--integration': 'integration', '--main': 'main', '--capacity': 'capacity', '--skip-labels': 'skipLabels', '--handoff-after': 'handoffAfter' })).get(args[i]);
+    const name = new Map(Object.entries({ '--integration': 'integration', '--main': 'main', '--capacity': 'capacity', '--skip-labels': 'skipLabels', '--handoff-after': 'handoffAfter', '--worker-state': 'workerState' })).get(args[i]);
     const value = args[++i];
     if (!name || !value || value.startsWith('--') || name in options) bad = true;
     else options[name] = value;
@@ -1184,7 +1222,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(2);
   }
   try {
-    const out = await probe({ cli }, checkout, options);
+    const out = await probe({ cli, workerState: options.workerState }, checkout, options);
     for (const line of out) console.log(line);
     if (out.some(line => line.startsWith('CHECKPOINT_LOCKED '))) process.exit(3);
     if (out.some(line => /^(APPLY_MISS|PARENT_APPLY_FAILED) /.test(line))) process.exit(1);

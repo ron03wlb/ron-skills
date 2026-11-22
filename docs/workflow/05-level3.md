@@ -36,7 +36,7 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 | 檔案 | 內容 |
 | --- | --- |
 | `preferences.md` | standing orders：worker 上限、批次大小、誰合入、誰 push |
-| `gates.md` | 等人回覆的問題、選項、已套用的預設、gate 擋住的 batch 成員（`--hold`，解除前 Probe 印 `HELD`、不 stage） |
+| `gates.md` | 等人回覆的問題、選項、已套用的預設、gate 擋住的 batch 成員（`--hold`，解除前 Probe 印 `HELD`、不 stage）；開啟與解除的 session（別的 session 或 bot 代解時 Probe 印 `GATE_RESOLVED`，套用答案、回寫 Issue 後標 `applied`） |
 | `decisions.md` | 每個決定的理由、證據、結果 |
 | `status.md` | 從 checkpoint 重產的現況，不手寫 |
 | `requests.md` | 其他 session 轉來的請求（插單、hold、stop） |

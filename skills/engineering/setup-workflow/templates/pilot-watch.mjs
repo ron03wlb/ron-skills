@@ -11,16 +11,20 @@
 // batch 成員印 RESULT 時同時把結果行記進 checkpoint 同目錄的 `results/<handle>`（`<ISO 時間> <結果行>`，pilot-probe.mjs 的 recordResult）：
 // 結果行之後可能被捲走、terminal 可能結束，Probe 畫面上讀不到時改讀這份，--apply 照常寫回（#413 第 1 項）。記不進去時照樣印 RESULT、stderr 印原因。
 //
-// 用法：node scripts/pilot-watch.mjs [<handle>|<checkpoint>.md]... [--batch <key>]... [--checkout <主 checkout>] [--interval <秒>]
+// 用法：node scripts/pilot-watch.mjs [<handle>|<checkpoint>.md]... [--batch <key>]... [--checkout <主 checkout>] [--interval <秒>] [--worker-state <路徑>]
 //       node scripts/pilot-watch.mjs --tail <handle> [--lines <n>]
 //   --batch    監看 <主 checkout>/.scratch/pilot/batch-<key>.md 裡 state 為 running 的成員；可重複，每一批都監看（investing 舊版只看最後一批，發生三次）。
 //              --checkout 預設是目前目錄所屬 repo 的主 checkout（`git worktree list` 的第一個）。
 //   <checkpoint>.md  直接給 batch checkpoint 的路徑，同 --batch；batch 名取檔名 `batch-<key>.md` 的 key（不是這個形狀時取去掉 .md 的檔名）。
 //   batch 成員只認自己號碼的結果行；直接給的 handle 任何號碼都算。
 //   --interval 輪詢間隔秒數（預設 60，可帶小數）。
+//   --worker-state <路徑>（#466，只對 batch 成員）：worker checkpoint 的路徑，`<worktree>`、`<n>` 換成成員列的值，預設 `<worktree>/.scratch/issue-run-<n>/state.md`
+//              （同 pilot-probe.mjs 的 --worker-state）。
 //   --tail <handle> [--lines <n>]：唯讀，印該 worker 畫面的最後 n 行（預設 40），與 `pilot-probe.mjs --tail` 同一份實作；不能和其他參數併用。
 // stdout（<batch> 是批次名，直接給的 handle 是 `-`）：
-//   RESULT <batch> <handle> <結果行>（新的 `DONE <n> <sha>`、`STOP <n> <cause>`，去掉縮排與框線）｜EXITED <batch> <handle>（terminal 已結束且沒有新結果行）
+//   RESULT <batch> <handle> <結果行>（新的 `DONE <n> <sha>`、`STOP <n> <cause>`，去掉縮排與框線）｜
+//   RESULT <batch> <handle> DONE <n> <sha> from-state（#466：batch 成員的 terminal 已結束、沒有結果行，worker checkpoint 最後一行 `State:` 是
+//     `done, candidate <sha>` 而 sha 等於成員 worktree 的 HEAD；<sha> 是完整的 HEAD，判斷同 Probe 的 `WORKER <n> DONE <sha> from-state`）｜EXITED <batch> <handle>（terminal 已結束且沒有新結果行）
 //   READ_FAILED <batch> <handle> <原因>（讀不到，下一輪重試）｜NO_RUNNING <key>（那一批沒有 running 成員）｜BATCH_FAILED <key> <原因>（checkpoint 讀不到）
 // exit：0 印出 RESULT／EXITED（同一輪的全部印完），或沒有任何可監看的 handle；1 BATCH_FAILED 或 --tail 讀不到；
 //       2 用法錯誤或沒有 $ORCA_CLI_COMMAND。
@@ -30,9 +34,9 @@ import { basename, dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { orca } from './orca-session-send.mjs';
-import { parseBatch, recordResult, resultMatch, screenLines, workerTail } from './pilot-probe.mjs';
+import { WORKER_STATE, parseBatch, recordResult, resultMatch, screenLines, stateResult, workerTail } from './pilot-probe.mjs';
 
-const USAGE = '用法：node scripts/pilot-watch.mjs [<handle>|<checkpoint>.md]... [--batch <key>]... [--checkout <主 checkout>] [--interval <秒>]｜node scripts/pilot-watch.mjs --tail <handle> [--lines <n>]（需要 ORCA_CLI_COMMAND）';
+const USAGE = '用法：node scripts/pilot-watch.mjs [<handle>|<checkpoint>.md]... [--batch <key>]... [--checkout <主 checkout>] [--interval <秒>] [--worker-state <路徑>]｜node scripts/pilot-watch.mjs --tail <handle> [--lines <n>]（需要 ORCA_CLI_COMMAND）';
 
 const oneLine = text => String(text).replace(/\s+/g, ' ').trim() || 'unknown';
 
@@ -44,7 +48,7 @@ export function parseArgs(argv) {
   let interval = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (['--tail', '--lines', '--interval', '--batch', '--checkout'].includes(arg)) {
+    if (['--tail', '--lines', '--interval', '--batch', '--checkout', '--worker-state'].includes(arg)) {
       const value = argv[++i];
       if (value === undefined || value.startsWith('--')) return { error: `${arg} 要有值` };
       if (arg === '--tail') tail = value;
@@ -59,19 +63,23 @@ export function parseArgs(argv) {
       } else if (arg === '--batch') {
         if (!/^[\w-]+$/.test(value)) return { error: `batch key 不合法：${value}` };
         options.batches.push(value);
+      } else if (arg === '--worker-state') {
+        if (options.workerState !== undefined) return { error: '--worker-state 只能給一次' };
+        options.workerState = value;
       } else options.checkout = value;
     } else if (arg.startsWith('--')) return { error: `不認得的選項 ${arg}` };
     else if (arg.endsWith('.md')) options.checkpoints.push(arg);
     else options.handles.push(arg);
   }
   if (tail !== undefined) {
-    if (options.handles.length || options.checkpoints.length || options.batches.length || options.checkout !== undefined || interval) {
+    if (options.handles.length || options.checkpoints.length || options.batches.length || options.checkout !== undefined || options.workerState !== undefined || interval) {
       return { error: '--tail 不能和其他參數併用' };
     }
     return { tail, lines: lines ?? 40 };
   }
   if (lines !== undefined) return { error: '--lines 只能和 --tail 一起用' };
   if (options.checkout !== undefined && !options.batches.length) return { error: '--checkout 只能和 --batch 一起用' };
+  if (options.workerState !== undefined && !options.batches.length && !options.checkpoints.length) return { error: '--worker-state 只能和 batch 一起用' };
   if (!options.handles.length && !options.checkpoints.length && !options.batches.length) return { error: '沒有 handle、checkpoint 或 --batch' };
   return options;
 }
@@ -80,10 +88,11 @@ export function parseArgs(argv) {
 export const batchKey = file => basename(file, '.md').replace(/^batch-/, '');
 
 /**
- * 監看主迴圈。targets 是 [{ batch, handle, n, resumed }]（n 缺省時任何號碼都算；有 n 的是 batch 成員，resumed 是它 `resumed:` 行記下的舊結果行）；read(handle) 傳回 { tail, status }，失敗時丟出；
- * wait(ms) 等下一輪；print(line) 印一行；record(target, line) 在 batch 成員印 RESULT 時收到它的結果行（#413）。第一輪記基準（已結束的 terminal 直接回報），之後每輪讀一次，有事件就印完這一輪後傳回 0。
+ * 監看主迴圈。targets 是 [{ batch, handle, n, resumed, worktree }]（n 缺省時任何號碼都算；有 n 的是 batch 成員，resumed 是它 `resumed:` 行記下的舊結果行）；read(handle) 傳回 { tail, status }，失敗時丟出；
+ * wait(ms) 等下一輪；print(line) 印一行；record(target, line) 在 batch 成員印畫面上的 RESULT 時收到它的結果行（#413；from-state 的不記，Probe 自己重讀 worker checkpoint）。
+ * 第一輪記基準（已結束的 terminal 直接回報），之後每輪讀一次，有事件就印完這一輪後傳回 0。
  */
-export async function watch({ targets, intervalMs = 60_000, read, wait = sleep, print = line => process.stdout.write(`${line}\n`), record = () => {} }) {
+export async function watch({ targets, intervalMs = 60_000, read, wait = sleep, print = line => process.stdout.write(`${line}\n`), record = () => {}, workerState = WORKER_STATE }) {
   const seen = new Map();
   // 同一個 handle 既直接給又是 batch 成員時以 batch 成員為準（只認自己的號碼、標出批次）。
   const unique = [];
@@ -114,7 +123,12 @@ export async function watch({ targets, intervalMs = 60_000, read, wait = sleep, 
           print(`RESULT ${batch} ${handle} ${match.line}`);
           events++;
         }
-        else if (terminal.status === 'exited') { print(`EXITED ${batch} ${handle}`); events++; }
+        else if (terminal.status === 'exited') {
+          // #466：分頁已結束卻沒有結果行時讀 worker checkpoint（與 Probe 的 workerState 同一判斷）。
+          const sha = stateResult(target, workerState);
+          print(sha ? `RESULT ${batch} ${handle} DONE ${n} ${sha} from-state` : `EXITED ${batch} ${handle}`);
+          events++;
+        }
         continue;
       }
       if (!seen.has(handle)) {
@@ -176,7 +190,7 @@ async function main(argv) {
     }
     const running = parseBatch(text).members.filter(member => member.state === 'running' && member.handle);
     if (!running.length) process.stdout.write(`NO_RUNNING ${key}\n`);
-    targets.push(...running.map(member => ({ batch: key, handle: member.handle, n: member.n, resumed: member.resumed, pilot: dirname(file) })));
+    targets.push(...running.map(member => ({ batch: key, handle: member.handle, n: member.n, resumed: member.resumed, worktree: member.worktree, pilot: dirname(file) })));
   }
   const read = async handle => (await orca(ctx, 'terminal', 'read', '--terminal', handle, '--screen')).terminal ?? {};
   const record = (target, line) => {
@@ -186,7 +200,7 @@ async function main(argv) {
       process.stderr.write(`RECORD_FAILED ${target.handle} ${oneLine(error.message)}\n`);
     }
   };
-  return watch({ targets, intervalMs: options.intervalMs, read, record });
+  return watch({ targets, intervalMs: options.intervalMs, read, record, workerState: options.workerState });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

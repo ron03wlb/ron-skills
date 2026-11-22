@@ -44,7 +44,7 @@ integration: pilot/integration @ 1234567
 
 | Issue | branch | worktree | handle | started | stuck-after | state | candidate |
 |---|---|---|---|---|---|---|---|
-${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle} | 2026-11-21T09:00:00+08:00 | 90m | ${m.state ?? 'running'} | |`).join('\n')}
+${members.map(m => `| ${m.n} | issue/${m.n}-x | ${m.worktree ?? `/w/issue-${m.n}`} | ${m.handle} | 2026-11-21T09:00:00+08:00 | 90m | ${m.state ?? 'running'} | |`).join('\n')}
 ${extra}`);
   const run = (args, extraEnv = { ORCA_CLI_COMMAND: cli }) =>
     spawnSync('node', [script, ...args], { encoding: 'utf8', env: { ...env, ...extraEnv }, cwd: temp, timeout: 20000 });
@@ -150,6 +150,24 @@ test('terminal 已結束卻沒有新結果行：印 EXITED 並退出', t => {
   const result = run(['term_x', ...fast]);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'EXITED - term_x\n');
+});
+
+// #466 第 2 項（investing#445）：worker 分頁已結束，`--batch 445` 只印 EXITED；它的 checkpoint 已寫 `State: done, candidate <sha>`、SHA 等於 worktree HEAD。
+test('batch 成員 terminal 已結束、checkpoint 最後的 State 是 done 且 SHA 等於 worktree HEAD：印 RESULT … DONE <n> <sha> from-state', t => {
+  const { temp, batch, run } = fixture(t, { term_445: [{ status: 'exited', tail: [] }], term_446: [{ status: 'exited', tail: [] }] });
+  const worktree = join(temp, 'wt');
+  const git = (...args) => spawnSync('git', ['-C', worktree, ...args], { encoding: 'utf8', env });
+  spawnSync('git', ['init', '-q', worktree], { env });
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'c');
+  const head = git('rev-parse', 'HEAD').stdout.trim();
+  for (const [n, sha] of [[445, head], [446, SHA]]) {
+    mkdirSync(join(temp, `notes/issue-${n}`), { recursive: true });
+    writeFileSync(join(temp, `notes/issue-${n}/state.md`), `State: done, candidate ${sha}\n`);
+  }
+  batch('445-446', [{ n: 445, handle: 'term_445', worktree }, { n: 446, handle: 'term_446', worktree }]);
+  const result = run(['--batch', '445-446', '--checkout', 'checkout', '--worker-state', join(temp, 'notes/issue-<n>/state.md'), ...fast]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `RESULT 445-446 term_445 DONE 445 ${head} from-state\nEXITED 445-446 term_446\n`);
 });
 
 // #204：tail 含反斜線（Windows 路徑、ANSI 殘留）時 Orca 的 JSON 有不成立的跳脫，zsh echo 加 jq 報 Invalid escape。
