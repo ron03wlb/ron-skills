@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // pilot 決策紀錄（PILOT-STORE.md 的 `.scratch/pilot/decisions.md`）的唯一寫入者：coordinator 不手寫表格列。
 // 用法：node scripts/pilot-decision.mjs <checkout> --decision <text> --reason <text> --evidence <text> --result <text> [--time <time>]
 //       node scripts/pilot-decision.mjs <checkout> --repair

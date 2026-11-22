@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 檢查 repo 內 Markdown 的本地相對連結與 #anchor（含檔首 frontmatter 清單中的 .md 路徑）；外部 URL 不連線。
 // docs/archive/ 為凍結歷史文件：其來源檔不檢查；archive 以外指向 archive 的連結照常檢查。
 // Anchor 接受 <a id>/<a name>、GitLab heading slug，以及 docs site reader 的 slugify。

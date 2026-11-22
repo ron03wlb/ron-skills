@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 會 spawn git 的 *.test.mjs 必須 import test/isolate-git-env.mjs（或已 import 它的 repo-fixture.mjs），
 // 否則在 git hook 或帶 GIT_DIR 的環境執行時，fixture 會改到真正的 repo（retro 2026-10-16：user.name=fixture 寫進 .git/config）。
 // 用法：node scripts/check-test-git-isolation.mjs <目錄>...（掃描範圍由專案傳入：寫死的目錄不存在時會 ENOENT 當掉）。

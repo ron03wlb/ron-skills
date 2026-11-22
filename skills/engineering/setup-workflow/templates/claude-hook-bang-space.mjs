@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // Claude Code UserPromptSubmit hook：使用者訊息開頭多了空白的 `!` 指令提示（spay2 retro b10f5dc4#5 起源，ron-skills #346 升為正本）。
 // Claude Code 只在輸入以 `!` 開頭時當 shell 指令執行；` ! node …/verify-728.mjs` 開頭多一個空格，被當一般訊息送給模型、指令沒有執行，使用者以為已跑過。
 // 和「交給人的指令一律附 `!` 前綴」互補：人照抄時多帶的前導空白由這支補提示。

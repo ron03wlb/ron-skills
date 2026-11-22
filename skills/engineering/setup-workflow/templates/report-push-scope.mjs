@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 import { spawnSync } from 'node:child_process';
 
 // 只輸出受控錯誤；Git stderr 可能包含 remote URL 或 credential。

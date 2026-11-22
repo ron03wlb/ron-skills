@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // Claude Code PreToolUse hook（Edit|Write|Bash）：退回會讓主 checkout 的 git status 不乾淨的修改，要求改在 worktree 進行。
 // 主 checkout 的未提交改動會擋住每一次 integration 合併；事後才偵測曾兩度卡住合併，所以改在修改當下擋。
 // 新檔也擋：曾有互動 session 在 pilot 執行時把未追蹤的 GLOSSARY.md 寫進主 checkout，Probe 看到改動就停止合併。

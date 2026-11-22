@@ -1,3 +1,4 @@
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 假 gh 的真實回應樣本：fixtures/github/<名稱>.json，以檔名（去掉 .json）為 key。
 // 替身的輸出一律從這些樣本長出來（mergeSample，見 fake-orca.mjs），不能自創 gh 沒有的欄位。
 import { readFileSync, readdirSync } from 'node:fs';

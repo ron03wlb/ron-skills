@@ -1,3 +1,4 @@
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // #194：/retro-collect 判斷 covered／衝突時，手寫迴圈對每個 worktree 跑 `git diff --name-only $(merge-base …)`，再 grep 改到 pilot.md 哪些條目（1031c、1031d 各寫一次）。
 // worktree-overlap.mjs 對每個非主 checkout 的 worktree，列出相對主分支 merge-base 的未合入改動（已 commit 與工作樹）碰到的檔與條目。
 import './test/isolate-git-env.mjs';

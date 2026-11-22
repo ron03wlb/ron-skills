@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // Claude Code 分頁狀態 hook：能用程式偵測的分頁狀態轉換（GLOSSARY.md「分頁狀態」）自動以 tab-state.mjs 換掉目前分頁標題的狀態前綴，
 // Stop 時標題沒有合法前綴就自行補上處理中。只在 Orca 裡跑的 session（有 ORCA_TERMINAL_HANDLE）才動作。
 // 依 stdin hook JSON 的 hook_event_name：
@@ -29,7 +30,7 @@ export const DEFAULT_TRIGGERS = {
   'worker-done': { event: 'Stop', match: '^DONE \\d+ [0-9a-f]{7,40}$', state: '待 Retro' },
 };
 
-/** 預設值加上專案 `docs/agents/tab-state.json` 的新增、覆寫（同名）與停用（null）。 */
+/** 預設值加上專案 `docs/agents/tab-state.json` 的新增、覆寫（同名）與停用（null）；每個觸發條件帶 `name`（它的鍵）。 */
 export function triggers(project) {
   const merged = { ...DEFAULT_TRIGGERS };
   const file = project && join(project, 'docs/agents/tab-state.json');
@@ -39,19 +40,27 @@ export function triggers(project) {
     if (trigger === null) delete merged[name];
     else merged[name] = trigger;
   }
-  return Object.values(merged).filter(trigger => STATES.includes(trigger?.state) && typeof trigger.match === 'string');
+  return Object.entries(merged).map(([name, trigger]) => ({ ...trigger, name }))
+    .filter(trigger => STATES.includes(trigger.state) && typeof trigger.match === 'string');
 }
 
-/** 第一個命中 `text`、而且 skipCommand 沒命中 `command` 的觸發條件的狀態；regex 寫壞的觸發條件略過。 */
-export function matchedState(list, event, text, command = '') {
+/**
+ * 第一個命中 `text`、而且 skipCommand 沒命中 `command` 的觸發條件：`{ state, name, text }`，text 是命中的那段文字；沒有就是 null。
+ * regex 寫壞的觸發條件略過。要記觸發條件名稱的 hook（例如 log 寫 `trigger=<名稱>`）用這個，不要自己再寫一份比對迴圈（investing#529）。
+ */
+export function matchedTrigger(list, event, text, command = '') {
   for (const trigger of list.filter(trigger => trigger.event === event)) {
     try {
       if (trigger.skipCommand && new RegExp(trigger.skipCommand).test(command)) continue;
-      if (new RegExp(trigger.match, 'm').test(text)) return trigger.state;
+      const match = new RegExp(trigger.match, 'm').exec(text);
+      if (match) return { state: trigger.state, name: trigger.name, text: match[0] };
     } catch { /* 略過寫壞的 regex */ }
   }
   return null;
 }
+
+/** matchedTrigger 的狀態；沒有命中時 null。 */
+export const matchedState = (list, event, text, command = '') => matchedTrigger(list, event, text, command)?.state ?? null;
 
 /**
  * 觸發條件的狀態要不要套到 `handle` 的分頁：記錄的標題已是待關閉（`/retro` 最後一步切的）時不降回待 Retro（#327：worker 在 DONE 之後的同一輪跑 retro，

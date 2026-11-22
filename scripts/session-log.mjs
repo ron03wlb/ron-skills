@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // setup-workflow 正本。讀 Claude Code session transcript（jsonl）裡的 tool call，取代 retro／retro-collect 每次手寫的解析器（#403）。
 // 手寫版的毛病：`slice(0,200)`、`cut -c1-300` 截掉指令結尾而誤判；同一個 tool_use 在 `api-request-blob` 再出現一次，看起來像重送；
 // 要的只有 hook 的 blockingError，卻印出整串 `hook_success` 附件與 `api-request` 行。

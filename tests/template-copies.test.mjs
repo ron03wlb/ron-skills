@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { pilotFiles } from '../scripts/pilot-probe.mjs';
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url));
@@ -68,4 +68,14 @@ test('.claude/settings.json 以 PostToolUse（Bash）與 Stop 接上分頁狀態
   const calls = list => list.some(({ command }) => command.includes('scripts/claude-hook-tab-state.mjs'));
   assert.ok(hooks.PostToolUse.some(({ matcher, hooks: list }) => /\bBash\b|^\*$/.test(matcher) && calls(list)), 'PostToolUse 沒有對 Bash 呼叫 scripts/claude-hook-tab-state.mjs');
   assert.ok(hooks.Stop.some(({ hooks: list }) => calls(list)), 'Stop 沒有呼叫 scripts/claude-hook-tab-state.mjs');
+});
+
+// investing#529：consumer 的 worker 看檔頭就知道是範本副本，不必查清單；copy-templates.mjs --verify 對 consumer 的副本檢查同一行（NO_ORIGIN）。
+test('setup-workflow 每支 .mjs／.sh 正本（fixtures/ 除外）前三行有來源行', () => {
+  const root = new URL('../skills/engineering/setup-workflow/templates/', import.meta.url);
+  const files = readdirSync(root, { recursive: true }).map(String)
+    .filter(path => /\.(mjs|sh)$/.test(path) && !/(^|\/)fixtures\//.test(path.replaceAll('\\', '/')));
+  assert.ok(files.length > 50, `只找到 ${files.length} 支正本`);
+  const missing = files.filter(path => !readFileSync(new URL(path, root), 'utf8').split('\n', 3).some(line => line.includes('由 setup-workflow 範本同步，勿在此改')));
+  assert.deepEqual(missing, [], '這些正本的檔頭沒有來源行：在 shebang 之後（沒有就在第一行）加 `// 由 setup-workflow 範本同步，勿在此改…`');
 });

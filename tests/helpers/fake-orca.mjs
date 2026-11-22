@@ -1,3 +1,4 @@
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 假 Orca CLI 的回應一律從真實樣本長出來，測試替身才不會和真實輸出形狀分家
 // （曾發生：假 Orca 回 `{ satisfied }`、真實是 `{ wait: { satisfied } }`，測試全綠、派工兩次都誤報 tui-timeout）。
 // 樣本在 fixtures/orca/<名稱>.json，是 `"$ORCA_CLI_COMMAND" terminal <子指令> --json` 的 `result`（字串已去識別化）；Orca 改版時重錄樣本：

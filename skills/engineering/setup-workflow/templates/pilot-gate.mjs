@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // pilot 的人工 gate（PILOT-STORE.md 的 `.scratch/pilot/gates.md`）：開、解、列出 gate，coordinator 不手改檔案（手寫曾把 resolved 寫進別的欄位，probe 才有 GATE_MALFORMED）。
 // 用法：node scripts/pilot-gate.mjs <checkout> open --title <text> --issue <text> --question <text> --options <text> --default <text> --parked <text> [--hold <n>] [--script <file>]
 //       node scripts/pilot-gate.mjs <checkout> resolve <G<n>> --how <text>

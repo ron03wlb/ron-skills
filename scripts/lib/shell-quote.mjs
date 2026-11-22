@@ -1,3 +1,4 @@
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // Bash hook 共用的引號比對（#360）：雙引號裡的 `$( … )` 與反引號是新的命令替換，引號狀態重設，裡面的 `"` 不是外層雙引號的結尾。
 // claude-hook-zsh-equals 與 claude-hook-main-checkout 都用它找雙引號字串的結尾：
 // 先前兩支各自找下一個 `"`，`echo "PR: $(jq -r '[.[]|"\(.name)=\(.bucket)"]' …)"` 與 `echo "x $(gh api "/x?created=>=1" …)"`

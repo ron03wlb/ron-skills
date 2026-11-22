@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // setup-workflow 正本（#178）：整台機器同時跑的 pilot worker 合計上限。同一台機器上的多個 coordinator（不同 repo 的 /issue-pilot、
 // /issue-cycle）共用一本帳，每個 coordinator 每輪只改寫自己那一列，派工前合計所有 repo 的列再加上這次要派的人數。
 // 上限依據：`bin/check` 的 node --test 預設開 availableParallelism()-1 個並行程序，worker 越多 load 疊得越高，

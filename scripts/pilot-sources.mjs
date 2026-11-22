@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // pilot 的來源檢查：coordinator 的規則檔（AGENTS.md、adapter、skill）改了就要重讀。記錄每個來源的 sha256，回報哪些變了。
 // 來源清單由 adapter 的 Pilot 段指定，以參數傳入，script 不寫死；記錄在 `.scratch/pilot/sources`，
 // 每個來源的內容快照存在 `.scratch/pilot/source-snapshots/<sha256>`（PILOT-STORE.md），repo 外的來源一樣存。

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // Claude Code Bash PreToolUse hook：擋下會被 zsh EQUALS 或 NOMATCH 中止整串指令的字（#203、#209）。
 // zsh 預設開著 EQUALS：沒加引號、以 `=` 開頭的字會換成指令路徑（`=node` → `/usr/local/bin/node`），找不到就印 `(eval):1: == not found`
 // 並中止整串指令。session 2ebf77bf 三次用 `echo ===` 當分隔線，後面的指令都沒跑、exit 1，錯誤訊息又不指向原因，各多花一次重跑。

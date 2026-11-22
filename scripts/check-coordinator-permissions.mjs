@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // setup-workflow 正本：coordinator 照 adapter 自己跑、會寫外部系統的腳本，在 .claude/settings.json 的放行規則要與 /setup-workflow L3 的 push 那一題一致。
 // 缺了 auto mode 會擋成 External System Writes，coordinator 只好把留言、關單交給人（ron-skills #96、#131）；
 // push 答否時多了 land、pilot-close 的規則，則是讓 agent 自己 push、合併，越過人選的 Push gate（#244）。

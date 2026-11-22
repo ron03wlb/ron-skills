@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // /issue-pilot coordinator 交接給乾淨的 session：達到 adapter Pilot Defaults 的交接條件時，舊 session 在安全點呼叫它，自己就此退役。
 // setup-workflow 正本，合併 ron-skills 與 spay2 兩邊的版本（#57）；`.scratch/pilot/` 的 coordinator、sessions.md 照 issue-pilot 的 PILOT-STORE.md 讀寫。
 // pilot 的狀態都在 `.scratch/pilot/` 與批次 checkpoint，新 session 從磁碟接手，不需要舊 context。
