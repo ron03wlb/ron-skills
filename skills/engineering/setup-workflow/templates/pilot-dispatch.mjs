@@ -53,7 +53,7 @@
 //   最後一段空白的「怎麼整併」給 coordinator 補，補完再帶 --note 重跑。
 //
 // 全機上限（#178）：帶 --capacity 時，動手前先以同目錄 pilot-capacity.mjs 的 check 合計全機帳本、加上這次要派的人數（--fresh 是 1）：
-//   超過 $PILOT_MACHINE_WORKER_CAP 就只印 `STOP capacity <合計>/<上限>`、exit 4，不寫 checkpoint、不建 worktree、不開分頁；沒超過先印 `CAPACITY ok <合計>/<上限>`。
+//   超過 $PILOT_MACHINE_WORKER_CAP 就只印 `STOP capacity <合計>/<上限> [<repo>=<n>...] +<人數>`（計入的列，#408）、exit 4，不寫 checkpoint、不建 worktree、不開分頁；沒超過先印 `CAPACITY ok <合計>/<上限>`。
 //   $PILOT_MACHINE_WORKER_CAP 空白時先印 `CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP`，照預設 4 比（#396）。
 //   沒帶時不讀帳本。帳本的本 repo 那一列由 pilot-probe.mjs --capacity 每輪更新，所以派工前要先跑過這一輪的 probe。
 //   有成員 DISPATCHED 時（#353），最後以帳本本 repo 那一列的現值加上派出人數改寫那一列（pilot-capacity 的 report，讀寫在同一把鎖裡），
@@ -86,7 +86,7 @@ import { claimedBy, defaultSession } from './issue-pool.mjs';
 import { orca, sendToSession } from './orca-session-send.mjs';
 import { closeIfAllMoved, exitIfLocked, updateCheckpoint } from './lib/pilot-store.mjs';
 import { ADAPTER, changedUnits, memberOverlaps, parseBatch, pilotFiles, pilotSection } from './pilot-probe.mjs';
-import { envMissingLines, check as capacityCheck, ledgerPath, machineCap, report as capacityReport } from './pilot-capacity.mjs';
+import { envMissingLines, check as capacityCheck, ledgerPath, machineCap, report as capacityReport, stopLine as capacityStopLine } from './pilot-capacity.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
 
 const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--repo-cap <n>] [--integration <分支>] [--stuck-after <分鐘>m]（需要 ORCA_CLI_COMMAND）\n'
@@ -674,8 +674,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     }
     if (given.capacity) {
       for (const line of envMissingLines()) console.log(line);
-      const { ok, total, cap } = capacityCheck(ledgerPath(), members.length);
-      if (!ok) stopCapacity(`STOP capacity ${total}/${cap}`);
+      const result = capacityCheck(ledgerPath(), members.length);
+      const { ok, total, cap } = result;
+      if (!ok) stopCapacity(capacityStopLine(result));
       console.log(`CAPACITY ok ${total}/${cap}`);
     }
     // Orca 整個不能用（#394）：什麼都不建，認領保留給下一輪原樣重跑。

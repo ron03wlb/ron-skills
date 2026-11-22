@@ -187,11 +187,11 @@ test('--capacity：帳本合計加上這批人數超過上限時 STOP capacity�
   const capped = { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '4' };
   const over = dispatch(['23-133', '23:pilot-probe', '133:pilot-dispatch', '--capacity'], capped);
   assert.equal(over.status, 4, over.stdout + over.stderr);
-  assert.deepEqual(lines(over), ['STOP capacity 5/4']);
+  assert.deepEqual(lines(over), ['STOP capacity 5/4 acme=2 investing=1 +2']);
   assert.equal(calls(), '');
   assert.equal(existsSync(join(repo, '.scratch/pilot/batch-23-133.md')), false);
   const fresh = dispatch(['133', '--fresh', '133:pilot-dispatch', '--note', ledger, '--capacity'], { ...capped, PILOT_MACHINE_WORKER_CAP: '3' });
-  assert.deepEqual(lines(fresh), ['STOP capacity 4/3']);
+  assert.deepEqual(lines(fresh), ['STOP capacity 4/3 acme=2 investing=1 +1']);
   assert.equal(calls(), '');
   const ok = dispatch(['23', '23:pilot-probe', '--capacity'], capped);
   assert.equal(ok.status, 0, ok.stdout + ok.stderr);
@@ -209,7 +209,7 @@ test('--capacity：$PILOT_MACHINE_WORKER_CAP 空白時先印 CAPACITY_ENV_MISSIN
   const blank = { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '' };
   const over = dispatch(['23-133', '23:pilot-probe', '133:pilot-dispatch', '--capacity'], blank);
   assert.equal(over.status, 4, over.stdout + over.stderr);
-  assert.deepEqual(lines(over), ['CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP', 'STOP capacity 5/4']);
+  assert.deepEqual(lines(over), ['CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP', 'STOP capacity 5/4 acme=3 +2']);
   const ok = dispatch(['23', '23:pilot-probe', '--capacity'], blank);
   assert.equal(ok.status, 0, ok.stdout + ok.stderr);
   assert.deepEqual(lines(ok), ['CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP', 'CAPACITY ok 4/4', 'DISPATCHED 23 term_23', 'REPORTED repo 1 4/4']);
@@ -273,7 +273,7 @@ test('STOP capacity：放掉本 session 認領的成員並印 RELEASED，別人�
   writeFileSync(ledger, `acme\t3\t${new Date().toISOString()}\n`);
   const result = dispatch(['23-133-134', '23:a', '133:b', '134:c', '--capacity'], { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '4' });
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['STOP capacity 6/4', 'RELEASED 23']);
+  assert.deepEqual(lines(result), ['STOP capacity 6/4 acme=3 +3', 'RELEASED 23']);
   assert.match(result.stderr, /^WARN release 134 edit /m);
   assert.deepEqual(assigned('23'), []);
   assert.deepEqual(assigned('133'), ['me']);

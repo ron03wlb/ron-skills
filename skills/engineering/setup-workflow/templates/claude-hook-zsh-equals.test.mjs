@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { argGlobWords, equalsWords, forGlobWords, nomatchWords, unmatchedArgGlobs, unmatchedForGlobs, usesPipestatus } from './claude-hook-zsh-equals.mjs';
+import { argGlobWords, equalsWords, forGlobWords, modifierWords, nomatchWords, unmatchedArgGlobs, unmatchedForGlobs, usesPipestatus } from './claude-hook-zsh-equals.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const HOOK = fileURLToPath(new URL('./claude-hook-zsh-equals.mjs', import.meta.url));
@@ -230,4 +230,34 @@ test('雙引號裡的 $( … ) 依 shell 規則重設引號狀態；命令替換
   assert.deepEqual(equalsWords('echo "$(echo ===)"'), ['===']);
   assert.deepEqual(equalsWords('echo "`echo ==`"'), ['==']);
   assert.equal(bash('echo ====').status, 2);
+});
+
+// #408（investing#502 第 1 項，session 3b67e742 第 386、402 行）：zsh 把 `$c:e` 當成取副檔名修飾字，`git show $c:engine/…` 每圈印
+// `fatal: ambiguous argument 'ngine/…'`，24 圈無效重放。沒加大括號的 `$name:` 後接修飾字字母時擋下，提示改寫 `${name}:`。
+test('沒加大括號的 $name: 後接 zsh 修飾字字母時擋下，exit 2 並提示改寫 ${name}:', () => {
+  const real = 'for c in $(git log --format=%h -12 -- engine/src/investing_engine/shared/proposal_safety.py); do git show $c:engine/src/investing_engine/shared/proposal_safety.py > /tmp/p-$c.py; done';
+  const result = bash(real);
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /修飾字/);
+  assert.match(result.stderr, /`\$c:e`/);
+  assert.match(result.stderr, /`\$\{c\}:engine\/src/);
+  assert.deepEqual(modifierWords(real), ['$c:e']);
+  assert.deepEqual(modifierWords('echo "$f:t" $1:h $dir:A'), ['$f:t', '$1:h', '$dir:A']);
+});
+
+test('加了大括號、單引號、跳脫、heredoc 內容、註解，或冒號後不是修飾字字母時放行', () => {
+  for (const command of [
+    'git show "${c}:engine/x.py"',
+    'git show ${c}:engine/x.py',
+    "git show '$c:engine/x.py'",
+    'git show \\$c:engine/x.py',
+    'echo $HOME:/usr/bin $host:8080 "$a:$b" $x:/y',
+    'echo ${var:-default} ${var:e}',
+    "cat <<'EOF'\ngit show $c:engine/x\nEOF\necho ok",
+    'echo ok # git show $c:engine/x',
+    'echo $c: done',
+  ]) {
+    assert.deepEqual(modifierWords(command), [], command);
+    assert.equal(bash(command).status, 0, command);
+  }
 });

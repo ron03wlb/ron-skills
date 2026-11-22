@@ -78,6 +78,29 @@ test('case：兩個追蹤檔只差大小寫時違規，各自不同名時通過'
   passes(scan(repoFixture(t), { 'docs/README.md': 'a', 'docs/Guide.md': 'b' }));
 });
 
+// #408（investing#503 第 1 項）：解完衝突標記、還沒 `git add` 時，未解決的路徑在 index 有 stage 1/2/3 三筆，
+// `ls-files -z` 列三次，舊版報成「case 與 <同一路徑>、<同一路徑> 只差大小寫」。
+test('未解決的 merge：印 UNMERGED <path> 提示 git add，不報成只差大小寫；git add 後通過', t => {
+  const f = repoFixture(t);
+  writeFileSync(join(f.repo, 'docs.md'), 'base\n');
+  git(f.repo, 'add', 'docs.md');
+  git(f.repo, 'commit', '-qm', 'base');
+  git(f.repo, 'checkout', '-qb', 'other');
+  writeFileSync(join(f.repo, 'docs.md'), 'other\n');
+  git(f.repo, 'commit', '-qam', 'other');
+  git(f.repo, 'checkout', '-q', '-');
+  writeFileSync(join(f.repo, 'docs.md'), 'mine\n');
+  git(f.repo, 'commit', '-qam', 'mine');
+  run(f.repo, ['git', 'merge', 'other']);
+  writeFileSync(join(f.repo, 'docs.md'), 'resolved\n');
+  const result = scan(f, {});
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stderr, /大小寫/);
+  assert.match(result.stderr, /^UNMERGED docs\.md：衝突未標記解決（git add）$/m);
+  git(f.repo, 'add', 'docs.md');
+  passes(scan(f, {}));
+});
+
 // [規則, 違規行, 合法行]；違規行放在 shell 檔的第 3 行。
 const SHELL = [
   ['declare-A', 'declare -A seen', 'declare -a list'],

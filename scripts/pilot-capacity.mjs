@@ -19,7 +19,7 @@
 //       node scripts/pilot-capacity.mjs check <新增人數>
 //       node scripts/pilot-capacity.mjs env [<環境變數名稱>...]
 // stdout：$PILOT_MACHINE_WORKER_CAP 空白時 report、check 先印 `CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP`；env 見上；report 印 `REPORTED <repo> <running> <合計>/<上限>`；
-//         check 在「合計＋新增人數」不超過上限時印 `CAPACITY ok <合計>/<上限>`，超過時印 `STOP capacity <合計>/<上限>`（合計已含新增人數）。
+//         check 在「合計＋新增人數」不超過上限時印 `CAPACITY ok <合計>/<上限>`，超過時印 `STOP capacity <合計>/<上限> [<repo>=<n>...] +<新增人數>`（合計已含新增人數；中間列出計入且 running 大於 0 的列，#408）。
 // exit：0 report 完成、CAPACITY ok 或 env；4 STOP capacity；2 用法錯誤；1 其他失敗（讀寫帳本失敗）。
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -101,10 +101,17 @@ export function readLedger(file) {
   });
 }
 
+/** 算進合計的列：2 小時內更新過、格式正確。 */
+const counted = (rows, now) => rows.filter(row => Number.isFinite(row.running) && Number.isFinite(row.time) && now.getTime() - row.time <= FRESH_MS);
+
 /** 合計：只算 2 小時內更新過、格式正確的列。 */
 export function machineTotal(rows, now = new Date()) {
-  return rows.filter(row => Number.isFinite(row.running) && Number.isFinite(row.time) && now.getTime() - row.time <= FRESH_MS)
-    .reduce((sum, row) => sum + row.running, 0);
+  return counted(rows, now).reduce((sum, row) => sum + row.running, 0);
+}
+
+/** STOP capacity 行：合計之後列出計入的列（running 大於 0 的 `<repo>=<n>`，依帳本順序）與這次新增的人數，一眼看出佔名額的是誰（#408）。 */
+export function stopLine({ total, cap, rows, add }) {
+  return ['STOP capacity', `${total}/${cap}`, ...rows.map(row => `${row.repo}=${row.running}`), `+${add}`].join(' ');
 }
 
 /**
@@ -132,10 +139,11 @@ export function report(file, repo, running, { now = new Date(), cap = machineCap
   return { running, total: machineTotal(rows, now), cap };
 }
 
-/** 派工前檢查：`{ ok, total, cap }`，total 已含新增人數。 */
+/** 派工前檢查：`{ ok, total, cap, rows, add }`，total 已含新增人數，rows 是計入且 running 大於 0 的列。 */
 export function check(file, add, { now = new Date(), cap = machineCap() } = {}) {
-  const total = machineTotal(readLedger(file), now) + add;
-  return { ok: total <= cap, total, cap };
+  const ledger = readLedger(file);
+  const total = machineTotal(ledger, now) + add;
+  return { ok: total <= cap, total, cap, rows: counted(ledger, now).filter(row => row.running > 0), add };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -164,9 +172,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const { total } = report(file, rest[0], Number(rest[1]), { cap });
       console.log(`REPORTED ${rest[0]} ${rest[1]} ${total}/${cap}`);
     } else {
-      const { ok, total } = check(file, Number(rest[0]), { cap });
-      console.log(ok ? `CAPACITY ok ${total}/${cap}` : `STOP capacity ${total}/${cap}`);
-      if (!ok) process.exit(4);
+      const result = check(file, Number(rest[0]), { cap });
+      console.log(result.ok ? `CAPACITY ok ${result.total}/${cap}` : stopLine(result));
+      if (!result.ok) process.exit(4);
     }
   } catch (error) {
     console.error(error.message);
