@@ -53,14 +53,16 @@ const stdin = fs.readFileSync(0, 'utf8');
 fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + (stdin ? ' STDIN ' + JSON.stringify(stdin) : '') + '\\n');
 ${orcaReplySource()}
 const screens = ${JSON.stringify(screens)};
-const screen = screens[arg('--terminal')];
-if (!screen) { fail('terminal_handle_stale'); process.exit(1); }
+const { scrollback, ...screen } = screens[arg('--terminal')] ?? {};
+if (!screens[arg('--terminal')]) { fail('terminal_handle_stale'); process.exit(1); }
 // pilot-batch resume 送 note（orca-session-send）：wait 一律就緒，send 收下的文字之後以 \`> <text>\` 接在畫面最後。
 const sentFile = ${JSON.stringify(log)} + '.sent';
 const sent = fs.existsSync(sentFile) ? fs.readFileSync(sentFile, 'utf8').split('\\n').filter(Boolean) : [];
 if (process.argv[3] === 'wait') reply('wait', { wait: { satisfied: true } });
 else if (process.argv[3] === 'send') { fs.appendFileSync(sentFile, arg('--text') + '\\n'); reply('send'); }
 else if (screen.raw !== undefined) process.stdout.write(screen.raw);
+// 不帶 --screen 的讀取（累積輸出，#537）：有 scrollback 時回它，沒有時同畫面。
+else if (!process.argv.includes('--screen') && scrollback) reply('read', { terminal: { ...screen, tail: scrollback } });
 else reply('read', { terminal: { ...screen, tail: [...(screen.tail ?? []), ...sent.map(text => '> ' + text)] } });
 `);
   chmodSync(cli, 0o755);
@@ -154,6 +156,23 @@ test('結果行帶 TUI 框線時仍讀出 DONE 與 STOP', t => {
   assert.equal(result.status, 0, result.stderr);
   assert.ok(lines(result).includes(`WORKER 23 DONE ${SHA}`), result.stdout);
   assert.ok(lines(result).includes('WORKER 46 STOP findings after two review cycles'), result.stdout);
+});
+
+// #537：watcher 啟動前 worker 的 `DONE <n> <sha>` 已捲出 40 行的畫面，Probe 與 watch 都報 RUNNING，分頁標題卻已是 `待關閉｜`。
+test('結果行已捲出畫面、畫面不是工作中：往回讀累積輸出找到 DONE；工作中不讀（#537）', t => {
+  const filler = Array.from({ length: 45 }, (_, i) => `  報告第 ${i + 1} 行`);
+  const { batch, probe, log } = fixture(t, { screens: {
+    term_526: { status: 'running', tail: [...filler.slice(-38), '❯'], scrollback: ['● 完成', `  DONE 526 ${SHA}`, ...filler, '❯'] },
+    term_527: { status: 'running', tail: ['✳ Fiddle-faddling… (1m 32s · ↓ 1.2k tokens)'], scrollback: [`DONE 527 ${SHA}`] },
+  } });
+  batch('526-527', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 526 }, { n: 527 }]);
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(lines(result).includes(`WORKER 526 DONE ${SHA}`), result.stdout);
+  assert.ok(lines(result).some(line => /^WORKER 527 (RUNNING|STUCK)/.test(line)), result.stdout);
+  const calls = readFileSync(log, 'utf8');
+  assert.match(calls, /^terminal read --terminal term_526 --limit \d+ --json$/m);
+  assert.doesNotMatch(calls, /^terminal read --terminal term_527 --limit/m);
 });
 
 // 過去手拼 probe 時漏掉的情況：worker 的 terminal 已經 exited，畫面卻沒有 DONE／STOP 行。
@@ -963,6 +982,59 @@ test('ADAPTER_AHEAD 附改動的條目名稱，有條目以外的改動時省略
     [aheadLine(repo, 'docs/agents/pilot-rules.md')]);
 });
 
+// #537：主 checkout 有一條未提交、缺 `Bash(...)` 外層的放行規則，probe 每輪只印 DIRTY，新開的 Claude 卡在 Settings Warning 對話框。
+test('.claude/settings.json 的規則格式錯或 JSON 壞掉時印 SETTINGS_INVALID；全部合格不印（#537）', t => {
+  const { repo, probe } = fixture(t);
+  mkdirSync(join(repo, '.claude'), { recursive: true });
+  const settings = allow => writeFileSync(join(repo, '.claude/settings.json'), JSON.stringify({ permissions: { allow, deny: ['Bash(rm -rf /)'] } }));
+  const invalid = () => lines(probe()).filter(line => line.startsWith('SETTINGS_INVALID'));
+  settings(['Bash(node scripts/gh-tracker.mjs:*)', 'Read', 'mcp__orca__x']);
+  assert.deepEqual(invalid(), []);
+  settings(['Bash(node scripts/gh-tracker.mjs:*)', 'gh issue close -R acme/app']);
+  assert.deepEqual(invalid(), ['SETTINGS_INVALID .claude/settings.json allow[1] "gh issue close -R acme/app"']);
+  writeFileSync(join(repo, '.claude/settings.local.json'), '{ "permissions": ');
+  assert.equal(invalid().filter(line => line.startsWith('SETTINGS_INVALID .claude/settings.local.json json ')).length, 1);
+});
+
+// #544：main 暫停期間每輪都印 ADAPTER_AHEAD 加 21 個條目（相對 main 的差異），coordinator 得手動 cmp 已存的 `.scratch/pilot/adapter/*.md`
+// 才知道只改了一條。已存副本等於整合分支那份時印 ADAPTER_AHEAD_SEEN；不同時名稱欄只列相對已存副本變動的條目。
+test('ADAPTER_AHEAD 比對已存副本：相同印 ADAPTER_AHEAD_SEEN，不同只列相對副本的條目（#544）', t => {
+  const { repo, git, probe } = fixture(t);
+  const commit = (changes, message) => {
+    for (const [path, text] of Object.entries(changes)) {
+      writeFileSync(join(repo, path), text);
+      git('add', path);
+    }
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', message);
+  };
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  const rules = entries => `# pilot\n\n前言。\n\n${entries.join('\n\n')}\n`;
+  commit({ 'docs/agents/issue-run.md': PILOT_SECTION, 'docs/agents/pilot-rules.md': rules(['- **Stage.** v1', '- **Watch.** v1', '- **Close.** v1']) }, 'adapter');
+  git('branch', 'pilot/integration');
+  git('switch', '-q', 'pilot/integration');
+  const v2 = rules(['- **Stage.** v2', '- **Watch.** v2', '- **Close.** v2']);
+  commit({ 'docs/agents/pilot-rules.md': v2 }, 'three entries');
+  git('switch', '-q', 'main');
+  const ahead = () => lines(probe()).filter(line => line.startsWith('ADAPTER_AHEAD'));
+  // 還沒存過：照舊相對 main 列三條。
+  assert.deepEqual(ahead(), [aheadLine(repo, 'docs/agents/pilot-rules.md', 'Close,Stage,Watch')]);
+  // 照指令存過之後：已讀過，只印 SEEN。
+  const saved = join(repo, '.scratch/pilot/adapter/pilot-rules.md');
+  mkdirSync(join(saved, '..'), { recursive: true });
+  writeFileSync(saved, v2);
+  assert.deepEqual(ahead(), ['ADAPTER_AHEAD_SEEN docs/agents/pilot-rules.md']);
+  // 整合分支再改一條：只列相對已存副本變動的 Watch。
+  git('switch', '-q', 'pilot/integration');
+  commit({ 'docs/agents/pilot-rules.md': rules(['- **Stage.** v2', '- **Watch.** v3', '- **Close.** v2']) }, 'watch');
+  git('switch', '-q', 'main');
+  assert.deepEqual(ahead(), [aheadLine(repo, 'docs/agents/pilot-rules.md', 'Watch')]);
+  // 條目以外也變了：省略名稱欄。
+  git('switch', '-q', 'pilot/integration');
+  commit({ 'docs/agents/pilot-rules.md': rules(['- **Stage.** v2', '- **Watch.** v3', '- **Close.** v2']).replace('前言。', '前言 v2。') }, 'prose');
+  git('switch', '-q', 'main');
+  assert.deepEqual(ahead(), [aheadLine(repo, 'docs/agents/pilot-rules.md')]);
+});
+
 // #357（#325 第 3 項）：investing 每輪都印 `ADAPTER_AHEAD docs/agents/issue-run.md`，改的卻是 Review、Permissions 段；coordinator 用整檔
 // `git diff` 讀，輸出 43.9 KB／51 KB。issue-run.md 只在 `## Pilot` 段變動時印，每行附 `git -C <主 checkout> show <整合分支>:<檔案>` 的讀取提示。
 test('issue-run.md 只有 Pilot 段以外變動時不印 ADAPTER_AHEAD；Pilot 段變動時印，並附 git show 的讀取提示', t => {
@@ -1023,7 +1095,8 @@ test('Pilot 段宣告 Adapter ref 為遠端 ref 時，ADAPTER_AHEAD 比那個 re
   git('remote', 'set-url', 'origin', join(repo, 'missing.git'));
   const failed = lines(probe({ args: ['--integration', 'develop'] }));
   assert.ok(failed.some(l => l.startsWith('FETCH_FAILED adapter-ref ')), failed.join('\n'));
-  assert.ok(failed.includes(line), failed.join('\n'));
+  // 上面的指令已把那份存檔，所以照上次 fetch 的 ref 比的結果是已讀過（#544）。
+  assert.ok(failed.includes('ADAPTER_AHEAD_SEEN docs/agents/pilot-rules.md'), failed.join('\n'));
 });
 
 // #77：coordinator 拿 probe 的 WORKER 行手寫 sed 改成員列，表頭或空的 candidate 欄一變就靜默沒寫進去。

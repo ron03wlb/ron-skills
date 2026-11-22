@@ -30,9 +30,12 @@ const list = screens[handle];
 if (!list) { fail('terminal_handle_stale'); process.exit(1); }
 const counter = ${JSON.stringify(join(temp, 'count-'))} + handle;
 const i = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0;
-fs.writeFileSync(counter, String(i + 1));
-const screen = list[Math.min(i, list.length - 1)];
-if (screen.raw !== undefined) process.stdout.write(screen.raw);
+// 不帶 --screen 的讀取（累積輸出，#537）不推進畫面順序：有 scrollback 時回它，沒有時同目前畫面。
+const scroll = !process.argv.includes('--screen');
+if (!scroll) fs.writeFileSync(counter, String(i + 1));
+const { scrollback, ...screen } = list[Math.min(scroll ? Math.max(i - 1, 0) : i, list.length - 1)];
+if (scroll && scrollback) reply('read', { terminal: { ...screen, tail: scrollback } });
+else if (screen.raw !== undefined) process.stdout.write(screen.raw);
 else reply('read', { terminal: screen });
 `);
   chmodSync(cli, 0o755);
@@ -91,6 +94,15 @@ test('batch 成員在 resume 後、watcher 啟動前已印 DONE：第一輪就�
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, `RESULT 430 term_430 DONE 430 ${SHA}\n`);
   assert.equal(reads('term_430'), 1);
+});
+
+// #537：watcher 啟動前 DONE 已捲出畫面；畫面不是工作中時往回讀累積輸出。
+test('batch 成員的結果行已捲出畫面：往回讀累積輸出回報 RESULT（#537）', t => {
+  const { batch, run } = fixture(t, { term_526: [{ status: 'running', tail: ['  報告最後一行', '❯'], scrollback: [`DONE 526 ${SHA}`, '  報告最後一行', '❯'] }] });
+  batch('526', [{ n: 526, handle: 'term_526' }]);
+  const result = run(['--batch', '526', '--checkout', 'checkout', ...fast]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `RESULT 526 term_526 DONE 526 ${SHA}\n`);
 });
 
 test('batch 成員沒有 resumed 行、啟動時畫面已有自己的結果行：第一輪就回報（與 Probe 的 WORKER 同一判斷）', t => {
