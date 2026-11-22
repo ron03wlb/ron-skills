@@ -6,6 +6,9 @@
 // 派每個成員之前先讀 Issue 最近一則認領留言（同目錄 issue-pool.mjs 的格式與判斷，含 claim 的前任 coordinator 接手）：不是這個 session
 // （$CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE）的就印 `STOP <n> not-claimed`，不開 worktree、不開分頁（#165：claim 印 STOP 後照樣派出）。
 // 讀留言用 gh，所以只支援 GitHub tracker。
+// blocker（investing#486）：同一次 `gh issue view` 也讀 blockedBy；認領檢查與 running 檢查之後、動手之前（--fresh 不做），每個開著、同 repo（url 與成員相同前綴）的 blocker <m>
+// 有本機分支 `issue/<m>-*`（`-prior`、`-prior2`… 不算）的 commit 不在整合分支時，印 `HOLD <n> blocker <m>[,<m>…] unstaged`，不建 worktree、不開分頁、不改成員列、
+// 不放掉認領：blocker 的最新候選還沒 stage，worker 開工就得自己 merge 它（#436 的 blocker #434 照 G69 修完多 5 個 commit）；下一輪 stage 之後用同一個 key 只帶它重跑。
 // 重疊（#174）：認領檢查之後、動手之前，成員分支（本機已有時；--fresh 是要另存成 prior 的那個）和 `.scratch/pilot/` 開著的 batch 裡其他 running、done 成員
 // 照 pilot-probe.mjs 的 OVERLAP 同一套比法（同一個檔，或 `.md` 的同一個 `- **<名稱>.**` 條目）比對，有重疊就印 `STOP <n> overlap <m> <檔案>[:<條目>]…`
 // （多個成員時以 `, <m> …` 接著列），什麼都不動、成員列也不改寫；`--allow-overlap` 才照派。還沒派過、本機沒有分支的成員沒有東西可比。
@@ -75,8 +78,10 @@
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
 //   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop；running、overlap 的 STOP 不改寫那一列；
 //   send 的 STOP 記 running：worker 可能其實已在跑，交給 Probe 判定，#354），STOP 原因只在 stdout。
+//   每個成員的 STOP 行（含 --fresh 與草稿的）最後一欄是 ` row=<kept|stop|running>`：這一行之後成員列沒動（kept），或寫成 stop、running（investing#481：
+//   哪些 STOP 改寫成員列以前只能讀程式碼）。HOLD 行不改成員列。不屬於成員的 STOP capacity、STOP orca-unavailable 不寫任何列，也沒有這一欄。
 //   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
-// exit：0 全部派出（草稿：寫好）；4 有成員 STOP（或 STOP capacity、STOP orca-unavailable）；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤（含草稿帶了派工旗標、Env sync 宣告寫錯）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
+// exit：0 全部派出（草稿：寫好）；4 有成員 STOP 或 HOLD（或 STOP capacity、STOP orca-unavailable）；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤（含草稿帶了派工旗標、Env sync 宣告寫錯）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
@@ -136,9 +141,9 @@ async function runEnvSync(command, worktree, signal) {
   });
 }
 
-/** 成員的 STOP 行：Env sync 失敗照 #363 指定的 `STOP sync <n> …`（同 `STOP dirty <n>` 的語序），其他是 `STOP <n> <原因>`。 */
-function stopLine(n, stop) {
-  return stop.startsWith('sync ') ? `STOP sync ${n} ${stop.slice(5)}` : `STOP ${n} ${stop}`;
+/** 成員的 STOP 行：Env sync 失敗照 #363 指定的 `STOP sync <n> …`（同 `STOP dirty <n>` 的語序），其他是 `STOP <n> <原因>`；最後接 ` row=<row>`（見檔頭）。 */
+function stopLine(n, stop, row) {
+  return `${stop.startsWith('sync ') ? `STOP sync ${n} ${stop.slice(5)}` : `STOP ${n} ${stop}`} row=${row}`;
 }
 
 /** 同步跑子行程；stdin 一律接 /dev/null。 */
@@ -300,17 +305,40 @@ function writeRow(checkpoint, n, cells) {
  * spawnSync 期間總預算的計時器不會觸發，所以 gh 自己限時（60 秒與剩餘預算取小），預算用完就是 `timeout`；原因壓成一行，stdout 才維持每個成員一行。
  */
 function claimStop(n) {
-  const left = DEADLINE - Date.now();
-  if (left <= 0) return 'timeout';
-  const viewed = run('gh', ['issue', 'view', n, '--json', 'comments'], { timeout: Math.min(60000, left) });
-  if (Date.now() >= DEADLINE) return 'timeout';
+  return issueCheck(n, false).stop;
+}
+
+/**
+ * 認領檢查（claimStop）；`withBlockers` 時同一次 `gh issue view` 多讀 blockedBy 與 url，傳回開著、同 repo（url 去掉號碼後相同）的 blocker 號碼：
+ * `{ stop }` 或 `{ blockers }`。舊版 gh 不認得 blockedBy（`Unknown JSON field`）時只讀留言，blockers 是空的。
+ */
+function issueCheck(n, withBlockers) {
+  const view = fields => {
+    const left = DEADLINE - Date.now();
+    return left <= 0 ? undefined : run('gh', ['issue', 'view', n, '--json', fields], { timeout: Math.min(60000, left) });
+  };
+  let viewed = view(withBlockers ? 'comments,blockedBy,url' : 'comments');
+  if (withBlockers && viewed && viewed.status !== 0 && /Unknown JSON field/i.test(viewed.stderr ?? '')) viewed = view('comments');
+  if (!viewed || Date.now() >= DEADLINE) return { stop: 'timeout' };
   const detail = (viewed.stderr ?? '').trim().replace(/\s*\n\s*/g, ' ');
-  if (viewed.status !== 0) return `claim-check ${detail || `exit ${viewed.status ?? viewed.error?.code}`}`;
-  try {
-    return claimedBy(JSON.parse(viewed.stdout).comments, defaultSession()) ? undefined : 'not-claimed';
-  } catch {
-    return 'claim-check gh issue view 的輸出不是 JSON';
-  }
+  if (viewed.status !== 0) return { stop: `claim-check ${detail || `exit ${viewed.status ?? viewed.error?.code}`}` };
+  let issue;
+  try { issue = JSON.parse(viewed.stdout); } catch { return { stop: 'claim-check gh issue view 的輸出不是 JSON' }; }
+  if (!claimedBy(issue.comments, defaultSession())) return { stop: 'not-claimed' };
+  const project = url => String(url ?? '').replace(/\/\d+$/, '');
+  const blockers = (issue.blockedBy?.nodes ?? [])
+    .filter(({ number, state, url }) => Number.isInteger(number) && state === 'OPEN' && issue.url && project(url) === project(issue.url))
+    .map(({ number }) => String(number));
+  return { blockers };
+}
+
+/** `blockers` 裡本機分支 `issue/<m>-*`（不含 -prior 另存）有 commit 不在整合分支的號碼，依原順序。git 失敗的分支不算。 */
+function unstagedBlockers(main, integration, blockers) {
+  return blockers.filter(m => {
+    const refs = run('git', ['-C', main, 'for-each-ref', '--format=%(refname:short)', `refs/heads/issue/${m}-*`]);
+    return refs.status === 0 && refs.stdout.split('\n').filter(branch => branch && !/-prior\d*$/.test(branch))
+      .some(branch => Number(run('git', ['-C', main, 'rev-list', '--count', `${integration}..${branch}`]).stdout.trim()) > 0);
+  });
 }
 
 /** 重疊檢查：`branch` 和開著的 batch 裡其他 running、done 成員有重疊時傳回 STOP 原因（不含 `STOP <n> ` 前綴），否則 undefined。 */
@@ -346,15 +374,16 @@ async function spawnText(command, args, options) {
 }
 
 /**
- * 派一個成員；傳回 `{ worktree?, handle }` 或 `{ worktree?, handle?, stop, keep? }`（不含 `STOP <n> ` 前綴；`keep` 時什麼都沒動，成員列也不改寫）。
+ * 派一個成員；傳回 `{ worktree?, handle }`、`{ worktree?, handle?, stop, keep? }`（不含 `STOP <n> ` 前綴；`keep` 時什麼都沒動，成員列也不改寫），
+ * 或 `{ hold, keep: true }`（不含 `HOLD <n> ` 前綴；`checkBlockers` 為真時才檢查，--fresh 不檢查）。
  * `envSync` 是 adapter 宣告的 Env sync 指令（沒宣告時 undefined），worktree 確認建好之後、開分頁之前在裡面跑。
  * worktree 已存在（重跑 STOP 的成員）時不再 create：再呼叫一次，Orca 會去重出 `issue-<n>-2`。
  * `signal` 中止時（reason 為 `timeout` 或 `signal <名稱>`）進行中的步驟丟錯，STOP 原因改用 reason；create 被中止時仍跑 Bare guard。
  */
-async function dispatchMember(cli, main, checkpoint, integration, { n, branch }, signal, allowOverlap, envSync) {
+async function dispatchMember(cli, main, checkpoint, integration, { n, branch }, signal, allowOverlap, envSync, checkBlockers = false) {
   if (signal.aborted) return { stop: signal.reason };
-  const unclaimed = claimStop(n);
-  if (unclaimed) return { stop: unclaimed };
+  const checked = issueCheck(n, checkBlockers);
+  if (checked.stop) return { stop: checked.stop };
   let created = '';
   const existed = worktreeOf(main, branch);
   const ctx = { cli, signal };
@@ -370,6 +399,8 @@ async function dispatchMember(cli, main, checkpoint, integration, { n, branch },
     const row = rowOf(checkpoint, n);
     if (row?.[7] === 'running' && open.includes(row[4])) return { stop: `running ${row[4]}`, keep: true };
   }
+  const unstaged = checkBlockers ? unstagedBlockers(main, integration, checked.blockers) : [];
+  if (unstaged.length) return { hold: `blocker ${unstaged.join(',')} unstaged`, keep: true };
   const overlap = !allowOverlap && overlapStop(main, n, branch, integration);
   if (overlap) return { worktree: existed, stop: overlap, keep: !overlap.startsWith('overlap-check ') };
   if (!existed) {
@@ -649,7 +680,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     }
     if (draft) {
       const written = freshDraft(main, key, options.integration, members[0]);
-      console.log(written.stop ? `STOP ${written.stop}` : `NOTE_DRAFT ${written.path}`);
+      console.log(written.stop ? `STOP ${written.stop} row=kept` : `NOTE_DRAFT ${written.path}`);
       clearTimeout(budget);
       process.exit(written.stop ? 4 : 0);
     }
@@ -701,14 +732,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const started = now();
       const ready = await refresh(cli, main, key, options.integration, member, readFileSync(given.note, 'utf8'), Boolean(given.again), Boolean(given.allowOverlap), controller.signal);
       if (ready.stop) {
-        console.log(`STOP ${ready.stop}`);
+        console.log(`STOP ${ready.stop} row=kept`);
         clearTimeout(budget);
         process.exit(4);
       }
       // 重疊已在 refresh 比對過；這時的分支是剛從整合分支開的，沒有改動可比。
       const result = await dispatchMember(cli, main, ready.checkpoint, options.integration, member, controller.signal, true, envSync);
       // 結果行先印：成員行等鎖逾時（exit 3）時，coordinator 仍看得到 worker 已經派出（#345）。
-      console.log(result.stop ? stopLine(member.n, result.stop) : `DISPATCHED ${member.n} ${result.handle}\nPRIOR ${member.n} ${ready.prior} ${ready.sha}`);
+      // --fresh 一律寫成員列（keep 也寫），所以 row 照 rowState。
+      console.log(result.stop ? stopLine(member.n, result.stop, rowState(result.stop)) : `DISPATCHED ${member.n} ${result.handle}\nPRIOR ${member.n} ${ready.prior} ${ready.sha}`);
       writeRow(ready.checkpoint, member.n, [member.branch, result.worktree ?? ready.worktree, result.handle ?? '', started, options.stuckAfter, rowState(result.stop)]);
       reportDispatched(result.stop ? 0 : 1);
       clearTimeout(budget);
@@ -720,11 +752,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     let dispatched = 0;
     for (const member of members) {
       const started = now();
-      const result = await dispatchMember(cli, main, checkpoint, options.integration, member, controller.signal, Boolean(given.allowOverlap), envSync);
-      stopped ||= Boolean(result.stop);
-      console.log(result.stop ? stopLine(member.n, result.stop) : `DISPATCHED ${member.n} ${result.handle}`);
+      const result = await dispatchMember(cli, main, checkpoint, options.integration, member, controller.signal, Boolean(given.allowOverlap), envSync, true);
+      stopped ||= Boolean(result.stop || result.hold);
+      console.log(result.hold ? `HOLD ${member.n} ${result.hold}`
+        : result.stop ? stopLine(member.n, result.stop, result.keep ? 'kept' : rowState(result.stop)) : `DISPATCHED ${member.n} ${result.handle}`);
       if (!result.keep) writeRow(checkpoint, member.n, [member.branch, result.worktree ?? '', result.handle ?? '', started, options.stuckAfter, rowState(result.stop)]);
-      if (!result.stop) dispatched++;
+      if (!result.stop && !result.hold) dispatched++;
     }
     reportDispatched(dispatched);
     clearTimeout(budget);

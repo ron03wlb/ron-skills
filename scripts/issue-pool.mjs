@@ -29,7 +29,7 @@
 // adapter 用的 label 不同時以 `--categories` 覆寫（逗號分隔）。exit 0。gh 或 glab 失敗時 stderr 印原因、exit 1；用法錯誤或本機 Markdown tracker 時 exit 2。
 // 有母單的 ready 行在號碼與標題之間多寫 `parent #<p> `（`ready #<n> parent #<p> <標題>`；別的 repo 的母單寫 `<owner>/<repo>#<p>`，GitLab 是父項目），
 // Shared registry 看同一母單不必逐張查 sub-issue（#397）；其他桶不寫。
-// claim 是 session 開始處理一張 Issue 前的認領：先留「認領：<機器>／<session>」（整則留言只有這一行；session 預設
+// claim 是 session 開始處理一張 Issue 前的認領：先留「認領：<機器>／<session>」（整則留言只有這一行；<機器> 是 $ISSUE_POOL_HOSTNAME，沒設時 os.hostname()，本機認領者的判斷也用它；session 預設
 // $CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE），再指派給自己（HOSTS.md 的 Assign yourself），印 `CLAIMED <n>`。同一個帳號會在好幾台機器上跑，
 // 指派分不出是誰，所以看認領留言：
 // - 已被指派時，最近一則認領留言必須是這個 session、作者還在指派名單裡，才再認領一次（重派；新留言順便更新 stale 的時間），否則不改 Issue。
@@ -403,7 +403,9 @@ const IDLE_MS = 60 * 60_000;
 /** 整則留言只有「認領：<機器>／<session>」一行時回傳認領者；引用或夾在其他文字裡的不算。 */
 const claimerOf = ({ body }) => body.trim().match(/^認領：([^\n]+)$/)?.[1];
 const latestClaimer = comments => claimerOf(comments.filter(claimerOf).at(-1) ?? { body: '' });
-const claimerName = session => `${hostname()}／${session}`;
+/** 認領留言裡的機器名：ISSUE_POOL_HOSTNAME 有值時用它（測試的注入點，investing#481 第 3 項），否則 os.hostname()。 */
+const machine = () => process.env.ISSUE_POOL_HOSTNAME || hostname();
+const claimerName = session => `${machine()}／${session}`;
 
 /** 主 checkout：`git worktree list` 的第一列，從任何 worktree 呼叫都指回同一處；不在 git repo 裡時是 undefined（claim 照舊 STOP，不像 pilot-dispatch 那樣丟錯）。 */
 function mainCheckout() {
@@ -415,7 +417,7 @@ function mainCheckout() {
  * 都照主 checkout 的 sessions.md（PILOT-STORE.md 的格式）判斷，讀不到時是 undefined。 */
 function takeoverSession(claimer, session) {
   const [host, previous] = claimer.split('／');
-  const main = host === hostname() && previous ? mainCheckout() : undefined;
+  const main = host === machine() && previous ? mainCheckout() : undefined;
   if (!main) return undefined;
   let lines;
   try { lines = readFileSync(join(main, '.scratch/pilot/sessions.md'), 'utf8').split('\n'); } catch { return undefined; }
@@ -427,7 +429,7 @@ function takeoverSession(claimer, session) {
 /** 本機認領者的 transcript 最後寫入時間（ms）；認領者在別台、或找不到它的 transcript 時是 undefined。 */
 function transcriptActivity(claimer) {
   const [host, session] = claimer.split('／');
-  if (host !== hostname() || !session) return undefined;
+  if (host !== machine() || !session) return undefined;
   const projects = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
   let dirs;
   try { dirs = readdirSync(projects); } catch { return undefined; }
