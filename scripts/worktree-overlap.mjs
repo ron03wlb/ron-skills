@@ -8,7 +8,7 @@
 // lib/changed-units.mjs 的 changedUnits（`to` 給 null 時比工作樹），試合併與 Probe 的 CONFLICT 共用 lib/merge-tree.mjs（#376），
 // 不另寫一份；只靠這兩支，所以可以複製到沒有 pilot 腳本的 repo。
 //
-// 用法：node scripts/worktree-overlap.mjs [--main <分支>] [--mine [--near <N>] [--generated <glob>]… [--max-files <N>] | <檔案>…]（cwd 在 repo 任一 worktree 的任一目錄；檔案一律是 repo 根的相對路徑，
+// 用法：node scripts/worktree-overlap.mjs [--main <分支>] [--mine [--near <N>] [--generated <glob>]… [--max-files <N>] | [--since <ISO 時間>] <檔案>…]（cwd 在 repo 任一 worktree 的任一目錄；檔案一律是 repo 根的相對路徑，
 //   不隨 cwd 的子目錄改變，每個 worktree 才能用同一組 pathspec）
 //   --mine：檔案清單改取 cwd 所在 worktree 自己從 merge-base（同一個 <主分支>）起的改動（含未 commit、未追蹤的新檔），
 //   不列 cwd 所在的 worktree；自己沒有改動時不輸出。retro 合入前重查並行改動用：`git diff --name-only main HEAD` 在本機 main
@@ -54,6 +54,11 @@
 //   是清單裡的副本就在 OVERLAP_WT 之前印一行（依輸入順序），<正本路徑> 是清單的 template（ron-skills 內的路徑）。不改 exit code。
 //   看到這行：不要直接改這個檔，改 ron-skills 的正本再以 copy-templates 帶回（retro spay2 0cd3fdeb#1：計畫把副本派給子代理直接改，
 //   到 check-contracts --static 的 TEMPLATE_COPY_MISMATCH 才發現，多走兩輪 PR）。不帶檔案時不印。
+//   LANDED_SINCE <檔案> <commit7> <subject>
+//   帶 `--since <ISO 時間>`（要給檔案，不能和 --mine 併用）時，<主分支> 第一父線上 committer 時間不早於它、改到這個檔的 commit
+//   各印一行，依輸入的檔案順序、同一檔新的在前，排在 TEMPLATE_COPY 之後、OVERLAP_WT 之前。以落地時間算：側分支較早的 commit
+//   在之後才合入時印那個合併 commit。retro 候選寫下後（傳候選或 Issue 的建立時間）目標分支是否已改過這些檔：只看其他 worktree
+//   看不到已落地的改動（#413 第 6 項，investing#505：#499 兩項被記成 adopted，其實 875275d4 已落地）。
 // exit：0 印完（不論有無命中）；2 用法錯誤；1 git 失敗；3 印了 OVERLAP_BASE_BEHIND。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
@@ -62,7 +67,7 @@ import { pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
 import { mergeConflicts, snapshot } from './lib/merge-tree.mjs';
 
-const USAGE = '用法：node scripts/worktree-overlap.mjs [--main <分支>] [--mine [--near <N>] [--generated <glob>]… [--max-files <N>] | <檔案>…]\n'
+const USAGE = '用法：node scripts/worktree-overlap.mjs [--main <分支>] [--mine [--near <N>] [--generated <glob>]… [--max-files <N>] | [--since <ISO 時間>] <檔案>…]\n'
   + '  --mine 不帶 --main、自己的改動檔超過 --max-files（預設 200）時只印 OVERLAP_BASE_BEHIND <主分支> <N> --main <建議分支>，exit 3';
 // git 三方合併只在兩邊 hunk 重疊或相接（相距 0～1 行）時衝突；預設 5 行留一點餘裕，又不把隔了一段的改動也報成 near。
 const NEAR = 5;
@@ -103,6 +108,15 @@ export function templateCopies(cwd, files) {
     return [];
   }
   return files.filter(file => copies[file]?.template).map(file => `TEMPLATE_COPY ${file} ${copies[file].template}`);
+}
+
+/**
+ * `--since`：<主分支> 第一父線上 committer 時間不早於 `since`、改到 `files` 各檔的 commit → `LANDED_SINCE <檔> <commit7> <subject>`（#413）。
+ * 第一父線讓側分支合入時以合併 commit（落地時間）出現，不以側分支上較早的 commit 時間被濾掉。
+ */
+export function landedSince(cwd, files, since, main = 'main') {
+  return files.flatMap(file => git(cwd, 'log', '--first-parent', `--since=${since}`, '--format=%H %s', main, '--', file)
+    .split('\n').filter(Boolean).map(line => `LANDED_SINCE ${file} ${line.slice(0, 7)} ${line.slice(41)}`));
 }
 
 /** cwd 所在 worktree 的根目錄、merge-base，與它從 merge-base 起改過的檔（含工作樹）。 */
@@ -234,7 +248,7 @@ export function globRegExp(glob) {
  * 每個非主 checkout worktree 的 OVERLAP_WT 行。`files` 是 repo 相對路徑，空陣列表示全部。
  * `mine` 時 `files` 改成 cwd 所在 worktree 自己的改動，並跳過那個 worktree。
  */
-export function worktreeOverlaps(cwd, files = [], { main = 'main', mine = false, near = NEAR, generated = [], maxFiles = null } = {}) {
+export function worktreeOverlaps(cwd, files = [], { main = 'main', mine = false, near = NEAR, generated = [], maxFiles = null, since } = {}) {
   let self = null;
   let own = null;
   const isGenerated = path => generated.some(glob => globRegExp(glob).test(path));
@@ -255,6 +269,7 @@ export function worktreeOverlaps(cwd, files = [], { main = 'main', mine = false,
     return [baseBehind(own.top, own.base, main, checkedOut)];
   }
   const out = files.length ? templateCopies(cwd, files) : [];
+  if (since !== undefined) out.push(...landedSince(cwd, files, since, main));
   for (const tree of others) {
     if (isSelf(tree)) continue;
     // 目錄已不在，或還沒有任何 commit 的 orphan worktree（HEAD 解析不到，merge-base 會 exit 128）都略過。
@@ -289,11 +304,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   let near = NEAR;
   let nearGiven = false;
   const generated = [];
+  let since;
   let bad = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--main' && args[i + 1] && !args[i + 1].startsWith('--')) { main = args[++i]; mainGiven = true; }
     else if (args[i] === '--max-files' && /^\d+$/.test(args[i + 1] ?? '')) { maxFiles = Number(args[++i]); maxFilesGiven = true; }
     else if (args[i] === '--mine') mine = true;
+    else if (args[i] === '--since' && args[i + 1] && !args[i + 1].startsWith('--')) since = args[++i];
     else if (args[i] === '--near' && /^\d+$/.test(args[i + 1] ?? '')) { near = Number(args[++i]); nearGiven = true; }
     else if (args[i] === '--generated' && args[i + 1] && !args[i + 1].startsWith('--')) generated.push(args[++i]);
     else if (args[i] === '--') files.push(...args.splice(i + 1));
@@ -301,12 +318,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     else files.push(args[i]);
   }
   // --near、--generated 只影響 --mine 的 hunk 欄位，--max-files 只影響 --mine 的基準檢查，不帶 --mine 時給了等於沒作用，當用法錯誤。
-  if (bad || (mine && files.length) || (!mine && (nearGiven || generated.length || maxFilesGiven))) {
+  // --since 只對給的檔案有意義，時間要是 Date.parse 讀得懂的 ISO 寫法（git 的 approxidate 會把讀不懂的字串猜成某個時間，不報錯）。
+  const badSince = since !== undefined && (mine || !files.length || Number.isNaN(Date.parse(since)));
+  if (bad || badSince || (mine && files.length) || (!mine && (nearGiven || generated.length || maxFilesGiven))) {
     console.error(USAGE);
     process.exit(2);
   }
   try {
-    const lines = worktreeOverlaps(process.cwd(), files, { main, mine, near, generated, maxFiles: mainGiven ? null : maxFiles });
+    const lines = worktreeOverlaps(process.cwd(), files, { main, mine, near, generated, maxFiles: mainGiven ? null : maxFiles, since });
     for (const line of lines) console.log(line);
     if (lines[0]?.startsWith(`${BEHIND} `)) process.exit(3);
   } catch (error) {

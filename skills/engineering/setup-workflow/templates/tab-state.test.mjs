@@ -420,3 +420,17 @@ test('forgetTitleRecord：刪掉 recordTitle 寫的紀錄（含要轉換檔名�
   }
   forgetTitleRecord(undefined);
 });
+
+// #413 第 5 項（investing#510）：回報未加引號的 `待 Retro --topic …` 印 TAB_STATE_MISMATCH、加引號後正常。--topic 之前的參數以空白併起來當狀態，
+// 兩種寫法送出同一個 rename；當時的 MISMATCH 是改名後讀回延遲（#332），不是參數被拆開。這條測試釘住兩種寫法等價。
+test('未加引號的 `待 Retro --topic …` 與加引號同一個狀態：送出同一個 rename、印同一行 TAB_STATE', t => {
+  const quoted = fixture(t, { tabTitle: '處理中｜舊' });
+  const bare = fixture(t, { tabTitle: '處理中｜舊' });
+  const a = quoted.run(['待 Retro', '--topic', '#12 交付']);
+  const b = bare.run(['待', 'Retro', '--topic', '#12 交付']);
+  assert.equal(a.status, 0, a.stderr);
+  assert.equal(b.status, 0, b.stderr);
+  assert.equal(b.stdout, 'TAB_STATE 待 Retro｜#12 交付\n');
+  assert.equal(b.stdout, a.stdout);
+  assert.equal(bare.calls(), quoted.calls());
+});
