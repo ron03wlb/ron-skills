@@ -254,6 +254,34 @@ export function gateIssues(text) {
   return issues;
 }
 
+/** sessions.md 裡當過 coordinator 的 session id（start 行與舊格式 start 行，PILOT-STORE.md；#466）。 */
+export function coordinatorSessions(text) {
+  const ids = new Set();
+  for (const line of text.split('\n')) {
+    const id = line.match(/^\S+ {3}session (\S+) {3}pid \d+\b/)?.[1] ?? line.match(/^\S+ {2}(\S+) {2}.* {2}coordinator start\s*$/)?.[1];
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * 別人代為 resolve、答案還沒套用的 gate（#466 第 3 項，investing G80）：`## G<n>` 段落有 `- by：<session>`（pilot-gate open 記的開啟者）而那是
+ * sessions.md 的 coordinator session、已 resolved、沒有 `- applied` 行，而且 `- resolver：<session>` 不在或不是任何 coordinator session 時，
+ * 每個印 `GATE_RESOLVED G<n> by <resolver|?> <how>`（how 是 resolved 行時間之後的文字）。coordinator 自己 resolve 的當場套用，不印；表格列沒有這些欄，不印。
+ */
+export function resolvedGateLines(text, sessions) {
+  const coordinators = coordinatorSessions(sessions);
+  return gateSections(text).flatMap(({ id, body }) => {
+    const field = name => body.match(new RegExp(`^- ${name}[：:]\\s*(\\S+)`, 'm'))?.[1];
+    const resolved = body.match(/^- (?:G\d+ )?resolved \S+(?: (.*))?$/m);
+    const by = field('by');
+    if (!resolved || !by || !coordinators.has(by) || /^- applied\b/m.test(body)) return [];
+    const resolver = field('resolver');
+    if (resolver && coordinators.has(resolver)) return [];
+    return [`GATE_RESOLVED ${id} by ${resolver ?? '?'} ${resolved[1] ?? ''}`.trimEnd()];
+  });
+}
+
 /** pilot-probe 與 pilot-gate list 印的 gate 行：每個開著的 gate 一行 `GATE <line>`，resolved 寫錯欄位的再加 `GATE_MALFORMED <id> <那一行>`。 */
 export const gateLines = text => openGates(text)
   .flatMap(gate => [`GATE ${gate.line}`, ...(gate.malformed ? [`GATE_MALFORMED ${gate.id} ${gate.malformed}`] : [])]);

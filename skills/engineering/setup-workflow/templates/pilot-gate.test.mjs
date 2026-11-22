@@ -43,7 +43,10 @@ const checkout = (t, text = GATES) => {
   }
   return dir;
 };
-const run = (dir, ...args) => spawnSync('node', [SCRIPT, dir, ...args], { encoding: 'utf8' });
+// 測試本身可能在 Claude Code session 裡跑：繼承的 CLAUDE_CODE_SESSION_ID 會讓 open／resolve 多寫 by／resolver 欄，預設拿掉；`runAs` 指定 session。
+const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'CLAUDE_CODE_SESSION_ID'));
+const run = (dir, ...args) => spawnSync('node', [SCRIPT, dir, ...args], { encoding: 'utf8', env: baseEnv });
+const runAs = (session, dir, ...args) => spawnSync('node', [SCRIPT, dir, ...args], { encoding: 'utf8', env: { ...baseEnv, CLAUDE_CODE_SESSION_ID: session } });
 const gates = dir => readFileSync(join(dir, '.scratch/pilot/gates.md'), 'utf8');
 
 test('open：以下一個 G<n> 附加 `## G<n> <title>` 段落與六個欄位，印 GATE_OPENED，list 與 probe 都看得到', t => {
@@ -279,4 +282,59 @@ test('open --script：檔案不存在或旗標重複是用法錯誤 exit 2，不
   }
   assert.throws(() => gates(dir));
   assert.throws(() => readFileSync(join(dir, '.scratch/pilot/gates/G1.sh')));
+});
+
+// #466 第 3 項（investing#574 第 1 項）：coordinator 開的 G80 由投資 bot 代為 resolve，probe 之後什麼都不印，#554 停在 needs-triage 約 2 小時，
+// 直到 coordinator 自己 resolve 撞到 `STOP G80 resolved`。open 記開啟的 session、resolve 記解除的 session，applied 標記答案已套用。
+const COORDINATOR = '11111111-aaaa-bbbb-cccc-000000000001';
+const BOT = '22222222-aaaa-bbbb-cccc-000000000002';
+
+test('open／resolve 記下 session（by、resolver），applied 寫 `- applied <time>`、印 GATE_APPLIED；重複、未解、表格列與找不到的 gate 都 STOP', t => {
+  const dir = checkout(t);
+  assert.equal(runAs(COORDINATOR, dir, 'open', ...OPEN).stdout, 'GATE_OPENED G4\n');
+  assert.match(gates(dir), new RegExp(`- parked：batch 13 的 Stage\\n- by：${COORDINATOR}\\n- opened：${TIME}\\n$`));
+  const open = run(dir, 'applied', 'G4');
+  assert.equal(open.status, 4);
+  assert.equal(open.stdout, 'STOP G4 open\n');
+  assert.equal(runAs(BOT, dir, 'resolve', 'G4', '--how', '代決：選 1').stdout, 'GATE_RESOLVED G4\n');
+  assert.match(gates(dir), new RegExp(`- opened：${TIME}\\n- resolved ${TIME} 代決：選 1\\n- resolver：${BOT}\\n$`));
+  const applied = run(dir, 'applied', 'G4');
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(applied.stdout, 'GATE_APPLIED G4\n');
+  assert.match(gates(dir), new RegExp(`- resolver：${BOT}\\n- applied ${TIME}\\n$`));
+  assert.equal(run(dir, 'applied', 'G4').stdout, 'STOP G4 applied\n');
+  assert.equal(run(dir, 'applied', 'G1').stdout, 'STOP G1 table\n');
+  assert.equal(run(dir, 'applied', 'G9').stdout, 'STOP G9 missing\n');
+});
+
+test('probe 的 GATE_RESOLVED：coordinator 開、不是 coordinator 的 session（或沒記 resolver）解、還沒 applied 的 gate 各印一行', t => {
+  const sessions = [
+    `2026-11-21T09:00:00+08:00   session ${COORDINATOR}   pid 111   investing-7`,
+    '2026-11-20T09:00:00+08:00  33333333-old  investing-6  coordinator start',
+  ].join('\n');
+  const section = (id, fields) => [`## ${id} #554 要不要先標待資訊`, '- Issue：#554', '- question：q', '- options：A；B', '- default：A', '- parked：#554', ...fields].join('\n');
+  const text = ['# Gates', '',
+    // G80 的形狀：bot 以手寫或舊版腳本 resolve，沒有 resolver 欄。
+    section('G80', [`- by：${COORDINATOR}`, '- opened：2026-11-21T16:20:51+08:00', '- resolved 2026-11-21T16:31:13+08:00 代決，可推翻：選預設 A，先標待資訊']), '',
+    section('G81', [`- by：${COORDINATOR}`, '- opened：2026-11-21T16:40:00+08:00', '- resolved 2026-11-21T16:50:00+08:00 選 B', `- resolver：${BOT}`]), '',
+    // coordinator 自己（含舊格式 start 行的前任）resolve：當場套用，不印。
+    section('G82', [`- by：${COORDINATOR}`, '- opened：2026-11-21T17:00:00+08:00', '- resolved 2026-11-21T17:05:00+08:00 選 A', `- resolver：${COORDINATOR}`]), '',
+    section('G83', ['- by：33333333-old', '- opened：2026-11-20T17:00:00+08:00', '- resolved 2026-11-20T17:05:00+08:00 選 A', '- resolver：33333333-old']), '',
+    // 已套用、還開著、舊 gate（沒有 by）、不是 coordinator 開的：都不印。
+    section('G84', [`- by：${COORDINATOR}`, '- opened：2026-11-21T18:00:00+08:00', '- resolved 2026-11-21T18:05:00+08:00 選 A', `- resolver：${BOT}`, '- applied 2026-11-21T18:10:00+08:00']), '',
+    section('G85', [`- by：${COORDINATOR}`, '- opened：2026-11-21T19:00:00+08:00']), '',
+    section('G86', ['- opened：2026-11-19T19:00:00+08:00', '- resolved 2026-11-19T19:05:00+08:00 選 A']), '',
+    section('G87', [`- by：${BOT}`, '- opened：2026-11-21T19:00:00+08:00', '- resolved 2026-11-21T19:05:00+08:00 選 A']), '',
+  ].join('\n');
+  const dir = checkout(t, text);
+  writeFileSync(join(dir, '.scratch/pilot/sessions.md'), `${sessions}\n`);
+  const rows = openRows(join(dir, '.scratch/pilot'));
+  assert.deepEqual(rows.filter(line => line.startsWith('GATE_RESOLVED')), [
+    'GATE_RESOLVED G80 by ? 代決，可推翻：選預設 A，先標待資訊',
+    `GATE_RESOLVED G81 by ${BOT} 選 B`,
+  ]);
+  assert.ok(rows.includes('GATE G85 #554 要不要先標待資訊'), rows.join('\n'));
+  // 套用後標 applied，不再印。
+  assert.equal(run(dir, 'applied', 'G80').status, 0);
+  assert.deepEqual(openRows(join(dir, '.scratch/pilot')).filter(line => line.startsWith('GATE_RESOLVED')), [`GATE_RESOLVED G81 by ${BOT} 選 B`]);
 });
