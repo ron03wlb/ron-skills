@@ -50,7 +50,7 @@
 
 - **Scope supplement.** 見 [pilot-exceptions.md](pilot-exceptions.md)：Dispatch 之後要給 worker 補範圍時讀。
 
-- **Watch.** worker 在跑時以 `run_in_background` 起 `node scripts/pilot-watch.mjs --batch <key>`（每批一個）：啟動前的結果行不算，新的 `DONE <n> <sha>`／`STOP <n> <cause>` 印 `RESULT <key> <handle> <行>`，terminal 結束而無新結果印 `EXITED <key> <handle>`（卡住），即結束；接著跑 Probe（`--apply`），還有 running 就再起。解析與 Probe 的 `WORKER` 共用，不另寫（#325、#355）。看畫面：`node scripts/pilot-probe.mjs --tail <handle>`。stuck-after 預設 90 分鐘，仍以 1200 秒排下次喚醒。
+- **Watch.** worker 在跑時以 `run_in_background` 起 `node scripts/pilot-watch.mjs --batch <key>`（每批一個）：成員的結果行照 Probe 的 `WORKER` 判斷，啟動時已在畫面上的也算，只略過 `pilot-batch.mjs resume` 記在 `resumed:` 行的舊結果（#406：resume 後、watcher 啟動前印的 DONE 不會叫醒），`DONE <n> <sha>`／`STOP <n> <cause>` 印 `RESULT <key> <handle> <行>`，terminal 結束而無新結果印 `EXITED <key> <handle>`（卡住），即結束；接著跑 Probe（`--apply`），還有 running 就再起。解析與 Probe 的 `WORKER` 共用，不另寫（#325、#355）。看畫面：`node scripts/pilot-probe.mjs --tail <handle>`。stuck-after 預設 90 分鐘，仍以 1200 秒排下次喚醒。
 
 - **Idle wait.** 見 [pilot-round.md](pilot-round.md)：閒置次數達到 issue-pilot SKILL 的 Report and sleep 門檻時讀；整條用 `node scripts/adapter-line.mjs 'Idle wait'` 取。
 
