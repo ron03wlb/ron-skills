@@ -24,6 +24,9 @@
 // （investing retro 03b2c41c 第 118 行），`for f in $F` 也只跑一次。同一條指令裡先以含空白的值賦值（`F="a b"`、`F='a b'`、`export F="a b"`），
 // 之後沒加引號的 `$F`、`${F}` 才算；雙引號、`${=F}`、陣列（`F=(a b)`）、`[[ ]]`、`(( ))`、單引號、heredoc 內容、`echo`／`print` 的參數
 // （切不切輸出都一樣）、賦值之前的使用放行。看不到前一條指令設的變數，所以跨指令的不擋。
+// heredoc 反引號（#498）：分隔字沒加引號的 heredoc（`<<EOF`、`<<-EOF`）本文裡沒跳脫的反引號是指令替換，Markdown 的 code span 會被當指令跑，
+// zsh 印 `command not found`、`parse error`，寫出的檔案不完整，後面的指令照跑（investing session f499bd65）。只看反引號：
+// 本文刻意用的 `$(...)`、`$var` 放行；`<<'EOF'`、`<<"EOF"` 與 heredoc 以外的反引號維持現狀。
 // 命中時 exit 2，stderr 說明原因與改法；$SHELL 不是 zsh（#301）、輸入不合法或不是 Bash 時 exit 0 不輸出。
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -129,6 +132,14 @@ const SPLIT_HARMLESS = new Set(['echo', 'print', '[', 'test', 'case']);
 // 後面接的賦值在這條指令之後仍有效的宣告指令；其他指令前的賦值（`F="a b" cmd $F`）只給那支指令，`$F` 展開的是舊值。
 const DECLARE = new Set(['export', 'local', 'typeset', 'declare', 'readonly']);
 
+/** 分隔字沒加引號、本文含沒跳脫反引號的 heredoc 分隔字（依出現順序，`<<-` 的帶 `-`），例如 `cat > a.md <<EOF` 加含 code span 的 Markdown。 */
+export function backtickHeredocs(command) {
+  return scan(command).backtickHeredocs;
+}
+
+// 沒跳脫的反引號：前面是偶數個反斜線。
+const BACKTICK = /(?:^|[^\\])(?:\\\\)*`/;
+
 /** 指令有沒有在 zsh 會展開的地方用到 bash 的 `$PIPESTATUS`。 */
 export function usesPipestatus(command) {
   return scan(command).pipestatus;
@@ -171,6 +182,7 @@ function scan(command) {
   let wild = false; // 目前的字有沒有沒加引號的 * 或 ?
   let glob = false; // 目前的字在 `--opt=` 之後、或像 ref 的字裡，有沒有沒加引號的 * 或 ?
   const heredocs = [];
+  const backticks = []; // 本文含反引號、分隔字沒加引號的 heredoc
   let i = 0;
   let word = '';
   let wordStart = true; // 目前的字是否還沒有任何字元
@@ -215,13 +227,16 @@ function scan(command) {
       i++;
       // heredoc 的內容從下一行開始，到單獨一行的結束字為止。
       while (heredocs.length) {
-        const { tag, strip } = heredocs.shift();
+        const { tag, strip, quoted } = heredocs.shift();
+        let hit = false;
         while (i < command.length) {
           const next = command.indexOf('\n', i);
           const line = command.slice(i, next < 0 ? command.length : next);
           i = next < 0 ? command.length : next + 1;
           if ((strip ? line.replace(/^\t+/, '') : line) === tag) break;
+          if (!quoted && BACKTICK.test(line)) hit = true;
         }
+        if (hit) backticks.push(strip ? `-${tag}` : tag);
       }
       continue;
     }
@@ -248,6 +263,7 @@ function scan(command) {
           argGlobs.push(...sub.argGlobs);
           if (sub.pipestatus) pipestatus = true;
           modifiers.push(...sub.modifiers);
+          backticks.push(...sub.backtickHeredocs);
         }
       }
       word += command.slice(i, j + 1);
@@ -262,8 +278,10 @@ function scan(command) {
     }
     if (c === '<' && command[i + 1] === '<' && command[i + 2] !== '<') {
       end();
-      const m = command.slice(i).match(/^<<(-?)\s*(['"]?)([\w.-]+)\2/);
-      if (m) { heredocs.push({ tag: m[3], strip: m[1] === '-' }); i += m[0].length; continue; }
+      // 分隔字只要有一部分加引號或跳脫（`<<'EOF'`、`<<E"OF"`、`<<\EOF`），整個本文就不展開。
+      const m = command.slice(i).match(/^<<(-?)\s*((?:[\w.-]|'[\w.-]*'|"[\w.-]*"|\\[\w.-])+)/);
+      const tag = m?.[2].replace(/['"\\]/g, '');
+      if (tag) { heredocs.push({ tag, strip: m[1] === '-', quoted: /['"\\]/.test(m[2]) }); i += m[0].length; continue; }
       i += 2;
       continue;
     }
@@ -303,7 +321,7 @@ function scan(command) {
   end();
   const seen = new Set();
   const unique = modifiers.filter(m => !seen.has(m.word) && seen.add(m.word));
-  return { equals: found, nomatch, pipestatus, forGlobs, argGlobs, modifiers: unique, splits: [...new Set(splits)] };
+  return { equals: found, nomatch, pipestatus, forGlobs, argGlobs, modifiers: unique, splits: [...new Set(splits)], backtickHeredocs: backticks };
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
@@ -315,10 +333,10 @@ if (isMain) {
   const command = input?.tool_input?.command;
   if (input?.tool_name && input.tool_name !== 'Bash') process.exit(0);
   if (typeof command !== 'string') process.exit(0);
-  const { equals, nomatch, pipestatus, modifiers, splits } = scan(command);
+  const { equals, nomatch, pipestatus, modifiers, splits, backtickHeredocs: heredocTicks } = scan(command);
   const unmatchedFor = unmatchedForGlobs(command, { cwd: input?.cwd });
   const args = unmatchedArgGlobs(command, { cwd: input?.cwd });
-  if (!equals.length && !nomatch.length && !pipestatus && !unmatchedFor.length && !args.length && !modifiers.length && !splits.length) process.exit(0);
+  if (!equals.length && !nomatch.length && !pipestatus && !unmatchedFor.length && !args.length && !modifiers.length && !splits.length && !heredocTicks.length) process.exit(0);
   const lines = [];
   if (equals.length) lines.push(
     `zsh 會把沒加引號、以 = 開頭的字當 EQUALS 展開成指令路徑：${equals.map(w => `\`${w}\``).join('、')}。`,
@@ -356,6 +374,11 @@ if (isMain) {
       `改用陣列：\`${name}=(a b c)\` 再寫 \`"\${${name}[@]}"\`（bash、zsh 都切成各元素）；要整串當一個參數時加雙引號 \`"$${name}"\`。`,
     );
   }
+  if (heredocTicks.length) lines.push(
+    `分隔字沒加引號的 heredoc 本文含反引號：${heredocTicks.map(t => `\`<<${t}\``).join('、')}。反引號會被當成指令替換執行，Markdown 的 code span 變成指令（#498）。`,
+    'zsh 印 `command not found`、`parse error`，寫出的檔案內容不完整，後面的指令卻照跑，看起來像成功。',
+    `改用 ${heredocTicks.map(t => `\`<<${t[0] === '-' ? `-'${t.slice(1)}'` : `'${t}'`}\``).join('、')}（本文原樣寫入），需要變數時事後代入（例如 \`sed\`）；或用 Write 工具寫檔。`,
+  );
   if (pipestatus) lines.push(
     'Bash 工具跑的是 zsh，bash 的 `$PIPESTATUS` 在 zsh 展開成空字串，pipe 前那支指令的 exit code 會不見（#238）。',
     '改用 zsh 的 `${pipestatus[1]}`（從 1 起算），或不要 pipe，直接看結果行。',

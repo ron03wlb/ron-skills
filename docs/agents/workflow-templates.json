@@ -92,8 +92,8 @@
     },
     "scripts/claude-hook-zsh-equals.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-zsh-equals.mjs",
-      "commit": "75d98fe38787e746f91dcb08de3bc1811515dc32",
-      "sha256": "e283a3029dfe19b1070a0fab8c22b6c1ee508770875a91ff39b1e80816ae1f1c"
+      "commit": "c8c1073789afc5bd32ea9ac7454e45f01ffbefa5",
+      "sha256": "75bc8779be34971456618e0f6f498e7d0138afc21e0b75681afac8dde80c60a0"
     },
     "scripts/doc-excerpt.mjs": {
       "template": "skills/engineering/setup-workflow/templates/doc-excerpt.mjs",
@@ -152,7 +152,7 @@
     },
     "scripts/lib/shell-quote.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/shell-quote.mjs",
-      "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
+      "commit": "c8c1073789afc5bd32ea9ac7454e45f01ffbefa5",
       "sha256": "d5700b2ff787cc9f8a7e040da0835c574a4d8936eef4909673a31077501ca687"
     },
     "scripts/memory-audit.mjs": {
