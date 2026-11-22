@@ -707,6 +707,21 @@ test('--fresh：-prior 留住原分支，新分支從目前的整合分支開出
   assert.deepEqual(fx.posted(), [{ issue: '46', body: `重派：與 pilot/integration 的 Stage 條目衝突，從新 base 整併。\n\nprior: issue/46-pilot-dispatch-prior @ ${fx.head}` }]);
 });
 
+// investing#549 第 5 項（#437）：第二輪 --fresh 草稿撞上前一輪已填的 fresh-<n>.md，STOP draft-filled，只能手動 mv 成 fresh-<n>-r1.md。
+test('--fresh 派出後把 fresh-<n>.md 歸檔成下一個空號的 fresh-<n>-r<k>.md，印 DRAFT_ARCHIVED；沒有草稿時不印', t => {
+  const fx = conflicted(t);
+  const dir = join(fx.repo, '.scratch/pilot');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'fresh-46.md'), '# fresh-46\n\n## 怎麼整併\n\n照整合分支改寫。\n');
+  writeFileSync(join(dir, 'fresh-46-r1.md'), 'round 1\n');
+  const result = fresh(fx);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['DISPATCHED 46 term_46_3', `PRIOR 46 issue/46-pilot-dispatch-prior ${fx.head}`, `DRAFT_ARCHIVED 46 ${join(dir, 'fresh-46-r2.md')}`]);
+  assert.equal(existsSync(join(dir, 'fresh-46.md')), false);
+  assert.equal(readFileSync(join(dir, 'fresh-46-r2.md'), 'utf8'), '# fresh-46\n\n## 怎麼整併\n\n照整合分支改寫。\n');
+  assert.equal(readFileSync(join(dir, 'fresh-46-r1.md'), 'utf8'), 'round 1\n');
+});
+
 test('--fresh 把原 batch 的成員全部搬走：原 batch 的 current: 寫成 closed moved，只搬走一個時不動（#205）', t => {
   const fx = conflicted(t);
   const tree23 = join(fx.root, 'issue-23');

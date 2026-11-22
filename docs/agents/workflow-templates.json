@@ -102,7 +102,7 @@
     },
     "scripts/gh-tracker.mjs": {
       "template": "skills/engineering/setup-workflow/templates/gh-tracker.mjs",
-      "commit": "4859d89ac0798a12b50c9681d0fa9c610982185e",
+      "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
       "sha256": "79ea206d5975a3824776e08fd9b2e47e66a9681f2a38498deacfd42e4e4d98b6"
     },
     "scripts/hook-acceptance.mjs": {
@@ -152,7 +152,7 @@
     },
     "scripts/lib/shell-quote.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/shell-quote.mjs",
-      "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
+      "commit": "e3f47ccf038330b1613fcad61490dec0cbf70965",
       "sha256": "3e5db11b40e187cbbb728d34d2493725658693dbefc6fe5274dfa0fa98002192"
     },
     "scripts/memory-audit.mjs": {
@@ -172,7 +172,7 @@
     },
     "scripts/orca-worktree-create.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-worktree-create.mjs",
-      "commit": "4859d89ac0798a12b50c9681d0fa9c610982185e",
+      "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
       "sha256": "01d40e755d4c42f65b8b19154a348cd00bb5ea2c4a7c5f5c3cdd8ffe4d5ff2bb"
     },
     "scripts/parent-hints.mjs": {
@@ -182,8 +182,8 @@
     },
     "scripts/pilot-batch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-batch.mjs",
-      "commit": "55505003094a5452f4a9b3109ce6b290e8305e97",
-      "sha256": "942813096b331c787e3004708e52c1dee4d5cb478662ee4611507b6dbf4aed63"
+      "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
+      "sha256": "03c75da7761e6f9f0532ee386de74b39d02f4022395e7e30de002de9dfcc7428"
     },
     "scripts/pilot-capacity.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-capacity.mjs",
@@ -207,8 +207,8 @@
     },
     "scripts/pilot-dispatch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-dispatch.mjs",
-      "commit": "4859d89ac0798a12b50c9681d0fa9c610982185e",
-      "sha256": "ea00f88848540d56f9b565fca759b789983b47badacb11a4c18c2a3ea2db47f0"
+      "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
+      "sha256": "b1c7a037737afacf818920055c7368481d4b19aa7e3557f82850f9a5c8bf5eab"
     },
     "scripts/pilot-gate.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-gate.mjs",

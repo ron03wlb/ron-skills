@@ -45,6 +45,8 @@
 //   認領不在這裡做：coordinator 照 Dispatch 先跑 claim；這裡只在動手前同樣檢查認領，不是這個 session 的就 `STOP <n> not-claimed`，什麼都不動。
 //   沒帶 --note（#227）時只寫 `<主 checkout>/.scratch/pilot/fresh-<n>.md` 草稿、印 `NOTE_DRAFT <path>`，不派工：唯讀（只有 gh 讀 Issue 標題），
 //   不檢查認領、不需要 ORCA_CLI_COMMAND，不改名分支、不開關分頁、不留言；帶派工才用的 --again、--allow-overlap、--capacity、--repo-cap、--stuck-after 是用法錯誤（exit 2）。
+//   帶 --note 的 --fresh 印 DISPATCHED 之後，草稿（不論 --note 指哪個檔）改名成第一個空號的 `fresh-<n>-r<k>.md`（k 從 1 起），印 `DRAFT_ARCHIVED <n> <path>`（#437：
+//   下一輪的草稿撞上前一輪已填的 fresh-<n>.md，只能手動 mv）；STOP 時不歸檔。
 //   草稿已在時覆寫，但它的「怎麼整併」已經有內容（coordinator 補過、漏帶 --note 重跑）時印 `STOP <n> draft-filled <path>`，不動它。內容：原 Issue 號碼與標題；
 //   prior 分支與 SHA（batch-<key>.md 那列的 candidate，空的取分支 tip）與 `git merge-base <分支> <整合分支>`；成員（prior SHA）與整合分支
 //   自 merge-base 以來共同改過的檔，各附兩邊的 `git diff --stat` 那一行，`.md` 再附兩邊改到的 `- **<名稱>.**` 條目（pilot-probe 的 changedUnits；有條目外的改動時另註明），不印完整 diff；
@@ -80,7 +82,7 @@
 //   send 的 STOP 記 running：worker 可能其實已在跑，交給 Probe 判定，#354），STOP 原因只在 stdout。
 //   每個成員的 STOP 行（含 --fresh 與草稿的）最後一欄是 ` row=<kept|stop|running>`：這一行之後成員列沒動（kept），或寫成 stop、running（investing#481：
 //   哪些 STOP 改寫成員列以前只能讀程式碼）。HOLD 行不改成員列。不屬於成員的 STOP capacity、STOP orca-unavailable 不寫任何列，也沒有這一欄。
-//   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
+//   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`，有草稿時再印 `DRAFT_ARCHIVED <n> <path>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
 // exit：0 全部派出（草稿：寫好）；4 有成員 STOP 或 HOLD（或 STOP capacity、STOP orca-unavailable）；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤（含草稿帶了派工旗標、Env sync 宣告寫錯）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -639,6 +641,20 @@ function freshDraft(main, key, integration, { n, branch }) {
   return { path };
 }
 
+/**
+ * --fresh 派出後（#437）：這一輪用過的 fresh-<n>.md 改名成第一個空號的 fresh-<n>-r<k>.md（k 從 1 起），下一輪草稿才不撞上 draft-filled。
+ * 傳回歸檔後的路徑，沒有草稿時 undefined。
+ */
+function archiveDraft(main, n) {
+  const draft = join(main, `.scratch/pilot/fresh-${n}.md`);
+  if (!existsSync(draft)) return undefined;
+  let k = 1;
+  while (existsSync(join(main, `.scratch/pilot/fresh-${n}-r${k}.md`))) k++;
+  const archived = join(main, `.scratch/pilot/fresh-${n}-r${k}.md`);
+  renameSync(draft, archived);
+  return archived;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const positional = [];
@@ -742,6 +758,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       // --fresh 一律寫成員列（keep 也寫），所以 row 照 rowState。
       console.log(result.stop ? stopLine(member.n, result.stop, rowState(result.stop)) : `DISPATCHED ${member.n} ${result.handle}\nPRIOR ${member.n} ${ready.prior} ${ready.sha}`);
       writeRow(ready.checkpoint, member.n, [member.branch, result.worktree ?? ready.worktree, result.handle ?? '', started, options.stuckAfter, rowState(result.stop)]);
+      if (!result.stop) {
+        const archived = archiveDraft(main, member.n);
+        if (archived) console.log(`DRAFT_ARCHIVED ${member.n} ${archived}`);
+      }
       reportDispatched(result.stop ? 0 : 1);
       clearTimeout(budget);
       process.exit(result.stop ? 4 : 0);
