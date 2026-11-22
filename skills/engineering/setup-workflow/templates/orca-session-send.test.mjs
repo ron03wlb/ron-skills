@@ -80,6 +80,54 @@ test('第一輪仍忙碌時再等一輪；兩輪都忙碌 STOP tui-timeout，不
   assert.doesNotMatch(readFileSync(log, 'utf8'), /terminal send/);
 });
 
+// #535 真實發生過：`terminal wait` 等不到 tui-idle 時 Orca CLI 回 { ok: false, error: { code: 'timeout' } }，不是 satisfied: false；
+// 舊碼第一輪就 STOP orca timeout，第二輪沒機會跑。#536：新分頁卡在 Settings Warning 對話框，兩輪逾時後分頁被關，畫面證據跟著消失。
+// 畫面照抄 #536 的真實對話框。
+const SETTINGS_WARNING = ['Settings Warning', '', ' permissions.allow: Invalid permission rule', '', '❯ 1. Continue', '  2. Fix with Claude', '  3. Exit and fix manually', '', ''];
+
+function waitTimeoutFixture(t, { timeouts, screen = SETTINGS_WARNING, readFails = false }) {
+  return fakeOrca(t, (temp, log) => `
+const waits = (fs.readFileSync(${JSON.stringify(log)}, 'utf8').match(/terminal wait/g) || []).length;
+if (b === 'wait' && waits <= ${timeouts}) fail('timeout');
+else if (b === 'wait') reply('wait', { wait: { satisfied: true } });
+else if (b === 'read' && ${readFails}) fail('terminal_handle_stale');
+else if (b === 'read' && has('--screen')) reply('read', { terminal: { tail: ${JSON.stringify(screen)}, draft: '' } });
+else if (b === 'send') { fs.appendFileSync(${JSON.stringify(log)} + '.sent', arg('--text') + '\\n'); reply('send', { send: { accepted: true } }); }
+else if (b === 'read') { const sent = ${JSON.stringify(log)} + '.sent'; reply('read', { terminal: { tail: ['> ' + (fs.existsSync(sent) ? fs.readFileSync(sent, 'utf8').trim() : '')], draft: '' } }); }
+`);
+}
+
+test('terminal wait 第一輪回 timeout 錯誤碼：當作未就緒再等一輪，照常 SENT（#535）', t => {
+  const { send } = waitTimeoutFixture(t, { timeouts: 1 });
+  const result = send(['--terminal', 'term_w', '--prompt', PROMPT]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'SENT term_w');
+  assert.doesNotMatch(result.stderr, /SCREEN_TAIL/);
+});
+
+test('terminal wait 兩輪都回 timeout 錯誤碼：STOP tui-timeout，stderr 先附畫面尾巴（#535、#536）', t => {
+  const { log, send } = waitTimeoutFixture(t, { timeouts: 2 });
+  const result = send(['--terminal', 'term_w', '--prompt', PROMPT]);
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(result.stdout.trim(), 'STOP tui-timeout term_w');
+  assert.match(result.stderr, /^SCREEN_TAIL term_w\n {2}Settings Warning\n/m);
+  assert.match(result.stderr, /^ {2}❯ 1\. Continue$/m);
+  assert.doesNotMatch(result.stderr, /\n {2}\n?$/, '尾端空行不印');
+  assert.match(readFileSync(log, 'utf8'), /^terminal read --terminal term_w --screen --json$/m);
+  assert.doesNotMatch(readFileSync(log, 'utf8'), /terminal send/);
+});
+
+test('畫面只留最後 15 行；讀不到畫面時印 SCREEN_TAIL_UNAVAILABLE，STOP 與 exit 碼不變（#536）', t => {
+  const long = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+  const kept = waitTimeoutFixture(t, { timeouts: 2, screen: long }).send(['--terminal', 'term_w', '--prompt', PROMPT]);
+  assert.equal(kept.stdout.trim(), 'STOP tui-timeout term_w');
+  assert.deepEqual(kept.stderr.trim().split('\n'), ['SCREEN_TAIL term_w', ...long.slice(-15).map(line => `  ${line}`)]);
+  const failed = waitTimeoutFixture(t, { timeouts: 2, readFails: true }).send(['--terminal', 'term_w', '--prompt', PROMPT]);
+  assert.equal(failed.status, 4);
+  assert.equal(failed.stdout.trim(), 'STOP tui-timeout term_w');
+  assert.match(failed.stderr, /^SCREEN_TAIL_UNAVAILABLE term_w terminal_handle_stale$/m);
+});
+
 // 真實發生過的錯：裸 `terminal send` 回 accepted、文字卻沒提交，重送又黏成兩份。
 test('送出被吞：讀畫面確認後重送；三次都被吞 STOP send', t => {
   const late = fixture(t, { swallow: 1 });

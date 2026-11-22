@@ -11,6 +11,7 @@
 //
 // 用法（cwd 為 repo 內任一 checkout）：node scripts/orca-session-split.mjs --title <分頁標題（split 模式不用）> --prompt <第一個 prompt> [--tab | --worktree <path>]
 // stdout：OPENED <terminal handle>，或 STOP <原因>（create <錯誤>、tui-timeout <handle>、send <handle>、orca <錯誤碼>）。
+//   tui-timeout 時 stderr 先印分頁畫面尾巴（orca-session-send.mjs 的 `SCREEN_TAIL`，#536）。
 // exit：0 已送出；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';

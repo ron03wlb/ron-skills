@@ -16,13 +16,19 @@
 //
 // 用法：node scripts/orca-session-send.mjs --terminal <handle> --prompt <text> [--queue]
 // stdout 最後一行：SENT <handle>、QUEUED <handle>（--queue），或 STOP <原因>（tui-timeout <handle>、send <handle>、draft-not-empty <handle>、draft-unavailable <handle>（後兩者只在 --queue）、orca <錯誤碼>）。
+//   步驟逾時的 orca 原因帶出步驟與已花時間：`orca timeout <terminal 子指令> <毫秒>ms`（#535）。
 // stderr：不帶 --queue 時，第一次送出因 composer 已有該 prompt 而只補 Enter 時印 `DRAFT_SUBMIT <handle>`（不含 prompt 文字）。
+//   `tui-timeout` 時先讀該分頁的畫面再回 STOP（呼叫者之後可能關掉分頁，畫面就跟著消失，#536）：印 `SCREEN_TAIL <handle>` 加最後 15 行（每行前面兩個空白），
+//   讀不到時印 `SCREEN_TAIL_UNAVAILABLE <handle> <原因>`；兩者都不改 stdout 的 STOP 行與 exit 碼。
 // exit：0 已送達；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
 const USAGE = '用法：node scripts/orca-session-send.mjs --terminal <handle> --prompt <text> [--queue]（需要 ORCA_CLI_COMMAND）';
+
+/** tui-timeout 時附在 stderr 的畫面行數。 */
+const SCREEN_TAIL_LINES = 15;
 
 /** 每輪等 TUI 就緒的上限；共等兩輪（實測第一次常逾時、第二次在 30 秒內就緒）。 */
 const TUI_WAIT_MS = Number(process.env.SESSION_TUI_WAIT_MS || 120000);
@@ -72,29 +78,69 @@ export function repairJson(text) {
 }
 
 /**
- * Orca CLI 呼叫；回傳 JSON 的 result，失敗丟出含錯誤碼的 Error。輸出不是合法 JSON 時先以 repairJson 修過再解析一次。
+ * Orca CLI 呼叫；回傳 JSON 的 result，失敗丟出含錯誤碼（`code`）的 Error。輸出不是合法 JSON 時先以 repairJson 修過再解析一次。
  * `signal` 中止時殺掉 CLI 並丟出 AbortError（呼叫者用它限制總時間、處理 SIGTERM）。
+ * 逾時有兩種：CLI 自己回 `{ ok: false, error: { code: 'timeout' } }`（`terminal wait` 等不到條件），或呼叫者的 `AbortSignal.timeout` 殺掉它；
+ * 兩者的訊息都帶出步驟與已花時間，例如 `timeout terminal list 10003ms`，STOP 行才看得出是哪一步（#535，investing 連續三次交接失敗）。
+ * 其他失敗的訊息不變：Orca 的錯誤碼；總預算與 SIGTERM 的中止（reason 是字串）也維持原樣。
  */
 export async function orca({ cli, signal }, ...args) {
-  const child = spawn(cli, [...args, '--json'], { stdio: ['ignore', 'pipe', 'pipe'], signal });
-  let stdout = '', stderr = '';
-  child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
-  child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
-  const status = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
-  let body;
-  try { body = JSON.parse(stdout); } catch {
-    try { body = JSON.parse(repairJson(stdout)); } catch { throw new Error((stderr || stdout || '').trim().split('\n').pop() || `exit ${status}`); }
+  const started = Date.now();
+  const timedOut = () => `timeout ${args.slice(0, 2).join(' ')} ${Date.now() - started}ms`;
+  try {
+    const child = spawn(cli, [...args, '--json'], { stdio: ['ignore', 'pipe', 'pipe'], signal });
+    let stdout = '', stderr = '';
+    child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+    const status = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
+    let body;
+    try { body = JSON.parse(stdout); } catch {
+      try { body = JSON.parse(repairJson(stdout)); } catch { throw new Error((stderr || stdout || '').trim().split('\n').pop() || `exit ${status}`); }
+    }
+    if (!body.ok) {
+      const code = body.error?.code ?? body.error?.message ?? 'orca 失敗';
+      throw Object.assign(new Error(code === 'timeout' ? timedOut() : code), { code });
+    }
+    return body.result;
+  } catch (error) {
+    // 步驟上限（AbortSignal.timeout）到了：AbortError 的 cause 是 TimeoutError。
+    if (error.name === 'AbortError' && error.cause?.name === 'TimeoutError') {
+      throw Object.assign(new Error(timedOut()), { code: 'timeout', name: 'AbortError', cause: error.cause });
+    }
+    throw error;
   }
-  if (!body.ok) throw new Error(body.error?.code ?? body.error?.message ?? 'orca 失敗');
-  return body.result;
 }
 
-/** 等 terminal 的 Claude TUI 就緒，最多兩輪。 */
+/**
+ * 等 terminal 的 Claude TUI 就緒，最多兩輪。Orca CLI 等不到條件時回 `timeout` 錯誤碼（不是 `satisfied: false`），
+ * 這輪算未就緒、照常再等一輪；其他錯誤與呼叫者的中止照舊丟出（#535）。
+ * 兩輪都沒就緒時，回 false 前先以 reportScreenTail 把畫面尾巴印到 stderr（呼叫者接著可能關掉分頁，#536）。
+ */
 export async function waitTuiReady(ctx, handle) {
   for (let round = 0; round < 2; round++) {
-    if ((await orca(ctx, 'terminal', 'wait', '--terminal', handle, '--for', 'tui-idle', '--timeout-ms', String(TUI_WAIT_MS))).wait?.satisfied) return true;
+    try {
+      if ((await orca(ctx, 'terminal', 'wait', '--terminal', handle, '--for', 'tui-idle', '--timeout-ms', String(TUI_WAIT_MS))).wait?.satisfied) return true;
+    } catch (error) {
+      if (error.code !== 'timeout' || ctx.signal?.aborted) throw error;
+    }
   }
+  await reportScreenTail(ctx, handle);
   return false;
+}
+
+/**
+ * tui-timeout 時把分頁畫面最後幾行印到 stderr：分頁常卡在啟動對話框（例如 Settings Warning），呼叫者關掉分頁後就看不到（#536）。
+ * 讀取失敗只印原因，不丟錯、不改變 STOP。
+ */
+export async function reportScreenTail(ctx, handle) {
+  try {
+    const { tail = [] } = (await orca(ctx, 'terminal', 'read', '--terminal', handle, '--screen')).terminal ?? {};
+    const lines = tail.map(line => line.trimEnd());
+    while (lines.length && !lines.at(-1)) lines.pop();
+    console.error([`SCREEN_TAIL ${handle}`, ...lines.slice(-SCREEN_TAIL_LINES).map(line => `  ${line}`)].join('\n'));
+  } catch (error) {
+    console.error(`SCREEN_TAIL_UNAVAILABLE ${handle} ${error.message}`);
+  }
 }
 
 /**

@@ -19,6 +19,17 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for reads
 
 Reads infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone. Writes need no inference: `scripts/gh-tracker.mjs` takes the host and repo from the adapter's Tracker section and always passes `--repo github.com/ron03wlb/ron-skills` (and `gh api --hostname github.com`), so neither the remote, the gh config's default host, nor `GH_HOST`/`GH_REPO` can redirect them. The same holds for the board: `scripts/project-sync.mjs` reads the same Tracker section, calls only `gh api graphql --hostname github.com`, writes only the Project linked to that repo, and refuses `--repo`, `--owner` and `--project` with `--apply` (#538).
 
+## 哪台機器的單
+
+本 repo 的單由兩台機器處理，各自只做自己開的單，避免同一張做兩次、合入時互相衝突。處理前（分流、`/retro-collect`、`/issue-run`、pilot 的 Pool）先判斷這張單是不是這台的：
+
+1. 單引用的 session（標題 `retro <前 8 碼>`、內文 `session <前 8 碼>` 或完整 UUID）在本機紀錄找得到：`find ~/.claude/projects -name '<id>*.jsonl'` 有結果，就是這台的單。
+2. 找不到 session，但單是從只在這台跑的 consumer repo 來的（標題帶該 repo 的 retro、內文寫「來源／從 <repo>#N 拆出」、在該 repo 實測或由它的 coordinator／commit 發現），也是這台的單；只是順帶提到那個 repo 不算。哪些 consumer 只在哪台跑，見 [CLAUDE.md](../../CLAUDE.md) 的 Other Repos。
+3. 引用的 session 不在本機、也不是從只在這台跑的 repo 來的，是另一台的單，不碰。
+4. 判斷不出來就不做，在回報或單上寫明。
+
+另外，單上已有 `認領：<機器>／<session>` 留言、`<機器>` 不是這台（`hostname`）時，表示另一台已在做，也跳過。單內開頭的 `Orca: term_…` 不能用來判斷：Orca 不保存已關閉分頁的 handle，查不到不代表是另一台開的。
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
