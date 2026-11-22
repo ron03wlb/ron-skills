@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
+import { gateIssues } from './lib/pilot-store.mjs';
 
 // 正本的通用路徑：沒有專案 resolver 時只自己解 workflow-templates.json 的 restamp，其他衝突一律 STOP conflict；
 // 專案值（regression 指令、整合分支、主分支、resolver）都從參數來。ron-skills 的條目解法另在 tests/pilot-land.test.mjs 測。
@@ -108,6 +109,35 @@ test('done 成員被開著的 gate hold 住：STOP held <n> G<k>、exit 4，不 
   const landed = f.land(f.key);
   assert.equal(landed.status, 0, landed.stdout + landed.stderr);
   assert.match(landed.last, /^MERGED 320 [0-9a-f]{40}$/);
+});
+
+// #406（investing#457 第 2 項）：#432 帶著沒人答的 Operator 問題（confirm ruling）落地，下游 #434 照樣派工、停在 STOP decision。
+// 成員 checkpoint 的 `[confirm]` ruling 在 gates.md 沒有任何 gate 指向該 Issue 時不 stage；開了 gate（開著或已 resolved）就照常。
+test('done 成員的 checkpoint 有 [confirm] ruling、gates.md 沒有它的 gate：STOP operator-questions <n> <數量>；開了 gate 後 MERGED', t => {
+  const f = fixture(t, { members: [{ n: 432, files: { 'a.txt': 'a\n' } }] });
+  const tip = git(f.repo, 'rev-parse', 'pilot/integration');
+  write(f.temp, { 'issue-432/.scratch/issue-run-432/state.md': '# issue-run 432\n\n## rulings\n'
+    + '- [confirm] 來源用 A；Issue 沒指定；source 驗收 2；rejected B\n[confirm] budgets.yaml 額度 300；沿用舊值；source ADR 0002；rejected 500\n'
+    + '- [reversible] 測試放 tests/；慣例；source 驗收 1；rejected 無\n' });
+  write(f.repo, { '.scratch/pilot/gates.md': '# Gates\n\n## G7 #77 別張單\n- Issue：#77\n- opened：2026-11-18T11:00:00+08:00\n' });
+  const stopped = f.land(f.key);
+  assert.equal(stopped.status, 4, stopped.stdout + stopped.stderr);
+  assert.equal(stopped.last, 'STOP operator-questions 432 2');
+  assert.equal(f.checks(), '');
+  assert.match(f.read(), /^current: dispatched /m);
+  assert.equal(git(f.repo, 'rev-parse', 'pilot/integration'), tip);
+  write(f.repo, { '.scratch/pilot/gates.md': '# Gates\n\n## G29 #432 來源與額度\n- Issue：#432\n- opened：2026-11-19T11:00:00+08:00\n- resolved 2026-11-19T12:00:00+08:00 照 ruling\n' });
+  const landed = f.land(f.key);
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.match(landed.last, /^MERGED 432 [0-9a-f]{40}$/);
+});
+
+test('gateIssues：表格列的 Issue 欄與段落的 `- Issue：` 行，開著或已 resolved 都算；batch 欄與段落標題不算', () => {
+  const text = '# Gates\n\n| id | Issue | question | options | default | parks | opened | status |\n|---|---|---|---|---|---|---|---|\n'
+    + '| G1 | #9 | 誰？ | a｜b | b | #10 | 2026-10-30T13:23:09+08:00 | resolved 2026-10-30T13:29:27+08:00 選 b |\n'
+    + '| G5 | batch 11 | 改名？ | 改｜不改 | 改 | - | 2026-10-31T11:00:00+08:00 | open |\n\n'
+    + '## G28 #320 等人決定\n- Issue：#320、#321\n- hold：#320\n\n## G29 #55 只有標題\n- opened：2026-11-18T11:00:00+08:00\n';
+  assert.deepEqual([...gateIssues(text)].sort(), ['320', '321', '9']);
 });
 
 test('--integration：stage 從指定的整合分支開、MERGED 後快轉它', t => {

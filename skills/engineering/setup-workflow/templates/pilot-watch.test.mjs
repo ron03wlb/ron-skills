@@ -37,14 +37,14 @@ else reply('read', { terminal: screen });
   chmodSync(cli, 0o755);
   const pilot = join(temp, 'checkout', '.scratch/pilot');
   mkdirSync(pilot, { recursive: true });
-  const batch = (key, members) => writeFileSync(join(pilot, `batch-${key}.md`), `# batch ${key}
+  const batch = (key, members, extra = '') => writeFileSync(join(pilot, `batch-${key}.md`), `# batch ${key}
 current: dispatched 2026-11-21T09:00:00+08:00
 integration: pilot/integration @ 1234567
 
 | Issue | branch | worktree | handle | started | stuck-after | state | candidate |
 |---|---|---|---|---|---|---|---|
 ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle} | 2026-11-21T09:00:00+08:00 | 90m | ${m.state ?? 'running'} | |`).join('\n')}
-`);
+${extra}`);
   const run = (args, extraEnv = { ORCA_CLI_COMMAND: cli }) =>
     spawnSync('node', [script, ...args], { encoding: 'utf8', env: { ...env, ...extraEnv }, cwd: temp, timeout: 20000 });
   const reads = handle => readFileSync(log, 'utf8').split('\n').filter(line => line.includes(`--terminal ${handle} `)).length;
@@ -73,11 +73,30 @@ test('啟動時畫面已有舊 STOP 130：不算，之後出現新 DONE 才退�
     { status: 'running', tail: [old, '● 重跑中', '❯'] },
     { status: 'running', tail: [old, '● 重跑中', `DONE 130 ${SHA}`, '❯'] },
   ] });
-  batch('130', [{ n: 130, handle: 'term_130' }]);
+  batch('130', [{ n: 130, handle: 'term_130' }], `resumed: #130 2026-11-21T10:00:00+08:00 ${old.trim()}\n`);
   const result = run(['--batch', '130', '--checkout', 'checkout', ...fast]);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, `RESULT 130 term_130 DONE 130 ${SHA}\n`);
   assert.equal(reads('term_130'), 4);
+});
+
+// #406（investing#469 第 2 項）：pilot-batch resume 之後、watcher 啟動之前 worker 已印 DONE，畫面基準把它吞掉，watcher 一直不通知。
+// batch 成員改照 Probe 的 WORKER：只略過 `resumed:` 記下的那一行，啟動時已在畫面上的新結果行照報。
+test('batch 成員在 resume 後、watcher 啟動前已印 DONE：第一輪就回報，只略過 resumed 記下的舊結果行', t => {
+  const old = 'STOP 430 decision 舊的取捨';
+  const { batch, run, reads } = fixture(t, { term_430: [{ status: 'running', tail: [old, '● 照答案做', `  DONE 430 ${SHA}`, '❯'] }] });
+  batch('430', [{ n: 430, handle: 'term_430' }], `resumed: #430 2026-11-21T18:20:00+08:00 ${old}\n`);
+  const result = run(['--batch', '430', '--checkout', 'checkout', ...fast]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `RESULT 430 term_430 DONE 430 ${SHA}\n`);
+  assert.equal(reads('term_430'), 1);
+});
+
+test('batch 成員沒有 resumed 行、啟動時畫面已有自己的結果行：第一輪就回報（與 Probe 的 WORKER 同一判斷）', t => {
+  const { batch, run } = fixture(t, { term_436: [{ status: 'running', tail: [`DONE 436 ${SHA}`, '❯'] }] });
+  batch('436', [{ n: 436, handle: 'term_436' }]);
+  const result = run(['--batch', '436', '--checkout', 'checkout', ...fast]);
+  assert.equal(result.stdout, `RESULT 436 term_436 DONE 436 ${SHA}\n`);
 });
 
 test('啟動時畫面已有舊 STOP，之後出現不同的新 STOP 也退出', t => {

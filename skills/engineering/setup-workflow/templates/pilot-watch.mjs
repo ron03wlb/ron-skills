@@ -3,7 +3,9 @@
 // 每 interval 秒讀每個 handle 的 `terminal read --screen`（經 orca-session-send.mjs 的 orca()：不經 shell、不依賴 jq，tail 帶反斜線時先修 JSON），
 // 結果行的判斷與 Probe 的 WORKER 共用 pilot-probe.mjs 的 resultMatch（容忍縮排、TUI 框線與 bullet、略過提示列），不另寫一份
 // （#325：自寫的 `^(DONE|STOP) [0-9]+` 漏抓兩格縮排的結果行，漏掉 STOP 約 1 小時）。
-// 啟動時先記下每個 handle 畫面上已有的結果行當基準，不報（#323：resume 後畫面還留著舊 STOP）；之後最後一個結果行不在基準裡才算新結果。
+// 直接給的 handle：啟動時先記下畫面上已有的結果行當基準，不報（#323：resume 後畫面還留著舊 STOP）；之後最後一個結果行不在基準裡才算新結果。
+// batch 成員照 Probe 的 WORKER 判斷：最後一個結果行就是結果，只略過成員 `resumed:` 行記下的 resume 前舊結果（pilot-batch resume，#356），
+// 啟動時已在畫面上的新結果行第一輪就報（#406：resume 後、watcher 啟動前印的 DONE 被畫面基準吞掉，watcher 一直不通知）。
 // 有一個 handle 出現新結果或 terminal 已結束（`status: exited`）就印出這一輪的事件並結束：coordinator 以背景執行它，結束即被叫醒，處理後再起一次。
 //
 // 用法：node scripts/pilot-watch.mjs [<handle>|<checkpoint>.md]... [--batch <key>]... [--checkout <主 checkout>] [--interval <秒>]
@@ -75,7 +77,7 @@ export function parseArgs(argv) {
 export const batchKey = file => basename(file, '.md').replace(/^batch-/, '');
 
 /**
- * 監看主迴圈。targets 是 [{ batch, handle, n }]（n 缺省時任何號碼都算）；read(handle) 傳回 { tail, status }，失敗時丟出；
+ * 監看主迴圈。targets 是 [{ batch, handle, n, resumed }]（n 缺省時任何號碼都算；有 n 的是 batch 成員，resumed 是它 `resumed:` 行記下的舊結果行）；read(handle) 傳回 { tail, status }，失敗時丟出；
  * wait(ms) 等下一輪；print(line) 印一行。第一輪記基準（已結束的 terminal 直接回報），之後每輪讀一次，有事件就印完這一輪後傳回 0。
  */
 export async function watch({ targets, intervalMs = 60_000, read, wait = sleep, print = line => process.stdout.write(`${line}\n`) }) {
@@ -101,6 +103,13 @@ export async function watch({ targets, intervalMs = 60_000, read, wait = sleep, 
         continue;
       }
       const tail = screenLines(terminal.tail);
+      if (n !== undefined) {
+        // batch 成員：與 Probe 的 workerState 同一判斷，沒有畫面基準。
+        const match = resultMatch(tail, n);
+        if (match && match.line !== target.resumed) { print(`RESULT ${batch} ${handle} ${match.line}`); events++; }
+        else if (terminal.status === 'exited') { print(`EXITED ${batch} ${handle}`); events++; }
+        continue;
+      }
       if (!seen.has(handle)) {
         // 基準：畫面上這個成員已有的每一個結果行。讀不到的 handle 等第一次讀到時才記。
         seen.set(handle, new Set(tail.map(raw => resultMatch([raw], n)?.line).filter(Boolean)));
@@ -160,7 +169,7 @@ async function main(argv) {
     }
     const running = parseBatch(text).members.filter(member => member.state === 'running' && member.handle);
     if (!running.length) process.stdout.write(`NO_RUNNING ${key}\n`);
-    targets.push(...running.map(member => ({ batch: key, handle: member.handle, n: member.n })));
+    targets.push(...running.map(member => ({ batch: key, handle: member.handle, n: member.n, resumed: member.resumed })));
   }
   const read = async handle => (await orca(ctx, 'terminal', 'read', '--terminal', handle, '--screen')).terminal ?? {};
   return watch({ targets, intervalMs: options.intervalMs, read });
