@@ -2106,3 +2106,44 @@ test('--handoff-after <n> 帶入門檻；不是正整數時是用法錯誤', t =
   assert.deepEqual(handoffOutput(probe({ args: ['--handoff-after', '1'] })), ['HANDOFF_COUNT 2/1', 'HANDOFF_DUE']);
   for (const bad of ['0', 'x', '1.5']) assert.equal(probe({ args: ['--handoff-after', bad] }).status, 2, bad);
 });
+
+// #413 第 1 項（investing#516 第 1 項、investing#533 第 2 項）：pilot-watch 已印 `RESULT … DONE 508 <sha>`，worker 隨後結束，
+// 下一次 Probe 印 `WORKER 508 STUCK exited`、batch 列仍 running。畫面上沒有結果行時改讀 watch 記下的 `.scratch/pilot/results/<handle>`。
+test('畫面沒有結果行、terminal 已結束：讀 watch 記下的結果，印 WORKER <n> DONE 並由 --apply 寫回', t => {
+  const { batch, probe, pilot } = fixture(t, { screens: {
+    term_508: { status: 'exited', tail: ['Bye!'] },
+    term_437: { status: 'running', tail: ['● 取消 loop', '❯'] },
+  } });
+  batch('437-508', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 437, started: ago(30) }, { n: 508, started: ago(30) }]);
+  mkdirSync(join(pilot, 'results'));
+  writeFileSync(join(pilot, 'results', 'term_508'), `${ago(2)} DONE 508 ${SHA}\n`);
+  writeFileSync(join(pilot, 'results', 'term_437'), `${ago(3)} STOP 437 decision 取捨\n`);
+  const result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(lines(result).includes(`WORKER 508 DONE ${SHA}`), result.stdout);
+  assert.ok(lines(result).includes('WORKER 437 STOP decision 取捨'), result.stdout);
+  const text = readFileSync(join(pilot, 'batch-437-508.md'), 'utf8');
+  assert.match(text, new RegExp(`\\| 508 \\|.*\\| done \\| ${SHA} \\|`));
+  assert.match(text, /\| 437 \|.*\| stop \| +\|/);
+});
+
+test('watch 的記錄早於成員的 started 或最後一次 resumed、號碼不符時不算；畫面上的結果行優先', t => {
+  const OTHER = 'c'.repeat(40);
+  const { batch, probe, pilot } = fixture(t, { screens: {
+    term_1: { status: 'exited', tail: ['Bye!'] },
+    term_2: { status: 'exited', tail: ['Bye!'] },
+    term_3: { status: 'exited', tail: ['Bye!'] },
+    term_4: { status: 'running', tail: [`DONE 4 ${OTHER}`, '❯'] },
+  } });
+  batch('1-4', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 1, started: ago(10) }, { n: 2, started: ago(30) }, { n: 3, started: ago(30) }, { n: 4, started: ago(30) }]);
+  const file = join(pilot, 'batch-1-4.md');
+  writeFileSync(file, `${readFileSync(file, 'utf8')}resumed: #2 ${ago(5)} -\n`);
+  mkdirSync(join(pilot, 'results'));
+  writeFileSync(join(pilot, 'results', 'term_1'), `${ago(20)} DONE 1 ${SHA}\n`);
+  writeFileSync(join(pilot, 'results', 'term_2'), `${ago(8)} DONE 2 ${SHA}\n`);
+  writeFileSync(join(pilot, 'results', 'term_3'), `${ago(2)} DONE 99 ${SHA}\n`);
+  writeFileSync(join(pilot, 'results', 'term_4'), `${ago(2)} DONE 4 ${SHA}\n`);
+  const out = lines(probe());
+  for (const n of [1, 2, 3]) assert.ok(out.includes(`WORKER ${n} STUCK exited`), out.join('\n'));
+  assert.ok(out.includes(`WORKER 4 DONE ${OTHER}`), out.join('\n'));
+});

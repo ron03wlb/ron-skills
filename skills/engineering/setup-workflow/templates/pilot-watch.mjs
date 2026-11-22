@@ -7,6 +7,8 @@
 // batch 成員照 Probe 的 WORKER 判斷：最後一個結果行就是結果，只略過成員 `resumed:` 行記下的 resume 前舊結果（pilot-batch resume，#356），
 // 啟動時已在畫面上的新結果行第一輪就報（#406：resume 後、watcher 啟動前印的 DONE 被畫面基準吞掉，watcher 一直不通知）。
 // 有一個 handle 出現新結果或 terminal 已結束（`status: exited`）就印出這一輪的事件並結束：coordinator 以背景執行它，結束即被叫醒，處理後再起一次。
+// batch 成員印 RESULT 時同時把結果行記進 checkpoint 同目錄的 `results/<handle>`（`<ISO 時間> <結果行>`，pilot-probe.mjs 的 recordResult）：
+// 結果行之後可能被捲走、terminal 可能結束，Probe 畫面上讀不到時改讀這份，--apply 照常寫回（#413 第 1 項）。記不進去時照樣印 RESULT、stderr 印原因。
 //
 // 用法：node scripts/pilot-watch.mjs [<handle>|<checkpoint>.md]... [--batch <key>]... [--checkout <主 checkout>] [--interval <秒>]
 //       node scripts/pilot-watch.mjs --tail <handle> [--lines <n>]
@@ -23,11 +25,11 @@
 //       2 用法錯誤或沒有 $ORCA_CLI_COMMAND。
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { orca } from './orca-session-send.mjs';
-import { parseBatch, resultMatch, screenLines, workerTail } from './pilot-probe.mjs';
+import { parseBatch, recordResult, resultMatch, screenLines, workerTail } from './pilot-probe.mjs';
 
 const USAGE = '用法：node scripts/pilot-watch.mjs [<handle>|<checkpoint>.md]... [--batch <key>]... [--checkout <主 checkout>] [--interval <秒>]｜node scripts/pilot-watch.mjs --tail <handle> [--lines <n>]（需要 ORCA_CLI_COMMAND）';
 
@@ -78,9 +80,9 @@ export const batchKey = file => basename(file, '.md').replace(/^batch-/, '');
 
 /**
  * 監看主迴圈。targets 是 [{ batch, handle, n, resumed }]（n 缺省時任何號碼都算；有 n 的是 batch 成員，resumed 是它 `resumed:` 行記下的舊結果行）；read(handle) 傳回 { tail, status }，失敗時丟出；
- * wait(ms) 等下一輪；print(line) 印一行。第一輪記基準（已結束的 terminal 直接回報），之後每輪讀一次，有事件就印完這一輪後傳回 0。
+ * wait(ms) 等下一輪；print(line) 印一行；record(target, line) 在 batch 成員印 RESULT 時收到它的結果行（#413）。第一輪記基準（已結束的 terminal 直接回報），之後每輪讀一次，有事件就印完這一輪後傳回 0。
  */
-export async function watch({ targets, intervalMs = 60_000, read, wait = sleep, print = line => process.stdout.write(`${line}\n`) }) {
+export async function watch({ targets, intervalMs = 60_000, read, wait = sleep, print = line => process.stdout.write(`${line}\n`), record = () => {} }) {
   const seen = new Map();
   // 同一個 handle 既直接給又是 batch 成員時以 batch 成員為準（只認自己的號碼、標出批次）。
   const unique = [];
@@ -106,7 +108,11 @@ export async function watch({ targets, intervalMs = 60_000, read, wait = sleep, 
       if (n !== undefined) {
         // batch 成員：與 Probe 的 workerState 同一判斷，沒有畫面基準。
         const match = resultMatch(tail, n);
-        if (match && match.line !== target.resumed) { print(`RESULT ${batch} ${handle} ${match.line}`); events++; }
+        if (match && match.line !== target.resumed) {
+          record(target, match.line);
+          print(`RESULT ${batch} ${handle} ${match.line}`);
+          events++;
+        }
         else if (terminal.status === 'exited') { print(`EXITED ${batch} ${handle}`); events++; }
         continue;
       }
@@ -169,10 +175,17 @@ async function main(argv) {
     }
     const running = parseBatch(text).members.filter(member => member.state === 'running' && member.handle);
     if (!running.length) process.stdout.write(`NO_RUNNING ${key}\n`);
-    targets.push(...running.map(member => ({ batch: key, handle: member.handle, n: member.n, resumed: member.resumed })));
+    targets.push(...running.map(member => ({ batch: key, handle: member.handle, n: member.n, resumed: member.resumed, pilot: dirname(file) })));
   }
   const read = async handle => (await orca(ctx, 'terminal', 'read', '--terminal', handle, '--screen')).terminal ?? {};
-  return watch({ targets, intervalMs: options.intervalMs, read });
+  const record = (target, line) => {
+    try {
+      recordResult(target.pilot, target.handle, line);
+    } catch (error) {
+      process.stderr.write(`RECORD_FAILED ${target.handle} ${oneLine(error.message)}\n`);
+    }
+  };
+  return watch({ targets, intervalMs: options.intervalMs, read, record });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

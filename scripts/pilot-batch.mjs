@@ -8,6 +8,10 @@
 //       node scripts/pilot-batch.mjs <checkout> accept <key> <n> <sha>
 //   move   把 batch-<key> 的成員 #n 搬到 batch-<n>.md：表頭（標題換成 `# batch <n>`、current:、integration:）與成員行照抄，
 //          `--state stop` 時新行的 state 寫 stop、candidate 清空；舊行的 state 改成 `moved batch-<n>`，其他格不動。成員最後一行 `resumed:`（見 resume）也抄到新檔。
+//          沒帶 --state、成員是 running、有 ORCA_CLI_COMMAND 時（#437：watcher 已印 DONE、Probe 還沒寫回就搬，新列仍是 running，pilot-land 只會 STOP member running），
+//          拿鎖前先讀該列 handle 的畫面最後一個結果行（pilot-probe 的 resultMatch；就是 resumed 記下的那一行時不算）：`DONE <n> <sha>` 的 sha 是成員分支（branch 欄）在 checkout 的 HEAD 時
+//          新行寫 done＋完整 SHA，不是 HEAD 或分支不存在時 `STOP <n> unapplied-result <結果行>`、不動檔（先查清楚或跑 pilot-probe.mjs --apply）；`STOP <n> <cause>` 寫 stop、candidate 不動。
+//          讀不到畫面時 stderr 印 `WARN move <n> orca <錯誤>`，照舊搬成 running。
 //   park   同 move，但新行的 state 寫 `parked after #<m>`、candidate 保留，表格下方加一行 `parked: after #<m> <time> <原因>`；
 //          成員要是 done（暫緩已完成、等 #m 先合入的成員）。<key> 就是 <n> 時就地改 state，不搬；這時 batch 要只有它一個成員。
 //   unpark 把 batch-<n>.md 裡 `parked after #<m>` 的成員 #n 改回 done（probe 印 UNPARK <n> 之後），candidate 不動。
@@ -19,13 +23,13 @@
 //   accept 採用 worker 已回報的 candidate（#338 第 1 項：coordinator 代決 STOP decision、選了候選的做法）：成員要是 running 或 stop，
 //          <sha> 要等於成員分支（branch 欄）在 checkout 的 HEAD；寫 state done、candidate 完整 SHA，Probe 下一輪照常印 STAGEABLE。
 //   搬完舊 batch 的成員全是 moved 時，把 `current:` 寫成 `closed moved`（重跑已做完的 move 也補寫，pilot-dispatch --fresh 共用同一個函式，#205）。
-// stdout：`MOVED <key> <n> batch-<n>`，舊 batch 因此關閉時行尾加 ` closed`；park 就地改時印 `PARKED_MEMBER <n> after #<m>`；`UNPARKED <n>`；
+// stdout：`MOVED <key> <n> batch-<n>`，舊 batch 因此關閉時行尾加 ` closed`，照畫面結果行寫了新列時前面多一行 `APPLIED <n> done <完整 sha>` 或 `APPLIED <n> stop`；park 就地改時印 `PARKED_MEMBER <n> after #<m>`；`UNPARKED <n>`；
 //   `RESUMED <key> <n>`；`ACCEPTED <key> <n> <完整 sha>`。
 //   重跑已做完的 move／park 照樣印同一行（中斷在寫新檔與改舊行之間時只補完舊行，目標檔已有這個成員就不重寫）。
 //   重跑以目標檔已有這個成員為準，不核對那一列的 state（probe --apply 可能已改過它）：中斷後要換成另一個子命令或 --state 時，先看目標檔。
 //   STOP（檔案不動）：`STOP <key> missing`（沒有 batch-<key>.md）、`STOP <n> rows <列數>`（成員列不是剛好一列）、`STOP <n> same-batch`（move 的 <key> 就是 <n>）、
 //   `STOP <n> members <數目>`（就地 park 的 batch 還有別的成員）、`STOP <n> state <state>`（park 的成員不是 done、unpark 的不是 parked、move／park 的成員已移到別處）、`STOP <n> target batch-<n>.md`（目標檔已存在卻沒有這個成員）、
-//   `STOP <n> state missing`（resume／accept 的成員不在 batch 裡）、resume 的成員不是 stop／done 或 accept 的不是 running／stop 時 `STOP <n> state <state>`、
+//   `STOP <n> unapplied-result <結果行>`（move 見上）、`STOP <n> state missing`（resume／accept 的成員不在 batch 裡）、resume 的成員不是 stop／done 或 accept 的不是 running／stop 時 `STOP <n> state <state>`、
 //   `STOP <n> orca <錯誤碼>`／`STOP <n> send <handle>`／`STOP <n> tui-timeout <handle>`（resume 讀不到畫面或沒送達）、`STOP <n> sha <分支 HEAD|missing>`（accept 的 SHA 不是分支 HEAD、分支不存在）、`STOP <n> delivered <原因>`（resume 送達 note 後鎖內重檢失敗，例如 `delivered state running`：note 已送到，不要重跑）。
 //   讀改寫都在 batch-<key>.md 與 batch-<n>.md 的 checkpoint 鎖內（lib/pilot-store.mjs 的 withCheckpointLock，#345）：逾時印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，什麼都沒寫。
 // exit：0 成功；4 STOP；3 CHECKPOINT_LOCKED；2 用法錯誤（--reason 不能空白、含換行、三個連續空白或 `|`；--note 不能空白或含換行；resume 沒有 ORCA_CLI_COMMAND；accept 的 <sha> 不是 7–40 碼十六進位）。
@@ -68,8 +72,40 @@ const isMember = line => tableCells(line).length >= 8 && /^\d+$/.test(tableCells
 const stateOf = line => tableCells(line)[6];
 const isMoved = line => /^moved\b/.test(stateOf(line));
 
-/** move 與 park 的搬移：`state` 是新行的 state，`candidate` 給了就換掉 candidate 格，`note` 是加在新檔表格下方的一行。 */
-function move(pilot, key, n, { state, candidate, note, requireDone }) {
+/** `ref` 在 checkout 解析出的完整 SHA，解析不到時空字串。 */
+function rev(checkout, ref) {
+  const result = spawnSync('git', ['-C', checkout, 'rev-parse', '--verify', '-q', ref], { encoding: 'utf8' });
+  return result.status === 0 ? result.stdout.trim() : '';
+}
+
+/**
+ * move 前在鎖外讀 running 成員的畫面（#437）：傳回最後一個結果行（pilot-probe 的 resultMatch），resume 記下的舊結果行不算。
+ * 成員不是剛好一列 running、沒有 ORCA_CLI_COMMAND 時 undefined；讀不到畫面時 stderr 印 `WARN move <n> orca <錯誤>`，也是 undefined（照舊搬）。
+ */
+async function screenResult(pilot, key, n) {
+  const cli = process.env.ORCA_CLI_COMMAND;
+  const file = join(pilot, `batch-${key}.md`);
+  if (!cli || !existsSync(file)) return undefined;
+  const source = load(file);
+  const rows = source.rows(n);
+  if (rows.length !== 1 || stateOf(source.lines[rows[0]]) !== 'running') return undefined;
+  let tail;
+  try {
+    tail = (await orca({ cli }, 'terminal', 'read', '--terminal', tableCells(source.lines[rows[0]])[3], '--screen')).terminal?.tail ?? [];
+  } catch (error) {
+    console.error(`WARN move ${n} orca ${error.message}`);
+    return undefined;
+  }
+  const resumed = source.lines.map(line => line.match(new RegExp(`^resumed: #${n} \\S+ (.*)$`))?.[1]).filter(Boolean).at(-1);
+  const match = resultMatch(tail, n);
+  return match && match.line !== resumed ? match : undefined;
+}
+
+/**
+ * move 與 park 的搬移：`state` 是新行的 state，`candidate` 給了就換掉 candidate 格，`note` 是加在新檔表格下方的一行。
+ * `result`（screenResult）給了、成員仍是 running 時照它寫新列：DONE 的 sha 要是成員分支在 `checkout` 的 HEAD，寫 done＋完整 SHA，否則 STOP unapplied-result；STOP 寫 stop。
+ */
+function move(pilot, key, n, { state, candidate, note, requireDone, result, checkout }) {
   const file = join(pilot, `batch-${key}.md`);
   if (!existsSync(file)) throw new Stop(`${key} missing`);
   const source = load(file);
@@ -87,10 +123,23 @@ function move(pilot, key, n, { state, candidate, note, requireDone }) {
   }
   if (isMoved(source.lines[i])) throw new Stop(`${n} state ${memberState}`);
   if (existsSync(target) && !copied) throw new Stop(`${n} target batch-${n}.md`);
+  let applied = '';
   if (!copied) {
     if (requireDone && memberState !== 'done') throw new Stop(`${n} state ${memberState}`);
     const header = source.lines.slice(0, source.lines.findIndex(isMember)).map(line => (/^# batch /.test(line) ? `# batch ${n}` : line));
-    const member = state === undefined ? source.lines[i] : setCells(source.lines[i], state, candidate);
+    let member = state === undefined ? source.lines[i] : setCells(source.lines[i], state, candidate);
+    // watcher 已印結果、Probe 還沒寫回的 running 成員（#437）：搬過去仍是 running，pilot-land 只會 STOP member running。
+    if (state === undefined && result && memberState === 'running') {
+      if (result.kind === 'DONE') {
+        const head = rev(checkout, `refs/heads/${tableCells(source.lines[i])[1]}^{commit}`);
+        if (!head || rev(checkout, `${result.value}^{commit}`) !== head) throw new Stop(`${n} unapplied-result ${result.line}`);
+        member = setCells(member, 'done', head);
+        applied = `APPLIED ${n} done ${head}\n`;
+      } else {
+        member = setCells(member, 'stop');
+        applied = `APPLIED ${n} stop\n`;
+      }
+    }
     // resume 記下的那一行跟著成員走（#356）：搬走的 running 成員在新檔也要忽略畫面上的舊結果行。
     const resumed = source.lines.filter(line => line.startsWith(`resumed: #${n} `)).slice(-1);
     writeCheckpoint(target, `${[...header, member, ...resumed, ...(note ? [note] : [])].join('\n')}\n`);
@@ -98,7 +147,7 @@ function move(pilot, key, n, { state, candidate, note, requireDone }) {
   source.lines[i] = setCells(source.lines[i], moved);
   const closed = closeIfAllMoved(source.lines);
   writeCheckpoint(file, source.lines.join('\n'));
-  return `MOVED ${key} ${n} batch-${n}${closed ? ' closed' : ''}`;
+  return `${applied}MOVED ${key} ${n} batch-${n}${closed ? ' closed' : ''}`;
 }
 
 /** park 的 <key> 就是 <n>：就地把 done 改成 parked，加上原因行。 */
@@ -179,13 +228,9 @@ async function resume(file, key, n, note, ctx) {
 /** accept：成員 running 或 stop，<sha> 要是成員分支的 HEAD；寫 done 與完整 SHA。 */
 function accept(checkout, file, key, n, sha) {
   const { batch, i, cells } = memberRow(file, key, n, ['running', 'stop']);
-  const rev = ref => {
-    const result = spawnSync('git', ['-C', checkout, 'rev-parse', '--verify', '-q', ref], { encoding: 'utf8' });
-    return result.status === 0 ? result.stdout.trim() : '';
-  };
-  const head = rev(`refs/heads/${cells[1]}^{commit}`);
+  const head = rev(checkout, `refs/heads/${cells[1]}^{commit}`);
   if (!head) throw new Stop(`${n} sha missing`);
-  if (rev(`${sha}^{commit}`) !== head) throw new Stop(`${n} sha ${head}`);
+  if (rev(checkout, `${sha}^{commit}`) !== head) throw new Stop(`${n} sha ${head}`);
   batch.lines[i] = setCells(batch.lines[i], 'done', head);
   writeCheckpoint(file, batch.lines.join('\n'));
   return `ACCEPTED ${key} ${n} ${head}`;
@@ -216,7 +261,12 @@ if (command === 'move') {
   if (!isKey(key) || !isNumber(n) || (state !== undefined && state !== 'stop')) usage(USAGE);
   files = [join(pilot, `batch-${key}.md`), join(pilot, `batch-${n}.md`)];
   if (key === n) run = () => { throw new Stop(`${n} same-batch`); };
-  else run = () => move(pilot, key, n, state ? { state, candidate: '' } : {});
+  // 畫面在拿鎖前讀（#437）：Orca 可能要幾秒，不讓 probe --apply 等鎖；鎖內 move 重讀列，成員已不是 running 時不用它。
+  else if (state) run = () => move(pilot, key, n, { state, candidate: '' });
+  else {
+    const result = await screenResult(pilot, key, n);
+    run = () => move(pilot, key, n, { result, checkout });
+  }
 } else if (command === 'park') {
   const [key, n, ...more] = rest;
   const { after, reason } = flags(more, ['after', 'reason']);

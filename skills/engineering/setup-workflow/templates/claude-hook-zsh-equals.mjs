@@ -18,6 +18,11 @@
 // （session 8d8ec702 jsonl 第 183 行 `… | tail -20; echo "exit=${PIPESTATUS[0]}"` 印 `exit=`，#238）。沒加引號或在雙引號裡的才算，單引號與 heredoc 內容放行。
 // 修飾字（#408）：zsh 把沒加大括號的 `$name:` 後接修飾字字母當成 history 修飾字，`git show $c:engine/x.py` 的 `$c:e` 取副檔名，
 // 印 `fatal: ambiguous argument 'ngine/x.py'`（investing session 3b67e742，24 圈無效重放）。沒加引號或在雙引號裡的才算，`${c}:`、單引號、跳脫、heredoc 內容放行。
+// 變數不切分（#413 第 4 項）：bash 把沒加引號的 `$F` 依空白切成多個參數，zsh 不切。`F="a.py b.py"; ruff check $F` 在 zsh 只傳一個參數
+// （investing session 97ce22e7 jsonl 第 842 行 `E902 File name too long`），`worktree-overlap.mjs $F` 把整串當一個檔名、什麼都不印，看起來像「沒有重疊」
+// （investing retro 03b2c41c 第 118 行），`for f in $F` 也只跑一次。同一條指令裡先以含空白的值賦值（`F="a b"`、`F='a b'`、`export F="a b"`），
+// 之後沒加引號的 `$F`、`${F}` 才算；雙引號、`${=F}`、陣列（`F=(a b)`）、`[[ ]]`、`(( ))`、單引號、heredoc 內容、`echo`／`print` 的參數
+// （切不切輸出都一樣）、賦值之前的使用放行。看不到前一條指令設的變數，所以跨指令的不擋。
 // 命中時 exit 2，stderr 說明原因與改法；$SHELL 不是 zsh（#301）、輸入不合法或不是 Bash 時 exit 0 不輸出。
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -111,6 +116,18 @@ export function modifierWords(command) {
 // zsh 參數展開接受的修飾字字母（`:gs/…` 這類 g、& 開頭的少見，不擋）。
 const MODIFIER = /^\$([A-Za-z_]\w*|\d):([aAcehlPqQrstux])([^\s;&|()<>"'`]*)/;
 
+/** 含空白的 `NAME="…"` 之後沒加引號的 `$NAME`／`${NAME}`（依出現順序，不重複），zsh 不切分、bash 會切（#413）。 */
+export function splitWords(command) {
+  return scan(command).splits;
+}
+
+// `$NAME` 或 `${NAME}`；`${=NAME}`、`${NAME[@]}`、`${NAME:-x}` 這類不是單純的變數展開，不算。
+const PLAIN_VAR = /^\$(?:([A-Za-z_]\w*)(?![\w{])|\{([A-Za-z_]\w*)\})/;
+// 參數不必切開的指令：echo／print 切不切印出來都一樣；`[`、`test` 的運算元與 `case` 的對象本來就該是一個值，zsh 不切才正確。
+const SPLIT_HARMLESS = new Set(['echo', 'print', '[', 'test', 'case']);
+// 後面接的賦值在這條指令之後仍有效的宣告指令；其他指令前的賦值（`F="a b" cmd $F`）只給那支指令，`$F` 展開的是舊值。
+const DECLARE = new Set(['export', 'local', 'typeset', 'declare', 'readonly']);
+
 /** 指令有沒有在 zsh 會展開的地方用到 bash 的 `$PIPESTATUS`。 */
 export function usesPipestatus(command) {
   return scan(command).pipestatus;
@@ -126,6 +143,24 @@ function scan(command) {
   const argGlobs = [];
   let pipestatus = false;
   const modifiers = [];
+  const assigned = new Set(); // 目前為止以含空白的值賦值、之後沒再改成不含空白的變數
+  const splits = [];
+  let vars = []; // 目前的字裡沒加引號的 `$NAME`
+  let cmdStart = true; // 目前的字還在指令名稱之前（指令開頭或前面只有賦值）
+  let cmd = null; // 目前這條指令的名稱
+  let pending = []; // 這條指令裡的賦值 [名稱, 值含空白]：指令結束、確定不是前綴賦值後才生效
+  // 一條指令結束：只有賦值或宣告指令（export F="a b"）的賦值生效，再重設指令狀態。
+  const newCommand = () => {
+    if (cmd === null || DECLARE.has(cmd)) {
+      for (const [name, spaced] of pending) {
+        if (spaced) assigned.add(name);
+        else assigned.delete(name);
+      }
+    }
+    pending = [];
+    cmdStart = true;
+    cmd = null;
+  };
   const modifier = text => {
     const m = text.match(MODIFIER);
     if (m) modifiers.push({ word: `$${m[1]}:${m[2]}`, fix: `\${${m[1]}}:${m[2]}${m[3]}` });
@@ -141,6 +176,14 @@ function scan(command) {
   let startsWithEquals = false;
   let depth = 0; // [[ … ]] 或 (( … )) 的層數：裡面的 == 是比較運算子
   const end = () => {
+    if (word && depth === 0) {
+      const assign = word.match(/^([A-Za-z_]\w*)=(.*)$/s);
+      if (cmdStart && !assign) { cmd = word; cmdStart = false; }
+      // 賦值的右邊（`G=$F`）兩種 shell 都不切分。
+      if (assign) pending.push([assign[1], /\s/.test(assign[2])]);
+      else for (const name of vars) if (assigned.has(name) && !SPLIT_HARMLESS.has(cmd)) splits.push(`$${name}`);
+    }
+    vars = [];
     if (startsWithEquals && word.length > 1 && depth === 0) found.push(word);
     if (glob && depth === 0) nomatch.push(word);
     if (word && depth === 0) {
@@ -153,6 +196,7 @@ function scan(command) {
       else if (forList === 1) forList = 2;
       else if (word === 'for' && atCommand) forList = 1;
       atCommand = word === 'then' || word === 'do' || word === 'else';
+      if (atCommand) newCommand();
     }
     glob = false;
     wild = false;
@@ -166,6 +210,7 @@ function scan(command) {
       end();
       forList = 0;
       atCommand = true;
+      newCommand();
       i++;
       // heredoc 的內容從下一行開始，到單獨一行的結束字為止。
       while (heredocs.length) {
@@ -237,11 +282,16 @@ function scan(command) {
       end();
       if (c === ';' || c === '&' || c === '|') { forList = 0; atCommand = true; }
       if (c === '(') atCommand = true;
+      if (c === ';' || c === '&' || c === '|' || c === '(') newCommand();
       i++;
       continue;
     }
     if (c === '$' && PIPESTATUS.test(command.slice(i, i + 12))) pipestatus = true;
     if (c === '$') modifier(command.slice(i));
+    if (c === '$' && depth === 0) {
+      const m = command.slice(i).match(PLAIN_VAR);
+      if (m) vars.push(m[1] ?? m[2]);
+    }
     if (wordStart && c === '=') startsWithEquals = true;
     if ((c === '*' || c === '?') && GLOB_WORD.test(word)) glob = true;
     if (c === '*' || c === '?') wild = true;
@@ -252,7 +302,7 @@ function scan(command) {
   end();
   const seen = new Set();
   const unique = modifiers.filter(m => !seen.has(m.word) && seen.add(m.word));
-  return { equals: found, nomatch, pipestatus, forGlobs, argGlobs, modifiers: unique };
+  return { equals: found, nomatch, pipestatus, forGlobs, argGlobs, modifiers: unique, splits: [...new Set(splits)] };
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
@@ -264,10 +314,10 @@ if (isMain) {
   const command = input?.tool_input?.command;
   if (input?.tool_name && input.tool_name !== 'Bash') process.exit(0);
   if (typeof command !== 'string') process.exit(0);
-  const { equals, nomatch, pipestatus, modifiers } = scan(command);
+  const { equals, nomatch, pipestatus, modifiers, splits } = scan(command);
   const unmatchedFor = unmatchedForGlobs(command, { cwd: input?.cwd });
   const args = unmatchedArgGlobs(command, { cwd: input?.cwd });
-  if (!equals.length && !nomatch.length && !pipestatus && !unmatchedFor.length && !args.length && !modifiers.length) process.exit(0);
+  if (!equals.length && !nomatch.length && !pipestatus && !unmatchedFor.length && !args.length && !modifiers.length && !splits.length) process.exit(0);
   const lines = [];
   if (equals.length) lines.push(
     `zsh 會把沒加引號、以 = 開頭的字當 EQUALS 展開成指令路徑：${equals.map(w => `\`${w}\``).join('、')}。`,
@@ -297,6 +347,14 @@ if (isMain) {
     '冒號之後的字會被吃掉或改寫，例如 `git show $c:engine/x.py` 印 `fatal: ambiguous argument \'ngine/x.py\'`（#408）。',
     `變數名稱加大括號：${modifiers.map(m => `\`${m.fix}\``).join('、')}。`,
   );
+  if (splits.length) {
+    const name = splits[0].slice(1);
+    lines.push(
+      `zsh 不會把沒加引號的變數依空白切成多個參數（bash 會）：${splits.map(w => `\`${w}\``).join('、')} 的值含空白，整串只傳成一個參數（#413）。`,
+      '指令會把整串當一個檔名或參數：可能報 `File name too long`，也可能什麼都不印，看起來像「沒有命中」；`for … in` 只跑一次。',
+      `改用陣列：\`${name}=(a b c)\` 再寫 \`"\${${name}[@]}"\`（bash、zsh 都切成各元素）；要整串當一個參數時加雙引號 \`"$${name}"\`。`,
+    );
+  }
   if (pipestatus) lines.push(
     'Bash 工具跑的是 zsh，bash 的 `$PIPESTATUS` 在 zsh 展開成空字串，pipe 前那支指令的 exit code 會不見（#238）。',
     '改用 zsh 的 `${pipestatus[1]}`（從 1 起算），或不要 pipe，直接看結果行。',

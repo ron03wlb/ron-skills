@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { argGlobWords, equalsWords, forGlobWords, modifierWords, nomatchWords, unmatchedArgGlobs, unmatchedForGlobs, usesPipestatus } from './claude-hook-zsh-equals.mjs';
+import { argGlobWords, equalsWords, forGlobWords, modifierWords, nomatchWords, splitWords, unmatchedArgGlobs, unmatchedForGlobs, usesPipestatus } from './claude-hook-zsh-equals.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const HOOK = fileURLToPath(new URL('./claude-hook-zsh-equals.mjs', import.meta.url));
@@ -258,6 +258,47 @@ test('加了大括號、單引號、跳脫、heredoc 內容、註解，或冒號
     'echo $c: done',
   ]) {
     assert.deepEqual(modifierWords(command), [], command);
+    assert.equal(bash(command).status, 0, command);
+  }
+});
+
+// #413 第 4 項：zsh 不把沒加引號的 `$VAR` 依空白切開（bash 會）。investing session 97ce22e7 jsonl 第 842 行
+// `F="a.py b.py …"; uv run ruff check $F` 印 `E902 File name too long`；retro 03b2c41c 第 118 行 `node scripts/worktree-overlap.mjs --main develop $F`
+// 把整串當一個檔名、什麼都沒印（靜默得到「無重疊」），for 迴圈也只跑一次。
+test('含空白的 VAR="…" 之後沒加引號的 $VAR／${VAR}（含 for 清單）被擋下，exit 2 並提示陣列', () => {
+  const real = 'F="scripts/data_impact.py docs/agents/issue-run.md"; node scripts/worktree-overlap.mjs --main develop $F; for f in $F; do echo "$f"; done';
+  const result = bash(real);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /`\$F`/);
+  assert.match(result.stderr, /\$\{F\[@\]\}/);
+  assert.deepEqual(splitWords(real), ['$F']);
+  assert.deepEqual(splitWords("F='a.py b.py'; uv run ruff check ${F}"), ['$F']);
+  assert.deepEqual(splitWords('export FILES="a b"\nwc -l $FILES $(cat $FILES)'), ['$FILES']);
+  assert.deepEqual(splitWords('A="x y"; B="1 2"; cmd $B $A'), ['$B', '$A']);
+});
+
+test('值沒有空白、雙引號裡、陣列、${=VAR}、[[ ]]、echo 的參數、單引號、heredoc 與先用後賦值時放行', () => {
+  for (const command of [
+    'F=a.py; ruff check $F',
+    'F="a.py b.py"; ruff check "$F"',
+    'F=(a.py b.py); ruff check "${F[@]}"',
+    'F="a.py b.py"; ruff check ${=F}',
+    'F="a b"; [[ -n $F ]] && echo ok',
+    'MSG="hello world"; echo $MSG',
+    "F=\"a b\"; echo 'cmd $F'",
+    'F="a b"; cat <<EOF\n$F\nEOF',
+    'ruff check $F; F="a b"',
+    'F="a b"; F=c; ruff check $F',
+    'F="a b"; ruff check \\$F',
+    'F="a b"; x="$(ruff check "$F")"',
+    // review 第 1 輪：賦值右邊、case 的對象、[ ]／test 的參數不切分也正確；前綴賦值 `F="a b" cmd $F` 的 $F 是舊值。
+    'F="a b"; G=$F; ls $G',
+    'F="a b"; export G=$F',
+    'F="a b"; case $F in a*) :;; esac',
+    'F="a b"; [ -n $F ] && test -n $F',
+    'F="a b" ruff check $F',
+  ]) {
+    assert.deepEqual(splitWords(command), [], command);
     assert.equal(bash(command).status, 0, command);
   }
 });
