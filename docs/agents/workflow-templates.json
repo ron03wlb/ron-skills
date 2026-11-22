@@ -67,8 +67,8 @@
     },
     "scripts/claude-hook-bash-pitfalls.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-bash-pitfalls.mjs",
-      "commit": "1155b4e18a900ed62a4c1d341d6aee693d7adb7b",
-      "sha256": "d62a207379124e42354b4bd815b1e2df6bdec0ee8623b90f2ac2b22c0309ce8a"
+      "commit": "4859d89ac0798a12b50c9681d0fa9c610982185e",
+      "sha256": "b5f5a2d3b71e11ba321a2185bfb84995e54741272eec865225bc033f4f947d3e"
     },
     "scripts/claude-hook-language.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-language.mjs",
@@ -152,7 +152,7 @@
     },
     "scripts/lib/shell-quote.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/shell-quote.mjs",
-      "commit": "e3f47ccf038330b1613fcad61490dec0cbf70965",
+      "commit": "4859d89ac0798a12b50c9681d0fa9c610982185e",
       "sha256": "3e5db11b40e187cbbb728d34d2493725658693dbefc6fe5274dfa0fa98002192"
     },
     "scripts/memory-audit.mjs": {

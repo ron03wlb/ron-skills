@@ -3,16 +3,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { env, git, write } from './helpers/git-fixture.mjs';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
 import { mergeSample } from '../skills/engineering/setup-workflow/templates/test/fake-orca.mjs';
 import { GH_SAMPLES } from '../skills/engineering/setup-workflow/templates/test/gh-samples.mjs';
+import { copyScripts } from '../skills/engineering/setup-workflow/templates/test/script-deps.mjs';
 
 const repoRoot = new URL('..', import.meta.url).pathname;
-// restamp.mjs 的副本清單由 pilot-land.mjs（正本）重算、流程站戳記由 pilot-resolve.mjs 重算（#245），一起複製。
-const SCRIPTS = ['land.mjs', 'lib/protected-paths.mjs', 'orca-session-send.mjs', 'restamp.mjs', 'pilot-land.mjs', 'lib/pilot-store.mjs', 'pilot-resolve.mjs', 'check-workflow-sync.mjs'];
+// restamp.mjs 的副本清單由 pilot-land.mjs（正本）重算、流程站戳記由 pilot-resolve.mjs 重算（#245），一起複製；
+// 相依依 import 閉包帶上（test/script-deps.mjs），pilot-land.mjs 多了頂層 import 也不會缺檔（#473）。
+const SCRIPTS = ['land.mjs', 'restamp.mjs', 'pilot-resolve.mjs', 'check-workflow-sync.mjs'];
 const SYNC_SOURCES = Object.keys(JSON.parse(readFileSync(join(repoRoot, 'scripts/workflow-doc-sync.json'), 'utf8')).sources);
 const STAMPS = 'scripts/workflow-doc-sync.json';
 // 不用 Orca（收尾走 git worktree remove），也不讓外層的 GIT_* 寫進本 repo。
@@ -44,7 +46,7 @@ function fixture(t, { scripts = SCRIPTS } = {}) {
     'bin/check': `#!/usr/bin/env bash\nset -e\nnode scripts/check-workflow-sync.mjs\necho "check $(git rev-parse HEAD)" >> ${JSON.stringify(log)}\necho 'CHECK_PASS tests 1'\n`,
   });
   chmodSync(join(main, 'bin/check'), 0o755);
-  for (const name of scripts) cpSync(join(repoRoot, 'scripts', name), join(main, 'scripts', name));
+  copyScripts(join(repoRoot, 'scripts'), join(main, 'scripts'), scripts);
   restampIn(main);
   git(main, 'add', '-A');
   git(main, 'commit', '-q', '-m', 'init');
