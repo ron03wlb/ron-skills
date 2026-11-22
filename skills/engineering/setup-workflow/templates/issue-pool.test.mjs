@@ -47,7 +47,7 @@ const view = ({ assignees = [], comments = [] } = {}) => mergeSample(VIEW, {
 /** PATH 上的假 gh：`api graphql` 回 issues 頁面；`issue view` 依序回 views 的第 i 個（用完就一直回最後一個），其餘只記錄 argv；
  * 每次呼叫一行 JSON 寫進 calls.log。script 在暫存的 git repo 裡跑，sessions 給了就寫成它的 `.scratch/pilot/sessions.md`。
  * CLAUDE_CONFIG_DIR 指向暫存目錄，不讀使用者的 ~/.claude；transcripts 是 { <session>: [最後寫入幾小時前, 內容] }。 */
-function fakeGh({ issues = [], views = [view()], sessions, transcripts = {}, children, linkedPrs = [] } = {}) {
+function fakeGh({ issues = [], views = [view()], sessions, transcripts = {}, children, linkedPrs = [], env = {} } = {}) {
   const dir = mkdtempSync(join(realTmpdir(), 'issue-pool-'));
   const repo = join(dir, 'repo');
   mkdirSync(repo);
@@ -85,7 +85,7 @@ else if (args[0] === 'issue' && args[1] === 'view') {
 }
 `);
   chmodSync(join(dir, 'gh'), 0o755);
-  const runAt = (cwd, ...args) => spawnSync('node', [SCRIPT, '--repo', 'acme/app', ...args], { cwd, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, 'claude'), PATH: `${dir}:${process.env.PATH}` } });
+  const runAt = (cwd, ...args) => spawnSync('node', [SCRIPT, '--repo', 'acme/app', ...args], { cwd, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, 'claude'), PATH: `${dir}:${process.env.PATH}`, ...env } });
   const run = (...args) => runAt(repo, ...args);
   // 不帶 --repo：tracker 專案由 script 自己判定。
   const runBare = (...args) => spawnSync('node', [SCRIPT, ...args], { cwd: repo, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, 'claude'), PATH: `${dir}:${process.env.PATH}` } });
@@ -548,6 +548,24 @@ test('claim：本機認領者的 transcript 超過 1 小時沒寫入時，STOP �
   assert.equal(result.status, 4);
   assert.match(result.stdout, new RegExp(`^STALE_CLAIM 7 ${HOST}／${DEAD} \\d{4}-\\d\\d-\\d\\dT[\\d:.]+Z\nSTOP 7 claimed ${HOST}／${DEAD}\n$`));
   assert.deepEqual(writes(calls()), []);
+});
+
+// investing#481 第 3 項：主機名沒有注入點，測試只能靠 other-host.local 避開本機判斷。ISSUE_POOL_HOSTNAME 取代 os.hostname()。
+test('ISSUE_POOL_HOSTNAME：認領留言、本機認領者判斷都用它取代主機名', () => {
+  const env = { ISSUE_POOL_HOSTNAME: 'box-a' };
+  const mine = '認領：box-a／sess-1';
+  const claimed = fakeGh({ env, views: [view(), view({ assignees: ['ron'], comments: [['ron', mine]] })] });
+  const result = claimed.run('claim', '7', '--session', 'sess-1');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'CLAIMED 7\n');
+  assert.deepEqual(writes(claimed.calls())[0], ['issue', 'comment', '7', '--repo', 'acme/app', '--body', mine]);
+  // 認領者的機器名等於覆寫值才讀本機 transcript：box-a 的認領印 STALE_CLAIM，真正主機名的認領當成別台機器。
+  for (const [host, stale] of [['box-a', true], [HOST, false]]) {
+    const { run } = fakeGh({ env, transcripts: { [DEAD]: [3, INTERRUPTED] }, views: [view({ assignees: ['ron'], comments: [['ron', `認領：${host}／${DEAD}`]] })] });
+    const stopped = run('claim', '7', '--session', 'sess-1');
+    assert.equal(stopped.status, 4);
+    assert.equal(stopped.stdout.startsWith('STALE_CLAIM '), stale, `${host}: ${stopped.stdout}`);
+  }
 });
 
 test('claim --take-stale：本機認領者已無活動時改以這個 session 認領，印 CLAIMED <n> stale <session>', () => {

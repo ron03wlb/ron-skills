@@ -36,7 +36,9 @@ const git = (cwd, ...args) => {
 // `tracker` 為真時也把 dispatch 與相依複製到暫存的 scripts/，旁邊放 gh-tracker.mjs 與指向 acme/app 的 docs/agents/issue-run.md；
 // 假 gh 的 `issue edit <n> --remove-assignee=@me` 從 assignees.json 拿掉 me（每張 Issue 起始都指派給 me），`editFails` 列的 Issue 改成失敗。
 // `adapter` 是 `{ <檔名>: <內容> }`，寫進主 checkout 的 docs/agents/（不 commit，#363 的 Env sync 宣告從這裡讀）。
-function fixture(t, { modes = {}, waitHangs = false, guard, claims = {}, tracker = false, editFails = [], orcaDown = false, adapter = {} } = {}) {
+// `blockers[<n>]` 是那張 Issue 的 blockedBy 節點 `[{ number, state, repo? }]`（repo 預設 acme/app，Issue 本身的 url 也在 acme/app）。
+// `oldGh` 為真時 `issue view --json` 帶 blockedBy 就失敗（舊版 gh 沒有這個欄位）。
+function fixture(t, { modes = {}, waitHangs = false, guard, claims = {}, tracker = false, editFails = [], orcaDown = false, adapter = {}, blockers = {}, oldGh = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-dispatch-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
@@ -138,7 +140,9 @@ if (args[0] === 'issue' && args[1] === 'edit') {
   if (args.includes('--remove-assignee=@me')) now[args[2]] = (now[args[2]] ?? ['me']).filter(a => a !== 'me');
   fs.writeFileSync(assignees, JSON.stringify(now));
 }
-else if (args[0] === 'issue' && args[1] === 'view') console.log(JSON.stringify({ title: 'Fixture ' + args[2], comments: [...claims, ...comments.filter(c => c.issue === args[2]).map(({ body }) => body)].map(body => ({ body })) }));
+else if (${oldGh} && args[0] === 'issue' && args[1] === 'view' && /blockedBy/.test(arg('--json'))) { console.error('Unknown JSON field: "blockedBy"'); process.exit(1); }
+else if (args[0] === 'issue' && args[1] === 'view') console.log(JSON.stringify({ title: 'Fixture ' + args[2], url: 'https://github.com/acme/app/issues/' + args[2],
+  blockedBy: { nodes: (${JSON.stringify(blockers)}[args[2]] ?? []).map(({ number, state, repo = 'acme/app' }) => ({ number, state, url: 'https://github.com/' + repo + '/issues/' + number })) }, comments: [...claims, ...comments.filter(c => c.issue === args[2]).map(({ body }) => body)].map(body => ({ body })) }));
 else if (args[0] === 'issue' && args[1] === 'comment') fs.writeFileSync(${JSON.stringify(comments)}, JSON.stringify([...comments, { issue: args[2], body: arg('--body') }]));
 else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
 `);
@@ -225,7 +229,7 @@ test('--capacity：派出後把本 repo 的帳本列加上派出人數，第二�
   const capped = { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '5' };
   const first = dispatch(['23-47', '23:pilot-probe', '47:fail', '--capacity'], capped);
   assert.equal(first.status, 4, first.stdout + first.stderr);
-  assert.deepEqual(lines(first), ['CAPACITY ok 4/5', 'DISPATCHED 23 term_23', 'STOP 47 create orca worktree create：invalid_argument', 'REPORTED repo 2 3/5']);
+  assert.deepEqual(lines(first), ['CAPACITY ok 4/5', 'DISPATCHED 23 term_23', 'STOP 47 create orca worktree create：invalid_argument row=stop', 'REPORTED repo 2 3/5']);
   assert.match(readFileSync(ledger, 'utf8'), /^repo\t2\t/m);
   const second = dispatch(['46', '46:pilot-dispatch', '--capacity'], capped);
   assert.equal(second.status, 0, second.stdout + second.stderr);
@@ -289,7 +293,7 @@ test('<workspaces>/issue-<n> 已是別的分支的 worktree：STOP worktree-bran
   git(repo, 'worktree', 'add', '-q', '-b', 'issue-46', join(root, 'issue-46'), 'pilot/integration');
   const result = dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['DISPATCHED 23 term_23', `STOP 46 worktree-branch ${join(root, 'issue-46')} issue-46`]);
+  assert.deepEqual(lines(result), ['DISPATCHED 23 term_23', `STOP 46 worktree-branch ${join(root, 'issue-46')} issue-46 row=stop`]);
   assert.doesNotMatch(calls(), /^worktree create .*--issue 46 /m);
   assert.equal(existsSync(join(root, 'issue-46-2')), false);
 });
@@ -299,7 +303,7 @@ test('最近一則認領是別的 session：STOP not-claimed，不開 worktree�
   const { repo, dispatch, calls, checkpoint } = fixture(t, { claims: { 133: [MINE, '認領：other-box／their-session'] } });
   const result = dispatch(['23-133', '23:pilot-probe', '133:pilot-dispatch']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['DISPATCHED 23 term_23', 'STOP 133 not-claimed']);
+  assert.deepEqual(lines(result), ['DISPATCHED 23 term_23', 'STOP 133 not-claimed row=stop']);
   assert.doesNotMatch(calls(), /^worktree create .*--issue 133 /m);
   assert.doesNotMatch(calls(), /^terminal create .* --title 處理中｜#133 /m);
   assert.equal(existsSync(join(repo, '..', 'workspaces', 'issue-133')), false);
@@ -310,7 +314,7 @@ test('沒有認領留言、或認領只是引用在別的文字裡：STOP not-cl
   const { dispatch, calls } = fixture(t, { claims: { 133: [], 134: [`前任寫的：\n${MINE}`] } });
   const result = dispatch(['133-134', '133:a', '134:b']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['STOP 133 not-claimed', 'STOP 134 not-claimed']);
+  assert.deepEqual(lines(result), ['STOP 133 not-claimed row=stop', 'STOP 134 not-claimed row=stop']);
   assert.doesNotMatch(calls(), /^worktree create /m);
 });
 
@@ -362,7 +366,7 @@ test('輪詢到上限仍沒登記：照樣 terminal create，重試一次仍 sel
   const { root, dispatch, calls, checkpoint } = fixture(t, { modes: { 46: 'unregistered' } });
   const result = dispatch(['46', '46:pilot-dispatch'], { PILOT_DISPATCH_REGISTER_MS: '0' });
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.equal(lines(result).pop(), 'STOP 46 terminal selector_not_found');
+  assert.equal(lines(result).pop(), 'STOP 46 terminal selector_not_found row=stop');
   assert.match(result.stderr, new RegExp(`^WARN orca-register ${root}/issue-46$`, 'm'));
   assert.equal(calls().match(/^terminal create /gm).length, 2);
   assert.match(checkpoint('46'), /^\| 46 \| .* \| stop \| \|$/m);
@@ -398,7 +402,7 @@ test('create 失敗而且沒有目錄：STOP create，不開分頁；其他成�
   const { dispatch, calls } = fixture(t, { modes: { 46: 'fail' } });
   const result = dispatch(['23-46', '46:pilot-dispatch', '23:pilot-probe']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['STOP 46 create orca worktree create：invalid_argument', 'DISPATCHED 23 term_23']);
+  assert.deepEqual(lines(result), ['STOP 46 create orca worktree create：invalid_argument row=stop', 'DISPATCHED 23 term_23']);
   assert.doesNotMatch(calls(), /terminal create .* --title 處理中｜#46 /);
 });
 
@@ -424,7 +428,7 @@ test('Bare guard 失敗：STOP unbare，不開分頁', t => {
   const { dispatch, calls } = fixture(t, { guard: '#!/bin/sh\necho 壞了 >&2\nexit 3\n' });
   const result = dispatch(['46', '46:pilot-dispatch']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['STOP 46 unbare 壞了']);
+  assert.deepEqual(lines(result), ['STOP 46 unbare 壞了 row=stop']);
   assert.doesNotMatch(calls(), /^terminal create /m);
 });
 
@@ -454,12 +458,12 @@ test('STOP send：成員列保持 running 並記下 handle；重跑時分頁還�
   const { dispatch, checkpoint, root, log } = fixture(t, { modes: { 46: 'lost' } });
   const result = dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.match(result.stdout, /^STOP 46 send term_46$/m);
+  assert.match(result.stdout, /^STOP 46 send term_46 row=running$/m);
   assert.match(checkpoint('23-46'), new RegExp(`\\| 46 \\| issue/46-pilot-dispatch \\| ${root}/issue-46 \\| term_46 \\| ${ISO} \\| 90m \\| running \\|`));
   const sends = () => readFileSync(log, 'utf8').split('\n').filter(line => line.startsWith('terminal send ') && line.includes('term_46')).length;
   const before = sends();
   const again = dispatch(['23-46', '46:pilot-dispatch']);
-  assert.match(again.stdout, /^STOP 46 running term_46$/m);
+  assert.match(again.stdout, /^STOP 46 running term_46 row=kept$/m);
   assert.equal(sends(), before);
 });
 
@@ -485,8 +489,8 @@ test('總預算用完：進行中與還沒派的成員都 STOP timeout，照樣�
   assert.equal(result.status, 4, result.stdout + result.stderr);
   // 負載高時 23 可能已開了分頁才逾時，STOP 會多帶「請確認有沒有留下標題 … 的分頁」（#139：land.test 搬進同一組並行後出現）。
   const [first, ...rest] = lines(result);
-  assert.match(first, /^STOP 23 timeout(（請確認有沒有留下標題 .+ 的分頁）)?$/);
-  assert.deepEqual(rest, ['STOP 46 timeout']);
+  assert.match(first, /^STOP 23 timeout(（請確認有沒有留下標題 .+ 的分頁）)? row=stop$/);
+  assert.deepEqual(rest, ['STOP 46 timeout row=stop']);
   assert.match(checkpoint('23-46'), /^\| 23 \| .* \| term_23 \| .* \| stop \| \|$/m);
   assert.match(checkpoint('23-46'), /^\| 46 \| .* \| stop \| \|$/m);
 });
@@ -526,7 +530,7 @@ test('重跑時成員還是 running、分頁還開著：STOP running，不關分
   const before = checkpoint('23-46').split('\n').find(line => line.startsWith('| 46 |'));
   const result = dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['DISPATCHED 23 term_23_2', 'STOP 46 running term_46']);
+  assert.deepEqual(lines(result), ['DISPATCHED 23 term_23_2', 'STOP 46 running term_46 row=kept']);
   assert.doesNotMatch(calls(), /^terminal close --terminal term_46 /m);
   assert.ok(open().some(t => t.handle === 'term_46'));
   assert.equal(checkpoint('23-46').split('\n').find(line => line.startsWith('| 46 |')), before);
@@ -567,7 +571,7 @@ test('重派的成員與 running 成員改同一個條目：STOP overlap，不�
   const fx = overlapped(t);
   const result = fx.dispatch(['46', '46:pilot-dispatch']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['STOP 46 overlap 23 docs/pilot.md:Probe']);
+  assert.deepEqual(lines(result), ['STOP 46 overlap 23 docs/pilot.md:Probe row=kept']);
   // 只多了唯讀的 `terminal list`（確認舊分頁是不是還在跑）與 `worktree list`（Orca 可用，#394），沒有 close、create、send。
   assert.equal(fx.calls().replace(/^(terminal|worktree) list .*\n/gm, ''), fx.before.calls.replace(/^(terminal|worktree) list .*\n/gm, ''));
   assert.deepEqual(fx.open(), fx.before.open);
@@ -596,7 +600,7 @@ test('--fresh 的對象與 done（未合入）成員改同一個條目：STOP ov
   const fx = overlapped(t, 'done');
   const result = fx.dispatch(['46', '--fresh', '46:pilot-dispatch', '--note', fx.note]);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['STOP 46 overlap 23 docs/pilot.md:Probe']);
+  assert.deepEqual(lines(result), ['STOP 46 overlap 23 docs/pilot.md:Probe row=kept']);
   // 只多了唯讀的 `terminal list`（確認舊分頁是不是還在跑）與 `worktree list`（Orca 可用，#394），沒有 close、create、send。
   assert.equal(fx.calls().replace(/^(terminal|worktree) list .*\n/gm, ''), fx.before.calls.replace(/^(terminal|worktree) list .*\n/gm, ''));
   assert.equal(git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch'), fx.head);
@@ -724,7 +728,7 @@ test('--fresh：工作樹有未提交改動時 STOP dirty，分支、worktree、
   const before = fx.checkpoint('23-46');
   const result = fresh(fx);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['STOP dirty 46']);
+  assert.deepEqual(lines(result), ['STOP dirty 46 row=kept']);
   assert.equal(git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch'), fx.head);
   assert.equal(git(fx.repo, 'branch', '--list', '*-prior*'), '');
   assert.equal(git(fx.tree, 'branch', '--show-current'), 'issue/46-pilot-dispatch');
@@ -746,7 +750,7 @@ test('--fresh：重派過的 Issue 再衝突時 STOP refresh-twice、什麼都�
   const closes = fx.calls().match(/^terminal close /gm).length;
   const result = fresh(fx);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['STOP refresh-twice 46']);
+  assert.deepEqual(lines(result), ['STOP refresh-twice 46 row=kept']);
   assert.equal(git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch'), second);
   assert.equal(git(fx.repo, 'branch', '--list', '*-prior2'), '');
   assert.equal(fx.calls().match(/^terminal close /gm).length, closes);
@@ -787,7 +791,7 @@ test('--fresh：已派出的 fresh worker 還在跑時 STOP running，不關分�
   const closes = fx.calls().match(/^terminal close /gm).length;
   const result = fresh(fx);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['STOP 46 running term_46_3']);
+  assert.deepEqual(lines(result), ['STOP 46 running term_46_3 row=kept']);
   assert.equal(fx.calls().match(/^terminal close /gm).length, closes);
   assert.deepEqual(fx.open().filter(t => t.worktreePath === fx.tree).map(t => t.handle), ['term_46_3']);
 });
@@ -798,7 +802,7 @@ test('--fresh：最近一則認領是別的 session 時 STOP not-claimed，分�
   const before = fx.checkpoint('23-46');
   const result = fresh(fx);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['STOP 46 not-claimed']);
+  assert.deepEqual(lines(result), ['STOP 46 not-claimed row=kept']);
   assert.equal(git(fx.repo, 'branch', '--list', '*-prior*'), '');
   assert.doesNotMatch(fx.calls(), /^terminal close /m);
   assert.equal(fx.checkpoint('23-46'), before);
@@ -913,7 +917,7 @@ test('--fresh 不帶 --note：成員沒有分支時 STOP，不寫草稿', t => {
   const fx = drafted(t);
   const result = fx.dispatch(['23-46', '--fresh', '99:nothing']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.match(result.stdout, /^STOP 99 git 沒有分支 issue\/99-nothing$/m);
+  assert.match(result.stdout, /^STOP 99 git 沒有分支 issue\/99-nothing row=kept$/m);
   assert.equal(existsSync(join(fx.repo, '.scratch/pilot/fresh-99.md')), false);
 });
 
@@ -926,7 +930,7 @@ test('--fresh 不帶 --note：草稿的「怎麼整併」已經補過時 STOP dr
   const filled = readFileSync(path, 'utf8');
   const result = fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), [`STOP 46 draft-filled ${path}`]);
+  assert.deepEqual(lines(result), [`STOP 46 draft-filled ${path} row=kept`]);
   assert.equal(readFileSync(path, 'utf8'), filled);
 });
 
@@ -1060,7 +1064,7 @@ test('Env sync 失敗：STOP sync <n>、exit 4，沒開分頁、成員記 stop�
   const fx = fixture(t, { adapter: { 'issue-run.md': `## Pilot\n\nEnv sync: \`case "$PWD" in */issue-46) echo 'uv: lock mismatch' >&2; exit 3;; esac\`\n` } });
   const result = fx.dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['DISPATCHED 23 term_23', 'STOP sync 46 exit 3']);
+  assert.deepEqual(lines(result), ['DISPATCHED 23 term_23', 'STOP sync 46 exit 3 row=stop']);
   assert.match(result.stderr, /uv: lock mismatch/);
   assert.equal(fx.calls().split('\n').filter(line => line.startsWith('terminal create ') && line.includes('#46')).length, 0);
   assert.deepEqual(fx.open().map(({ handle }) => handle), ['term_23']);
@@ -1087,4 +1091,54 @@ test('Env sync 宣告寫錯（沒有反引號裡的指令、宣告兩次）：ex
     assert.equal(fx.calls(), '');
     assert.equal(existsSync(join(fx.repo, '.scratch/pilot/batch-46.md')), false);
   }
+});
+
+// investing#486 第 1 項：#436 的 blocker #434 照 G69 修完的候選（多 5 個 commit）還沒進 pilot/integration，dispatch 照樣派出 #436，
+// worker 只好自己 merge #434 的分支。派工前看每個開著的同 repo blocker 的本機分支，有 commit 不在整合分支就 HOLD，留到下一輪。
+test('開著的 blocker 分支有 commit 不在整合分支：HOLD <n> blocker <m> unstaged，不建 worktree、不寫成員列、不放掉認領', t => {
+  const { repo, dispatch, calls, checkpoint, ghCalls } = fixture(t, { blockers: { 46: [{ number: 23, state: 'OPEN' }, { number: 24, state: 'OPEN' }] } });
+  for (const [branch, file] of [['issue/23-probe', 'a.txt'], ['issue/24-land', 'b.txt']]) {
+    git(repo, 'switch', '-q', '-c', branch, 'pilot/integration');
+    writeFileSync(join(repo, file), `${branch}\n`);
+    git(repo, 'add', file);
+    git(repo, 'commit', '-qm', branch);
+  }
+  git(repo, 'switch', '-q', 'main');
+  const result = dispatch(['23-47', '46:pilot-dispatch', '47:other']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['HOLD 46 blocker 23,24 unstaged', 'DISPATCHED 47 term_47']);
+  assert.doesNotMatch(calls(), /--issue 46 /);
+  assert.doesNotMatch(checkpoint('23-47'), /^\| 46 \|/m);
+  assert.doesNotMatch(ghCalls(), /^issue edit 46 /m);
+});
+
+test('blocker 的分支都已在整合分支、沒有本機分支、已關、在別的 repo，或只有 -prior 分支有新 commit：照常派出', t => {
+  const { repo, dispatch } = fixture(t, { blockers: { 46: [
+    { number: 23, state: 'OPEN' }, { number: 24, state: 'OPEN' }, { number: 25, state: 'CLOSED' }, { number: 26, state: 'OPEN', repo: 'acme/other' }, { number: 27, state: 'OPEN' },
+  ] } });
+  const commitOn = (branch, base, file) => {
+    git(repo, 'switch', '-q', '-c', branch, base);
+    writeFileSync(join(repo, file), `${branch}\n`);
+    git(repo, 'add', file);
+    git(repo, 'commit', '-qm', branch);
+  };
+  commitOn('issue/23-probe', 'pilot/integration', 'a.txt');
+  git(repo, 'switch', '-q', 'pilot/integration');
+  git(repo, 'merge', '-q', '--no-ff', '-m', 'stage 23', 'issue/23-probe');
+  commitOn('issue/25-closed', 'pilot/integration', 'c.txt');
+  commitOn('issue/26-other', 'pilot/integration', 'd.txt');
+  git(repo, 'branch', 'issue/27-fresh', 'pilot/integration');
+  commitOn('issue/27-fresh-prior', 'pilot/integration', 'e.txt');
+  git(repo, 'switch', '-q', 'main');
+  const result = dispatch(['46', '46:pilot-dispatch']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['DISPATCHED 46 term_46']);
+});
+
+test('舊版 gh 不認得 blockedBy：只讀留言照常派出，認領檢查不因此失敗', t => {
+  const { dispatch, ghCalls } = fixture(t, { oldGh: true, blockers: { 46: [{ number: 23, state: 'OPEN' }] } });
+  const result = dispatch(['46', '46:pilot-dispatch']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['DISPATCHED 46 term_46']);
+  assert.match(ghCalls(), /^issue view 46 --json comments$/m);
 });
