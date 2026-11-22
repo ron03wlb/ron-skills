@@ -92,3 +92,42 @@ test('用法錯誤：exit 2（decline 沒給 reason、reason 含三個空白、�
   assert.equal(lines(dir).join('\n'), REQUESTS);
   assert.equal(run(dir, 'bogus').status, 2);
 });
+
+// investing#472 第 2 項：非 pilot session 交 request 要翻 PILOT-STORE 才找得到行格式，手寫容易寫錯分欄。
+test('add <內文> --source <session>：附加 `<time>   <內文>   source <session>`，印 ADDED <行號>，之後 list 列出', t => {
+  const dir = checkout(t);
+  const result = run(dir, 'add', '請合入 issue/52-x（#52）', '--source', 'demo-0e');
+  assert.equal(result.status, 0, result.stderr);
+  const n = REQUESTS.split('\n').length;
+  assert.equal(result.stdout, `ADDED ${n}\n`);
+  assert.match(lines(dir)[n - 1], /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d   請合入 issue\/52-x（#52）   source demo-0e$/);
+  assert.equal(lines(dir).at(-1), '');
+  assert.match(run(dir, 'list').stdout, new RegExp(`^REQUEST ${n}   .*source demo-0e$`, 'm'));
+});
+
+test('add：沒有 requests.md 時建立它；檔尾沒有換行時先補上', t => {
+  const fresh = mkdtempSync(join(realTmpdir(), 'pilot-request-'));
+  t.after(() => rmSync(fresh, { recursive: true, force: true }));
+  assert.equal(run(fresh, 'add', '暫停到 #30', '--source', 's1').stdout, 'ADDED 1\n');
+  assert.match(lines(fresh)[0], /   暫停到 #30   source s1$/);
+  const dir = checkout(t, '# Requests');
+  assert.equal(run(dir, 'add', '優先做 #31', '--source', 's2').stdout, 'ADDED 2\n');
+  assert.equal(lines(dir)[0], '# Requests');
+});
+
+test('add 用法錯誤：exit 2、不改檔（沒有 --source、內文含 source 字樣或三個空白、source 含 applied／declined）', t => {
+  for (const args of [
+    ['add', '優先做 #27'],
+    ['add', '優先做 #27', '--source'],
+    ['add', '改 source 再說', '--source', 's1'],
+    ['add', 'a   b', '--source', 's1'],
+    ['add', '優先做 #27', '--source', 'applied x'],
+    ['add', '#27 開頭像標題', '--source', 's1'],
+    ['add', '優先做 #27', '--source', 's1', '--note', 'x'],
+  ]) {
+    const dir = checkout(t);
+    const result = run(dir, ...args);
+    assert.equal(result.status, 2, args.join(' '));
+    assert.equal(lines(dir).join('\n'), REQUESTS, args.join(' '));
+  }
+});

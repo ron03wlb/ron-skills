@@ -258,6 +258,15 @@ test('改名後要過一下才讀得到新標題：重讀到相符就算成功',
   assert.equal(result.stdout.trim(), 'TAB_STATE 處理中｜主題');
 });
 
+// #407 第 1 項（investing#491、#542）：同狀態只換 topic，前三次讀回仍是上一個標題；用預設的 TAB_STATE_VERIFY_MS／RETRY_MS 也要輪詢到，不印 MISMATCH。
+test('處理中→處理中只換 topic、第 4 次讀回才是新標題：預設輪詢參數下印 TAB_STATE，不重送', t => {
+  const { run, calls } = fixture(t, { tabTitle: '處理中｜#537 結案拒未落地分支｜調查｜讀 landing.py', lagReads: 3 });
+  const result = run(['處理中', '--topic', '#537 結案拒未落地分支｜驗證｜雙軸 review']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'TAB_STATE 處理中｜#537 結案拒未落地分支｜驗證｜雙軸 review');
+  assert.equal(calls().split('terminal rename').length - 1, 1);
+});
+
 test('讀不到分頁（舊版 Orca、連不上）不算不符：照常印 TAB_STATE、exit 0', t => {
   const { run } = fixture(t);
   const result = run(['處理中', '--topic', '主題']);
