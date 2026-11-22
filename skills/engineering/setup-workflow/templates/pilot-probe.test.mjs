@@ -113,7 +113,7 @@ integration: pilot/integration @ 1234567
 
 | Issue | branch | worktree | handle | started | stuck-after | state | candidate |
 |---|---|---|---|---|---|---|---|
-${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? `term_${m.n}`} | ${m.started ?? ago(5)} | ${m.stuckAfter ?? '90m'} | ${m.state ?? 'running'} | ${m.candidate ?? ''} |`).join('\n')}
+${members.map(m => `| ${m.n} | issue/${m.n}-x | ${m.worktree ?? `/w/issue-${m.n}`} | ${m.handle ?? `term_${m.n}`} | ${m.started ?? ago(5)} | ${m.stuckAfter ?? '90m'} | ${m.state ?? 'running'} | ${m.candidate ?? ''} |`).join('\n')}
 `);
   // guard、world、tracker 都在暫存的 scripts/ 跑副本：templates/ 裡同目錄就有 gh-tracker.mjs 正本，--apply 會經它寫入（#244）。
   // tracker 是 adapter 內文：給了才連 gh-tracker.mjs 一起複製、寫 docs/agents/issue-run.md，否則 --apply 直接跑 gh issue。
@@ -163,6 +163,48 @@ test('terminal exited 但沒有結果行時印 STUCK', t => {
   const result = probe();
   assert.equal(result.status, 0, result.stderr);
   assert.ok(lines(result).includes('WORKER 23 STUCK exited'), result.stdout);
+});
+
+// #466 第 2 項（investing#445）：worker 分頁已結束、畫面沒有結果行，但它的 checkpoint 已寫 `State: done, candidate <sha>`，
+// Probe 只印 STUCK exited，coordinator 手讀 state.md 後用 sed 改 batch 檔。SHA 等於 worktree HEAD 時照 DONE 讀，--apply 寫回。
+test('terminal exited 而 worker checkpoint 寫了 done 且 SHA 等於 worktree HEAD 時印 DONE from-state，--apply 寫回', t => {
+  const { repo, pilot, git, batch, probe } = fixture(t, { screens: {
+    term_445: { status: 'exited', tail: [] },
+    term_446: { status: 'exited', tail: [] },
+    term_447: { status: 'exited', tail: [] },
+  } });
+  const head = git('rev-parse', 'HEAD');
+  const state = (n, text) => {
+    mkdirSync(join(repo, `.scratch/issue-run-${n}`), { recursive: true });
+    writeFileSync(join(repo, `.scratch/issue-run-${n}/state.md`), text);
+  };
+  state(445, `# issue-run 445\nState: running\n\nfull gate pytest 7830 passed\nState: done, candidate ${head}\n`);
+  // SHA 不是 worktree HEAD：worker 之後又 commit 了，不能當結果。
+  state(446, `State: done, candidate ${SHA}\n`);
+  // 最後一行 State 不是 done。
+  state(447, `State: done, candidate ${head}\nState: stop, review findings\n`);
+  batch('445-447', 'dispatched 2026-11-21T15:00:00+08:00', [445, 446, 447].map(n => ({ n, worktree: repo })));
+  const result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  const out = lines(result);
+  assert.ok(out.includes(`WORKER 445 DONE ${head} from-state`), result.stdout);
+  assert.ok(out.includes('WORKER 446 STUCK exited'), result.stdout);
+  assert.ok(out.includes('WORKER 447 STUCK exited'), result.stdout);
+  const text = readFileSync(join(pilot, 'batch-445-447.md'), 'utf8');
+  assert.match(text, new RegExp(`^\\| 445 \\|.*\\| done \\| ${head} \\|$`, 'm'));
+  assert.match(text, /^\| 446 \|.*\| running \|/m);
+});
+
+test('--worker-state：checkpoint 路徑照 <worktree>、<n> 佔位符展開（investing 放在資料目錄）', t => {
+  const { repo, temp, git, batch, probe } = fixture(t, { screens: { term_445: { status: 'exited', tail: [] } } });
+  const head = git('rev-parse', 'HEAD');
+  mkdirSync(join(temp, 'notes/issue-445'), { recursive: true });
+  writeFileSync(join(temp, 'notes/issue-445/state.md'), `State: done, candidate ${head}\n`);
+  batch('445', 'dispatched 2026-11-21T15:00:00+08:00', [{ n: 445, worktree: repo }]);
+  assert.ok(lines(probe()).includes('WORKER 445 STUCK exited'));
+  const result = probe({ args: ['--worker-state', join(temp, 'notes/issue-<n>/state.md')] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(lines(result).includes(`WORKER 445 DONE ${head} from-state`), result.stdout);
 });
 
 test('超過 stuck-after 印 STUCK，還沒超過印 RUNNING <分鐘>；讀不到 terminal 也算 STUCK', t => {

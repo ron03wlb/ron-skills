@@ -3,6 +3,7 @@
 // pilot 的人工 gate（PILOT-STORE.md 的 `.scratch/pilot/gates.md`）：開、解、列出 gate，coordinator 不手改檔案（手寫曾把 resolved 寫進別的欄位，probe 才有 GATE_MALFORMED）。
 // 用法：node scripts/pilot-gate.mjs <checkout> open --title <text> --issue <text> --question <text> --options <text> --default <text> --parked <text> [--hold <n>] [--script <file>]
 //       node scripts/pilot-gate.mjs <checkout> resolve <G<n>> --how <text>
+//       node scripts/pilot-gate.mjs <checkout> applied <G<n>>
 //       node scripts/pilot-gate.mjs <checkout> list
 // stdout：open 以表格與段落中最大的 G<n> 加一為 id，附加 `## G<n> <title>` 段落（六個欄位，`- opened：<time>`），檔案不存在或是空的就先寫 `# Gates`；印 `GATE_OPENED G<n>`。
 //   帶 --script 時把 <file> 的步驟包成 `.scratch/pilot/gates/G<n>.sh`（bash 與 zsh 共通語法，Operator 以 `! bash <path>` 或 `! zsh <path>` 在任何目錄執行，都先 cd 到 checkout 根目錄），
@@ -15,13 +16,17 @@
 //   不印 STAGEABLE，pilot-land 印 `STOP held <n> G<k>`、不 stage；resolve 之後恢復（#367：investing#320 等 G28 時 probe 仍印 STAGEABLE 320）。
 //   resolve 在該段落最後一個 `- ` 欄位之後插入 `- resolved <time> <how>`（表格列則把 status 欄換成 `resolved <time> <how>`），印 `GATE_RESOLVED G<n>`；
 //   gate 已 resolved 印 `STOP G<n> resolved`、找不到印 `STOP G<n> missing`，都不改檔。
+//   session（#466）：有 $CLAUDE_CODE_SESSION_ID 時 open 在 opened 前多一個 `- by：<session>` 欄位（開啟者），resolve 段落在 resolved 行之後多一個
+//   `- resolver：<session>`（表格列沒有這欄）；pilot-probe 對 coordinator 開、別的 session 或 bot 解的 gate 印 `GATE_RESOLVED G<n> by <resolver|?> <how>`。
+//   applied 在段落最後一個 `- ` 欄位之後插入 `- applied <time>`（coordinator 套用了別人代解的答案），印 `GATE_APPLIED G<n>`；還沒 resolved 印 `STOP G<n> open`、
+//   已 applied 印 `STOP G<n> applied`、表格列印 `STOP G<n> table`、找不到印 `STOP G<n> missing`，都不改檔。
 //   list 印開著的 gate，與 pilot-probe 的 `GATE …`、`GATE_MALFORMED <id> <行>` 相同（沒有就不輸出）。
 // exit：0 成功；4 STOP；2 用法錯誤（每個旗標給一次；欄位不能空白、含換行或三個連續空白，--how 也不能含 `|`；--hold 是正整數、不帶 #；--script 的檔案要存在），不寫任何檔。
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gateLines, gateRow, gateSections, isField, isResolvedRow, isResolvedSection, now, storeDir, usage } from './lib/pilot-store.mjs';
 
-const USAGE = '用法：node scripts/pilot-gate.mjs <checkout> open --title <text> --issue <text> --question <text> --options <text> --default <text> --parked <text> [--hold <n>] [--script <file>] | <checkout> resolve <G<n>> --how <text> | <checkout> list';
+const USAGE = '用法：node scripts/pilot-gate.mjs <checkout> open --title <text> --issue <text> --question <text> --options <text> --default <text> --parked <text> [--hold <n>] [--script <file>] | <checkout> resolve <G<n>> --how <text> | <checkout> applied <G<n>> | <checkout> list';
 // 旗標名與段落欄位名：只有 Issue 的大小寫不同。
 // gate 腳本與完成標記的目錄，相對於 checkout。
 const SCRIPT_DIR = '.scratch/pilot/gates';
@@ -31,6 +36,16 @@ const [checkout, command, ...rest] = process.argv.slice(2);
 if (!checkout || checkout.startsWith('--')) usage(USAGE);
 const file = join(storeDir(checkout), 'gates.md');
 const read = () => (existsSync(file) ? readFileSync(file, 'utf8') : '');
+// 開啟者與解除者（#466）：Claude Code session 的 id；沒有或不是一個 token 時不寫。
+const session = /^\S+$/.test(process.env.CLAUDE_CODE_SESSION_ID ?? '') ? process.env.CLAUDE_CODE_SESSION_ID : undefined;
+
+/** 在段落最後一個 `- ` 欄位之後插入幾行（段落後面的空行、下一個 `## ` 或接在後面的表格都不動）。 */
+function insertAfterFields(text, section, added) {
+  const body = text.slice(section.start, section.end);
+  const at = section.start + Math.max(...[...body.matchAll(/^- .*$/gm)].map(match => match.index + match[0].length), body.includes('\n') ? body.indexOf('\n') : body.length);
+  const after = text.slice(at);
+  return `${text.slice(0, at)}${added.map(line => `\n${line}`).join('')}${after || '\n'}`;
+}
 
 /** 解析 `--<name> <value>`：names 每個都要給、optional 可以不給，都只給一次；值不能以 `--` 開頭（漏給值時吃到下一個旗標），names 的值是一個欄位（isField）。 */
 function parseFlags(args, names, optional = []) {
@@ -99,7 +114,7 @@ if (command === 'list' && !rest.length) {
     values.question = `${values.question} 執行：! bash ${script}`;
   }
   if (!text.trim()) writeFileSync(file, '');
-  appendFileSync(file, `${prefix}${[`## ${id} ${values.title}`, ...FIELDS.map(([name, label]) => `- ${label}：${values[name]}`), ...(values.hold ? [`- hold：#${values.hold}`] : []), ...(script ? [`- script：${script}`] : []), `- opened：${now()}`].join('\n')}\n`);
+  appendFileSync(file, `${prefix}${[`## ${id} ${values.title}`, ...FIELDS.map(([name, label]) => `- ${label}：${values[name]}`), ...(values.hold ? [`- hold：#${values.hold}`] : []), ...(script ? [`- script：${script}`] : []), ...(session ? [`- by：${session}`] : []), `- opened：${now()}`].join('\n')}\n`);
   if (script) console.log(`GATE_SCRIPT ${script}`);
   console.log(`GATE_OPENED ${id}`);
 } else if (command === 'resolve' && /^G[1-9]\d*$/.test(rest[0] ?? '')) {
@@ -118,11 +133,17 @@ if (command === 'list' && !rest.length) {
     writeFileSync(file, lines.join('\n'));
   } else if (section) {
     if (isResolvedSection(section.body)) { console.log(`STOP ${id} resolved`); process.exit(4); }
-    // 插在段落最後一個 `- ` 欄位之後：段落後面的空行、下一個 `## ` 或接在後面的表格都不動。
-    const body = text.slice(section.start, section.end);
-    const at = section.start + Math.max(...[...body.matchAll(/^- .*$/gm)].map(match => match.index + match[0].length), body.includes('\n') ? body.indexOf('\n') : body.length);
-    const after = text.slice(at);
-    writeFileSync(file, `${text.slice(0, at)}\n- ${mark}${after || '\n'}`);
+    writeFileSync(file, insertAfterFields(text, section, [`- ${mark}`, ...(session ? [`- resolver：${session}`] : [])]));
   } else { console.log(`STOP ${id} missing`); process.exit(4); }
   console.log(`GATE_RESOLVED ${id}`);
+} else if (command === 'applied' && rest.length === 1 && /^G[1-9]\d*$/.test(rest[0])) {
+  const [id] = rest;
+  const text = read();
+  const section = gateSections(text).find(entry => entry.id === id);
+  const stop = cause => { console.log(`STOP ${id} ${cause}`); process.exit(4); };
+  if (!section) stop(text.split('\n').some(line => gateRow(line)?.[0] === id) ? 'table' : 'missing');
+  if (!isResolvedSection(section.body)) stop('open');
+  if (/^- applied\b/m.test(section.body)) stop('applied');
+  writeFileSync(file, insertAfterFields(text, section, [`- applied ${now()}`]));
+  console.log(`GATE_APPLIED ${id}`);
 } else usage(USAGE);

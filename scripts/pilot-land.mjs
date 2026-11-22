@@ -10,6 +10,7 @@
 // 全部在 stage worktree 做（分支是整合分支或 pilot/stage-* 的那個 worktree；沒有就用 Orca 建 pilot-stage，再跑旁邊的 pilot-unbare.sh 當 Bare guard）：
 //   running     成員列還有 running 時先用 Probe 的 workerState（pilot-probe.mjs）讀一次畫面（#361：pilot-watch 已印 DONE、checkpoint 還記 running）：
 //               每個 running 成員都讀到結果行時印 `WORKER <n> DONE <sha>`／`WORKER <n> STOP <cause>`，照 probe --apply 寫回成員列（done 與 candidate、stop）再繼續；
+//               terminal 已結束時與 Probe 一樣讀 worker checkpoint（只看預設路徑 `<worktree>/.scratch/issue-run-<n>/state.md`），讀到時印 `WORKER <n> DONE <sha> from-state`、照 DONE 寫回（#466）；
 //               有一個還在工作、讀不到 terminal 或沒有 ORCA_CLI_COMMAND 時印 `STOP member <n> running (<WORKER 狀態>)，先跑 pilot-probe.mjs --apply`，成員列都不改。
 //   先同步      要重新 stage（不是 RESUME）、主 checkout 有 origin remote 時，load 關卡之後先照 sync-main 讓整合分支包含 origin/<主分支>（#366）：
 //               已包含不印任何行；落後或分叉時同步後印 `SYNCED <sha> ff|<CHECK_PASS 行>`，再從新的 tip stage；
@@ -395,15 +396,15 @@ function sameMembers(main, members, staged, tip) {
  */
 async function readRunning(file, key) {
   // 用到時才載入：restamp.mjs 等只 import restampManifest 的腳本不必帶上 pilot-probe.mjs 與它的整串相依（land-restamp 測試只複製部分腳本）。
-  const { applyResults, parseBatch, workerState } = await import('./pilot-probe.mjs');
+  const { applyResults, parseBatch, workerResult, workerState } = await import('./pilot-probe.mjs');
   const running = parseBatch(readFileSync(file, 'utf8')).members.filter(m => m.state === 'running');
   if (!running.length) return;
   const results = [];
   for (const member of running) {
     const state = await workerState({ cli: process.env.ORCA_CLI_COMMAND }, member);
-    const [, kind, value] = state.match(/^(DONE|STOP) (.+)$/) ?? [];
+    const { kind, sha } = workerResult(state);
     if (!kind) throw new Stop(`member ${member.n} running (${state})，先跑 pilot-probe.mjs --apply`);
-    results.push({ n: member.n, state: kind === 'DONE' ? 'done' : 'stop', sha: kind === 'DONE' ? value : undefined, line: `WORKER ${member.n} ${state}` });
+    results.push({ n: member.n, state: kind === 'DONE' ? 'done' : 'stop', sha, line: `WORKER ${member.n} ${state}` });
   }
   for (const { line } of results) console.log(line);
   const misses = applyResults(file, key, results);
