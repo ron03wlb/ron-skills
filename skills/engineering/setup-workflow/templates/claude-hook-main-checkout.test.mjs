@@ -334,3 +334,27 @@ test('Bash：雙引號裡的 $( … ) 依 shell 規則重設引號狀態；命�
     assert.match(denied.stderr, new RegExp(`${file} 在主 checkout 內`), command);
   }
 });
+
+// 真實發生過的錯（tooling-828，retro 1121c Group R；session 8fb55a3a、bdabcbed）：子代理在 `git clone --shared` 出的 scratch clone 裡
+// `git checkout -q --detach <sha>` 被當成主 checkout 切分支擋下。clone 是獨立 repo，git-dir 等於 git-common-dir，
+// 分支切換的判斷沒有像寫入判斷一樣比對 CLAUDE_PROJECT_DIR 的 git-common-dir。
+test('Bash：CLAUDE_PROJECT_DIR 之外的 repo（clone --shared 的 scratch clone）切分支放行；本專案主 checkout 照擋', () => {
+  const { root, main, worktree } = fixture();
+  const clone = join(root, 'grpS-clone');
+  git(root, 'clone', '-q', '--shared', main, clone);
+  const bash = (command, cwd, projectDir) => hook(JSON.stringify({ tool_name: 'Bash', cwd, tool_input: { command } }), projectDir);
+  for (const command of [
+    `cd ${clone}; git checkout -q --detach HEAD && git checkout HEAD -- docs/a.md && git status --short`,
+    `cd ${clone} && git branch side HEAD && git checkout -q --detach HEAD`,
+    `git -C ${clone} switch -c tmp`,
+  ]) {
+    for (const projectDir of [main, worktree]) {
+      const allowed = bash(command, main, projectDir);
+      assert.equal(allowed.status, 0, `${command}（CLAUDE_PROJECT_DIR=${projectDir}）`);
+      assert.equal(allowed.stdout + allowed.stderr, '', command);
+    }
+  }
+  assert.equal(bash('git checkout -q --detach HEAD', main, main).status, 2, '本專案主 checkout 照擋');
+  assert.equal(bash('git checkout -q --detach HEAD', main, worktree).status, 2, 'session 開在 worktree 時切主 checkout 照擋');
+  assert.equal(bash(`cd ${clone} && git checkout -q --detach HEAD`, main).status, 2, '沒有 CLAUDE_PROJECT_DIR 時照舊：任何主 checkout 都擋');
+});

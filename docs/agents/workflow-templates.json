@@ -77,8 +77,8 @@
     },
     "scripts/claude-hook-main-checkout.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-main-checkout.mjs",
-      "commit": "18445356b0e22d38101073fbb4e16360c1e0f3d9",
-      "sha256": "e5d3e09ce4f1a9ed9d40aa0f1d6fe5f2d921d53827b106b0a1610e417fab253f"
+      "commit": "1d0f2d74d9428e23cb730c2db67d58f1a6aff061",
+      "sha256": "059adee85b3d6a9656e38c32572e18244071b8082122d131a640d53a12d73b56"
     },
     "scripts/claude-hook-tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-tab-state.mjs",
@@ -152,7 +152,7 @@
     },
     "scripts/lib/shell-quote.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/shell-quote.mjs",
-      "commit": "18445356b0e22d38101073fbb4e16360c1e0f3d9",
+      "commit": "1d0f2d74d9428e23cb730c2db67d58f1a6aff061",
       "sha256": "3e5db11b40e187cbbb728d34d2493725658693dbefc6fe5274dfa0fa98002192"
     },
     "scripts/memory-audit.mjs": {
