@@ -222,3 +222,17 @@ test('--check 對連結來源落後 upstream 的 repo 印 SKILLS_BEHIND <repo> <
   assert.match(result.stdout, /^CHECK_OK \d+ skills$/m);
   assert.deepEqual(result.stderr.split('\n').filter(line => line.startsWith('SKILLS_BEHIND')), [`SKILLS_BEHIND ${realpathSync(lagging)} 3`]);
 });
+
+// retro spay2 8fb55a3a#4：`bin/sync-skills --help` 不印說明，直接執行同步（從 worktree 跑會把已安裝連結改指向 worktree）。
+for (const flag of ['--help', '-h', '--bogus']) {
+  test(`${flag} 印用法並 exit 2，不同步`, t => {
+    const tmp = scratch(t);
+    const dest = join(tmp, 'dest'), hooks = join(tmp, 'hooks'), xdg = join(tmp, 'xdg');
+    const result = run([flag], { SKILL_DIRS: dest, HOOK_DIR: hooks, XDG_DATA_HOME: xdg, WIN_SKILL_DIR: '', GIT_HOOKS_DIR: join(tmp, 'git-hooks') });
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.match(result.stderr, /^用法：bin\/sync-skills \[--check \| --list\]/m);
+    assert.doesNotMatch(result.stdout, /SYNCED/);
+    assert.equal(existsSync(dest), false);
+    assert.equal(existsSync(xdg), false);
+  });
+}

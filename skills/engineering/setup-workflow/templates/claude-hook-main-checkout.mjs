@@ -4,6 +4,7 @@
 // 新檔也擋：曾有互動 session 在 pilot 執行時把未追蹤的 GLOSSARY.md 寫進主 checkout，Probe 看到改動就停止合併。
 // 主 checkout 判定：目標所在 repo 的 git-dir 等於 git-common-dir（worktree 兩者不同）；gitignored 檔（如 .scratch/）與 repo 外檔案放行。
 // 只管本專案：有 CLAUDE_PROJECT_DIR 時，目標 repo 的 git-common-dir 和它的不同就放行（曾擋下 ~/.claude 這個 repo 裡的 settings.json，retro 2026-10-30）；
+// 寫入與切分支都套用（tooling-828：`git clone --shared` 出的 scratch clone 自己的 git-dir 等於 git-common-dir，切分支被當成主 checkout 擋下）；
 // CLAUDE_PROJECT_DIR 取不到 git-common-dir 時照舊，任何主 checkout 都擋。
 // Bash 也擋（曾有 session 在主 checkout 以 sed -i 改三支追蹤檔，Edit|Write hook 擋不到）：啟發式辨識 sed -i／perl -i、`>`／`>>` 重導向與 tee 的寫入目標，
 // 依指令中的 cd 與 hook 輸入的 cwd 解析相對路徑並展開 `{a,b}`，每個目標用和 Edit|Write 同一個判斷；heredoc 內文與引號內文字不算。eval、子 shell 字串等寫法不在辨識範圍。
@@ -214,11 +215,16 @@ export function bashWriteTargets(command, cwd) {
   return targets.filter(path => path !== '/dev/null');
 }
 
-/** 目錄是不是主 checkout（git-dir 等於 git-common-dir）；無法判定時為 false。 */
-function isMainCheckout(dir) {
+/**
+ * 目錄是不是本專案的主 checkout（git-dir 等於 git-common-dir）；無法判定時為 false。
+ * 給了 projectCommon 時，git-common-dir 不同的 repo 不算（和 dirtiesMainCheckout 同一個範圍）：`git clone --shared` 出的 scratch clone
+ * 是獨立 repo、git-dir 也等於 git-common-dir，只看這點會被當成主 checkout（tooling-828：clone 內 `git checkout --detach` 被擋）。
+ */
+function isMainCheckout(dir, projectCommon) {
   const dirs = git(existingDir(dir), 'rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir');
   if (dirs.status !== 0) return false;
   const [gitDir, commonDir] = dirs.stdout.trim().split('\n');
+  if (projectCommon && projectCommon !== commonDir) return false;
   return Boolean(gitDir) && gitDir === commonDir;
 }
 
@@ -252,10 +258,11 @@ const CREATE_FLAGS = new Set(['-c', '-C', '--create', '--force-create', '-b', '-
  * 切到主 checkout 該停的分支（homeBranches）、`git checkout -- <檔案>` 放行。
  * @param {string} command Bash tool 的 command
  * @param {string} cwd hook 輸入的 cwd；指令內的 `cd <dir>` 與 `git -C <dir>` 依序套用
+ * @param {string} [projectCommon] 本專案的 git-common-dir（見 projectCommonDir()）；給了就只管同一個 repo 的主 checkout
  * @returns {{repo: string, home: string, unresolvedC?: string}[]} 會被切走分支的主 checkout 目錄；`git -C` 的引數解析不了、改依目前目錄判斷時，
  *   unresolvedC 是那個未代換的引數。無法解析時丟錯（呼叫端 fail-open）
  */
-export function bashBranchSwitches(command, cwd) {
+export function bashBranchSwitches(command, cwd, projectCommon) {
   const found = [];
   for (const { name, args, rawArgs, resolvePaths } of walkSegments(command, cwd)) {
     if (name !== 'git') continue;
@@ -276,7 +283,7 @@ export function bashBranchSwitches(command, cwd) {
     const [sub, ...rest] = args.slice(i);
     if (sub !== 'switch' && sub !== 'checkout') continue;
     if (sub === 'checkout' && rest.includes('--')) continue;
-    if (!isMainCheckout(repo)) continue;
+    if (!isMainCheckout(repo, projectCommon)) continue;
     const target = rest.find(arg => !arg.startsWith('-'));
     const creates = rest.some(arg => CREATE_FLAGS.has(arg));
     if (!creates && homeBranches(repo).includes(target)) continue;
@@ -305,7 +312,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const dirty = [...new Set(paths)].filter(path => dirtiesMainCheckout(path, projectCommon));
     if (dirty.length) deny(dirty);
     let switches = [];
-    try { switches = bashBranchSwitches(command, typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd()); } catch { process.exit(0); }
+    try { switches = bashBranchSwitches(command, typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd(), projectCommon); } catch { process.exit(0); }
     if (switches.length) {
       const unresolved = switches.find(found => found.unresolvedC !== undefined);
       process.stderr.write(`主 checkout 防護：不在主 checkout（${switches[0].repo}）切換或新開分支，它要一直停在 ${switches[0].home}；其他 session 同時在這裡開分支時，commit 會落到別人的分支上。`
