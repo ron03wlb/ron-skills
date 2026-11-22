@@ -23,6 +23,10 @@
 //   held 關卡   成員都 done 之後、load 關卡之前：<主 checkout>/.scratch/pilot/gates.md 開著的 gate 以 `- hold：#<n>` hold 住 done 成員 #n
 //               （pilot-gate open --hold）時印 `STOP held <n> <gate id>`（依成員列順序取第一個），stage worktree、checkpoint 與整合分支都不動；
 //               gate resolve 之後重跑同一行（#367：investing#320 等 G28 時仍可被 stage）。RESUME 也經過這一關。
+//   operator-questions 關卡  held 關卡之後：done 成員 #n 的 issue-run checkpoint（成員列 worktree 下的 `.scratch/issue-run-<n>/state.md`）有
+//               `[confirm]` ruling 行（行首，前面可有 `- `），而 gates.md 沒有任何 gate（開著或已 resolved）的 Issue 指向 #n 時，
+//               印 `STOP operator-questions <n> <confirm 行數>`（依成員列順序取第一個），什麼都不動；開 gate（pilot-gate open）後重跑同一行
+//               （#406：investing#432 帶著沒人答的 Operator 問題落地，下游 #434 照 Pool 規則派工後停在 STOP decision）。checkpoint 不在時不檢查。RESUME 也經過這一關。
 //   load 關卡   要重新 stage（不是 RESUME）時，建 stage worktree 與 stage 之前先讀 1 分鐘 load（os.loadavg）；超過門檻就印
 //               `STOP load <load> <門檻>`（load 取到小數兩位），stage 分支、stage worktree、checkpoint 與整合分支都不動，
 //               下一輪重跑同一行就接著做（ron-skills #178：同時跑 8 個 worker 時 load 約 90，檢查時間加倍，計時測試失敗）。
@@ -56,7 +60,7 @@
 //
 // 用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [<選項>…] | sync-main [<選項>…]（在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）
 //   選項：--check-command <指令>、--integration <分支>、--main <分支>、--resolver <模組>、--load-max <n>
-// stdout：最後一行是 `MERGED <key> <sha>`，或 `STOP regression <exit>`、`STOP hold`、`STOP held <n> <gate id>`、`STOP drift`（tip 變了，下一輪重新 stage）、
+// stdout：最後一行是 `MERGED <key> <sha>`，或 `STOP regression <exit>`、`STOP hold`、`STOP held <n> <gate id>`、`STOP operator-questions <n> <數量>`、`STOP drift`（tip 變了，下一輪重新 stage）、
 //   `STOP conflict <n> <檔>=<來源>:<種類> …`（已 abort，stage worktree 乾淨；每個衝突檔一項）：來源是 `member <m>`（本次 stage
 //     依號碼先合入、自己的分支改過這個檔的成員）、`integration`（成員開分支之後整合分支改過），或以 + 相連的多個來源（`member 79+integration`、`member 1+member 3`），
 //     都看不出來（不該發生）時是 `unknown`；種類是 resolver 的 conflictKind，沒有時 `code`（程式檔）或 `other`。
@@ -71,7 +75,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { availableParallelism, loadavg } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { CheckpointLocked, dropRegressing, exitIfLocked, heldIssues, openGates, runInStageWorktree, updateCheckpoint } from './lib/pilot-store.mjs';
+import { CheckpointLocked, dropRegressing, exitIfLocked, gateIssues, heldIssues, openGates, runInStageWorktree, updateCheckpoint } from './lib/pilot-store.mjs';
 
 const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--check-command <指令>] [--integration <分支>] [--main <分支>] [--resolver <模組>] [--load-max <n>] | sync-main [同上選項，不含 --branch]（--branch 時 key 是 req-<n>；門檻預設 $PILOT_LOAD_MAX，再來 3 × 核心數；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
 const LOAD = /^\d+(\.\d+)?$/;
@@ -151,7 +155,7 @@ function readCheckpoint(file) {
   const members = text.split('\n').filter(line => line.trim().startsWith('|'))
     .map(line => line.trim().split('|').slice(1, -1).map(cell => cell.trim()))
     .filter(([n]) => /^(\d+|-)$/.test(n))
-    .map(([n, branch, , , , , state]) => ({ n: n === '-' ? branch : Number(n), branch, state }))
+    .map(([n, branch, worktree, , , , state]) => ({ n: n === '-' ? branch : Number(n), branch, worktree, state }))
     .sort((a, b) => order(a) - order(b));
   const regression = [...text.matchAll(/^regression:[ \t]*(.*)$/gm)].pop()?.[1].trim();
   return { current, members, regression };
@@ -407,6 +411,23 @@ async function readRunning(file, key) {
   if (misses.length) throw new Stop(`checkpoint ${misses.join(' ')}`);
 }
 
+/** issue-run checkpoint 裡 `[confirm]` ruling 的行數（行首，前面可有 `- `／`* `）；checkpoint 讀不到時 0。 */
+const confirmRulings = text => (text.match(/^[ \t]*(?:[-*][ \t]+)?\[confirm\]/gm) ?? []).length;
+
+/**
+ * operator-questions 關卡（#406）：第一個有 `[confirm]` ruling、gates.md 卻沒有 gate 指向它的 done 成員 `{ n, count }`，沒有時 undefined。
+ * 請求分支（n 不是號碼）沒有 issue-run checkpoint，不檢查。
+ */
+function operatorQuestions(members, gated) {
+  for (const m of members) {
+    if (!/^\d+$/.test(String(m.n)) || gated.has(String(m.n)) || !m.worktree) continue;
+    const file = join(m.worktree, `.scratch/issue-run-${m.n}/state.md`);
+    const count = existsSync(file) ? confirmRulings(readFileSync(file, 'utf8')) : 0;
+    if (count) return { n: m.n, count };
+  }
+  return undefined;
+}
+
 /** 整個流程；傳回 MERGED 的 SHA，其他結果丟 Stop。 */
 async function land(key, loadMax) {
   const main = mainCheckout();
@@ -424,10 +445,13 @@ async function land(key, loadMax) {
   const members = checkpoint.members.filter(m => m.state === 'done');
   if (!members.length) throw new Stop(`checkpoint ${file} 沒有 done 成員`);
   const gatesFile = join(main, '.scratch/pilot/gates.md');
-  const held = heldIssues(openGates(existsSync(gatesFile) ? readFileSync(gatesFile, 'utf8') : ''));
+  const gatesText = existsSync(gatesFile) ? readFileSync(gatesFile, 'utf8') : '';
+  const held = heldIssues(openGates(gatesText));
   // 成員列的 n 是數字（請求分支是分支名稱），heldIssues 的 key 是號碼字串。
   const blocked = members.find(m => held.has(String(m.n)));
   if (blocked) throw new Stop(`held ${blocked.n} ${held.get(String(blocked.n))}`);
+  const unasked = operatorQuestions(members, gateIssues(gatesText));
+  if (unasked) throw new Stop(`operator-questions ${unasked.n} ${unasked.count}`);
 
   let tip = must(main, 'rev-parse', config.integration);
   const [, staged, onto] = checkpoint.current.match(/^staged ([0-9a-f]{40}) onto ([0-9a-f]{40})\b/) ?? [];

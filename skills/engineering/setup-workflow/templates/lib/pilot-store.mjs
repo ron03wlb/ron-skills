@@ -241,6 +241,18 @@ export function heldIssues(gates) {
 /** gate 的 parked 以固定寫法 `all-push` 開頭：擋住所有 push（例如 GitHub Actions 帳務），probe 把沒進主分支的 batch 合成一行 PUSH_PARKED（#136）。 */
 export const parksAllPush = gate => /^all-push(?![\w-])/.test(gate.parked);
 
+/**
+ * gates.md 裡有 gate 指向的 Issue 號碼字串（不分開著或已 resolved；#406）：表格列的 Issue 欄、`## G<n>` 段落的 `- Issue：` 那一行裡的每個 `#<n>`。
+ * pilot-land 的 operator-questions 關卡用它判斷成員的 `[confirm]` ruling 有沒有開過 gate。
+ */
+export function gateIssues(text) {
+  const issues = new Set();
+  const add = cell => { for (const [, n] of String(cell).matchAll(/#(\d+)/g)) issues.add(n); };
+  for (const cells of text.split('\n').map(gateRow)) if (cells) add(cells[1]);
+  for (const { body } of gateSections(text)) add(body.match(/^- Issue[：:]\s*(.*)$/m)?.[1] ?? '');
+  return issues;
+}
+
 /** pilot-probe 與 pilot-gate list 印的 gate 行：每個開著的 gate 一行 `GATE <line>`，resolved 寫錯欄位的再加 `GATE_MALFORMED <id> <那一行>`。 */
 export const gateLines = text => openGates(text)
   .flatMap(gate => [`GATE ${gate.line}`, ...(gate.malformed ? [`GATE_MALFORMED ${gate.id} ${gate.malformed}`] : [])]);
