@@ -18,14 +18,14 @@ const HEADER = '| Issue | branch | worktree | handle | started | stuck-after | s
 const row = (n, state, candidate = '') => `| ${n} | issue/${n}-x | /w/issue-${n} | term_${n} | 2026-10-31T11:29:04+08:00 | 90m | ${state} |${candidate ? ` ${candidate} ` : ' '}|`;
 const batchText = (key, current, rows) => `# batch ${key}\ncurrent: ${current}\nintegration: pilot/integration @ 370114b\n\n${HEADER}${rows.join('\n')}\n`;
 
-/** 只有 `.scratch/pilot/` 與給定 batch checkpoint 的 checkout；`run` 跑 pilot-batch，`read` 讀 batch 檔（不存在回 null）。 */
+/** 只有 `.scratch/pilot/` 與給定 batch checkpoint 的 checkout（ORCA_CLI_COMMAND 預設清空：move 才不讀真的 Orca）；`run` 跑 pilot-batch，`read` 讀 batch 檔（不存在回 null）。 */
 function fixture(t, batches, env = {}) {
   const dir = mkdtempSync(join(realTmpdir(), 'pilot-batch-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const pilot = join(dir, '.scratch/pilot');
   mkdirSync(pilot, { recursive: true });
   for (const [key, text] of Object.entries(batches)) writeFileSync(join(pilot, `batch-${key}.md`), text);
-  const run = (...args) => spawnSync('node', [SCRIPT, dir, ...args], { encoding: 'utf8', env: { ...process.env, ...env } });
+  const run = (...args) => spawnSync('node', [SCRIPT, dir, ...args], { encoding: 'utf8', env: { ...process.env, ORCA_CLI_COMMAND: '', ...env } });
   const read = key => (existsSync(join(pilot, `batch-${key}.md`)) ? readFileSync(join(pilot, `batch-${key}.md`), 'utf8') : null);
   return { run, read, pilot, dir };
 }
@@ -344,7 +344,11 @@ test('resume 用法錯誤 exit 2：要 --note 一行文字；沒有 ORCA_CLI_COM
 // accept（#338 第 1 項、#356 留言）：coordinator 代決 STOP decision、採用 worker 已回報的候選時，只能 sed 手改列（investing batch-372），
 // 或重派一個 worker 只為交付已驗過的 candidate（#347 的 f688405）。
 function gitFixture(t, batches) {
-  const fx = fixture(t, batches);
+  return withGit(fixture(t, batches));
+}
+
+/** 在 fixture 的 checkout 開 git：main 一個 commit，`issue/372-x` 多一個；head 是分支 HEAD、base 是 main。 */
+function withGit(fx) {
   const git = (...args) => spawnSync('git', ['-C', fx.dir, ...args], { encoding: 'utf8', env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))) }).stdout.trim();
   git('init', '-q', '-b', 'main');
   git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'base');
@@ -385,4 +389,50 @@ test('move 把成員最後一行 resumed 帶到新檔；別的成員的 resumed 
   const { run, read } = fixture(t, { '5-6': text });
   assert.equal(run('move', '5-6', '5').stdout, 'MOVED 5-6 5 batch-5\n');
   assert.equal(read('5'), `${batchText('5', 'dispatched 2026-11-18T10:00:00+08:00', [row(5, 'running')])}resumed: #5 2026-11-18T12:00:00+08:00 DONE 5 ${A}\n`);
+});
+
+// investing#549 第 1 項（#437）：watcher 已印 DONE 538 <sha>、Probe 還沒寫回時 move 530 538，新列仍是 running，pilot-land 538 印 STOP member 538 running。
+test('move：running 成員畫面已有 DONE <n> <sha>、sha 是分支 HEAD 時新列寫 done＋完整 SHA，先印 APPLIED', t => {
+  const batches = { '371-372': batchText('371-372', 'dispatched 2026-11-19T10:00:00+08:00', [row(371, 'running'), row(372, 'running')]) };
+  const fx = orcaFixture(t, batches, { screens: { term_372: ['● 報告', '│ DONE 372 PLACEHOLDER │', '❯'], term_371: ['❯'] } });
+  const { head } = withGit(fx);
+  // 畫面上的 sha 要在 withGit 之後才知道：重寫假 Orca 的 screens 太繞，改寫 orca 腳本裡的佔位字。
+  const cli = readFileSync(join(fx.log, '../orca'), 'utf8');
+  writeFileSync(join(fx.log, '../orca'), cli.replace('PLACEHOLDER', head.slice(0, 7)));
+  const result = fx.run('move', '371-372', '372');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `APPLIED 372 done ${head}\nMOVED 371-372 372 batch-372\n`);
+  assert.equal(fx.read('372'), batchText('372', 'dispatched 2026-11-19T10:00:00+08:00', [row(372, 'done', head)]));
+  assert.equal(fx.read('371-372'), batchText('371-372', 'dispatched 2026-11-19T10:00:00+08:00', [row(371, 'running'), row(372, 'moved batch-372')]));
+});
+
+test('move：畫面 DONE 的 sha 不是分支 HEAD 時 STOP <n> unapplied-result，不動檔；STOP 結果行寫成 stop；resume 記下的舊結果行不算', t => {
+  const batches = {
+    '371-372': batchText('371-372', 'dispatched 2026-11-19T10:00:00+08:00', [row(371, 'running'), row(372, 'running')]),
+    '5-6': `${batchText('5-6', 'dispatched 2026-11-18T10:00:00+08:00', [row(5, 'running'), row(6, 'running')])}resumed: #6 2026-11-18T11:00:00+08:00 STOP 6 old\n`,
+  };
+  const fx = orcaFixture(t, batches, { screens: { term_372: [`DONE 372 ${A}`, '❯'], term_5: ['STOP 5 decision x', '❯'], term_6: ['STOP 6 old', '❯'] } });
+  withGit(fx);
+  const result = fx.run('move', '371-372', '372');
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(result.stdout, `STOP 372 unapplied-result DONE 372 ${A}\n`);
+  assert.equal(fx.read('371-372'), batches['371-372']);
+  assert.equal(fx.read('372'), null);
+  assert.equal(fx.run('move', '5-6', '5').stdout, 'APPLIED 5 stop\nMOVED 5-6 5 batch-5\n');
+  assert.match(fx.read('5'), /\| 5 \| .*\| stop \| \|\n/);
+  assert.equal(fx.run('move', '5-6', '6').stdout, 'MOVED 5-6 6 batch-6 closed\n');
+  assert.match(fx.read('6'), /\| 6 \| .*\| running \| \|\n/);
+});
+
+test('move：讀不到畫面時照舊搬成 running、stderr 印 WARN move；--state stop 不讀畫面', t => {
+  const batches = { '371-372': batchText('371-372', 'dispatched 2026-11-19T10:00:00+08:00', [row(371, 'running'), row(372, 'running')]) };
+  const fx = orcaFixture(t, batches, { screens: { term_371: [`DONE 371 ${A}`, '❯'] } });
+  const result = fx.run('move', '371-372', '372');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'MOVED 371-372 372 batch-372\n');
+  assert.match(result.stderr, /^WARN move 372 orca terminal_handle_stale$/m);
+  assert.match(fx.read('372'), /\| running \| \|\n/);
+  assert.equal(fx.run('move', '371-372', '371', '--state', 'stop').stdout, 'MOVED 371-372 371 batch-371 closed\n');
+  assert.match(fx.read('371'), /\| stop \| \|\n/);
+  assert.equal(readFileSync(fx.log, 'utf8').split('\n').filter(line => line.includes('--terminal term_371')).length, 0);
 });
