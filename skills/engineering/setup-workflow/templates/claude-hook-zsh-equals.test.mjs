@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { argGlobWords, equalsWords, forGlobWords, modifierWords, nomatchWords, splitWords, unmatchedArgGlobs, unmatchedForGlobs, usesPipestatus } from './claude-hook-zsh-equals.mjs';
+import { argGlobWords, backtickHeredocs, equalsWords, forGlobWords, modifierWords, nomatchWords, splitWords, unmatchedArgGlobs, unmatchedForGlobs, usesPipestatus } from './claude-hook-zsh-equals.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const HOOK = fileURLToPath(new URL('./claude-hook-zsh-equals.mjs', import.meta.url));
@@ -302,4 +302,45 @@ test('值沒有空白、雙引號裡、陣列、${=VAR}、[[ ]]、echo 的參數
     assert.deepEqual(splitWords(command), [], command);
     assert.equal(bash(command).status, 0, command);
   }
+});
+
+// #498（investing retro 1122a，investing#602 第 1 項，session f499bd65）：分隔字沒加引號的 heredoc 本文裡的反引號是指令替換，
+// zsh 印 `(eval):1: command not found: _no_session`、`no matches found: _taipei_day(asked_at)`、`parse error`，brief 檔內容不完整，後面的 `echo ok` 照跑。
+const F499 = 'cat > $S/axes-brief-r1.md <<EOF\n# 審查 brief\n\n- 沒有 session 時回 `_no_session`，不呼叫 `send`。\n- 判斷式是 `_taipei_day(asked_at) <= session`。\nEOF\necho ok';
+
+test('未加引號的 heredoc 本文含反引號時擋下，exit 2 並提示改用 <<\'EOF\'', () => {
+  const result = bash(F499);
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /<<'EOF'/);
+  assert.match(result.stderr, /反引號/);
+  assert.deepEqual(backtickHeredocs(F499), ['EOF']);
+  assert.deepEqual(backtickHeredocs('cat <<-END\n\tsee `x`\n\tEND\necho ok'), ['-END']);
+  // review 第 1 輪：`<<-` 的改法要保留 `-`，否則 tab 縮排的結束行對不上。
+  const strip = bash('cat <<-END\n\tsee `x`\n\tEND\necho ok');
+  assert.equal(strip.status, 2);
+  assert.match(strip.stderr, /<<-'END'/);
+});
+
+test('加引號的分隔字、只有 $(...) 的本文、跳脫的反引號、heredoc 外的反引號維持現狀', () => {
+  for (const command of [
+    "cat > a.md <<'EOF'\nsee `x`\nEOF\necho ok",
+    'cat > a.md <<"EOF"\nsee `x`\nEOF\necho ok',
+    "cat > a.md <<-'END'\n\tsee `x`\n\tEND",
+    'cat > a.md <<EOF\nnow: $(date)\nEOF\necho ok',
+    'cat > a.md <<EOF\nliteral \\`x\\`\nEOF',
+    'echo `date`; cat <<EOF\nplain\nEOF',
+    // review 第 1 輪：分隔字只有一部分加引號或跳脫，整個本文也不展開。
+    'cat <<E"OF"\nsee `x`\nEOF\necho ok',
+    "cat <<'E'OF\nsee `x`\nEOF\necho ok",
+    'cat <<\\EOF\nsee `x`\nEOF\necho ok',
+  ]) {
+    assert.deepEqual(backtickHeredocs(command), [], command);
+    assert.equal(bash(command).status, 0, command);
+  }
+});
+
+test('同一行或同一條指令有多個 heredoc 時只擋本文含反引號、分隔字沒加引號的那一個', () => {
+  assert.deepEqual(backtickHeredocs("cat <<A <<'B'\nplain\nA\nsee `x`\nB"), []);
+  assert.deepEqual(backtickHeredocs("cat <<'A' <<B\nsee `x`\nA\nalso `y`\nB"), ['B']);
+  assert.deepEqual(backtickHeredocs('cat <<A\nok\nA\ncat <<B\n`x`\nB\ncat <<C\n$(y)\nC'), ['B']);
 });
