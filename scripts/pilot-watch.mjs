@@ -34,7 +34,7 @@ import { basename, dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { orca } from './orca-session-send.mjs';
-import { WORKER_STATE, parseBatch, recordResult, resultMatch, screenLines, stateResult, workerTail } from './pilot-probe.mjs';
+import { WORKER_STATE, parseBatch, recordResult, resultMatch, screenLines, scrollbackMatch, stateResult, workerTail, workingScreen } from './pilot-probe.mjs';
 
 const USAGE = '用法：node scripts/pilot-watch.mjs [<handle>|<checkpoint>.md]... [--batch <key>]... [--checkout <主 checkout>] [--interval <秒>] [--worker-state <路徑>]｜node scripts/pilot-watch.mjs --tail <handle> [--lines <n>]（需要 ORCA_CLI_COMMAND）';
 
@@ -92,7 +92,7 @@ export const batchKey = file => basename(file, '.md').replace(/^batch-/, '');
  * wait(ms) 等下一輪；print(line) 印一行；record(target, line) 在 batch 成員印畫面上的 RESULT 時收到它的結果行（#413；from-state 的不記，Probe 自己重讀 worker checkpoint）。
  * 第一輪記基準（已結束的 terminal 直接回報），之後每輪讀一次，有事件就印完這一輪後傳回 0。
  */
-export async function watch({ targets, intervalMs = 60_000, read, wait = sleep, print = line => process.stdout.write(`${line}\n`), record = () => {}, workerState = WORKER_STATE }) {
+export async function watch({ targets, intervalMs = 60_000, read, scrollback = async () => null, wait = sleep, print = line => process.stdout.write(`${line}\n`), record = () => {}, workerState = WORKER_STATE }) {
   const seen = new Map();
   // 同一個 handle 既直接給又是 batch 成員時以 batch 成員為準（只認自己的號碼、標出批次）。
   const unique = [];
@@ -117,7 +117,11 @@ export async function watch({ targets, intervalMs = 60_000, read, wait = sleep, 
       const tail = screenLines(terminal.tail);
       if (n !== undefined) {
         // batch 成員：與 Probe 的 workerState 同一判斷，沒有畫面基準。
-        const match = resultMatch(tail, n);
+        let match = resultMatch(tail, n);
+        // #537：結果行已捲出畫面、畫面也不是工作中時，往回讀累積輸出（與 Probe 的 workerState 同一判斷）。
+        if (!match && !workingScreen(tail)) {
+          try { match = await scrollback(handle, n); } catch { match = null; }
+        }
         if (match && match.line !== target.resumed) {
           record(target, match.line);
           print(`RESULT ${batch} ${handle} ${match.line}`);
@@ -200,7 +204,8 @@ async function main(argv) {
       process.stderr.write(`RECORD_FAILED ${target.handle} ${oneLine(error.message)}\n`);
     }
   };
-  return watch({ targets, intervalMs: options.intervalMs, read, record, workerState: options.workerState });
+  const scrollback = (handle, n) => scrollbackMatch(ctx, handle, n);
+  return watch({ targets, intervalMs: options.intervalMs, read, scrollback, record, workerState: options.workerState });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

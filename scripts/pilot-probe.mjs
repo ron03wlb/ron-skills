@@ -31,6 +31,8 @@
 //   Bare guard：同目錄有 pilot-unbare.sh（setup-workflow 正本，`<checkout> <時機>`，還原時印 UNBARE）時先跑它（時機 probe），沒有就略過。
 // stdout 每行一項，沒事的項目不印（全部正常且沒有 batch 時只印池子那一行）：
 //   主 checkout：UNBARE <checkout>（Bare guard 剛還原 core.bare）｜NOT_MAIN <分支>｜HOLD｜DIRTY <git status --short 的一行>
+//            ｜SETTINGS_INVALID <.claude/settings[.local].json> json <錯誤>｜SETTINGS_INVALID <檔案> <allow|ask|deny>[<index>] <規則的 JSON>
+//            （#537：格式錯的權限規則讓主 checkout 新開的 Claude 停在 Settings Warning 對話框；規則格式同 check-claude-settings.mjs）
 //   adapter：ADAPTER_AHEAD <檔案> [<名稱>[,<名稱>…]] ｜ mkdir -p <主 checkout>/.scratch/pilot/adapter && [git -C <主 checkout> fetch <remote> <分支> && ]
 //            git -C <主 checkout> show <adapter ref>:<檔案> > <主 checkout>/.scratch/pilot/adapter/<檔名>（adapter ref 上的 adapter 比主分支新；
 //            adapter ref 是主分支那份 adapter 的 Pilot 段與它連到的檔裡 `- **Adapter ref.**` 條目的第一個反引號值，沒有時是 --integration 的本機分支；
@@ -40,6 +42,8 @@
 //            它 `## Pilot` 段連到的同目錄 .md 整份都算，改動都在 `- **<名稱>.**` 條目裡時附改動的條目名稱，依名稱排序、以 `,` 分隔，名稱本身可能有空格
 //            （不能有 `,` 或 `｜`）；刪掉或改名的條目也列（取改動前的名稱）；有條目以外的改動或不是 `.md` 時省略名稱欄，表示要讀整份。
 //            ` ｜ ` 之後是把那份存進 scratch 檔的指令，跑完用 Read 讀存檔，不讀整份 diff，也不把 `git show` 直接印到輸出：35 KB、67 KB 會被存檔後再進 context 一次）
+//            ｜ADAPTER_AHEAD_SEEN <檔案>（#544：上面指令存的 `.scratch/pilot/adapter/<檔名>` 已在、內容等於 adapter ref 那份，coordinator 已讀過，不必再讀；
+//            已存副本與 adapter ref 那份不同時照印 ADAPTER_AHEAD，名稱欄改成相對已存副本變動的條目，規則同上）
 //   腳本（#358）：SCRIPT_AHEAD <scripts/路徑> run-in <stage worktree>｜SCRIPT_AHEAD <scripts/路徑> sync-main（有 ADAPTER_AHEAD 的那一輪，整合分支那份 adapter 的
 //            Pilot 段與它連到的檔指名的 `scripts/*`（含 `.py`、`.sh`），主 checkout 工作樹缺檔或內容與整合分支不同，而且整合分支那份不比主分支舊；依路徑。
 //            run-in 是分支為整合分支或 pilot/stage-* 的 worktree，在主 checkout 以 `<stage worktree>/scripts/…` 跑；那個 worktree 不存在或也沒有這個檔時是 sync-main）｜
@@ -75,7 +79,8 @@
 //                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）
 //                 畫面上沒有自己的結果行（捲走、terminal 已結束或讀不到）時，改用 pilot-watch.mjs 記下的 `.scratch/pilot/results/<handle>`
 //                 （`<ISO 時間> <結果行>`）：號碼相符、時間晚於成員列的 started 與最後一行 `resumed:` 的時間、不是 resumed 記下的舊結果行才算，
-//                 印成同一行 DONE／STOP，--apply 照常寫回（#413 第 1 項：watch 已印 DONE，畫面隨後捲走或 terminal 結束，Probe 只印 RUNNING／STUCK exited）
+//                 印成同一行 DONE／STOP，--apply 照常寫回（#413 第 1 項：watch 已印 DONE，畫面隨後捲走或 terminal 結束，Probe 只印 RUNNING／STUCK exited）；
+//                 也沒有時、畫面不是工作中（沒有 spinner、`esc to interrupt`），往回讀累積輸出（scrollbackMatch）的最後一個結果行，同樣印成 DONE／STOP（#537）
 //   batch：dispatched 的 batch 沒有 running 成員時（這一輪剛讀到 DONE／STOP 的照結果算；moved（含 `moved batch-<n>`）的成員已移到別的 batch，不算）：
 //          每個成員都 done 印 STAGEABLE <key>；有 done 也有 stop、parked 印 MOVE <key> <不是 done 的成員…>（先用 pilot-batch 移走）；
 //          STAGEABLE 之後緊接 CONFLICT <key> <n> <m|integration> <檔…>（#376：done 成員的本機分支兩兩、再各自對整合分支（沒有時主分支）的 tip
@@ -128,7 +133,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
 import { mergeConflicts } from './lib/merge-tree.mjs';
 import { CheckpointLocked, gateLines, heldIssues, resolvedGateLines, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
-import { orca } from './orca-session-send.mjs';
+import { SPINNER, orca } from './orca-session-send.mjs';
 import { envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 import { POOL_FIELDS, blockerOpenScope, landedOn, mainPause, pool, prerequisiteOf } from './issue-pool.mjs';
 import { counterparts, declaredProjects } from './pilot-counterpart.mjs';
@@ -168,6 +173,32 @@ export function checkoutState(checkout, main = 'main') {
   const status = git(checkout, 'status', '--short');
   if (status.status !== 0) throw new Error(`git status exit ${status.status}：${status.stderr.trim()}`);
   for (const line of status.stdout.split('\n').filter(Boolean)) out.push(`DIRTY ${line}`);
+  out.push(...settingsLines(checkout));
+  return out;
+}
+
+/** 權限規則的格式：同 check-claude-settings.mjs 的 RULE（工具名大寫開頭或 mcp__ 開頭，可帶一組 (...)）。 */
+const SETTINGS_RULE = /^(?:[A-Z][A-Za-z0-9]*|mcp__[A-Za-z0-9_-]+)(?:\(.+\))?$/;
+
+/**
+ * 主 checkout 的 `.claude/settings.json`、`.claude/settings.local.json`（有才讀）：JSON 解析不了印 `SETTINGS_INVALID <檔案> json <錯誤>`，
+ * allow／ask／deny 裡格式不對的規則各印 `SETTINGS_INVALID <檔案> <清單>[<index>] <規則的 JSON>`。
+ * 這類設定會讓主 checkout 新開的 Claude 停在 Settings Warning 對話框，交接與派工的 tui-idle 等不到（#537：只印 DIRTY，卡了約 10 小時）。
+ */
+export function settingsLines(checkout) {
+  const out = [];
+  for (const name of ['.claude/settings.json', '.claude/settings.local.json']) {
+    const file = join(checkout, name);
+    if (!existsSync(file)) continue;
+    let settings;
+    try { settings = JSON.parse(readFileSync(file, 'utf8')); } catch (error) { out.push(`SETTINGS_INVALID ${name} json ${error.message.split('\n')[0]}`); continue; }
+    const permissions = settings?.permissions ?? {};
+    for (const list of ['allow', 'ask', 'deny']) {
+      (Array.isArray(permissions[list]) ? permissions[list] : []).forEach((rule, index) => {
+        if (typeof rule !== 'string' || !SETTINGS_RULE.test(rule)) out.push(`SETTINGS_INVALID ${name} ${list}[${index}] ${JSON.stringify(rule)}`);
+      });
+    }
+  }
   return out;
 }
 
@@ -241,6 +272,8 @@ export function adapterRef(checkout, base, integration) {
  * 比的檔案是 adapter 本身，加上兩邊任一版 adapter 的 Pilot 段連到的檔案（新連上的檔只在整合分支那邊）。
  * 改動都在條目裡時附條目名稱（同 OVERLAP 的 changedUnits，不算相鄰的條目），讓 coordinator 只讀那幾條、不讀整份 diff（#144）。
  * adapter 本身只在 `## Pilot` 段變動時算、不附名稱；每行在 ` ｜ ` 之後附讀整合分支那份的 `git -C <checkout> show` 指令（#357：investing 用整檔 diff 讀，51 KB）。
+ * 指令存檔的 `.scratch/pilot/adapter/<檔名>` 已經在、內容等於整合分支那份時，coordinator 已讀過，改印 `ADAPTER_AHEAD_SEEN <檔案>`；
+ * 已存副本與整合分支那份不同時照印 ADAPTER_AHEAD，條目名稱改成相對已存副本的變動（#544：main 暫停期間每輪都列 21 個條目，實際只改了一條）。
  */
 export function adapterAhead(checkout, { integration = 'pilot/integration', main = 'main', source } = {}) {
   const base = `refs/heads/${main}`;
@@ -254,12 +287,41 @@ export function adapterAhead(checkout, { integration = 'pilot/integration', main
     if (path === ADAPTER && pilotSection(show(checkout, ahead, path)) === pilotSection(show(checkout, base, path))) return false;
     return integrationNewer(checkout, ahead, base, path);
   }).map(path => {
-    const unit = path === ADAPTER ? undefined : changedUnits(checkout, base, ahead, { paths: [path], adjacent: false }).get(path);
-    const names = unit && !unit.whole && unit.entries.size ? ` ${[...unit.entries].sort().join(',')}` : '';
     const dir = join(checkout, '.scratch/pilot/adapter');
+    const saved = join(dir, basename(path));
+    const savedText = existsSync(saved) ? readFileSync(saved, 'utf8') : undefined;
+    const aheadText = savedText === undefined ? undefined : show(checkout, ahead, path);
+    if (savedText !== undefined && savedText === aheadText) return `ADAPTER_AHEAD_SEEN ${path}`;
+    const changed = path === ADAPTER ? undefined
+      : savedText === undefined ? changedUnits(checkout, base, ahead, { paths: [path], adjacent: false }).get(path) : entryChanges(savedText, aheadText);
+    const names = changed && !changed.whole && changed.entries.size ? ` ${[...changed.entries].sort().join(',')}` : '';
     const pull = fetchArgs ? `git -C ${checkout} fetch ${fetchArgs} && ` : '';
     return `ADAPTER_AHEAD ${path}${names} ｜ mkdir -p ${dir} && ${pull}git -C ${checkout} show ${ref}:${path} > ${join(dir, basename(path))}`;
   });
+}
+
+/**
+ * 兩份 `.md` 文字之間改了哪些 `- **<名稱>.**` 條目（條目含其後縮排的續行）：{ whole, entries }；條目以外的文字也變了時 whole。
+ * 已存的 adapter 副本不在 git 裡，所以不用 changedUnits 的 diff。
+ */
+export function entryChanges(before, after) {
+  const split = text => {
+    const units = new Map();
+    const rest = [];
+    let current = null;
+    for (const line of text.split('\n')) {
+      const name = line.match(/^- \*\*(.+?)\.\*\*/)?.[1];
+      if (name) { current = name; units.set(name, line); continue; }
+      if (current && (/^\s+\S/.test(line) || !line.trim())) { units.set(current, `${units.get(current)}\n${line.trimEnd()}`); continue; }
+      current = null;
+      rest.push(line);
+    }
+    for (const [name, value] of units) units.set(name, value.trimEnd());
+    return { units, rest: rest.join('\n').trim() };
+  };
+  const [a, b] = [split(before), split(after)];
+  const entries = new Set([...a.units.keys(), ...b.units.keys()].filter(name => a.units.get(name) !== b.units.get(name)));
+  return { whole: a.rest !== b.rest, entries };
 }
 
 // adapter 指名的腳本：`scripts/<路徑>.<副檔名>`，前面不能是路徑字元（`skills/…/scripts/x.mjs` 是正本、`<stage worktree>/scripts/<x>.mjs` 是寫法說明，都不算）。
@@ -622,6 +684,22 @@ export function resultLine(tail, n, ignore) {
   return match && match.line !== ignore ? `${match.kind} ${match.value}` : null;
 }
 
+/** 畫面上 worker 還在工作（spinner 或 `esc to interrupt`）。 */
+export const workingScreen = tail => screenLines(tail).some(line => line.includes('esc to interrupt') || SPINNER.test(line));
+
+/** scrollbackMatch 往回讀的累積輸出行數。 */
+const SCROLLBACK_LINES = 2000;
+
+/**
+ * 畫面上沒有結果行、畫面也不是工作中時，往回讀累積輸出（`terminal read` 不帶 `--screen`，含捲出畫面的行）找最後一個結果行，同 resultMatch（#537：
+ * watcher 啟動前 `DONE <n> <sha>` 已捲出 40 行的畫面，Probe 與 watch 都報 RUNNING，分頁標題卻已是 `待關閉｜`）。
+ * 工作中不讀：每輪多一次讀取沒有用，worker 還沒寫結果行。
+ */
+export async function scrollbackMatch(ctx, handle, n) {
+  const { terminal } = await orca(ctx, 'terminal', 'read', '--terminal', handle, '--limit', String(SCROLLBACK_LINES));
+  return resultMatch(terminal?.tail ?? [], n);
+}
+
 /** pilot-watch.mjs 記結果行的目錄（`.scratch/pilot/` 底下）與檔案：一個 handle 一個檔，內容 `<ISO 時間> <結果行>`（#413）。 */
 export const RESULTS_DIR = 'results';
 export const resultFile = (pilot, handle) => join(pilot, RESULTS_DIR, handle.replace(/[^\w.-]/g, '_'));
@@ -692,6 +770,12 @@ export async function workerState(ctx, member, now = Date.now(), saved = null) {
   const result = resultLine(terminal.tail ?? [], member.n, member.resumed);
   if (result) return result;
   if (saved) return saved;
+  if (!workingScreen(terminal.tail)) {
+    try {
+      const match = await scrollbackMatch(ctx, member.handle, member.n);
+      if (match && match.line !== member.resumed) return `${match.kind} ${match.value}`;
+    } catch { /* 讀不到累積輸出時照畫面判斷 */ }
+  }
   if (terminal.status === 'exited') {
     const sha = stateResult(member, ctx.workerState);
     return sha ? `DONE ${sha} from-state` : 'STUCK exited';
