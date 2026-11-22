@@ -66,6 +66,9 @@
 //   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
 //                 WORKER <n> STUCK exited|stuck-after <分鐘>|orca <錯誤碼>|no-orca|checkpoint <欄位> <值>
 //                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）
+//                 畫面上沒有自己的結果行（捲走、terminal 已結束或讀不到）時，改用 pilot-watch.mjs 記下的 `.scratch/pilot/results/<handle>`
+//                 （`<ISO 時間> <結果行>`）：號碼相符、時間晚於成員列的 started 與最後一行 `resumed:` 的時間、不是 resumed 記下的舊結果行才算，
+//                 印成同一行 DONE／STOP，--apply 照常寫回（#413 第 1 項：watch 已印 DONE，畫面隨後捲走或 terminal 結束，Probe 只印 RUNNING／STUCK exited）
 //   batch：dispatched 的 batch 沒有 running 成員時（這一輪剛讀到 DONE／STOP 的照結果算；moved（含 `moved batch-<n>`）的成員已移到別的 batch，不算）：
 //          每個成員都 done 印 STAGEABLE <key>；有 done 也有 stop、parked 印 MOVE <key> <不是 done 的成員…>（先用 pilot-batch 移走）；
 //          STAGEABLE 之後緊接 CONFLICT <key> <n> <m|integration> <檔…>（#376：done 成員的本機分支兩兩、再各自對整合分支（沒有時主分支）的 tip
@@ -571,9 +574,13 @@ export function parseBatch(text) {
     const [n, branch, worktree, handle, started, stuckAfter, state, candidate] = cells;
     members.push({ n, branch, worktree, handle, started, stuckAfter, state, candidate });
   }
-  // pilot-batch resume 記下的那一行（#356）：每個成員取最後一行 `resumed: #<n> <time> <結果行|->`。
-  for (const [, n, line] of text.matchAll(/^resumed: #(\d+) \S+ (.*)$/gm)) {
-    for (const member of members) if (member.n === n) member.resumed = line === '-' ? undefined : line;
+  // pilot-batch resume 記下的那一行（#356）：每個成員取最後一行 `resumed: #<n> <time> <結果行|->`；時間給 watch 的記錄比對（#413）。
+  for (const [, n, time, line] of text.matchAll(/^resumed: #(\d+) (\S+) (.*)$/gm)) {
+    for (const member of members) {
+      if (member.n !== n) continue;
+      member.resumed = line === '-' ? undefined : line;
+      member.resumedAt = time;
+    }
   }
   return { current, members, regression, regressionExit, sha, regressing: regressingMark(text) };
 }
@@ -608,18 +615,47 @@ export function resultLine(tail, n, ignore) {
   return match && match.line !== ignore ? `${match.kind} ${match.value}` : null;
 }
 
-/** 一個 running 成員的狀態行（不含 `WORKER <n> ` 前綴）。`ctx.cli` 缺省時（沒有 ORCA_CLI_COMMAND）讀不到 terminal。 */
-export async function workerState(ctx, member, now = Date.now()) {
-  if (!ctx.cli) return 'STUCK no-orca';
+/** pilot-watch.mjs 記結果行的目錄（`.scratch/pilot/` 底下）與檔案：一個 handle 一個檔，內容 `<ISO 時間> <結果行>`（#413）。 */
+export const RESULTS_DIR = 'results';
+export const resultFile = (pilot, handle) => join(pilot, RESULTS_DIR, handle.replace(/[^\w.-]/g, '_'));
+
+/** watch 讀到 batch 成員的結果行時記下（覆寫同一個 handle 先前的記錄）。 */
+export function recordResult(pilot, handle, line, at = new Date()) {
+  mkdirSync(join(pilot, RESULTS_DIR), { recursive: true });
+  writeFileSync(resultFile(pilot, handle), `${at.toISOString()} ${line}\n`);
+}
+
+/**
+ * watch 記下的這個成員的結果，去掉號碼（同 resultLine）；沒有記錄、號碼不符、是 resumed 記下的舊結果行，
+ * 或時間不晚於成員列的 started 與最後一次 resumed（記的是前一次派工或 resume 前的結果）時 null。
+ */
+export function savedResult(pilot, member) {
+  const file = resultFile(pilot, member.handle);
+  if (!existsSync(file)) return null;
+  const [, time, line] = readFileSync(file, 'utf8').trim().match(/^(\S+) (.+)$/) ?? [];
+  const at = Date.parse(time);
+  if (Number.isNaN(at)) return null;
+  const since = [member.started, member.resumedAt].map(value => Date.parse(value)).filter(value => !Number.isNaN(value));
+  if (!since.length || since.some(value => at <= value)) return null;
+  return resultLine([line], member.n, member.resumed);
+}
+
+/**
+ * 一個 running 成員的狀態行（不含 `WORKER <n> ` 前綴）。`ctx.cli` 缺省時（沒有 ORCA_CLI_COMMAND）讀不到 terminal。
+ * `saved` 是 savedResult 的結果：畫面上沒有結果行（讀不到、terminal 已結束、還在跑）時以它為準（#413）。
+ */
+export async function workerState(ctx, member, now = Date.now(), saved = null) {
+  if (!ctx.cli) return saved ?? 'STUCK no-orca';
   let terminal;
   try {
     terminal = (await orca(ctx, 'terminal', 'read', '--terminal', member.handle, '--screen')).terminal ?? {};
   } catch (error) {
-    return `STUCK orca ${error.message}`;
+    return saved ?? `STUCK orca ${error.message}`;
   }
   // resume 當下畫面最後一個結果行（成員的 resumed，#356）還是最後一個時不算：那是 resume 前的舊結果。
   const result = resultLine(terminal.tail ?? [], member.n, member.resumed);
   if (result) return result;
+  if (saved) return saved;
   if (terminal.status === 'exited') return 'STUCK exited';
   const started = Date.parse(member.started);
   if (Number.isNaN(started)) return `STUCK checkpoint started ${member.started}`;
@@ -1035,7 +1071,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     const results = [];
     // 已 closed 的 batch 沒有在跑的 worker：殘留的 running 列不讀 terminal、不算容量（#295：batch-53-55 的兩列印 STUCK orca terminal_handle_stale，帳本記 2）。
     for (const member of /^closed\b/.test(current) ? [] : members.filter(m => m.state === 'running')) {
-      const state = await workerState(ctx, member);
+      const state = await workerState(ctx, member, Date.now(), savedResult(pilot, member));
       const [, kind, value] = state.match(/^(DONE|STOP) (.+)$/) ?? [];
       if (kind) results.push({ n: member.n, state: kind === 'DONE' ? 'done' : 'stop', sha: kind === 'DONE' ? value : undefined });
       // terminal 已結束（STUCK exited）的成員不佔機器，不算容量（#408：investing 的 437 exited 仍被算進帳本，派工印 STOP capacity 4/3）。

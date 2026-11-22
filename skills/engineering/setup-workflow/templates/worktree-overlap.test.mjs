@@ -419,3 +419,39 @@ test('建議分支：自己與其他 worktree 分支的 remote-tracking 分身�
   assert.equal(result.status, 3, result.stderr);
   assert.equal(result.stdout, `OVERLAP_BASE_BEHIND main ${commits + 3} --main develop\n`);
 });
+
+// #413 第 6 項（investing#505）：retro 計畫把 #499 兩項記成 adopted，其實候選寫下之後 875275d4 已落地；只看其他 worktree 看不到主分支動過的檔。
+// --since <ISO>：主分支第一父線上該時間之後改到給的檔的 commit 各印 LANDED_SINCE；以落地（合併）時間算，側分支 commit 較早也算。
+test('--since <ISO>：主分支在該時間後落地、改到給的檔的 commit 各印 LANDED_SINCE <檔> <commit7> <subject>，排在 OVERLAP_WT 之前', t => {
+  const { main } = fixture(t);
+  const at = (date, ...args) => {
+    const result = runIn(main, ['git', ...args], { env: { GIT_COMMITTER_DATE: date, GIT_AUTHOR_DATE: date } });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  writeFileSync(join(main, 'README.md'), '# app\n\n舊\n');
+  at('2026-11-01T00:00:00Z', 'commit', '-q', '-am', 'old readme');
+  git(main, 'switch', '-q', '-c', 'retro/x');
+  writeFileSync(join(main, 'README.md'), '# app\n\n新\n');
+  at('2026-11-02T00:00:00Z', 'commit', '-q', '-am', 'retro x readme');
+  git(main, 'switch', '-q', 'main');
+  at('2026-11-10T00:00:00Z', 'merge', '-q', '--no-ff', '-m', 'Merge retro/x', 'retro/x');
+  const merge = git(main, 'rev-parse', 'HEAD').slice(0, 7);
+  const result = run(main, '--since', '2026-11-05T00:00:00Z', 'README.md', 'scripts/x.mjs');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    `LANDED_SINCE README.md ${merge} Merge retro/x`,
+    'OVERLAP_WT issue/1-a README.md',
+    'OVERLAP_WT issue/2-b scripts/x.mjs',
+  ]);
+  const later = run(main, '--since', '2026-11-11T00:00:00Z', 'README.md');
+  assert.equal(later.status, 0, later.stderr);
+  assert.deepEqual(later.stdout.trim().split('\n'), ['OVERLAP_WT issue/1-a README.md']);
+});
+
+test('--since：沒給檔案、和 --mine 併用、時間解析不了時是用法錯誤（exit 2）', t => {
+  const { main } = fixture(t);
+  assert.equal(run(main, '--since', '2026-11-05T00:00:00Z').status, 2);
+  assert.equal(run(main, '--mine', '--since', '2026-11-05T00:00:00Z').status, 2);
+  assert.equal(run(main, '--since', 'yesterday-ish', 'README.md').status, 2);
+  assert.equal(run(main, '--since').status, 2);
+});

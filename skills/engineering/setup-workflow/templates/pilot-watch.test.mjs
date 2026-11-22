@@ -218,3 +218,22 @@ test('tail 是字串、或元素內含換行：攤平成行再判斷', t => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'RESULT - term_s STOP 3 prerequisite missing\n');
 });
+
+// #413 第 1 項（investing#516 第 1 項、investing#533 第 2 項）：watch 印 `RESULT … DONE 437 <sha>`，之後畫面捲走結果行或 terminal 結束，
+// 下一次 Probe 讀畫面只得到 RUNNING／STUCK exited，--apply 沒寫回，coordinator 只能手改。watch 讀到 batch 成員的結果行時記進
+// `<checkpoint 目錄>/results/<handle>`（`<ISO 時間> <結果行>`），Probe 畫面上沒有結果行時改讀它。
+test('batch 成員印 RESULT 時把結果行記進 results/<handle>；直接給的 handle 不記', t => {
+  const { batch, pilot, run } = fixture(t, {
+    term_436: [{ status: 'running', tail: [`DONE 436 ${SHA}`, '❯'] }],
+    term_x: [{ status: 'running', tail: [] }, { status: 'running', tail: ['STOP 9 decision x'] }],
+  });
+  batch('436', [{ n: 436, handle: 'term_436' }]);
+  const before = Date.now();
+  const result = run(['--batch', '436', '--checkout', 'checkout', ...fast]);
+  assert.equal(result.stdout, `RESULT 436 term_436 DONE 436 ${SHA}\n`);
+  const [time, ...line] = readFileSync(join(pilot, 'results', 'term_436'), 'utf8').trim().split(' ');
+  assert.equal(line.join(' '), `DONE 436 ${SHA}`);
+  assert.ok(Date.parse(time) >= before - 1000, time);
+  assert.equal(run(['term_x', ...fast]).stdout, 'RESULT - term_x STOP 9 decision x\n');
+  assert.throws(() => readFileSync(join(pilot, 'results', 'term_x')), /ENOENT/);
+});
