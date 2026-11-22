@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // setup-workflow 正本（#58）：pilot 的 Reconcile 用這一支對帳。主 checkout、`.scratch/pilot/` 的請求、gate、batch checkpoint、
 // 每個 running 成員的 terminal 與 tracker 上的母單，各印一行狀態，不必再手動拼 `orca terminal read` 的 JSON（手拼時漏過 exited 卻沒有結果行的 worker）。
 // 存檔格式照 issue-pilot 的 PILOT-STORE.md；專案不同的值由參數傳入。

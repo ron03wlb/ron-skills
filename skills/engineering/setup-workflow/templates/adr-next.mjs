@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 取 ADR 編號：README 的「下一個可用編號」只反映整合分支，進行中 worktree 已占用的編號要合併時才撞出來
 // （曾有同一個編號同時被兩條分支使用，改號重合一次）。本腳本把整合分支與所有 worktree
 // （已提交與未提交變更）占用的編號一起算，印出真正可用的下一號。唯讀。

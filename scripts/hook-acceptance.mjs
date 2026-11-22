@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 以真實 `.claude/settings.json` 驗收 hook：照設定的 matcher 找出每個工具呼叫會觸發的 hook 指令（含參數），餵 Claude Code 同形狀的 stdin JSON，核對 exit code。
 // spay2 retro 8eaa8b41#2：新參數的 PreToolUse hook 落地後，使用者用 `!` 與終端機都測不到（PreToolUse 只攔 Claude 的工具呼叫），白跑兩次才改開新 session。
 // check-claude-settings 只查 permissions 規則格式，各 hook 的測試直接帶自己的參數跑，兩者都驗不到「settings.json 真的帶了這些參數」。

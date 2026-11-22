@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 分頁狀態（GLOSSARY.md「分頁狀態」）：Orca 分頁標題最前面的 `<狀態>｜` 前綴，狀態是處理中、待 Retro、待關閉。
 // 只回答問題、工作區乾淨也沒有 commit 的 session 直接用待關閉，不必為問答跑 /retro（#399）。
 // 換目前分頁（ORCA_TERMINAL_HANDLE）標題的狀態前綴，沒有前綴就補上；agent、skill、pilot script 與 claude-hook-tab-state.mjs 都用它。

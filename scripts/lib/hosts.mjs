@@ -1,3 +1,4 @@
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // tracker host 與程式碼 host 的判定，setup-workflow 的 Host 站（detect.mjs --host）與 issue-pool.mjs 使用；人看的說明在 ../../HOSTS.md。
 // host 只有 github、gitlab、local 三種：github.com 與名稱含 github 的主機（GitHub Enterprise）算 github，
 // 其他網路主機一律當自架 GitLab（http、IP 也算，例如 http://192.168.200.202/spay/spay2）；沒有 remote 或 remote 是本機路徑算 local。

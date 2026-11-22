@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 各 worktree 的未合入改動碰到哪些檔、哪些條目（#194）。唯讀。
 // /retro-collect 判斷候選 covered 或衝突、retro 的 concurrent-edit 步驟，原本各自手寫迴圈對每個 worktree 跑
 // `git diff --name-only $(merge-base …)`，再另一個迴圈 grep 改到 adapter 哪些條目（1031c、1031d 各寫一次）。

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // node:test 內以 spawn／fork／execFile 產生並存進變數的子行程，下一個語句必須是 t.after(() => <child>.kill())（spay2 #653）。
 // assertion 失敗會跳過之後的程式，測試中段的 kill() 不會執行，子行程讓測試檔的 event loop 不結束（spay2 #279／#284：sleep 300 卡到外層逾時）。
 // 無法在更上層消除：共用 spawn helper 只涵蓋改用它的測試，強制改用仍要一支 lint；`node --test --import` 預載只涵蓋經包裝的呼叫。

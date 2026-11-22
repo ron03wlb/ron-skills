@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // /issue-pilot 的 Entry：這個 session 成為 coordinator 時登記自己（PILOT-STORE.md 的 `coordinator` 與 `sessions.md`），coordinator 不手寫這兩個檔。
 // 步驟：sessions.md 有這個 session 的 handoff 行就是已退役，STOP → 改寫 `coordinator` 為 pid 行（原本就是同一個 pid 時保留 since）
 //   → sessions.md 還沒有這個 session 的 start 行才附加（舊格式的 start 行也算）→ 以 pilot-sources --record 記錄傳入的來源。

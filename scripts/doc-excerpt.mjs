@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // setup-workflow 正本。在單行很長的文件裡只取比對處前後的字：docs/agents/*.md 的條目都是單行（**Probe lines.** 約 5 KB），直接 grep 會印整行。
 // `grep -o '.\\{0,60\\}<詞>.\\{0,60\\}'` 在 ugrep 報 `exceeds complexity limits`、exit 2（#295，兩個 session 都踩到），所以不靠 grep 的引擎。
 // 用法：node scripts/doc-excerpt.mjs <regex> <檔案>... [--width <n>]（前後各取 n 個字，預設 60）

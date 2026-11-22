@@ -11,7 +11,9 @@
 //       --staged：正本已 `git add`、還沒 commit 時用（本 repo 的副本要和正本同一個 commit，bin/check 才過）：工作樹與 index 不同才擋，清單的 commit 記現在的 HEAD。
 // 輸出每檔一行 `COPY|SAME|UPDATE|DIFF <副本路徑>`（UPDATE、DIFF 後接 unified diff；UPDATE 是 sha256 與清單記錄一致、沒手改過的舊副本，直接覆寫），最後一行：
 //   PLANNED <n>（--dry-run）、COPIED <n>、CONFIRM_OVERWRITE <路徑...>（exit 3：既有檔內容不同且與清單記錄不一致，人確認後加 --yes 重跑；不是明列的範本時路徑緊接來源，例如 `scripts/b.mjs（a、c 的相依）`）、
-//   VERIFIED <n>（--verify 全部一致；有 MISMATCH／MISSING 或沒有清單時 exit 1）。參數或旗標錯誤、正本不存在或有未提交改動時 exit 2。
+//   VERIFIED <n>（--verify 全部一致；有 MISMATCH／MISSING／NO_ORIGIN 或沒有清單時 exit 1）。
+// --verify 另查每個登記的 .mjs／.sh 副本（fixtures/ 下的不算）前三行有沒有來源行（ORIGIN），沒有印 `NO_ORIGIN <副本路徑>`：
+//   正本檔頭都帶它，讓 consumer 不必查清單就知道檔案是副本（investing#529）；ron-skills 的 tests/template-copies.test.mjs 檢查每支正本都有。參數或旗標錯誤、正本不存在或有未提交改動時 exit 2。
 // `正本不存在：templates/<檔>` 是相依時接 `（templates/<引用檔>:<行>）`（retro spay2 ff00a288#1(b)：只寫缺的檔名，要自己 grep 是誰引用的）；
 //   actionable：改掉該行的引用，或在範本加 `// copy-templates: requires` 宣告真正的相依。
 // 目標 repo 就是 ron-skills 本身（目標裡有 skills/engineering/setup-workflow/scripts/copy-templates.mjs）時，只處理清單已列的副本，
@@ -25,6 +27,13 @@ import { fileURLToPath } from 'node:url';
 
 const TEMPLATES = fileURLToPath(new URL('../templates/', import.meta.url));
 const MANIFEST = 'docs/agents/workflow-templates.json';
+
+/** 每支程式正本檔頭第一段的來源行（`//` 或 `#` 註解）；`--verify` 認這段字。 */
+const ORIGIN = '由 setup-workflow 範本同步，勿在此改';
+/** 要帶來源行的檔：.mjs／.sh，fixtures/ 下的資料不算。 */
+const needsOrigin = path => /\.(mjs|sh)$/.test(path) && !/(^|\/)fixtures\//.test(path);
+/** 前三行有來源行。 */
+const hasOrigin = text => text.split('\n', 3).some(line => line.includes(ORIGIN));
 
 const fail = message => { console.error(`copy-templates: ${message}`); process.exit(2); };
 const excludes = [];
@@ -60,7 +69,9 @@ if (flags.has('--verify')) {
   let bad = 0;
   for (const [path, entry] of Object.entries(manifest.copies)) {
     const file = join(repo, path);
-    if (!existsSync(file)) { console.log(`MISSING ${path}`); bad++; } else if (sha256(file) !== entry.sha256) { console.log(`MISMATCH ${path}`); bad++; }
+    if (!existsSync(file)) { console.log(`MISSING ${path}`); bad++; continue; }
+    if (sha256(file) !== entry.sha256) { console.log(`MISMATCH ${path}`); bad++; }
+    if (needsOrigin(path) && !hasOrigin(readFileSync(file, 'utf8'))) { console.log(`NO_ORIGIN ${path}`); bad++; }
   }
   if (bad) process.exit(1);
   console.log(`VERIFIED ${Object.keys(manifest.copies).length}`);

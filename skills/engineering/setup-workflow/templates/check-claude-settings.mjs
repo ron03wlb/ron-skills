@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // .claude/settings.json 權限規則格式：Claude Code 對格式錯誤的規則只會略過並警告，不會失敗，
 // 例如漏寫 Bash() 外層的 "python3 ..." 會靜默失效。本檢查讓這類規則在 push gate 就被擋下。
 import { readFileSync } from 'node:fs';

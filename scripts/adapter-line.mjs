@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // setup-workflow 正本。只印 adapter 的單一條目（#344）：adapter 的條目多是單行長文，coordinator 為了一兩條就整份讀，
 // 壓縮後再付一次；doc-excerpt.mjs 只給比對處前後文，切不出整條。必讀核心只留每次都用的條目，其餘搬到拆出檔、核心留一行 pointer，用這支取整條。
 // 用法：node scripts/adapter-line.mjs [--root <dir>] <條目名> [<條目名>…] | --list

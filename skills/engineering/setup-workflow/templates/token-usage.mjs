@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // token 消耗量測（#373 由另一專案的量測腳本通用化）：讀 Claude Code transcript，依日、模型、角色彙總，並給 worker 每張單的加權值與中位數。唯讀，只量測。
 //
 // 用法：node scripts/token-usage.mjs [--since YYYY-MM-DD] [--summary] [--root <dir>] [--project <子字串>]

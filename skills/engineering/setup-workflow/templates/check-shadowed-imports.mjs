@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 區域宣告遮蔽同名 import 的靜態檢查（spay2 retro ff00a288#3）：probe 內新增 `const landingChanges = () => …`，遮蔽同檔頂層的同名 import，
 // focused 測試全綠，到完整檢查才抓到。純 JS 腳本 `node --check` 不報遮蔽。
 // 用法：node scripts/check-shadowed-imports.mjs [<檔案或目錄>…]（目錄遞迴掃 *.mjs，略過 node_modules 與 . 開頭目錄；不帶參數時掃本檔所在目錄）

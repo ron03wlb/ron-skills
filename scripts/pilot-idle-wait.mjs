@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // copy-templates: requires pilot-probe.mjs
 // setup-workflow 正本（#377，改寫自 spay2 的 scripts/pilot-idle-wait.mjs，spay2 #868）：/issue-pilot coordinator 連續閒置時的背景等待。
 // spay2 實測 27 次閒置喚醒每次重載 `/loop` 全文，輸入 token 從 55603 漲到 152429；閒置時改以 run_in_background 跑本程序，

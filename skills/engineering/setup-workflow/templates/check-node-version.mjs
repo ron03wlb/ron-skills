@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 本機檢查入口與遠端 CI 要跑同一個 Node 主版本：PR #43 本機 Node 24 全過、CI Node 22.19.0 卻紅（node --test 在 Node 22 非 TTY 預設 TAP reporter），合入後 main 才紅。
 // 讀 setup-workflow 的 ci.mjs 釘版本的地方：.github/workflows/*.yml 的每個 `node-version:`，和 .gitlab-ci.yml 的 `image: node:<版本>`（位置取自 lib/hosts.mjs 的 CI_FILES）；
 // 註解行不算。釘的版本彼此要完全相同，主版本要等於執行本腳本的 Node。

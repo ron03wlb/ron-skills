@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 唯讀查詢：指定 issue 是否已合入整合分支（主 worktree 目前的分支）、是否已在 remote；remote 以 ls-remote 即時讀取，不依賴對話開頭的 git 快照或過期的 remote-tracking ref。
 // 用法：node scripts/integration-status.mjs <issue 編號…>
 // stdout 一段 JSON；inRemote 為 null 表示本機缺 remote tip 物件，先 git fetch 再查。

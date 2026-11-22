@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 把一條分支從 push 一路做到合入 main 並收尾（#40）：手動分支（retro、單獨跑的 /issue-run）與 pilot 的 Push gate 共用。
 // setup-workflow 正本（#139），L2 起由 adapter 的交付段指向 scripts/land.mjs；第一版只支援 GitHub（gh）。
 // 步驟：push → 找或開 PR → 等 CI → 以 merge commit 合併 → 收尾（移除 worktree、還原 core.bare、刪本機與 origin 分支）

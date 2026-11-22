@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 把 prompt 送進既有的 Orca Claude terminal（例如派工送 `/issue-run`、交接送 `/loop /issue-pilot`），並確認已開始處理。
 // 不用裸 `terminal send`：它會回 accepted，文字卻停在輸入框沒提交，重送又會黏成兩份。
 // 步驟：等 TUI 閒置（兩輪）→ 送出並讀畫面確認 prompt 開頭、`esc to interrupt` 或工作中的 spinner 出現，沒出現就延後重送；

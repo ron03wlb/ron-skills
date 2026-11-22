@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // pilot 的 Close 要到成員 Issue 的跨 repo 對應單留言交接；對應單寫在本文，如「app 對應單：acme/app#7」。
 // 裸的 <owner>/<repo>#<m> 是 github.com；GitLab 與 GitHub Enterprise 的對應單寫成 issue 網址（如 http://192.168.200.202/acme/app/-/issues/7），
 // host 種類與留言指令都取自 lib/hosts.mjs（setup-workflow 的 gh／glab 對照表，人看的副本是 HOSTS.md）。

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // commit 進去的檔案不能留著衝突標記：stage-58 手解衝突時斷言失敗，後面以 `;` 串接的 git commit 照樣執行，40bd917 帶著 pilot.md 的 `<<<<<<< HEAD` 進了 stage 分支（retro ron-skills-91）。
 // 掃 git 追蹤的文字檔，行首是 `<<<<<<<` 或 `>>>>>>>`（後面接空白或行尾）就算；`=======` 會撞到 setext 標題底線，不看。
 // 用法：node scripts/check-conflict-markers.mjs [repo]（預設本 repo）

@@ -1,3 +1,4 @@
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // setup-workflow 正本（#376）：兩個 commit 以 `git merge-tree --write-tree` 試合併，傳回會衝突的檔。唯讀：不動任何 ref、index 或工作樹。
 // worktree-overlap.mjs --mine 的 `merge=clean|conflict` 與 pilot-probe.mjs 的 `CONFLICT` 共用這一份，不另寫。
 // 只依賴 node 內建模組，可以和 worktree-overlap.mjs 一起複製到沒有 pilot 腳本的 repo。

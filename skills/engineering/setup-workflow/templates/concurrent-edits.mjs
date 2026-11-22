@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 開工前查併行編輯：列出其他 worktree 對指定檔案的未合入變更（已提交與未提交），以及整合分支自 base 以來動到這些檔案的 commit。
 // 同檔有人在改就先合上或放棄自己的，不要落地重複的修改。唯讀。
 // 用法：node scripts/concurrent-edits.mjs [--base <sha>] [--json] <file>...  （cwd 在 repo 任一 worktree；--base 預設為目前 HEAD 與整合分支的 merge-base）

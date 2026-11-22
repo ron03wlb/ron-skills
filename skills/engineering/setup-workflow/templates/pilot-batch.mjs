@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // pilot 的 batch checkpoint（PILOT-STORE.md 的 `.scratch/pilot/batch-<key>.md`）搬移成員：coordinator 不再手抄表頭與成員行（#163：三個 coordinator
 // 各自用 sed、head、python 拼，抄過去的 state 還是 done，probe 又印 STAGEABLE；全員搬走的 batch 沒有固定的 current: 值）。
 // 用法：node scripts/pilot-batch.mjs <checkout> move <key> <n> [--state stop]

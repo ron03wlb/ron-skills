@@ -1,3 +1,4 @@
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // pilot 存檔（issue-pilot 的 PILOT-STORE.md）正本 script 共用的小工具：存檔目錄、時間格式、用法錯誤，requests.md、gates.md 的解析（probe 與 pilot-request、pilot-gate 共用），以及 checkpoint 讀改寫的加鎖與原子寫入（withCheckpointLock、updateCheckpoint，#345）與 land 存活標記（regressingMark、landAlive，#361）。
 // 存檔一律在 coordinator checkout 的 `.scratch/pilot/`；checkout 由呼叫者傳入，不寫死任何專案路徑。
 import { spawnSync } from 'node:child_process';

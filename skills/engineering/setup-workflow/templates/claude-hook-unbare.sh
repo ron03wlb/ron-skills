@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 # PreToolUse（Bash）hook：Orca 從 WSL 做 worktree 操作時，可能在任何 session 進行中把主 checkout 的 core.bare 設成 true，
 # 不只在 pilot 的 Probe、Dispatch、Close（retro 2026-10-30：互動 session 一小時內碰到兩次，git status 回 `must be run in a work tree`）。
 # 從 git common dir 找主 checkout：在 linked worktree 裡 --is-bare-repository 照樣回 false，看不出主 checkout 已壞。

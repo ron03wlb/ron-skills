@@ -1,3 +1,4 @@
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // node-test-guarded.mjs 經 NODE_OPTIONS --import 載入：記下每個測試子行程實際跑完的測試名稱（不含 suite 與 <root>）。
 // `node --test` 父行程本身不載入 --import，只有測試子行程會（有 NODE_TEST_CONTEXT）。只記 wrapper 這一輪的第一層測試子行程：
 // 記錄的子行程把 NODE_TEST_COUNTED 設成 wrapper 的 pid（NODE_TEST_COUNT_ROOT）放進自己的 process.env，
