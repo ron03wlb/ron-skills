@@ -16,7 +16,7 @@
 //            寫入失敗印 PARENT_APPLY_FAILED <n> <錯誤>，其他母單照修，exit 1。
 //   --status：最後從 checkpoint、gates.md、requests.md、coordinator 與 git 重寫 `.scratch/pilot/status.md`（格式見 PILOT-STORE.md），不印任何行；
 //            batch 那行附最後一行 regression 的結果（`，regression <sha 前 7 碼> exit <code 或 none>`，staged 而沒有 regression 行時 `，regression none`）。
-//   --capacity <repo>（#178）：把這一輪還在跑的成員數（各 batch 的 running 列，扣掉這一輪讀到 DONE、STOP 的）以 <repo> 寫進全機帳本
+//   --capacity <repo>（#178）：把這一輪還在跑的成員數（各 batch 的 running 列，扣掉這一輪讀到 DONE、STOP 與 terminal 已 exited 的，#408）以 <repo> 寫進全機帳本
 //            （同目錄 pilot-capacity.mjs 的 report：$PILOT_WORKERS_LEDGER，預設 ~/.local/state/pilot-workers.tsv）；所有 repo 的合計超過
 //            $PILOT_MACHINE_WORKER_CAP（預設 4）時最後印 OVER_CAP <合計> <上限>。只回報，不改派工；沒帶時不碰帳本。
 //            $PILOT_MACHINE_WORKER_CAP 空白時在這之前印 CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP，照預設 4 算（#396）。
@@ -1038,7 +1038,8 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
       const state = await workerState(ctx, member);
       const [, kind, value] = state.match(/^(DONE|STOP) (.+)$/) ?? [];
       if (kind) results.push({ n: member.n, state: kind === 'DONE' ? 'done' : 'stop', sha: kind === 'DONE' ? value : undefined });
-      else running++;
+      // terminal 已結束（STUCK exited）的成員不佔機器，不算容量（#408：investing 的 437 exited 仍被算進帳本，派工印 STOP capacity 4/3）。
+      else if (state !== 'STUCK exited') running++;
       out.push(`WORKER ${member.n} ${state}`);
     }
     if (apply && results.length) out.push(...applyResults(join(pilot, file), key, results));

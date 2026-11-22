@@ -16,6 +16,8 @@
 // 指令開頭只有一個 `cd <字面絕對路徑>` 時，相對路徑以該路徑解析（#287 的兩條指令都以 `cd /Users/…` 開頭）；其他 cd、pushd 看不出當時的目錄，相對路徑放行。
 // PIPESTATUS：Bash 工具跑的是 zsh，bash 的 `${PIPESTATUS[0]}` 在 zsh 展開成空字串，pipe 前那支指令的 exit code 就不見了
 // （session 8d8ec702 jsonl 第 183 行 `… | tail -20; echo "exit=${PIPESTATUS[0]}"` 印 `exit=`，#238）。沒加引號或在雙引號裡的才算，單引號與 heredoc 內容放行。
+// 修飾字（#408）：zsh 把沒加大括號的 `$name:` 後接修飾字字母當成 history 修飾字，`git show $c:engine/x.py` 的 `$c:e` 取副檔名，
+// 印 `fatal: ambiguous argument 'ngine/x.py'`（investing session 3b67e742，24 圈無效重放）。沒加引號或在雙引號裡的才算，`${c}:`、單引號、跳脫、heredoc 內容放行。
 // 命中時 exit 2，stderr 說明原因與改法；$SHELL 不是 zsh（#301）、輸入不合法或不是 Bash 時 exit 0 不輸出。
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -101,6 +103,14 @@ export function unmatchedArgGlobs(command, options) {
   return NOT_GLOB_CONTEXT.test(command) ? [] : unmatched(argGlobWords(command), command, options);
 }
 
+/** 沒加大括號、後接 zsh 修飾字字母的 `$name:x`（依出現順序，不重複），例如 `git show $c:engine/x.py` 的 `$c:e`。 */
+export function modifierWords(command) {
+  return scan(command).modifiers.map(m => m.word);
+}
+
+// zsh 參數展開接受的修飾字字母（`:gs/…` 這類 g、& 開頭的少見，不擋）。
+const MODIFIER = /^\$([A-Za-z_]\w*|\d):([aAcehlPqQrstux])([^\s;&|()<>"'`]*)/;
+
 /** 指令有沒有在 zsh 會展開的地方用到 bash 的 `$PIPESTATUS`。 */
 export function usesPipestatus(command) {
   return scan(command).pipestatus;
@@ -115,6 +125,11 @@ function scan(command) {
   const forGlobs = [];
   const argGlobs = [];
   let pipestatus = false;
+  const modifiers = [];
+  const modifier = text => {
+    const m = text.match(MODIFIER);
+    if (m) modifiers.push({ word: `$${m[1]}:${m[2]}`, fix: `\${${m[1]}}:${m[2]}${m[3]}` });
+  };
   let forList = 0; // 1：剛看到 for；2：看過變數名；3：在 in 之後的清單裡
   let atCommand = true; // 目前的字在指令開頭（for 只有在這裡才是關鍵字）
   let wild = false; // 目前的字有沒有沒加引號的 * 或 ?
@@ -175,6 +190,10 @@ function scan(command) {
         const quoted = doubleQuoteEnd(command, i);
         j = quoted.end;
         if (PIPESTATUS.test(command.slice(i, j))) pipestatus = true;
+        for (let k = i + 1; k < j; k++) {
+          if (command[k] === '\\') k++;
+          else if (command[k] === '$') modifier(command.slice(k, j));
+        }
         for (const inner of quoted.commands) {
           const sub = scan(inner);
           found.push(...sub.equals);
@@ -182,6 +201,7 @@ function scan(command) {
           forGlobs.push(...sub.forGlobs);
           argGlobs.push(...sub.argGlobs);
           if (sub.pipestatus) pipestatus = true;
+          modifiers.push(...sub.modifiers);
         }
       }
       word += command.slice(i, j + 1);
@@ -221,6 +241,7 @@ function scan(command) {
       continue;
     }
     if (c === '$' && PIPESTATUS.test(command.slice(i, i + 12))) pipestatus = true;
+    if (c === '$') modifier(command.slice(i));
     if (wordStart && c === '=') startsWithEquals = true;
     if ((c === '*' || c === '?') && GLOB_WORD.test(word)) glob = true;
     if (c === '*' || c === '?') wild = true;
@@ -229,7 +250,9 @@ function scan(command) {
     i++;
   }
   end();
-  return { equals: found, nomatch, pipestatus, forGlobs, argGlobs };
+  const seen = new Set();
+  const unique = modifiers.filter(m => !seen.has(m.word) && seen.add(m.word));
+  return { equals: found, nomatch, pipestatus, forGlobs, argGlobs, modifiers: unique };
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
@@ -241,10 +264,10 @@ if (isMain) {
   const command = input?.tool_input?.command;
   if (input?.tool_name && input.tool_name !== 'Bash') process.exit(0);
   if (typeof command !== 'string') process.exit(0);
-  const { equals, nomatch, pipestatus } = scan(command);
+  const { equals, nomatch, pipestatus, modifiers } = scan(command);
   const unmatchedFor = unmatchedForGlobs(command, { cwd: input?.cwd });
   const args = unmatchedArgGlobs(command, { cwd: input?.cwd });
-  if (!equals.length && !nomatch.length && !pipestatus && !unmatchedFor.length && !args.length) process.exit(0);
+  if (!equals.length && !nomatch.length && !pipestatus && !unmatchedFor.length && !args.length && !modifiers.length) process.exit(0);
   const lines = [];
   if (equals.length) lines.push(
     `zsh 會把沒加引號、以 = 開頭的字當 EQUALS 展開成指令路徑：${equals.map(w => `\`${w}\``).join('、')}。`,
@@ -268,6 +291,11 @@ if (isMain) {
     `for 清單裡的 glob 此刻沒有相符的檔案：${unmatchedFor.map(w => `\`${w}\``).join('、')}。`,
     'zsh 的 NOMATCH 會中止整串指令，清單之後的指令都不跑、也沒有輸出；這不代表要找的東西不存在（#284）。',
     `改成 \`${unmatchedFor[0]}(N)\`（沒有相符時展開成空），或改用 \`find\`。`,
+  );
+  if (modifiers.length) lines.push(
+    `zsh 會把沒加大括號的 \`$name:\` 後接的字母當成修飾字：${modifiers.map(m => `\`${m.word}\``).join('、')}（\`:e\` 取副檔名、\`:h\` 取目錄、\`:t\` 取檔名…）。`,
+    '冒號之後的字會被吃掉或改寫，例如 `git show $c:engine/x.py` 印 `fatal: ambiguous argument \'ngine/x.py\'`（#408）。',
+    `變數名稱加大括號：${modifiers.map(m => `\`${m.fix}\``).join('、')}。`,
   );
   if (pipestatus) lines.push(
     'Bash 工具跑的是 zsh，bash 的 `$PIPESTATUS` 在 zsh 展開成空字串，pipe 前那支指令的 exit code 會不見（#238）。',
