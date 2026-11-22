@@ -75,6 +75,9 @@ test('bin/check 接管線、沒有 pipefail：exit 2，說明 exit 是 tail 的�
     './bin/check --upstream |& tee log',
     'timeout 600 bin/check | tail',
     'CI=1 bin/check >> log | cat',
+    'timeout -k 5 30 bin/check | tail -1',
+    'nice -n 5 bin/check 2>&1 | tail',
+    'env -u FOO X=1 bin/check | tee log',
   ]) assert.equal(bash(command).status, 2, command);
   assert.deepEqual(checkPiped('cd x && bin/check 2>&1 | tail -3'), ['bin/check']);
 });
@@ -88,6 +91,7 @@ test('bin/check 導到 log、有 pipefail／PIPESTATUS、|| 或只是讀 bin/che
     'bin/check --upstream &> log',
     'grep -n step bin/check | head',
     'sed -n 1,20p bin/check | cat',
+    'timeout 5 cat bin/check | head',
     'echo "bin/check | tail"',
   ]) assert.equal(bash(command).status, 0, command);
 });

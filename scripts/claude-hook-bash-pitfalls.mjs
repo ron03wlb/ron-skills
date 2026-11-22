@@ -143,16 +143,29 @@ export function ghViewCommentsWithoutJson(command) {
   }).map(words => words.join(' '));
 }
 
-const WRAPPERS = new Set(['env', 'time', 'nice', 'bash', 'sh', 'command', 'exec']);
+const WRAPPERS = new Set(['env', 'time', 'nice', 'timeout', 'bash', 'sh', 'command', 'exec']);
+/** 前綴指令帶值的選項（`timeout -k 5`、`nice -n 5`、`timeout -s TERM`、`env -u X`）：值另成一個字時一起跳過。 */
+const VALUED = new Set(['-k', '-s', '-n', '-u', '--kill-after', '--signal', '--adjustment', '--unset']);
+
+/** 去掉 `VAR=…` 與前綴指令（含選項、timeout 的時限）後，真正執行的指令字的位置。 */
+function commandIndex(words) {
+  let i = 0;
+  while (/^\w+=/.test(words[i] ?? '')) i++;
+  while (WRAPPERS.has(words[i])) {
+    const wrapper = words[i++];
+    while (words[i]?.startsWith('-')) i += VALUED.has(words[i]) ? 2 : 1;
+    if (wrapper === 'timeout' && /^\d/.test(words[i] ?? '')) i++;
+    while (/^\w+=/.test(words[i] ?? '')) i++;
+  }
+  return i;
+}
 
 /** 接管線、又沒有 pipefail／PIPESTATUS 的 `bin/check`（回傳該簡單指令，字以空白相接）。 */
 export function checkPiped(command) {
   if (/\bpipefail\b|\bPIPESTATUS\b/.test(command)) return [];
   return scan(command).simple.filter(words => {
     if (!words.piped) return false;
-    let i = 0;
-    while (i < words.length && (/^\w+=/.test(words[i]) || WRAPPERS.has(words[i]) || (words[i] === 'timeout' && ++i))) i++;
-    return /(?:^|\/)bin\/check$/.test(words[i] ?? '');
+    return /(?:^|\/)bin\/check$/.test(words[commandIndex(words)] ?? '');
   }).map(words => words.join(' '));
 }
 

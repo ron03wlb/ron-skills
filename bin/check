@@ -12,14 +12,18 @@ unset $(git rev-parse --local-env-vars)
 # pid 記在這棵工作樹自己的 git 目錄；記下的行程還活著、而且是 bin/check 時印 `CHECK_BUSY <pid>`、exit 3，不開第二份。
 # 行程已結束（含被 kill、沒跑到 EXIT trap）或 pid 被別的程式重用時視為沒人持有，照常開跑。
 # 持有者是自己的祖先（測試在本 repo 跑 bin/check，例如 tests/pre-commit-git-env.test.mjs）時不擋、也不接手：以繼承的 CHECK_LOCK_PID 認出。
+# 沒有 pid 檔時以 noclobber 原子建立，兩份同時開跑只有一份建得成；建不成才讀持有者判斷。
 lock=$(git rev-parse --path-format=absolute --git-path check.pid)
 holder=$(cat "$lock" 2>/dev/null) || holder=
 if [[ -z ${CHECK_LOCK_PID:-} || $holder != "$CHECK_LOCK_PID" ]]; then
-  if [[ $holder =~ ^[0-9]+$ && $holder != "$$" ]] && ps -p "$holder" -o command= 2>/dev/null | grep -q 'bin/check'; then
-    echo "CHECK_BUSY $holder"
-    exit 3
+  if ! (set -C; echo $$ > "$lock") 2>/dev/null; then
+    holder=$(cat "$lock" 2>/dev/null) || holder=
+    if [[ $holder =~ ^[0-9]+$ && $holder != "$$" ]] && ps -p "$holder" -o command= 2>/dev/null | grep -q 'bin/check'; then
+      echo "CHECK_BUSY $holder"
+      exit 3
+    fi
+    echo $$ > "$lock"
   fi
-  echo $$ > "$lock"
   export CHECK_LOCK_PID=$$
 fi
 # 這次檢查的樹：通過時記下，pre-commit 遇到同一棵樹不再跑（scripts/check-stamp.mjs，#297）。取不到不影響檢查。
