@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 // 看板同步（#487）：把本 repo 每張開著的 Issue 依 scripts/issue-pool.mjs 的分桶放進 GitHub Project「ron-skills 進度」Status 欄的七欄之一，
 // 並在 --apply 結束時寫一則整體進度的 Project status update。本 repo 專用，不是 setup-workflow 的共用範本；規則與三個檢視見 docs/agents/project-board.md。
-// 用法：node scripts/project-sync.mjs [--dry-run | --apply] [--setup-status-field] [--owner <login> --project <number>] [--repo <owner>/<name>]
+// 用法：node scripts/project-sync.mjs [--dry-run | --apply] [--setup-status-field] [--owner <login> --project <number>] [--repo <owner>/<name>] [--main <ref>]... [--integration <ref>]...
 //   預設 --dry-run：不寫入，只印會做的事。--apply 以當下讀到的狀態寫入差異。
-//   Project：預設取連結到本 repo 的那一個；沒有或多於一個時每個印一行 `PROJECT <owner>/<number> <title>`、exit 3。--owner 與 --project 一起給時改用指定的。
+//   寫入目標固定（#538，.claude/settings.json 放行本腳本的前提）：repo 讀本檔所在 scripts/ 的上一層 docs/agents/issue-run.md 的 `## Tracker` 段，
+//   段裡的 GitHub 專案網址要恰好一個（規則同 gh-tracker.mjs），否則 exit 2、不呼叫 gh；每次 gh 都是 `gh api graphql --hostname <host>`，
+//   gh 收到的環境沒有 GH_HOST、GH_REPO，所以 remote、gh 的預設主機與這兩個變數都改不了目標。
+//   Project：連結到該 repo 的那一個；沒有或多於一個時每個印一行 `PROJECT <owner>/<number> <title>`、exit 3。
+//   --repo、--owner 與 --project（後兩者一起給）只在 dry-run 改讀別的 repo 或 Project；和 --apply 一起給時 exit 2、不呼叫 gh。
 //   --setup-status-field：Status 選項不是 COLUMNS 那七個（依序）時改成那七個（GitHub 會清空每張卡的值，同一次同步補回）；沒帶而選項不符時印
 //   `STATUS_FIELD_MISMATCH <現有選項,…>`、exit 3。
 // 分欄（columnOf）：已關閉 → 完成；開著的照 bucketOf 的桶對 BUCKET_COLUMN；parent 桶加卡但不設 Status（已設的清掉）；
@@ -16,12 +20,15 @@
 //   七欄各一行 `COLUMN <欄> <張數>`（同步後的狀態）
 //   Status update 的六行內文（`STATUS_LINE <內文行>`），與 `STATUS_UPDATE skip|create|update <理由>`
 //   最後一行 `PROJECT_SYNC dry-run|applied <owner>/<number> changes <n>`
-// exit：0 完成；1 gh 或 git 失敗（stderr 印原因）；2 用法錯誤；3 Project 不能確定或 Status 選項不符。
+// exit：0 完成；1 gh 或 git 失敗（stderr 印原因）；2 用法錯誤或 adapter 的寫入目標不能確定；3 Project 不能確定或 Status 選項不符。
 // 測試用環境變數 PROJECT_SYNC_NOW（ISO 時間）取代現在時間，只影響 Status update 的「同一天」判斷與 stale 分桶。
 import { spawnSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { bucketOf, POOL_FIELDS } from './issue-pool.mjs';
+import { hostKind, remoteHostname } from './lib/hosts.mjs';
+
+const ADAPTER = fileURLToPath(new URL('../docs/agents/issue-run.md', import.meta.url));
 
 export const COLUMNS = ['Retro 候選', '待討論', '被擋', '可開工', '處理中', '已合入·待上 main', '完成'];
 const [RETRO, DISCUSS, BLOCKED, READY, ACTIVE, MERGED, DONE] = COLUMNS;
@@ -125,15 +132,44 @@ export function statusAction(latest, lines, now = Date.now()) {
 class UsageError extends Error {}
 class ConfigError extends Error {}
 
+// GitHub 主機上不是專案的網址與保留的第一段路徑，與 gh-tracker.mjs 的 trackerTarget 同一套規則。
+const NON_PROJECT_HOST = /^(?:docs|api|gist|raw|uploads|objects|codeload|status)\.|githubusercontent\.com$/;
+const RESERVED_OWNERS = new Set(['orgs', 'users', 'settings', 'enterprises', 'apps', 'marketplace', 'features', 'topics', 'sponsors', 'notifications', 'search', 'login', 'about']);
+
+/** adapter 文字的 `## Tracker` 段裡唯一的 GitHub 專案：{ host, repo }；沒有這一段、段裡沒有或有兩個以上的專案時丟 UsageError（exit 2）。 */
+export function trackerTarget(adapterText) {
+  const where = 'docs/agents/issue-run.md 的 ## Tracker 段';
+  if (adapterText === null) throw new UsageError(`找不到 ${ADAPTER}：寫入目標要寫在 ${where}`);
+  const lines = adapterText.split('\n');
+  const start = lines.findIndex(line => /^## Tracker\s*$/.test(line));
+  if (start < 0) throw new UsageError(`adapter 沒有 ## Tracker 段：寫入目標要寫在 ${where}`);
+  const end = lines.findIndex((line, i) => i > start && /^## /.test(line));
+  const projects = new Map();
+  for (const [match] of lines.slice(start + 1, end < 0 ? undefined : end).join('\n').matchAll(/https?:\/\/[^\s`'")<>]+/g)) {
+    const url = match.replace(/[.,;:]+$/, '');
+    const host = remoteHostname(url);
+    if (!host || hostKind(host) !== 'github' || NON_PROJECT_HOST.test(host)) continue;
+    const [owner, name] = new URL(url).pathname.replace(/\.git$/, '').split('/').filter(Boolean);
+    if (owner && name && !RESERVED_OWNERS.has(owner.toLowerCase())) projects.set(`${host}/${owner}/${name}`, { host, repo: `${owner}/${name}` });
+  }
+  if (projects.size !== 1) throw new UsageError(`${where}要恰好有一個 GitHub 專案網址（https://<host>/<owner>/<repo>），找到 ${projects.size} 個：${[...projects.keys()].join(' ') || '（無）'}`);
+  return [...projects.values()][0];
+}
+
+// gh 收到的環境去掉 GH_HOST、GH_REPO：主機一律由 --hostname 指定（#538）。
+const { GH_HOST: _host, GH_REPO: _repo, ...ghEnv } = process.env;
+
 function run(command, args, input) {
-  const result = spawnSync(command, args, { encoding: 'utf8', input, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] });
+  const result = spawnSync(command, args, { encoding: 'utf8', input, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], ...(command === 'gh' ? { env: ghEnv } : {}) });
   if (result.status !== 0) throw new Error(`${command} ${args.slice(0, 2).join(' ')} 失敗：${(result.stderr || result.error?.message || '').trim()}`);
   return result.stdout;
 }
 
-/** gh api graphql：query 與 variables 一律經 stdin 的 JSON 送出（陣列變數也能帶）。 */
+/** gh api graphql：主機固定為 adapter 的 host（main 開頭設定），query 與 variables 一律經 stdin 的 JSON 送出（陣列變數也能帶）。 */
+let ghHost = null;
 function graphql(query, variables = {}) {
-  const out = JSON.parse(run('gh', ['api', 'graphql', '--input', '-'], JSON.stringify({ query, variables })));
+  if (!ghHost) throw new Error('graphql 在寫入目標確定之前被呼叫');
+  const out = JSON.parse(run('gh', ['api', 'graphql', '--hostname', ghHost, '--input', '-'], JSON.stringify({ query, variables })));
   if (out.errors?.length) throw new Error(`gh api graphql 失敗：${out.errors.map(({ message }) => message).join('；')}`);
   return out.data;
 }
@@ -191,13 +227,18 @@ function parseArgs(argv) {
   if (Boolean(options.owner) !== Boolean(options.number)) throw new UsageError('--owner 與 --project 要一起給');
   if (options.number !== undefined && !Number.isInteger(options.number)) throw new UsageError('--project 要是數字');
   if (options.repo && !/^[\w.-]+\/[\w.-]+$/.test(options.repo)) throw new UsageError('--repo 要是 <owner>/<name>');
+  if (options.apply && (options.repo || options.owner)) {
+    throw new UsageError('--apply 不接受 --repo、--owner、--project：寫入目標固定為 docs/agents/issue-run.md 的 ## Tracker 段的 repo 與連結到它的 Project（#538）；這些旗標只能用在 dry-run');
+  }
   return options;
 }
 
 function main(argv) {
   const options = parseArgs(argv);
   const now = process.env.PROJECT_SYNC_NOW ? Date.parse(process.env.PROJECT_SYNC_NOW) : Date.now();
-  const repo = options.repo ?? run('gh', ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner']).trim();
+  const tracker = trackerTarget(existsSync(ADAPTER) ? readFileSync(ADAPTER, 'utf8') : null);
+  ghHost = tracker.host;
+  const repo = options.repo ?? tracker.repo;
   const [repoOwner, repoName] = repo.split('/');
 
   let target = options.owner ? { owner: options.owner, number: options.number } : null;
@@ -205,7 +246,7 @@ function main(argv) {
     const linked = graphql(LINKED_QUERY, { owner: repoOwner, name: repoName }).repository.projectsV2.nodes;
     if (linked.length !== 1) {
       for (const { owner, number, title } of linked) console.log(`PROJECT ${owner.login}/${number} ${title}`);
-      throw new ConfigError(`連結到 ${repo} 的 Project 有 ${linked.length} 個，用 --owner <login> --project <number> 指定`);
+      throw new ConfigError(`連結到 ${repo} 的 Project 有 ${linked.length} 個：--apply 只寫連結到它的唯一一個，先在 GitHub 上把多的取消連結（dry-run 可用 --owner <login> --project <number> 看指定的）`);
     }
     target = { owner: linked[0].owner.login, number: linked[0].number };
   }

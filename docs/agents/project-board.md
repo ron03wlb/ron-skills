@@ -9,10 +9,14 @@ node scripts/project-sync.mjs            # dry-run：只印會變的卡與數字
 node scripts/project-sync.mjs --apply    # 寫入
 ```
 
+- 寫入目標固定（#538）：repo 讀 [issue-run.md](issue-run.md) 的 `## Tracker` 段（github.com 的 `ron03wlb/ron-skills`），每次 gh 都帶 `--hostname github.com`，`GH_HOST`、`GH_REPO`、remote 與 gh 的預設主機都改不了它；Project 是連結到這個 repo 的那一個。所以 `.claude/settings.json` 放行 `Bash(node scripts/project-sync.mjs:*)`，auto mode 下的 agent 與排程跑 `--apply` 不會被擋。
+- 其他旗標：`--setup-status-field`（見下）；`--repo <owner>/<name>`、`--owner <login> --project <number>` 只在 dry-run 改讀別的 repo 或 Project，和 `--apply` 一起給時 exit 2、不呼叫 gh；`--main <ref>`、`--integration <ref>`（可重複）覆寫判斷「已合入·待上 main」用的本機 ref。
+- 測試用環境變數 `PROJECT_SYNC_NOW`（ISO 時間）取代現在時間，只影響 Status update 的「同一天」判斷與 stale 分桶。
+
 - 沒有 hook：`gh-tracker.mjs` 是共用範本的副本，不掛同步。由 AI 工作流 bot 每晚 20:00 Git 同步後跑 `--apply`，需要時手動跑。
 - 要先 `git fetch`：「已合入·待上 main」讀本機與 `origin` 的分支、`main`、`pilot/integration`。
 - gh 的 token 要有 `project` scope（`gh auth refresh -s project`）。
-- Project 取連結到本 repo 的那一個；沒有或多於一個時 exit 3 並列出，用 `--owner <login> --project <number>` 指定。
+- Project 取連結到本 repo 的那一個；沒有或多於一個時 exit 3 並列出：`--apply` 不能另外指定，先在 GitHub 上把多的取消連結（dry-run 可用 `--owner`、`--project` 看指定的那一個）。
 - Status 選項不是下表七個（依序）時 exit 3、印 `STATUS_FIELD_MISMATCH`：跑 `node scripts/project-sync.mjs --setup-status-field --apply`。GitHub 改選項會清空每張卡的 Status，同一次同步會補回。
 - 輸出格式與 exit code 寫在腳本開頭。
 
