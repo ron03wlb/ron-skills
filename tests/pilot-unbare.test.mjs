@@ -37,7 +37,7 @@ echo '{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCurso
   const probeEnv = Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'ORCA_CLI_COMMAND'));
   const result = spawnSync('node', [probe, repo], { encoding: 'utf8', env: { ...probeEnv, PATH: `${bin}:${probeEnv.PATH}` } });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(result.stdout.trim().split('\n'), [`UNBARE ${repo}`, 'DIRTY ?? .scratch/', 'POOL_EMPTY']);
+  assert.deepEqual(result.stdout.trim().split('\n'), [`UNBARE ${repo}`, 'DIRTY ?? .scratch/', 'POOL_EMPTY', 'HANDOFF_COUNT 0/2']);
   assert.equal(git('rev-parse', '--is-bare-repository').stdout.trim(), 'false');
   assert.match(readFileSync(join(repo, '.scratch/pilot/decisions.md'), 'utf8'), /被設成 true（probe）/);
 });

@@ -3,7 +3,7 @@
 // 每個 running 成員的 terminal 與 tracker 上的母單，各印一行狀態，不必再手動拼 `orca terminal read` 的 JSON（手拼時漏過 exited 卻沒有結果行的 worker）。
 // 存檔格式照 issue-pilot 的 PILOT-STORE.md；專案不同的值由參數傳入。
 //
-// 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...]
+// 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>]
 //   --integration 整合分支，預設 pilot/integration；--main 主分支，預設 main。讀 running 成員要 ORCA_CLI_COMMAND，沒有時其他檢查照跑。
 //   --skip-labels：adapter 宣告的「不進分級的 label」（逗號分隔，同 issue-pool.mjs 的 --skip-labels，#326）：掛著的單與 retro-candidates 一樣，
 //            不進 POOL_READY／POOL_TRIAGE／COUNTERPART_BARE 的 ready 桶，也不算 DEPS_PROSE「最後做」的新單。沒帶時只有內建的 retro-candidates、parent。
@@ -21,6 +21,7 @@
 //            $PILOT_MACHINE_WORKER_CAP（預設 4）時最後印 OVER_CAP <合計> <上限>。只回報，不改派工；沒帶時不碰帳本。
 //            $PILOT_MACHINE_WORKER_CAP 空白時在這之前印 CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP，照預設 4 算（#396）。
 //            <repo> 空白或帶 tab、換行，或上限不是正整數時是用法錯誤（exit 2）。
+//   --handoff-after <n>（#368）：交接門檻，本 coordinator session 合入幾批就交接（adapter 的 Defaults 帶入），預設 2；不是正整數時是用法錯誤（exit 2）。
 //   --tail <handle> [--lines <n>]（取代主 checkout 引數，只做這件事）：印那個 worker 分頁畫面的最後 n 行（預設 40），給 Watch 用，不必手拼 JSON 或依賴 jq（#295）；
 //            沒有 ORCA_CLI_COMMAND 或讀不到時 stderr 說明、exit 1。
 //   --apply、--status 都不改其他輸出行，stdout 與不帶旗標時相同（APPLY_MISS、PARENT_APPLY_FAILED 除外）。
@@ -105,6 +106,9 @@
 //   Memory audit（#347）：MEMORY_AUDIT_DUE <天數|?>d last=<YYYY-MM-DD|none> → node scripts/memory-audit.mjs --run（主分支的 adapter 或它 Pilot 段連到的檔
 //          宣告 `Memory audit days: <n>`，而 .scratch/pilot/memory-audit.md 最後一筆距今 n 天以上或沒有紀錄；判斷是同目錄 memory-audit.mjs 的 memoryAuditLine；
 //          沒宣告時不印；在 BEHIND_MAIN 之後）
+//   交接（#368，每次都印一行）：HANDOFF_COUNT <n>/<門檻>（本 coordinator session 派工、已合入的 batch 數：`coordinator` 檔的 pid 在 sessions.md 最後一筆
+//          start 行的時間是 session 開始（早於 coordinator 檔的 since 時取 since）；batch 成員列最早的 started 不早於它，current 是 merged／pushed，或 closed 而有 done 成員（`closed moved` 不算）；
+//          沒有 coordinator 檔、sessions.md 或這個 pid 的 start 行時是 0，前任派的 batch 不算），n 達門檻時下一行印 HANDOFF_DUE；在 MEMORY_AUDIT_DUE 之後
 //   全機上限：CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP、OVER_CAP <合計> <上限>（帶 --capacity 時，見上）
 // exit：0 印完；2 用法錯誤；3 `--apply` 的 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，該 batch 沒寫、其他行照印，#345）；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS、PARENT_APPLY_FAILED 等）。
 import { spawnSync } from 'node:child_process';
@@ -122,7 +126,7 @@ import { MEMORY_AUDIT_FILE, declaredDays, memoryAuditLine } from './memory-audit
 
 // 池子摘要要的欄位取 issue-pool 的 POOL_FIELDS（#240）；同名的 blockedBy 在 GraphQL 裡合併成一份選取。
 const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt lastEditedAt blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
-const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...]｜node scripts/pilot-probe.mjs --tail <handle> [--lines <n>]';
+const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>]｜node scripts/pilot-probe.mjs --tail <handle> [--lines <n>]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const TRACKER = join(dirname(fileURLToPath(import.meta.url)), 'gh-tracker.mjs');
 
@@ -973,13 +977,40 @@ export function statusReport(checkout, { integration = 'pilot/integration', main
   return `${out.join('\n')}\n`;
 }
 
+/**
+ * 本 coordinator session 開始的時間（#368）：`coordinator` 檔 `pid <pid>` 行的 pid 在 sessions.md 最後一筆 start 行（PILOT-STORE.md 的格式）的時間；
+ * 舊格式的 start 行沒有 pid，不算。找不到時是 undefined。pid 可能被重用：start 行早於 `coordinator` 檔的 `since`（成為 coordinator 的時間）時取 `since`，
+ * 只會少算、不會把前任派的 batch 算進來。
+ */
+export function sessionStart(coordinator, sessions) {
+  const pid = coordinator.match(/^pid (\d+)\b/m)?.[1];
+  if (!pid) return undefined;
+  const start = sessions.split('\n').map(line => line.split(/ {3}/)).filter(([, session, owner]) => /^session \S+$/.test(session ?? '') && owner === `pid ${pid}`).at(-1);
+  const time = start && Date.parse(start[0]);
+  if (!time) return undefined;
+  const since = Date.parse(coordinator.match(/^pid \d+\b.*\bsince (\S+)/m)?.[1]);
+  return Number.isNaN(since) ? time : Math.max(time, since);
+}
+
+/** 已合入整合分支的 batch：current 是 merged／pushed，或 closed 而有 done 成員（`closed moved` 什麼都沒合入）。 */
+const landedBatch = ({ current, members }) => /^(merged|pushed)\b/.test(current) || (/^closed\b/.test(current) && !/^closed moved\b/.test(current) && members.some(m => m.state === 'done'));
+
+/** `HANDOFF_COUNT <n>/<門檻>`，達門檻時再加 `HANDOFF_DUE`（#368）：只數成員列最早的 started 不早於本 session 開始的已合入 batch。 */
+export function handoffLines(batches, start, threshold = 2) {
+  const count = start === undefined ? 0 : batches.filter(batch => {
+    const times = batch.members.map(m => Date.parse(m.started)).filter(time => !Number.isNaN(time));
+    return landedBatch(batch) && times.length && Math.min(...times) >= start;
+  }).length;
+  return [`HANDOFF_COUNT ${count}/${threshold}`, ...(count >= threshold ? ['HANDOFF_DUE'] : [])];
+}
+
 /** `--tail`：worker 分頁畫面的最後 `lines` 行。 */
 export async function workerTail(ctx, handle, lines = 40) {
   const { terminal } = await orca(ctx, 'terminal', 'read', '--terminal', handle, '--screen');
   return (terminal?.tail ?? []).slice(-lines);
 }
 
-export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false, capacity, skipLabels = [] } = {}) {
+export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false, capacity, skipLabels = [], handoffAfter = 2 } = {}) {
   const pilot = join(checkout, '.scratch/pilot');
   // 開著的 batch checkpoint 的成員：Pool 不再挑它們，池子摘要也略過。
   const batched = new Set(batchFiles(pilot).map(file => parseBatch(readFileSync(join(pilot, file), 'utf8')))
@@ -1054,6 +1085,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   const record = join(checkout, MEMORY_AUDIT_FILE);
   const memoryAudit = memoryAuditLine(existsSync(record) ? readFileSync(record, 'utf8') : null, days);
   if (memoryAudit) out.push(memoryAudit);
+  out.push(...handoffLines(batches, sessionStart(readStore(pilot, 'coordinator'), readStore(pilot, 'sessions.md')), handoffAfter));
   if (capacity) {
     out.push(...envMissingLines());
     const { total, cap } = report(ledgerPath(), capacity, running);
@@ -1098,13 +1130,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       options[flag] = true;
       continue;
     }
-    const name = new Map(Object.entries({ '--integration': 'integration', '--main': 'main', '--capacity': 'capacity', '--skip-labels': 'skipLabels' })).get(args[i]);
+    const name = new Map(Object.entries({ '--integration': 'integration', '--main': 'main', '--capacity': 'capacity', '--skip-labels': 'skipLabels', '--handoff-after': 'handoffAfter' })).get(args[i]);
     const value = args[++i];
     if (!name || !value || value.startsWith('--') || name in options) bad = true;
     else options[name] = value;
   }
   const [checkout] = positional;
   if ('skipLabels' in options) options.skipLabels = options.skipLabels.split(',').filter(Boolean);
+  if ('handoffAfter' in options) {
+    if (!/^[1-9]\d*$/.test(options.handoffAfter)) bad = true;
+    options.handoffAfter = Number(options.handoffAfter);
+  }
   if (bad || positional.length !== 1 || ('capacity' in options && (!validRepo(options.capacity) || machineCap() === undefined))) {
     console.error(USAGE);
     process.exit(2);
