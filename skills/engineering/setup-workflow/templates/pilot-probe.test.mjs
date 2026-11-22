@@ -1,11 +1,12 @@
 import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { FAST, orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
+import { copyScripts } from './test/script-deps.mjs';
 import { applyResults, changedUnits } from './pilot-probe.mjs';
 
 const script = new URL('./pilot-probe.mjs', import.meta.url).pathname;
@@ -118,9 +119,8 @@ ${members.map(m => `| ${m.n} | issue/${m.n}-x | /w/issue-${m.n} | ${m.handle ?? 
   let probeScript = script;
   if (guard !== undefined || world !== undefined || tracker !== undefined) {
     const scripts = join(temp, 'scripts');
-    mkdirSync(join(scripts, 'lib'), { recursive: true });
-    const names = ['pilot-probe.mjs', 'pilot-capacity.mjs', 'pilot-counterpart.mjs', 'memory-audit.mjs', 'orca-session-send.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'lib/pilot-store.mjs', 'lib/changed-units.mjs', 'lib/merge-tree.mjs', ...(tracker === undefined ? [] : ['gh-tracker.mjs'])];
-    for (const name of names) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+    // 依 import 相依閉包複製（test/script-deps.mjs），probe 多了相依不必回來補清單（#473）。
+    copyScripts(new URL('.', import.meta.url).pathname, scripts, ['pilot-probe.mjs', ...(tracker === undefined ? [] : ['gh-tracker.mjs'])]);
     if (guard !== undefined) {
       writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
       chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);

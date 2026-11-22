@@ -1,10 +1,11 @@
 import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { realTmpdir } from './test/real-tmpdir.mjs';
+import { copyScripts } from './test/script-deps.mjs';
 
 // 正本的通用路徑：tracker 專案由 --repo 給（[host/]owner/repo），主分支由 --main 給；旁邊沒有 gh-tracker.mjs 時留言、關單直接用 gh。
 // 經 gh-tracker、Orca 的 terminal／worktree 步驟、對應單與母單另在 ron-skills 的 tests/pilot-close.test.mjs 測。
@@ -59,8 +60,8 @@ function fixture(t, { main = 'main', tracker = false, protectedFile = false, ada
   git(repo, 'reset', '-q', '--hard', 'HEAD^');
 
   const scripts = join(repo, 'scripts');
-  mkdirSync(join(scripts, 'lib'), { recursive: true });
-  for (const name of ['pilot-close.mjs', 'pilot-counterpart.mjs', 'lib/hosts.mjs', 'lib/pilot-store.mjs', 'lib/protected-paths.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+  // 依 import 相依閉包複製（#473、#454-3）；pilot-unbare.sh 由下面換成替身。
+  copyScripts(new URL('.', import.meta.url).pathname, scripts, ['pilot-close.mjs']);
   writeFileSync(join(scripts, 'pilot-unbare.sh'), '#!/bin/sh\nexit 0\n');
   chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);
   const log = join(temp, 'calls.log');

@@ -8,6 +8,24 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # 呼叫者帶來的 GIT_DIR、GIT_INDEX_FILE 等會被測試的 git 繼承，fixture 就改到真正的 repo（#25）；不經 pre-commit 直接跑時（`git rebase --exec`）也要清（#301）。
 unset $(git rev-parse --local-env-vars)
+# 同一棵工作樹只跑一份（#479：背景通知早到，worker 以為中斷又重跑兩次，三份 bin/check 同寫一個 log，全部作廢重跑）。
+# pid 記在這棵工作樹自己的 git 目錄；記下的行程還活著、而且是 bin/check 時印 `CHECK_BUSY <pid>`、exit 3，不開第二份。
+# 行程已結束（含被 kill、沒跑到 EXIT trap）或 pid 被別的程式重用時視為沒人持有，照常開跑。
+# 持有者是自己的祖先（測試在本 repo 跑 bin/check，例如 tests/pre-commit-git-env.test.mjs）時不擋、也不接手：以繼承的 CHECK_LOCK_PID 認出。
+# 沒有 pid 檔時以 noclobber 原子建立，兩份同時開跑只有一份建得成；建不成才讀持有者判斷。
+lock=$(git rev-parse --path-format=absolute --git-path check.pid)
+holder=$(cat "$lock" 2>/dev/null) || holder=
+if [[ -z ${CHECK_LOCK_PID:-} || $holder != "$CHECK_LOCK_PID" ]]; then
+  if ! (set -C; echo $$ > "$lock") 2>/dev/null; then
+    holder=$(cat "$lock" 2>/dev/null) || holder=
+    if [[ $holder =~ ^[0-9]+$ && $holder != "$$" ]] && ps -p "$holder" -o command= 2>/dev/null | grep -q 'bin/check'; then
+      echo "CHECK_BUSY $holder"
+      exit 3
+    fi
+    echo $$ > "$lock"
+  fi
+  export CHECK_LOCK_PID=$$
+fi
 # 這次檢查的樹：通過時記下，pre-commit 遇到同一棵樹不再跑（scripts/check-stamp.mjs，#297）。取不到不影響檢查。
 stamp_tree=$(node scripts/check-stamp.mjs tree 2>/dev/null) || stamp_tree=
 # pre-commit 帶入要 commit 的樹（CHECK_INDEX_TREE）時，流程站兩道守門讀那棵樹而不是工作區（#329-4）；CI 與手動跑沒有它，照舊讀工作區。
@@ -15,7 +33,7 @@ stamp_tree=$(node scripts/check-stamp.mjs tree 2>/dev/null) || stamp_tree=
 index_tree=${CHECK_INDEX_TREE:-}
 [[ -z $index_tree || $index_tree == "$stamp_tree" ]] || stamp_tree=
 
-tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"; [[ $(cat "$lock" 2>/dev/null) != "$$" ]] || rm -f "$lock"' EXIT
 # 失敗時最後一行印 `CHECK_FAIL <步驟> [<失敗的測試>｜…]`，和成功時的 CHECK_PASS 對稱：失敗的測試名稱從各組的 log 抽 `✖` 行，
 # 只看尾段就知道是哪個測試，不必整條重跑存 log 再 grep（#267：`bin/check | tail -8` 只拿到 stack trace）。<步驟> 是 $step，沒設時是失敗的指令。
 step=
@@ -72,7 +90,8 @@ docs_rules=(tests/template-copies.test.mjs tests/pilot-split.test.mjs tests/gh-t
 "${isolated[@]}" node --test --test-reporter=spec "${docs_rules[@]}" > "$tmp/docs-rules.log" 2>&1 || { sed -n '/failing tests:/,$p' "$tmp/docs-rules.log"; false; }
 step=tests
 # 每組測試各印一行 `ℹ tests <n>`，只看尾段會漏掉前面幾組（retro a6：PR #63、#64 只記到第二組的 120），所以最後彙總成一行。
-"${isolated[@]}" node --test --test-reporter=spec --test-force-exit tests/*.test.mjs | tee "$tmp/tests.log"
+# 帶 --test-force-exit 的組一律經 node-test-guarded 跑，補跑靜默遺失的測試（#483：高負載時這組少了 31 個測試仍印 CHECK_PASS、exit 0）。
+"${isolated[@]}" node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-reporter=spec --test-force-exit tests/*.test.mjs | tee "$tmp/tests.log"
 # setup-workflow 的 script 正本與測試：先列出檔名（node --test 的輸出不帶檔名），再以正本的 node-test-guarded 跑，它會補跑靜默遺失的測試。
 step=template-tests
 templates=(skills/engineering/setup-workflow/templates/*.test.mjs)

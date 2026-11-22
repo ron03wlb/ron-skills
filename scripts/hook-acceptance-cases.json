@@ -9,6 +9,8 @@
   { "event": "PreToolUse", "tool": "Bash", "input": { "command": "cat > .scratch/issue-run-399/retro-418.md <<'EOF'\n## 候選\n- 先 `git cherry-pick 84554ca`\nEOF" }, "expected": 0, "label": "bash-pitfalls：分隔字加單引號放行（#444）" },
   { "event": "PreToolUse", "tool": "Bash", "input": { "command": "gh issue view 399 --comments" }, "expected": 2, "label": "bash-pitfalls：gh issue view --comments 沒有 --json（#428）" },
   { "event": "PreToolUse", "tool": "Bash", "input": { "command": "gh issue view 399 --json number,title,body,labels,comments" }, "expected": 0, "label": "bash-pitfalls：有 --json 放行（#428）" },
+  { "event": "PreToolUse", "tool": "Bash", "input": { "command": "bin/check 2>&1 | tail -3" }, "expected": 2, "label": "bash-pitfalls：bin/check 接管線、exit 是 tail 的（#479）" },
+  { "event": "PreToolUse", "tool": "Bash", "input": { "command": "bin/check > .scratch/check.log 2>&1; echo exit=$?; tail -1 .scratch/check.log" }, "expected": 0, "label": "bash-pitfalls：bin/check 導到 log 放行（#479）" },
   { "event": "UserPromptSubmit", "stdin": { "prompt": " !git status" }, "expected": 0, "label": "bang-space：開頭有空白的 ! 只補提示、不擋訊息（#346）" },
   { "event": "Stop", "stdin": { "transcript_path": "<project>/tests/fixtures/hook-acceptance/english-reply.jsonl", "stop_hook_active": false }, "expected": 2, "label": "language、tab-state：Stop 時英文回覆要求改繁中", "env": { "ORCA_TERMINAL_HANDLE": "" } },
   { "event": "Stop", "stdin": { "transcript_path": "<project>/tests/fixtures/hook-acceptance/chinese-reply.jsonl", "stop_hook_active": false }, "expected": 0, "label": "language、tab-state：Stop 時繁中回覆放行（沒有 Orca 分頁時 tab-state 不動作）", "env": { "ORCA_TERMINAL_HANDLE": "" } },
