@@ -26,7 +26,7 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 1. **Reconcile 對帳**：讀 `.scratch/pilot/` 的狀態檔、其他 session 轉來的請求、還開著的 gate，用 Watch 指令唯讀查看每個 worker。
 2. **Drain 收件**：每個做完的 worker 分成 `DONE`（記下 candidate SHA）、`STOP`（照停因處理）或問題（只依 adapter 或 skill 的規則回答，產品問題變成 gate）。
 3. **Project hooks**：跑 adapter 列的專案檢查（見下方 tick hooks）。
-4. **Pick 挑單**：worker 數低於上限時，依 adapter 的 Pool 規則挑下一批；`needs-triage` 的單先照 Readiness 補齊。
+4. **Pick 挑單**：worker 數低於上限時，依 adapter 的 Pool 規則挑下一批；`needs-triage` 的單先照 Readiness 補齊，交給子代理補齊時 prompt 從 adapter 的 Triage brief 條目起頭。
 5. **Dispatch 派工**：每張開一個 worktree 與 terminal，執行 `/issue-run <n> --worker <batch checkpoint>`。
 6. **Land 落地**：整批成員都 `DONE` 或 `STOP` 後，在批次分支依號碼合入、在 staged SHA 跑回歸、通過才合進整合分支，然後照 Push gate 交出 push 指令；adapter 允許時自己 push、開 PR／MR、合併，接著結案。
 7. **Report and sleep**：重產 `status.md`，有需要人做的事才通知；這一輪還有可做的事（可 stage 的批次、可挑的單、待收的 worker 結果）時不用會阻塞的 `AskUserQuestion` 問 gate，交接也一樣：未回覆的 gate 寫在交接訊息第一行（`OPEN_GATES <G…> → <新 coordinator 分頁>`），由下一任通知、在它的 session 回答；排下一次喚醒（有 worker 在跑時 1200 秒，閒置時 1800 秒；連續閒置兩次以上時，adapter 有 **Idle wait** 就改在背景跑它、不排 `ScheduleWakeup`，probe、gate 檔或整合分支有變化或到上限時間才結束並喚醒，被它喚醒的那一輪照 `/loop` 一輪處理、需要定時喚醒時以同一個 `/loop` 指令排 `ScheduleWakeup`，它出錯時排 1800 秒；adapter 沒有這一條時排 3600 秒；交接時一起停掉）。
@@ -66,6 +66,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Pool | 挑單的查詢與排序；被擋住或已在其他批次的單怎麼濾掉 |
 | Batch | 批次 checkpoint 由哪個步驟建立；檔名、欄位與狀態值照 [`PILOT-STORE.md`](../../skills/engineering/issue-pilot/PILOT-STORE.md) |
 | Brief check | 拒絕缺欄位 brief 的指令（goal、scope、acceptance、verify、timebox、forbidden、report、standing orders 路徑）；有 setup-workflow 正本時用 `brief-check`，`--skeleton` 印可直接填的骨架 |
+| Triage brief | 選用：Pick 時交給子代理細化 `needs-triage` 單的 prompt 範本；repo 事實（限時寫法、tracker 寫入指令、踩過的坑）setup 時填好，主 checkout 與 `ADAPTER_AHEAD` 時的 stage worktree 由 coordinator 每輪代入；有 setup-workflow 正本時照 PILOT-ROUND-TEMPLATE 的同名條目 |
 | Dispatch | 開 worktree 與 terminal 並送出 `/issue-run <n> --worker …` 的指令 |
 | Watch | 唯讀讀取 worker 畫面的指令；最後一行 `DONE`／`STOP` 就是做完 |
 | Agent rows | 每個派出的 agent 記在哪 |

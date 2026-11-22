@@ -7,6 +7,9 @@ Copy it to docs/agents/pilot.md, replace every {{placeholder}}, drop the bracket
   {{check}}           the single check entry (e.g. bin/check)
   {{worker cap}}      workers from this repo at once (2 is a safe start)
   {{batch size}}      Issues per batch (2 is a safe start)
+  {{timeout cmd}}     how a triage subagent bounds a command that may hang on every platform this repo supports (e.g. Bash tool `timeout: 600000`, since macOS has no `timeout`)
+  {{tracker write}}   the command the adapter's Tracker section uses for comments and labels (e.g. `node scripts/gh-tracker.mjs`)
+  {{triage traps}}    one sentence per repo-specific trap a triage subagent hit before (write guards, read flags, readiness rules), or delete the line
 Placeholders in <angle brackets> (<main checkout>, <key>, <n>, <handle>, …) stay as they are: the coordinator substitutes them at run time.
 The filled-in file is a required core of at most 14000 bytes (scripts/adapter-size-budget.json, checked by check-adapter-size.mjs): the longest step entries (Pool, Dispatch, Probe) are already in PILOT-ROUND-TEMPLATE.md, copied to docs/agents/pilot-round.md, with one-line pointers here; when the filled-in file still outgrows that, move more whole entries there the same way.
 The script commands and result lines are in ~/.claude/skills/issue-pilot/PILOT-STORE.md; every script named here is a setup-workflow template copy in scripts/.
@@ -37,9 +40,11 @@ Project settings for the user-level `/issue-pilot` coordinator (`/loop /issue-pi
 
 - **Pool.** See `docs/agents/pilot-round.md`: read at Pick, when choosing the next batch; fetch only this entry with `node scripts/adapter-line.mjs 'Pool'`.
 
+- **Triage brief.** See `docs/agents/pilot-round.md`: read at Pick, before a subagent refines a `needs-triage` Issue; fetch only this entry with `node scripts/adapter-line.mjs 'Triage brief'`.
+
 - **Batch.** The batch checkpoint is `.scratch/pilot/batch-<key>.md`, created by Dispatch; each Issue's own checkpoint stays in its worktree. Move or park members before staging with `node scripts/pilot-batch.mjs <main checkout> move <key> <n> [--state stop]`, `park <key> <n> --after <m> --reason <text>`, `unpark <n>`, as the Probe's `MOVE` and `UNPARK` lines say. Send a `stop`/`done` worker back to work with `resume <key> <n> --note <text>`, not `terminal send` plus a row edit; adopt its reported candidate with `accept <key> <n> <sha>`.
 
-- **Brief check.** A worker's brief is `/issue-run <n> --worker <checkpoint>` plus the Issue body, and gets no check. For a tooling fix unit's brief, first print a labelled skeleton with `node scripts/brief-check.mjs --skeleton`, write it to `.scratch/pilot/briefs/<file>` and fill it in, then run `node scripts/brief-check.mjs <brief>`: dispatch only on `BRIEF_OK <brief>` (exit 0); on `BRIEF_REJECTED … missing=<fields>` (exit 1) fix the brief and rerun.
+- **Brief check.** See `docs/agents/pilot-round.md`: read at Dispatch, before dispatching a tooling fix unit; fetch only this entry with `node scripts/adapter-line.mjs 'Brief check'`.
 
 - **Dispatch.** See `docs/agents/pilot-round.md`: read at Dispatch, when claiming members, opening worktrees and starting workers; fetch only this entry with `node scripts/adapter-line.mjs 'Dispatch'`.
 
