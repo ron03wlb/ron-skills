@@ -1,12 +1,13 @@
 import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { FAST, orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
+import { copyScripts } from './test/script-deps.mjs';
 
 const script = new URL('./pilot-dispatch.mjs', import.meta.url).pathname;
 const SESSION = 'sess-me';
@@ -145,8 +146,8 @@ else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
   let dispatchScript = script;
   if (guard !== undefined || tracker) {
     const scripts = join(temp, 'scripts');
-    mkdirSync(join(scripts, 'lib'), { recursive: true });
-    for (const name of ['pilot-dispatch.mjs', 'issue-pool.mjs', 'lib/hosts.mjs', 'orca-session-send.mjs', 'orca-worktree-create.mjs', 'pilot-probe.mjs', 'pilot-capacity.mjs', 'pilot-counterpart.mjs', 'memory-audit.mjs', 'lib/changed-units.mjs', 'lib/merge-tree.mjs', 'lib/pilot-store.mjs', 'tab-state.mjs', 'gh-tracker.mjs']) copyFileSync(new URL(`./${name}`, import.meta.url), join(scripts, name));
+    // 依 import 相依閉包複製（#473）；orca-worktree-create、gh-tracker 是旁邊有才用的選用檔，明列。
+    copyScripts(new URL('.', import.meta.url).pathname, scripts, ['pilot-dispatch.mjs', 'orca-worktree-create.mjs', 'gh-tracker.mjs']);
     if (guard !== undefined) {
       writeFileSync(join(scripts, 'pilot-unbare.sh'), guard);
       chmodSync(join(scripts, 'pilot-unbare.sh'), 0o755);

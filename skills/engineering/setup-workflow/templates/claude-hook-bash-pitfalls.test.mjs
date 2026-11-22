@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { ghViewCommentsWithoutJson, unquotedHeredocs } from './claude-hook-bash-pitfalls.mjs';
+import { checkPiped, ghViewCommentsWithoutJson, unquotedHeredocs } from './claude-hook-bash-pitfalls.mjs';
 
 const HOOK = fileURLToPath(new URL('./claude-hook-bash-pitfalls.mjs', import.meta.url));
 const run = input => spawnSync('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8' });
@@ -59,6 +59,40 @@ test('有 --json、在引號裡、別的子指令放行', () => {
     "echo 'gh pr view 1 --comments'",
     'gh issue view 399',
     'gh issue list --comments',
+  ]) assert.equal(bash(command).status, 0, command);
+});
+
+// #479：#408 worker 第 219 行以 run_in_background 跑這條，通知 exit 0、輸出只有 `[exited with code 0]`，結果行與 bin/check 的 exit 都拿不到。
+test('bin/check 接管線、沒有 pipefail：exit 2，說明 exit 是 tail 的並給導到 log 的寫法（#479）', () => {
+  const result = bash('bin/check 2>&1 | tail -3');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /bin\/check 2>&1 \| tail|`bin\/check`/);
+  assert.match(result.stderr, /bin\/check > <log> 2>&1; echo exit=\$\?; tail -1 <log>/);
+  assert.match(result.stderr, /pipefail/);
+  for (const command of [
+    'kill 506539; cd /home/ron/orca/workspaces/ron-skills/issue-356 && bin/check 2>&1 | tail -1',
+    'bash bin/check 2>&1 | tail -15',
+    './bin/check --upstream |& tee log',
+    'timeout 600 bin/check | tail',
+    'CI=1 bin/check >> log | cat',
+    'timeout -k 5 30 bin/check | tail -1',
+    'nice -n 5 bin/check 2>&1 | tail',
+    'env -u FOO X=1 bin/check | tee log',
+  ]) assert.equal(bash(command).status, 2, command);
+  assert.deepEqual(checkPiped('cd x && bin/check 2>&1 | tail -3'), ['bin/check']);
+});
+
+test('bin/check 導到 log、有 pipefail／PIPESTATUS、|| 或只是讀 bin/check 檔案時放行', () => {
+  for (const command of [
+    'bin/check > .scratch/check.log 2>&1; echo exit=$?; tail -1 .scratch/check.log',
+    'set -o pipefail; bin/check 2>&1 | tail -3',
+    'bin/check | tail -3; echo "${PIPESTATUS[0]}"',
+    'bin/check || echo failed',
+    'bin/check --upstream &> log',
+    'grep -n step bin/check | head',
+    'sed -n 1,20p bin/check | cat',
+    'timeout 5 cat bin/check | head',
+    'echo "bin/check | tail"',
   ]) assert.equal(bash(command).status, 0, command);
 });
 

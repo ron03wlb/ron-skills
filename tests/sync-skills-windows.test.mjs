@@ -10,7 +10,9 @@ import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
 const root = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const sync = join(root, 'bin/sync-skills');
-const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_') && key !== 'SKILL_DIRS' && key !== 'WIN_SKILL_DIR'));
+// NODE_OPTIONS 也不傳：bin/check 經 node-test-guarded 跑時帶 `--import <preload>`，有 --import 時 node 拒載副檔名 .exe 的入口檔
+// （假 cmd.exe 印 ERR_UNKNOWN_FILE_EXTENSION、exit 1，#483 改經 guard 後才出現）。
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_') && key !== 'SKILL_DIRS' && key !== 'WIN_SKILL_DIR' && key !== 'NODE_OPTIONS'));
 const UNC = '\\\\wsl.localhost\\Fake';
 const toWin = path => UNC + path.replaceAll('/', '\\');
 const commonDir = spawnSync('git', ['-C', root, 'rev-parse', '--git-common-dir'], { encoding: 'utf8', env }).stdout.trim();
