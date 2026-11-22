@@ -202,6 +202,20 @@ test('--capacity <repo> 把在跑的成員數寫進帳本，合計超過上限�
   assert.equal(probe({ args: ['--capacity', 'acme'], extraEnv: { ...extraEnv, PILOT_MACHINE_WORKER_CAP: 'x' } }).status, 2);
 });
 
+// #408（investing#500 第 2 項）：Probe 印 WORKER 437 STUCK exited，帳本仍把它算成在跑，接著派工印 STOP capacity 4/3，實際只有 2 個 worker。
+test('--capacity：terminal 已 exited 的成員不算進帳本', t => {
+  const { batch, probe, repo } = fixture(t, { screens: {
+    term_437: { status: 'exited', tail: ['Bye!'] },
+    term_493: { status: 'running', tail: ['❯'] },
+    term_494: { status: 'running', tail: ['❯'] },
+  } });
+  batch('437-494', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 437 }, { n: 493 }, { n: 494 }]);
+  const ledger = join(repo, '..', 'pilot-workers.tsv');
+  const out = lines(probe({ args: ['--capacity', 'investing'], extraEnv: { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '3' } }));
+  assert.ok(out.includes('WORKER 437 STUCK exited'), out.join('\n'));
+  assert.match(readFileSync(ledger, 'utf8'), /^investing\t2\t/);
+});
+
 // #396：$PILOT_MACHINE_WORKER_CAP 空白時照預設 4 寫帳本，但先印 CAPACITY_ENV_MISSING，不再默默用預設值。
 test('--capacity 時 $PILOT_MACHINE_WORKER_CAP 空白印 CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP；有值時不印', t => {
   const { batch, probe, repo } = fixture(t, { screens: { term_1: { status: 'running', tail: ['❯'] } } });

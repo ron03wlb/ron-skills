@@ -59,7 +59,7 @@ test('check：合計加上新增人數不超過上限印 CAPACITY ok，超過印
   assert.equal(ok.stdout, 'CAPACITY ok 4/4\n');
   const over = run(file, ['check', '2'], { PILOT_MACHINE_WORKER_CAP: '4' });
   assert.equal(over.status, 4, over.stderr);
-  assert.equal(over.stdout, 'STOP capacity 5/4\n');
+  assert.equal(over.stdout, 'STOP capacity 5/4 ron-skills=2 investing=1 +2\n');
   const raised = run(file, ['check', '2'], { PILOT_MACHINE_WORKER_CAP: '6' });
   assert.equal(raised.stdout, 'CAPACITY ok 5/6\n');
 });
@@ -68,8 +68,8 @@ test('沒有帳本時 check 以 0 起算；上限沒設時先印 CAPACITY_ENV_MI
   const file = ledger(t);
   const missing = 'CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP\n';
   assert.equal(run(file, ['check', '4']).stdout, `${missing}CAPACITY ok 4/4\n`);
-  assert.equal(run(file, ['check', '5']).stdout, `${missing}STOP capacity 5/4\n`);
-  assert.equal(run(file, ['check', '5'], { PILOT_MACHINE_WORKER_CAP: '' }).stdout, `${missing}STOP capacity 5/4\n`);
+  assert.equal(run(file, ['check', '5']).stdout, `${missing}STOP capacity 5/4 +5\n`);
+  assert.equal(run(file, ['check', '5'], { PILOT_MACHINE_WORKER_CAP: '' }).stdout, `${missing}STOP capacity 5/4 +5\n`);
   assert.equal(existsSync(file), false);
   assert.equal(run(file, ['report', 'ron-skills', '1']).stdout, `${missing}REPORTED ron-skills 1 1/4\n`);
 });

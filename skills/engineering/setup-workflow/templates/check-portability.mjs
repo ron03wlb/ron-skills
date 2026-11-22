@@ -2,6 +2,7 @@
 // 可攜性檢查：擋只在 Linux／GNU 能跑的寫法（macOS 是 BSD 工具與 bash 3.2），以及只差大小寫的兩個追蹤檔（macOS 預設檔案系統不分大小寫）。
 // 用法：在 repo 內執行 node check-portability.mjs [<path>...]。掃追蹤檔與沒被忽略的新檔，違規一行一個 `<file>:<line>: <規則> <改法>` 印到 stderr，exit 1。
 // 給了 <path>（相對 repo 根的檔案或目錄，照字面比對、不展開萬用字元）時只掃這些路徑，大小寫衝突也只比這些路徑裡的追蹤檔。
+// 衝突還沒標記解決（index 有 stage 1/2/3）的路徑印 `UNMERGED <path>：衝突未標記解決（git add）`、算違規，不進大小寫比對（#408）。
 // 例外：在同一行寫 `portability-ok: <理由>`；沒寫理由不算例外。
 // 範圍：shell 規則只掃 shell 檔（.sh、.bash 或 sh 系 shebang），JS 字串裡組出的指令、package.json 的 scripts 與 Markdown 不掃；註解不掃。
 import { spawnSync } from 'node:child_process';
@@ -114,8 +115,13 @@ for (const path of files) {
     }
   });
 }
+// 衝突未解決的路徑在 index 有 stage 1/2/3 三筆，不能當成只差大小寫的三個檔（#408：`git add` 前報成「case 與 <同一路徑>、<同一路徑>」）。
+const staged = git(['-C', root, '--literal-pathspecs', 'ls-files', '-s', '-z', ...scope]).split('\0').filter(Boolean)
+  .map(entry => { const tab = entry.indexOf('\t'); return { stage: entry.slice(0, tab).split(' ')[2], path: entry.slice(tab + 1) }; });
+const unmerged = new Set(staged.filter(entry => entry.stage !== '0').map(entry => entry.path));
+for (const path of [...unmerged].sort()) problems.push(`UNMERGED ${path}：衝突未標記解決（git add）`);
 const byLower = new Map();
-for (const path of listed([])) {
+for (const path of new Set(staged.filter(entry => !unmerged.has(entry.path)).map(entry => entry.path))) {
   const key = path.toLowerCase();
   byLower.set(key, [...(byLower.get(key) ?? []), path]);
 }
