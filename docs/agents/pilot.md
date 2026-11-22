@@ -30,6 +30,8 @@
 
 - **Pool.** 見 [pilot-round.md](pilot-round.md)：Pick 選下一批（列池子、挑成員、細化 `needs-triage`）時讀；整條用 `node scripts/adapter-line.mjs 'Pool'` 取。
 
+- **Triage brief.** 見 [pilot-round.md](pilot-round.md)：Pick 時要把 `needs-triage` 單交給子代理細化，寫它的 prompt 前讀；整條用 `node scripts/adapter-line.mjs 'Triage brief'` 取。
+
 - **Triage.** 見 [pilot-exceptions.md](pilot-exceptions.md)：Pool 有 `needs-triage` 單要補齊（含 Probe 印 `POOL_TRIAGE`）、`issue-pool.mjs` 印 `NO_CATEGORY`，或挑到的單本文寫的依賴在本文之後才關閉時讀。
 
 - **Shared registry.** 見 [pilot-exceptions.md](pilot-exceptions.md)：Pool 的 ready 行有同一個 `parent #<p>`、都要改 `workflow-templates.json`、Templates 表、`PILOT-STORE.md` 的 Canonical scripts 表或 `setup-workflow/SKILL.md` 時讀。
