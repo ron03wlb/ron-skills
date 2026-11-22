@@ -17,7 +17,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for reads
 - **Reopen**: `node scripts/gh-tracker.mjs reopen <number> [--comment "..."]`
 - **看板**（GitHub Project「ron-skills 進度」）：`node scripts/project-sync.mjs [--apply]` 把池子的分桶鏡像成七欄並寫整體進度，卡片不手動拖；規則與三個檢視見 [project-board.md](project-board.md)。
 
-Reads infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone. Writes need no inference: `scripts/gh-tracker.mjs` takes the host and repo from the adapter's Tracker section and always passes `--repo github.com/ron03wlb/ron-skills` (and `gh api --hostname github.com`), so neither the remote, the gh config's default host, nor `GH_HOST`/`GH_REPO` can redirect them.
+Reads infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone. Writes need no inference: `scripts/gh-tracker.mjs` takes the host and repo from the adapter's Tracker section and always passes `--repo github.com/ron03wlb/ron-skills` (and `gh api --hostname github.com`), so neither the remote, the gh config's default host, nor `GH_HOST`/`GH_REPO` can redirect them. The same holds for the board: `scripts/project-sync.mjs` reads the same Tracker section, calls only `gh api graphql --hostname github.com`, writes only the Project linked to that repo, and refuses `--repo`, `--owner` and `--project` with `--apply` (#538).
 
 ## Pull requests as a triage surface
 

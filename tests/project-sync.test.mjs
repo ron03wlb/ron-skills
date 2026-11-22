@@ -10,7 +10,7 @@ import { realTmpdir } from './helpers/real-tmpdir.mjs';
 import { COLUMNS, statusAction, summarize, taipeiDate } from '../scripts/project-sync.mjs';
 
 const SCRIPT = new URL('../scripts/project-sync.mjs', import.meta.url).pathname;
-const REPO = 'acme/app';
+const REPO = 'ron03wlb/ron-skills'; // 寫入目標固定為 adapter Tracker 段的專案（#538），假 gh 的狀態也用它
 const NOW = '2026-11-22T12:00:00Z'; // 台北 20:00
 const SEVEN = COLUMNS;
 
@@ -21,10 +21,11 @@ const file = process.env.FAKE_GH_STATE;
 const state = JSON.parse(fs.readFileSync(file, 'utf8'));
 const save = () => fs.writeFileSync(file, JSON.stringify(state));
 const args = process.argv.slice(2);
+state.invocations = (state.invocations ?? []).concat([{ args, GH_HOST: process.env.GH_HOST ?? null, GH_REPO: process.env.GH_REPO ?? null }]);
 const out = data => { process.stdout.write(JSON.stringify({ data })); save(); };
-if (args[0] === 'repo' && args[1] === 'view') { process.stdout.write(state.repo + '\\n'); process.exit(0); }
-if (args[0] !== 'api' || args[1] !== 'graphql') { console.error('fake gh: unknown ' + args.join(' ')); process.exit(1); }
+if (args[0] !== 'api' || args[1] !== 'graphql') { save(); console.error('fake gh: unknown ' + args.join(' ')); process.exit(1); }
 const { query, variables: v } = JSON.parse(fs.readFileSync(0, 'utf8'));
+state.invocations.at(-1).variables = v;
 const call = name => { state.calls.push(name + ' ' + JSON.stringify(v)); };
 const issueNode = (n, i) => ({
   id: 'I_' + n, number: Number(n), title: 't' + n, body: '', state: i.state ?? 'OPEN',
@@ -41,8 +42,8 @@ const issueNode = (n, i) => ({
 });
 const project = state.project;
 const field = () => ({ id: 'F_status', options: project.options.map(name => ({ id: 'O_' + name, name })) });
-if (query.includes('projectsV2(first:20)')) out({ repository: { projectsV2: { nodes: state.linked.map(number => ({ number, title: 'p' + number, owner: { login: 'acme' } })) } } });
-else if (query.includes('repositoryOwner')) out({ repositoryOwner: v.number === project.number ? { projectV2: { id: 'P_1', number: project.number, title: 'board', owner: { login: 'acme' }, field: field(),
+if (query.includes('projectsV2(first:20)')) out({ repository: { projectsV2: { nodes: state.linked.map(number => ({ number, title: 'p' + number, owner: { login: state.repo.split('/')[0] } })) } } });
+else if (query.includes('repositoryOwner')) out({ repositoryOwner: v.number === project.number ? { projectV2: { id: 'P_1', number: project.number, title: 'board', owner: { login: state.repo.split('/')[0] }, field: field(),
   statusUpdates: { nodes: project.updates.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 1) } } } : { projectV2: null } });
 else if (query.includes('items(first:100')) out({ node: { items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: project.items.map(item => ({
   id: item.id, fieldValueByName: item.status ? { name: item.status } : null,
@@ -120,10 +121,10 @@ function fixture(t, state = baseState()) {
   writeFileSync(stateFile, JSON.stringify(state));
   const read = () => JSON.parse(readFileSync(stateFile, 'utf8'));
   const edit = fn => { const s = read(); fn(s); writeFileSync(stateFile, JSON.stringify(s)); };
-  const sync = (args = [], now = NOW) => {
+  const sync = (args = [], now = NOW, extraEnv = {}) => {
     edit(s => { s.now = now; });
     const result = spawnSync('node', [SCRIPT, ...args], { cwd: repo, encoding: 'utf8',
-      env: { ...env, PATH: `${join(temp, 'bin')}:${process.env.PATH}`, FAKE_GH_STATE: stateFile, PROJECT_SYNC_NOW: now } });
+      env: { ...env, PATH: `${join(temp, 'bin')}:${process.env.PATH}`, FAKE_GH_STATE: stateFile, PROJECT_SYNC_NOW: now, ...extraEnv } });
     return { ...result, lines: result.stdout.trim().split('\n') };
   };
   return { sync, read, edit };
@@ -153,7 +154,7 @@ test('dry-run 依桶分欄：每個桶、母單不設值、已合入／未合入
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(r.lines.filter(line => line.startsWith('#')), EXPECTED_CHANGES);
   assert.deepEqual(f.read().calls, []);
-  assert.equal(r.lines.at(-1), 'PROJECT_SYNC dry-run acme/7 changes 15');
+  assert.equal(r.lines.at(-1), 'PROJECT_SYNC dry-run ron03wlb/7 changes 15');
 });
 
 test('--apply 寫入差異：PR 與別的 repo 的卡不動，再跑一次沒有變更；七欄張數與六項數字', t => {
@@ -181,7 +182,7 @@ test('--apply 寫入差異：PR 與別的 repo 的卡不動，再跑一次沒有
   const again = f.sync(['--apply']);
   assert.equal(again.status, 0, again.stderr);
   assert.equal(again.lines.filter(line => line.startsWith('#')).length, 0);
-  assert.equal(again.lines.at(-1), 'PROJECT_SYNC applied acme/7 changes 0');
+  assert.equal(again.lines.at(-1), 'PROJECT_SYNC applied ron03wlb/7 changes 0');
 });
 
 test('Status 選項不符：沒帶 --setup-status-field 時 exit 3；帶了 --apply 改成七個並同一次補回，母單不設值', t => {
@@ -241,12 +242,55 @@ test('連結的 Project 不是剛好一個時 exit 3 並列出；--owner 與 --p
   f.edit(s => { s.linked = [7, 8]; });
   const two = f.sync();
   assert.equal(two.status, 3);
-  assert.deepEqual(two.lines, ['PROJECT acme/7 p7', 'PROJECT acme/8 p8']);
+  assert.deepEqual(two.lines, ['PROJECT ron03wlb/7 p7', 'PROJECT ron03wlb/8 p8']);
   f.edit(s => { s.linked = []; });
   assert.equal(f.sync().status, 3);
-  const chosen = f.sync(['--owner', 'acme', '--project', '7']);
+  const chosen = f.sync(['--owner', 'ron03wlb', '--project', '7']);
   assert.equal(chosen.status, 0, chosen.stderr);
-  assert.equal(f.sync(['--owner', 'acme']).status, 2);
+  assert.equal(f.sync(['--owner', 'ron03wlb']).status, 2);
+});
+
+// #538：寫入目標固定為 adapter（docs/agents/issue-run.md）Tracker 段的 github.com/ron03wlb/ron-skills 與它連結的 Project，
+// GH_HOST、GH_REPO 改不了；--apply 不收 --repo、--owner、--project（dry-run 照收，只讀）。
+test('GH_HOST、GH_REPO 設成別的值時 --apply 仍只讀寫 ron03wlb/ron-skills 與它連結的 Project，每次 gh 都帶 --hostname github.com', t => {
+  const f = fixture(t);
+  const r = f.sync(['--apply'], NOW, { GH_HOST: 'evil.example.com', GH_REPO: 'evil/repo' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.lines.at(-1), 'PROJECT_SYNC applied ron03wlb/7 changes 15');
+  const { invocations, calls } = f.read();
+  assert.ok(calls.length > 0, '沒有寫入');
+  for (const { args, GH_HOST, GH_REPO, variables } of invocations) {
+    assert.deepEqual(args, ['api', 'graphql', '--hostname', 'github.com', '--input', '-']);
+    assert.deepEqual([GH_HOST, GH_REPO], [null, null], 'GH_HOST／GH_REPO 不能傳給 gh');
+    if (variables?.name !== undefined) assert.deepEqual([variables.owner, variables.name], ['ron03wlb', 'ron-skills']);
+    if (variables?.number !== undefined) assert.deepEqual([variables.owner, variables.number], ['ron03wlb', 7]);
+  }
+});
+
+for (const flags of [['--repo', 'evil/repo'], ['--owner', 'evil', '--project', '1'], ['--repo', 'ron03wlb/ron-skills']]) {
+  test(`--apply 帶 ${flags.join(' ')} 時 exit 2、說明原因、不呼叫 gh`, t => {
+    const f = fixture(t);
+    for (const args of [['--apply', ...flags], [...flags, '--apply'], ['--setup-status-field', '--apply', ...flags]]) {
+      const r = f.sync(args);
+      assert.equal(r.status, 2, args.join(' '));
+      assert.match(r.stderr, /--apply.*寫入目標/);
+      assert.equal(f.read().invocations, undefined, `${args.join(' ')} 呼叫了 gh`);
+    }
+  });
+}
+
+test('dry-run 照收 --repo 與 --owner／--project，只讀不寫', t => {
+  const f = fixture(t);
+  const r = f.sync(['--repo', REPO, '--owner', 'ron03wlb', '--project', '7']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.lines.at(-1), 'PROJECT_SYNC dry-run ron03wlb/7 changes 15');
+  assert.deepEqual(f.read().calls, []);
+});
+
+test('.claude/settings.json 放行 project-sync.mjs，規則格式與 gh-tracker 那條一致', () => {
+  const { permissions } = JSON.parse(readFileSync(new URL('../.claude/settings.json', import.meta.url), 'utf8'));
+  assert.ok(permissions.allow.includes('Bash(node scripts/project-sync.mjs:*)'));
+  assert.ok(permissions.allow.includes('Bash(node scripts/gh-tracker.mjs:*)'));
 });
 
 test('summarize 與 statusAction：台北日期、沒有範圍時不除以零', () => {
