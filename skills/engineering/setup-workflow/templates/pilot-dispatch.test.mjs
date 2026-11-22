@@ -186,18 +186,20 @@ const markRow = (repo, key, n, state) => {
 
 // 全機上限（#178）：--capacity 時先以全機帳本合計加上這次要派的人數（--fresh 是 1）比上限，超過就整批 STOP capacity，
 // 不寫 checkpoint、不建 worktree、不開分頁；沒帶旗標時不讀帳本。
+// #513：不帶 tracker 時放掉認領要靠測試檔旁邊的 gh-tracker.mjs 找 adapter，結果依測試檔所在的 repo 而變（範本目錄旁沒有 adapter，碰巧沒有 RELEASED；
+// 目標 repo 多印 RELEASED 23、RELEASED 133）；兩個 STOP capacity 的測試都用帶假 adapter 的 tracker fixture，固定期望 RELEASED 行。
 test('--capacity：帳本合計加上這批人數超過上限時 STOP capacity，什麼都不動；不超過照常派出', t => {
-  const { repo, temp, dispatch, calls } = fixture(t);
+  const { repo, temp, dispatch, calls } = fixture(t, { tracker: true });
   const ledger = join(temp, 'pilot-workers.tsv');
   writeFileSync(ledger, `acme\t2\t${new Date().toISOString()}\ninvesting\t1\t${new Date().toISOString()}\n`);
   const capped = { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '4' };
   const over = dispatch(['23-133', '23:pilot-probe', '133:pilot-dispatch', '--capacity'], capped);
   assert.equal(over.status, 4, over.stdout + over.stderr);
-  assert.deepEqual(lines(over), ['STOP capacity 5/4 acme=2 investing=1 +2']);
+  assert.deepEqual(lines(over), ['STOP capacity 5/4 acme=2 investing=1 +2', 'RELEASED 23', 'RELEASED 133']);
   assert.equal(calls(), '');
   assert.equal(existsSync(join(repo, '.scratch/pilot/batch-23-133.md')), false);
   const fresh = dispatch(['133', '--fresh', '133:pilot-dispatch', '--note', ledger, '--capacity'], { ...capped, PILOT_MACHINE_WORKER_CAP: '3' });
-  assert.deepEqual(lines(fresh), ['STOP capacity 4/3 acme=2 investing=1 +1']);
+  assert.deepEqual(lines(fresh), ['STOP capacity 4/3 acme=2 investing=1 +1', 'RELEASED 133']);
   assert.equal(calls(), '');
   const ok = dispatch(['23', '23:pilot-probe', '--capacity'], capped);
   assert.equal(ok.status, 0, ok.stdout + ok.stderr);
@@ -209,13 +211,13 @@ test('--capacity：帳本合計加上這批人數超過上限時 STOP capacity�
 
 // #396：--capacity 時 $PILOT_MACHINE_WORKER_CAP 空白，先印 CAPACITY_ENV_MISSING 再照預設 4 檢查。
 test('--capacity：$PILOT_MACHINE_WORKER_CAP 空白時先印 CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP，照預設 4 比', t => {
-  const { temp, dispatch } = fixture(t);
+  const { temp, dispatch } = fixture(t, { tracker: true });
   const ledger = join(temp, 'pilot-workers.tsv');
   writeFileSync(ledger, `acme\t3\t${new Date().toISOString()}\n`);
   const blank = { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '' };
   const over = dispatch(['23-133', '23:pilot-probe', '133:pilot-dispatch', '--capacity'], blank);
   assert.equal(over.status, 4, over.stdout + over.stderr);
-  assert.deepEqual(lines(over), ['CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP', 'STOP capacity 5/4 acme=3 +2']);
+  assert.deepEqual(lines(over), ['CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP', 'STOP capacity 5/4 acme=3 +2', 'RELEASED 23', 'RELEASED 133']);
   const ok = dispatch(['23', '23:pilot-probe', '--capacity'], blank);
   assert.equal(ok.status, 0, ok.stdout + ok.stderr);
   assert.deepEqual(lines(ok), ['CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP', 'CAPACITY ok 4/4', 'DISPATCHED 23 term_23', 'REPORTED repo 1 4/4']);
@@ -654,7 +656,9 @@ function conflicted(t) {
   git(fx.repo, 'add', '.gitignore');
   git(fx.repo, 'commit', '-qm', 'ignore scratch');
   git(fx.repo, 'branch', '-f', 'pilot/integration', 'main');
-  assert.equal(fx.dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']).status, 0);
+  // #542：負載下這一步偶發 exit 4，舊斷言只印 `4 !== 0`；把 dispatch 的 stdout、stderr 帶進訊息，下次失敗留得下原因。
+  const first = fx.dispatch(['23-46', '23:pilot-probe', '46:pilot-dispatch']);
+  assert.equal(first.status, 0, `dispatch exit ${first.status}\nstdout:\n${first.stdout}\nstderr:\n${first.stderr}`);
   const tree = join(fx.root, 'issue-46');
   writeFileSync(join(tree, 'work.txt'), 'worker\n');
   git(tree, 'add', '.');

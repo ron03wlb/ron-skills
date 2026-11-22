@@ -16,6 +16,8 @@
 //   不印 STAGEABLE，pilot-land 印 `STOP held <n> G<k>`、不 stage；resolve 之後恢復（#367：investing#320 等 G28 時 probe 仍印 STAGEABLE 320）。
 //   resolve 在該段落最後一個 `- ` 欄位之後插入 `- resolved <time> <how>`（表格列則把 status 欄換成 `resolved <time> <how>`），印 `GATE_RESOLVED G<n>`；
 //   gate 已 resolved 印 `STOP G<n> resolved`、找不到印 `STOP G<n> missing`，都不改檔。
+//   resolve 成功時，gate 的 Issue 欄（段落的 `- Issue：`、表格的第二欄）每個 `#<n>` 或 `<owner>/<repo>#<n>` 在 GATE_RESOLVED 前各印一行
+//   `ISSUE_COMMENT_NEEDED <ref> G<n>`：解的人把 --how 的答案留言到那張 Issue（#543：bot 代解後只跑 resolve，Issue 仍停在「待 Operator 決定」）。
 //   session（#466）：有 $CLAUDE_CODE_SESSION_ID 時 open 在 opened 前多一個 `- by：<session>` 欄位（開啟者），resolve 段落在 resolved 行之後多一個
 //   `- resolver：<session>`（表格列沒有這欄）；pilot-probe 對 coordinator 開、別的 session 或 bot 解的 gate 印 `GATE_RESOLVED G<n> by <resolver|?> <how>`。
 //   applied 在段落最後一個 `- ` 欄位之後插入 `- applied <time>`（coordinator 套用了別人代解的答案），印 `GATE_APPLIED G<n>`；還沒 resolved 印 `STOP G<n> open`、
@@ -126,15 +128,20 @@ if (command === 'list' && !rest.length) {
   const lines = text.split('\n');
   const rowIndex = lines.findIndex(line => gateRow(line)?.[0] === id);
   const section = gateSections(text).find(entry => entry.id === id);
+  let issueField = '';
   if (rowIndex >= 0) {
     const row = gateRow(lines[rowIndex]);
+    issueField = row[1] ?? '';
     if (isResolvedRow(row)) { console.log(`STOP ${id} resolved`); process.exit(4); }
     lines[rowIndex] = `| ${[...row.slice(0, -1), mark].join(' | ')} |`;
     writeFileSync(file, lines.join('\n'));
   } else if (section) {
     if (isResolvedSection(section.body)) { console.log(`STOP ${id} resolved`); process.exit(4); }
     writeFileSync(file, insertAfterFields(text, section, [`- ${mark}`, ...(session ? [`- resolver：${session}`] : [])]));
+    issueField = section.body.match(/^- Issue[：:]\s*(.*)$/m)?.[1] ?? '';
   } else { console.log(`STOP ${id} missing`); process.exit(4); }
+  // #543：gate 解了，Issue 上仍停在「待決定」；解的人照這行把答案寫回 Issue（tracker 寫入照 repo 的 wrapper，腳本不代寫：Issue 欄可能指向別的 repo）。
+  for (const ref of new Set(issueField.match(/(?:[\w.-]+\/[\w.-]+)?#\d+/g) ?? [])) console.log(`ISSUE_COMMENT_NEEDED ${ref} ${id}`);
   console.log(`GATE_RESOLVED ${id}`);
 } else if (command === 'applied' && rest.length === 1 && /^G[1-9]\d*$/.test(rest[0])) {
   const [id] = rest;
