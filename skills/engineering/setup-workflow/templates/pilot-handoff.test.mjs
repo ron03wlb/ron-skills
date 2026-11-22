@@ -23,7 +23,7 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !ke
 // 主 checkout 另有既有 session（`--to` 的對象）：term_peer（標題 ron-skills-peer）、兩個標題都是 twin 的分頁；
 // 別的 repo 也有一個標題 ron-skills-peer 的分頁，`--to` 不能選到它。`terminal list --worktree path:<p>` 只回那個 worktree 的分頁。
 // term_peer 在 TAB_STATE_DIR 另有記錄的標題 `處理中｜[維運] renamed-peer`（Orca 讀不回 rename 設的標題，見 tab-state.mjs）。
-function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true, lateTakeover = false, waitHangs = false, createDelayMs = 0, orphanLate = false, takeoverName = 'ron-skills-ac' } = {}) {
+function fixture(t, { createError = false, tuiUnsatisfied = 0, sendRejected = false, takeover = true, lateTakeover = false, waitHangs = false, createDelayMs = 0, orphanLate = false, takeoverName = 'ron-skills-ac', waitTimeouts = 0, listHangs = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-handoff-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
@@ -47,6 +47,8 @@ ${orcaReplySource()}
 if (b === 'create') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${createDelayMs});
 if (b === 'create') ${createError ? `fail('create_failed')` : `reply('create', { terminal: { handle: 'term_pilot' } })`};
 else if (b === 'wait' && ${waitHangs}) setInterval(() => {}, 1000);
+else if (b === 'wait' && (fs.readFileSync(${JSON.stringify(log)}, 'utf8').match(/terminal wait/g) || []).length <= ${waitTimeouts}) fail('timeout');
+else if (b === 'list' && ${listHangs}) setInterval(() => {}, 1000);
 else if (b === 'wait') reply('wait', { wait: { satisfied: (fs.readFileSync(${JSON.stringify(log)}, 'utf8').match(/terminal wait/g) || []).length > ${tuiUnsatisfied} } });
 else if (b === 'send') {
   fs.appendFileSync(${JSON.stringify(log)} + '.sent', arg('--text') + '\\n');
@@ -293,6 +295,34 @@ test('預算在 terminal create 進行中用完：等 create 回來再關掉分�
   assert.equal(result.stdout.trim().split('\n').pop(), 'STOP timeout');
   assert.equal(readFileSync(coordinator, 'utf8'), original);
   assert.match(readFileSync(log, 'utf8'), /^terminal close --terminal term_pilot --json$/m);
+});
+
+// #535 真實發生過（investing 連續三次交接失敗）：`terminal wait` 逾時時 Orca CLI 回 { ok: false, error: { code: 'timeout' } }，不是 satisfied: false；
+// 舊碼把它當 Orca 錯誤，第一輪就 STOP orca timeout：第二輪沒機會跑，STOP 也看不出是哪一步。
+test('terminal wait 第一輪回 timeout 錯誤碼：當作未就緒再等一輪，照常 HANDED_OFF', t => {
+  const { handoff } = fixture(t, { waitTimeouts: 1 });
+  const result = handoff();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout.trim(), /^HANDED_OFF term_pilot\b/);
+});
+
+test('terminal wait 兩輪都回 timeout 錯誤碼：STOP tui-timeout，關分頁前先在 stderr 附畫面尾巴，還原並關掉分頁（#536）', t => {
+  const { coordinator, original, log, handoff } = fixture(t, { waitTimeouts: 2 });
+  const result = handoff();
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(result.stdout.trim().split('\n').pop(), 'STOP tui-timeout term_pilot');
+  assert.match(result.stderr, /^SCREEN_TAIL term_pilot$/m);
+  assert.equal(readFileSync(coordinator, 'utf8'), original);
+  const calls = readFileSync(log, 'utf8');
+  assert.ok(calls.indexOf('terminal read --terminal term_pilot --screen') < calls.indexOf('terminal close --terminal term_pilot'), calls);
+});
+
+test('某個 Orca 步驟逾時（terminal list 卡住超過步驟上限）：STOP 帶出步驟名稱與已花時間、還原 coordinator 檔', t => {
+  const { coordinator, original, handoff } = fixture(t, { listHangs: true });
+  const result = handoff('42', { PILOT_HANDOFF_STEP_MS: '300' });
+  assert.equal(result.status, 4, result.stderr);
+  assert.match(result.stdout.trim().split('\n').pop(), /^STOP orca timeout terminal list \d+ms$/);
+  assert.equal(readFileSync(coordinator, 'utf8'), original);
 });
 
 // 真實發生過的錯：每步寫死 10 秒，WSL 上 `terminal create` 常超過 10 秒，handoff 第一步就 STOP create The operation was aborted。

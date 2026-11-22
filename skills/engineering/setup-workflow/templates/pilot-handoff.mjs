@@ -19,6 +19,8 @@
 //   --held-check  adapter 指定的「整合分支合併進行中」檢查，在主 checkout 以 shell 執行：exit 0 合併中、1 沒有、其他無法判斷；沒帶就不檢查。
 // stdout 最後一行：HANDED_OFF <terminal handle> [name <name>]（name 是接手 session 經 pilot-register 寫進 coordinator 檔的 `name` 欄，沒有就省略），或 STOP <原因>（not-coordinator、held-merge、held-check、to-not-found、to-ambiguous、to-self、
 //   create、tui-timeout、send、orca、pid-timeout、timeout、signal）。
+//   `orca` 逾時時帶出步驟與已花時間：`STOP orca timeout terminal list 10003ms`（#535）；單獨的 `STOP timeout` 是總預算。
+//   `tui-timeout` 時 stderr 先印新分頁關掉前的畫面尾巴 `SCREEN_TAIL <handle>`（或 `SCREEN_TAIL_UNAVAILABLE`，#536）。
 // stderr：交接完成時提醒停掉本 session 的 watcher。
 // exit：0 交接完成；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
