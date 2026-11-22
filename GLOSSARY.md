@@ -64,6 +64,14 @@ _Avoid_: queue、backlog、待辦
 session 開始處理一張 Issue 前，在 tracker 上把它指派給自己，讓其他機器或 session 不會撿到同一張；同一個帳號分不出 session，所以先留一則「認領：<機器>／<session>」留言再指派。
 _Avoid_: lock、claim、佔單
 
+**看板**:
+GitHub Project「ron-skills 進度」，把每張開著的 Issue 依池子的分桶放進七欄之一；分桶才是準，看板只是鏡像，卡片不手動拖。
+_Avoid_: board、kanban、進度表
+
+**Retro 候選**:
+`/retro` 在收集模式開的候選單，等 `/retro-collect` 一起實作；不進池子，在看板上獨立一欄。
+_Avoid_: retro 單、retro backlog
+
 ## 分頁狀態
 
 **分頁狀態**:
