@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // Claude Code 語言 hook：使用者可見文字（assistant text block）以英文為主時回報，要求以繁體中文重新說明。
 // 專案規定使用者可見訊息一律繁體中文（寫在 CLAUDE.md 等 agent 指引），連工具呼叫之間的一行進度也算；只靠文字規則會反覆重犯，所以用 hook 擋。
 // 依 stdin hook JSON 的 hook_event_name 分兩種用法：

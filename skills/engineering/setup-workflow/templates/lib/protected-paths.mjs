@@ -1,3 +1,4 @@
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // setup-workflow 正本：保護路徑（#303）。land.mjs 與 pilot-close.mjs 快轉主 checkout 的主分支之前共用這一份判斷。
 // 宣告：adapter（主 checkout 的 docs/agents/issue-run.md）裡以 `Protected paths:` 開頭的行（前面可以有 `- ` 或 `* `），
 //   該行每個 `` `…` `` 是一條字面路徑（不是 pathspec），例如 `Protected paths: \`private\` \`notes/local.md\``；可以有多行，路徑合併。

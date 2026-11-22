@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // setup-workflow 正本（#355，取自 investing 的 scripts/pilot-watch.mjs）：coordinator 的背景 worker watcher，取代各自手寫的 watch.sh。
 // 每 interval 秒讀每個 handle 的 `terminal read --screen`（經 orca-session-send.mjs 的 orca()：不經 shell、不依賴 jq，tail 帶反斜線時先修 JSON），
 // 結果行的判斷與 Probe 的 WORKER 共用 pilot-probe.mjs 的 resultMatch（容忍縮排、TUI 框線與 bullet、略過提示列），不另寫一份

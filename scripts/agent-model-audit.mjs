@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 子代理模型稽核（唯讀）：掃 ~/.claude/projects/ 下相符專案目錄裡最近 N 個 transcript（含 <session>/subagents/*.jsonl），
 // 找出沒指定 input.model 的 Agent（舊名 Task）呼叫，依「呼叫前最近的 slash 指令或 Skill tool_use 的 skill 名」歸屬。
 // retro cf16948a#1：原本要在 session 內臨時手寫 Python，且無法確認 skill 改成 sonnet 後規則是否生效。

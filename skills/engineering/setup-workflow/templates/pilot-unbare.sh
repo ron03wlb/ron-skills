@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 # Orca 從 WSL 做 worktree create、rm 時可能把主 checkout 的 core.bare 設成 true，之後 git status、stage、merge 全部失敗（#20）。
 # pilot 的 Probe、Dispatch、Stage、Close、land.mjs 與 claude-hook-unbare.sh（時機 hook）都只呼叫這支：是 bare 就還原為 false，並在 <checkout>/.scratch/pilot/decisions.md 的表格追加一列。
 # 用法：scripts/pilot-unbare.sh <主 checkout> <時機>（如 probe、dispatch #20、close #20、hook）

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 在 Orca 開一個新的 Claude session 並送出第一個 prompt：有 ORCA_TERMINAL_HANDLE 時 split 在呼叫者的 pane 旁邊（使用者的每個分頁各有用途，不另開新分頁），
 // 沒有時，或帶 `--tab`（新 session 要比呼叫者活得久，例如 coordinator 交接後使用者會關掉舊視窗）時，在主 checkout 新開分頁；
 // 帶 `--worktree <path>`（要在自己 worktree 跑的 session）時，在該 worktree 新開分頁；

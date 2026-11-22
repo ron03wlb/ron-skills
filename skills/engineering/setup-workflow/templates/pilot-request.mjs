@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // pilot 的 request（PILOT-STORE.md 的 `.scratch/pilot/requests.md`）：其他 session 交出一項、列出還開著的，或把一項標成 applied／declined，都不手寫行格式。
 // 用法：node scripts/pilot-request.mjs <checkout> add <內文> --source <session>
 //       node scripts/pilot-request.mjs <checkout> list

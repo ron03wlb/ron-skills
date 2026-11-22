@@ -1,3 +1,4 @@
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // agent-model-audit.mjs 測試（retro cf16948a#1；#373 通用化）：假 transcript fixture。
 import './test/isolate-git-env.mjs';
 import { test } from 'node:test';

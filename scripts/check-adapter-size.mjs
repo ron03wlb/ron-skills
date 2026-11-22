@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // setup-workflow 正本。adapter 檔大小預算（#344）：worker 整份讀 docs/agents/issue-run.md、coordinator 整份讀 docs/agents/pilot.md，
 // 兩份是必讀核心，各 14000 bytes；只在部分情況才讀的拆出檔，以 Read 單次上限 58000 bytes 為預算。核心超過時，把只在某步驟或某情況才用到的條目
 // 搬到拆出檔，核心留一行 pointer 寫明何時讀，並以 `node scripts/adapter-line.mjs <條目名>` 取整條。

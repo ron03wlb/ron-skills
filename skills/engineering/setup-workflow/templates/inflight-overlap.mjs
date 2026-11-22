@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 合入整合分支前，找出來源分支與其他進行中 worktree（未合入的分支或未提交變更）的重疊，避免剛合入的變更
 // 和進行中的單互相抵觸，直到該單合併整合分支時才發現。
 //

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 派工前的 brief 欄位檢查（spay2 #649 起源，ron-skills #346 升為正本；issue-pilot〈Briefs〉：缺欄位的 brief 不派工，修 brief 而不是改 worker 的 prompt）。
 // 欄位以行首標籤辨識，標籤後須有內容（全形或半形冒號）：目標（goal）、範圍（scope）、驗收（acceptance）、驗證（verify）、TIMEBOX（timebox，須含分鐘數）、
 // 禁止（forbidden）、回報（report）、Standing orders（standing-orders，須指向 preferences.md）。

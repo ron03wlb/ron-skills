@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // issue-run adapter 的 Review：以固定模型／effort 執行 Codex code-review，並以確定性規則判定結果。
 // 用法：node scripts/run-codex-review.mjs <baseline> <spec> <worktree> <out-dir> [rulings]
 //       node scripts/run-codex-review.mjs --quota（唯讀：不呼叫 Codex，讀 $CODEX_HOME（預設 ~/.codex）/sessions 最新 rollout 的 rate_limits）

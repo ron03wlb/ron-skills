@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // pilot 的 hold 旗標（PILOT-STORE.md 的 `.scratch/pilot/hold`）：檔案存在就是 hold，Integrate 前一步不 merge。
 // 以及 main 暫停旗標（`.scratch/pilot/main-paused`，#379）：main 依決定暫停推送時，Probe 把 NOT_IN_MAIN／RESUME_PUSH 收成一行 MAIN_PAUSED，
 // issue-pool 帶 --integration 時把 landed 桶收成 LANDED_COUNT；until 當天仍有效，過期自動失效（判斷在 issue-pool 的 mainPause，這支只寫）。

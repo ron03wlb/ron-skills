@@ -176,8 +176,19 @@ test('--verify 沒有清單時 exit 1，不算驗證通過', t => {
   assert.match(result.stdout, /^MISSING docs\/agents\/workflow-templates\.json$/m);
 });
 
+/** 每支 .mjs 正本的檔頭加上來源行（真的正本都有，`--verify` 檢查副本有沒有它），commit 後才能複製。 */
+const ORIGIN = '// 由 setup-workflow 範本同步，勿在此改';
+function withOrigin(source) {
+  const templates = join(source, 'skills/engineering/setup-workflow/templates');
+  for (const name of ['a.mjs', 'b.mjs', 'lib/pre.mjs', 'a.test.mjs', 'test/helper.mjs', 'other.mjs']) {
+    writeFileSync(join(templates, name), `${ORIGIN}\n${readFileSync(join(templates, name), 'utf8')}`);
+  }
+  git(source, 'commit', '-qam', 'origin');
+}
+
 test('--verify：每一筆 hash 與實際檔案一致時 VERIFIED，有一筆不同就 exit 1 並列出', t => {
-  const { target, copier } = fixture(t);
+  const { source, target, copier } = fixture(t);
+  withOrigin(source);
   assert.equal(run(copier, target, 'a').status, 0);
   const ok = run(copier, target, '--verify');
   assert.equal(ok.status, 0, ok.stdout);
@@ -188,6 +199,18 @@ test('--verify：每一筆 hash 與實際檔案一致時 VERIFIED，有一筆不
   assert.equal(bad.status, 1);
   assert.match(bad.stdout, /^MISMATCH scripts\/b\.mjs$/m);
   assert.match(bad.stdout, /^MISSING scripts\/lib\/pre\.mjs$/m);
+});
+
+// investing#529：worker 要多查一次清單才知道檔案是範本副本；每個登記的 .mjs／.sh 副本前三行要有來源行，fixtures 的資料檔不算。
+test('--verify：登記的程式副本前三行沒有來源行就 NO_ORIGIN、exit 1', t => {
+  const { source, target, copier } = fixture(t);
+  withOrigin(source);
+  write(join(source, 'skills/engineering/setup-workflow/templates'), { 'b.mjs': 'export const b = 1;\n' });
+  git(source, 'commit', '-qam', 'strip origin');
+  assert.equal(run(copier, target, 'a').status, 0);
+  const bad = run(copier, target, '--verify');
+  assert.equal(bad.status, 1, bad.stdout);
+  assert.deepEqual(bad.stdout.trim().split('\n'), ['NO_ORIGIN scripts/b.mjs']);
 });
 
 // #246：Bare guard 的正本是 shell（pilot-unbare.sh、claude-hook-unbare.sh），hook 以 "$(dirname "$0")/pilot-unbare.sh" 呼叫旁邊那支。

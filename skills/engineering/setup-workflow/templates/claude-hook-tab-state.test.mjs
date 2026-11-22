@@ -1,3 +1,4 @@
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -7,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { orcaReplySource } from './test/fake-orca.mjs';
 import { git } from './test/repo-fixture.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
+import { matchedTrigger, triggers } from './claude-hook-tab-state.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-tab-state.mjs', import.meta.url));
 const tabStateScript = fileURLToPath(new URL('./tab-state.mjs', import.meta.url));
@@ -221,6 +223,20 @@ test('docs/agents/tab-state.json：同名覆寫、null 停用、新增觸發條�
   assert.equal(recorded(), '待 Retro｜#21 雙池採集｜收尾｜land');
   hook(bash('node scripts/pilot-handoff.mjs', 'HANDED_OFF term_new'));
   assert.equal(recorded(), '待關閉｜#21 雙池採集｜收尾｜land');
+});
+
+// 呼叫端（例如記 log 要寫 `trigger=<名稱>` 的 hook）要知道命中的是哪個觸發條件，專案自訂的也要有名稱（investing#529）。
+test('triggers() 保留觸發條件名稱，matchedTrigger 傳回 { state, name, text }', t => {
+  const { project } = fixture(t, { config: { triggers: {
+    deployed: { event: 'PostToolUse', match: '^DEPLOYED \\S+$', state: '待 Retro' },
+  } } });
+  const list = triggers(project);
+  assert.deepEqual(list.map(trigger => trigger.name), ['landed', 'pilot-handoff', 'worker-done', 'deployed']);
+  assert.deepEqual(matchedTrigger(list, 'PostToolUse', `ok\nLANDED 130 ${SHA}\n`, 'node scripts/land.mjs x'),
+    { state: '待 Retro', name: 'landed', text: `LANDED 130 ${SHA}` });
+  assert.deepEqual(matchedTrigger(list, 'PostToolUse', 'DEPLOYED prod'), { state: '待 Retro', name: 'deployed', text: 'DEPLOYED prod' });
+  assert.equal(matchedTrigger(list, 'PostToolUse', `LANDED 140 ${SHA}`, 'node scripts/land.mjs pilot/integration --keep-branch'), null);
+  assert.equal(matchedTrigger(list, 'Stop', 'DEPLOYED prod'), null);
 });
 
 // pilot 底下是 coordinator 以 `land.mjs pilot/integration --keep-branch` 落地，還在運作的 coordinator 分頁不能被切成待 Retro。

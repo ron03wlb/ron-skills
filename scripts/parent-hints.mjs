@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // setup-workflow 正本（#370）：`/issue-queue` 第 6 步（Parent hints）的母單提示，取代 agent 每次手寫的 sub_issues、blocked_by、`prose-deps.mjs` 迴圈。
 // 用法：node scripts/parent-hints.mjs [--repo <owner>/<name>] [<母單>...]
 //   不帶母單時查所有開著、有 sub-issue 的單。只支援 GitHub（subIssues）：docs/agents/issue-tracker.md 寫的是 GitLab 或本機 Markdown 時 exit 2。

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // copy-templates: requires pilot-counterpart.mjs pilot-unbare.sh
 // setup-workflow 正本：/issue-pilot coordinator 的 Close（adapter Pilot 段的 Close；結果行見 skills/engineering/issue-pilot/PILOT-STORE.md 的 Canonical scripts）：
 // batch 的 merge 進到 origin/<主分支> 之後收掉每個 done 成員。專案值都從參數來：

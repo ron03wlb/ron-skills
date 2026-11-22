@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // Push gate 第 1 步的 PR body：從 `current: merged <sha>` 的 batch checkpoint（PILOT-STORE.md 的 `.scratch/pilot/batch-<key>.md`）產生。
 // 用法：node scripts/pilot-pr-body.mjs <checkout> [--out <file>]
 //   每個 merged batch 一列（依 key 排序）：key（請求 batch 附分支名稱）、staged SHA、最後一個 `regression:` 行；

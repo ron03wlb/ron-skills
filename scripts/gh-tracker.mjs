@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // setup-workflow 正本：tracker 寫入 wrapper。.claude/settings.json 的 tracker 寫入只放行這支，auto mode 才不會把留言、關單擋成 External System Writes（ron-skills #96）。
 // 前綴規則 Bash(gh issue comment:*) 也放行 -R other/repo、Issue URL 與 -wR 這類短旗標串，所以這裡只收白名單旗標與數字 Issue 號碼，寫入目標不從命令列來。
 // 寫入目標（GitHub 主機與 <owner>/<repo>）讀本檔所在 scripts/ 的上一層 docs/agents/issue-run.md 的 `## Tracker` 段：段裡的 GitHub 專案網址

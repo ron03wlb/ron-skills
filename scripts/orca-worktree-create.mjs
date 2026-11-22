@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 以 Orca 建立 worktree 的唯一入口：`orca worktree create` 只呼叫一次，再以 git worktree list 確認新出現的 worktree。
 // Orca 從 WSL 建立時常先回 runtime_unavailable 或 runtime_timeout，卻仍在背景完成 checkout；重試會多出 `<name>-2`，所以一律不重試、改為輪詢。
 //

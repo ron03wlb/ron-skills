@@ -1,3 +1,4 @@
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 測試 fixture 把腳本複製到暫存 repo 的 scripts/ 時，依 import 相依閉包複製，不手列檔名（#473：pilot-land.mjs 頂層多 import
 // pilot-probe.mjs 後，只手列部分腳本的 tests/land-restamp.test.mjs 要到整條 bin/check 才報 `Cannot find module`；pilot-probe 加
 // lib/merge-tree.mjs 時 pilot-probe.test.mjs、pilot-dispatch.test.mjs 的手列清單也各要補；#454-3 pilot-close.test.mjs 同）。

@@ -1,3 +1,4 @@
+// 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // `from..to` 改了哪些檔與哪些 `- **<名稱>.**` 條目。pilot-probe.mjs 的 OVERLAP 與 worktree-overlap.mjs 共用：
 // 獨立成一支，worktree-overlap.mjs 複製到沒有 pilot-probe.mjs 的 repo 時才不必帶上整組 pilot 腳本（retro spay2 6d21b9cc#4）。
 import { spawnSync } from 'node:child_process';
