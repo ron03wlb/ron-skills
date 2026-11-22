@@ -43,7 +43,7 @@ test('--apply 經 scripts/gh-tracker.mjs 補 parent label、移除 triage label�
   const { probe, writes } = fixture(t);
   const result = probe('--apply');
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(result.stdout.trim().split('\n'), ['PARENT_LABEL 10', 'PARENT_REOPEN 40', 'POOL_READY 11 41']);
+  assert.deepEqual(result.stdout.trim().split('\n'), ['PARENT_LABEL 10', 'PARENT_REOPEN 40', 'POOL_READY 11 41', 'HANDOFF_COUNT 0/2']);
   assert.deepEqual(writes(), [
     ['issue', 'edit', '10', '--add-label=parent', '--remove-label=ready-for-agent', '--repo', 'github.com/ron03wlb/ron-skills'],
     ['issue', 'reopen', '40', '--repo', 'github.com/ron03wlb/ron-skills'],
