@@ -170,6 +170,16 @@ export function usage(text, message) {
   process.exit(2);
 }
 
+/** batch checkpoint 表格下方的 `postland: #<n> <command>` 行（#502，pilot-watch 從 worker 的 `POSTLAND <n> <command>` 記下），依檔案順序。 */
+export const postlandEntries = text => [...text.matchAll(/^postland: #(\d+) (.*\S)[ \t]*$/gm)].map(([, n, command]) => ({ n, command }));
+
+/** 在 checkpoint 尾端補上成員 #n 還沒記過的 postland 行；都記過時原樣傳回（同一個 <n> 重跑 watch 不重複記）。 */
+export function addPostland(text, n, commands) {
+  const have = new Set(postlandEntries(text).filter(entry => entry.n === String(n)).map(entry => entry.command));
+  const add = [...new Set(commands)].filter(command => !have.has(command));
+  return add.length ? `${text.replace(/\n*$/, '\n')}${add.map(command => `postland: #${n} ${command}\n`).join('')}` : text;
+}
+
 /** 欄位值不能含三個連續空白或換行（行格式以三個空白分欄）。 */
 export const isField = value => typeof value === 'string' && value.trim() !== '' && !/ {3}|\n/.test(value);
 

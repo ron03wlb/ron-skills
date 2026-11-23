@@ -8,7 +8,7 @@
 //       node scripts/pilot-batch.mjs <checkout> resume <key> <n> --note <text>（需要 ORCA_CLI_COMMAND）
 //       node scripts/pilot-batch.mjs <checkout> accept <key> <n> <sha>
 //   move   把 batch-<key> 的成員 #n 搬到 batch-<n>.md：表頭（標題換成 `# batch <n>`、current:、integration:）與成員行照抄，
-//          `--state stop` 時新行的 state 寫 stop、candidate 清空；舊行的 state 改成 `moved batch-<n>`，其他格不動。成員最後一行 `resumed:`（見 resume）也抄到新檔。
+//          `--state stop` 時新行的 state 寫 stop、candidate 清空；舊行的 state 改成 `moved batch-<n>`，其他格不動。成員最後一行 `resumed:`（見 resume）與它的每一行 `postland:`（#502）也抄到新檔。
 //          沒帶 --state、成員是 running、有 ORCA_CLI_COMMAND 時（#437：watcher 已印 DONE、Probe 還沒寫回就搬，新列仍是 running，pilot-land 只會 STOP member running），
 //          拿鎖前先讀該列 handle 的畫面最後一個結果行（pilot-probe 的 resultMatch；就是 resumed 記下的那一行時不算）：`DONE <n> <sha>` 的 sha 是成員分支（branch 欄）在 checkout 的 HEAD 時
 //          新行寫 done＋完整 SHA，不是 HEAD 或分支不存在時 `STOP <n> unapplied-result <結果行>`、不動檔（先查清楚或跑 pilot-probe.mjs --apply）；`STOP <n> <cause>` 寫 stop、candidate 不動。
@@ -143,7 +143,9 @@ function move(pilot, key, n, { state, candidate, note, requireDone, result, chec
     }
     // resume 記下的那一行跟著成員走（#356）：搬走的 running 成員在新檔也要忽略畫面上的舊結果行。
     const resumed = source.lines.filter(line => line.startsWith(`resumed: #${n} `)).slice(-1);
-    writeCheckpoint(target, `${[...header, member, ...resumed, ...(note ? [note] : [])].join('\n')}\n`);
+    // POSTLAND 指令（#502）也跟著成員走：park 之後落地的 batch 才印得出 POSTLAND_PENDING。
+    const postland = source.lines.filter(line => line.startsWith(`postland: #${n} `));
+    writeCheckpoint(target, `${[...header, member, ...resumed, ...postland, ...(note ? [note] : [])].join('\n')}\n`);
   }
   source.lines[i] = setCells(source.lines[i], moved);
   const closed = closeIfAllMoved(source.lines);
