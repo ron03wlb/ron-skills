@@ -129,6 +129,8 @@ test('有母單的 ready 行在號碼與標題之間附 parent #<p>（別的 rep
 
 const BUCKET_CASES = [
   ['blocked', '有開著的 blocked_by', issue(7, { labels: ['bug', 'ready-for-agent'], blockedBy: [3] }), 'ready-for-agent by #3 '],
+  // #337：被別的 repo 開著的 Issue 擋住也歸 blocked（investing#332 依賴 ron-skills#335 卻被當 ready 派工）。
+  ['blocked', '被別的 repo 開著的 Issue 擋住（跨 repo 原生 blocked_by）', issue(7, { labels: ['bug', 'ready-for-agent'], blockedBy: ['acme/tools#335'] }), 'ready-for-agent by acme/tools#335 '],
   ['blocked', '掛 retro 也照樣被開著的 blocked_by 擋住', issue(7, { labels: ['enhancement', 'ready-for-agent', 'retro'], blockedBy: [3] }), 'ready-for-agent by #3 '],
   ['parent', '有 sub-issue 的母單，即使標了 ready-for-agent', issue(7, { labels: ['ready-for-agent'], subIssues: 2 })],
   ['needs-triage', '標 needs-triage', issue(7, { labels: ['bug', 'needs-triage'] })],
@@ -151,6 +153,15 @@ for (const [bucket, why, fixture, detail = ''] of BUCKET_CASES) {
     assert.equal(result.stdout, `${bucket} #7 ${detail}標題 7\n`);
   });
 }
+
+// #337：跨 repo 的 blocker 關閉後恢復 ready（同 repo blocker 的行為不變，見上表）。
+test('跨 repo 的 blocker 關閉後，Issue 回到 ready', () => {
+  const blocked = issue(7, { labels: ['bug', 'ready-for-agent'], blockedBy: ['acme/tools#335'] });
+  blocked.blockedBy.nodes[0].state = 'CLOSED';
+  const result = fakeGh({ issues: [blocked] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #7 標題 7\n');
+});
 
 test('認領時限可以用 --stale-hours 覆寫，過期只歸到 stale、不釋放', () => {
   const { run, calls } = fakeGh({ issues: [issue(7, { labels: ['bug', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(3) })] });

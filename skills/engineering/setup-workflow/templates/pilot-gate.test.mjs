@@ -92,7 +92,8 @@ test('resolve：在該段落最後一個欄位後插入 `- resolved <time> <how>
   run(dir, 'open', ...OPEN);
   const result = run(dir, 'resolve', 'G4', '--how', '使用者選 1 重派');
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, 'GATE_RESOLVED G4\n');
+  // #543：Issue 欄的號碼各印一行 ISSUE_COMMENT_NEEDED，解的人把答案寫回 Issue。
+  assert.equal(result.stdout, 'ISSUE_COMMENT_NEEDED #13 G4\nGATE_RESOLVED G4\n');
   assert.match(gates(dir), new RegExp(`- opened：${TIME}\\n- resolved ${TIME} 使用者選 1 重派\\n$`));
   assert.ok(!openRows(join(dir, '.scratch/pilot')).some(line => line.startsWith('GATE G4')));
   assert.ok(!run(dir, 'list').stdout.includes('G4'));
@@ -108,7 +109,7 @@ test('resolve：段落中間的 gate 插在它自己的欄位之後，不動後�
 
 test('resolve：表格列把 status 欄換成 `resolved <time> <how>`', t => {
   const dir = checkout(t);
-  assert.equal(run(dir, 'resolve', 'G1', '--how', '決定不改').stdout, 'GATE_RESOLVED G1\n');
+  assert.equal(run(dir, 'resolve', 'G1', '--how', '決定不改').stdout, 'ISSUE_COMMENT_NEEDED #10 G1\nGATE_RESOLVED G1\n');
   assert.match(gates(dir), new RegExp(`^\\| G1 \\| #10 \\| 要不要改 API \\| 1\\. 改；2\\. 不改 \\| 不改 \\| batch-10 \\| 2026-10-30T20:00:00\\+08:00 \\| resolved ${TIME} 決定不改 \\|$`, 'm'));
   assert.ok(!openRows(join(dir, '.scratch/pilot')).some(line => line.startsWith('GATE G1 ')));
 });
@@ -296,7 +297,7 @@ test('open／resolve 記下 session（by、resolver），applied 寫 `- applied 
   const open = run(dir, 'applied', 'G4');
   assert.equal(open.status, 4);
   assert.equal(open.stdout, 'STOP G4 open\n');
-  assert.equal(runAs(BOT, dir, 'resolve', 'G4', '--how', '代決：選 1').stdout, 'GATE_RESOLVED G4\n');
+  assert.equal(runAs(BOT, dir, 'resolve', 'G4', '--how', '代決：選 1').stdout, 'ISSUE_COMMENT_NEEDED #13 G4\nGATE_RESOLVED G4\n');
   assert.match(gates(dir), new RegExp(`- opened：${TIME}\\n- resolved ${TIME} 代決：選 1\\n- resolver：${BOT}\\n$`));
   const applied = run(dir, 'applied', 'G4');
   assert.equal(applied.status, 0, applied.stderr);
@@ -305,6 +306,13 @@ test('open／resolve 記下 session（by、resolver），applied 寫 `- applied 
   assert.equal(run(dir, 'applied', 'G4').stdout, 'STOP G4 applied\n');
   assert.equal(run(dir, 'applied', 'G1').stdout, 'STOP G1 table\n');
   assert.equal(run(dir, 'applied', 'G9').stdout, 'STOP G9 missing\n');
+});
+
+// #543：Issue 欄指向別的 repo、或沒有號碼時：前者照原樣印，後者不印。
+test('resolve：Issue 欄的跨 repo 號碼照原樣印 ISSUE_COMMENT_NEEDED，沒有號碼時不印（#543）', t => {
+  const dir = checkout(t, `# Gates\n\n## G5 跨 repo\n- Issue：acme/tools#657（batch 657、#657）\n- opened：2026-10-30T20:00:00+08:00\n\n## G6 沒有號碼\n- Issue：machine setup\n- opened：2026-10-30T20:00:00+08:00\n`);
+  assert.equal(run(dir, 'resolve', 'G5', '--how', '選 A').stdout, 'ISSUE_COMMENT_NEEDED acme/tools#657 G5\nISSUE_COMMENT_NEEDED #657 G5\nGATE_RESOLVED G5\n');
+  assert.equal(run(dir, 'resolve', 'G6', '--how', '選 B').stdout, 'GATE_RESOLVED G6\n');
 });
 
 test('probe 的 GATE_RESOLVED：coordinator 開、不是 coordinator 的 session（或沒記 resolver）解、還沒 applied 的 gate 各印一行', t => {
