@@ -141,6 +141,10 @@ import { MEMORY_AUDIT_FILE, declaredDays, memoryAuditLine } from './memory-audit
 
 // 池子摘要要的欄位取 issue-pool 的 POOL_FIELDS（#240）；同名的 blockedBy 在 GraphQL 裡合併成一份選取。
 const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt lastEditedAt blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
+// 每次都印的行：池子摘要（POOL_READY｜POOL_TRIAGE｜POOL_EMPTY｜POOL_FAILED，#240）與 HANDOFF_COUNT（#368）。
+// 只看自己那幾行的測試比對整份 stdout 前用它去掉，probe 再加常駐行時改這一處即可（#556）。
+export const ALWAYS_LINES = /^(POOL_|HANDOFF_COUNT )/;
+
 const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>] [--worker-state <路徑>]｜node scripts/pilot-probe.mjs --tail <handle> [--lines <n>]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const TRACKER = join(dirname(fileURLToPath(import.meta.url)), 'gh-tracker.mjs');
