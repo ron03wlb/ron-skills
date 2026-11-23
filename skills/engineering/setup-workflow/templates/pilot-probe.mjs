@@ -678,6 +678,28 @@ export function resultMatch(tail, n) {
   return null;
 }
 
+/**
+ * worker 在 DONE 之前印的 `POSTLAND <n> <command>`（#502：候選落地後要立刻跑一次的指令），框線、bullet、提示列同 resultMatch 處理。
+ * 從畫面底部往上讀：最底下的結果行是 DONE 時跳過它繼續讀，碰到下一個結果行（resume 前的舊結果）就停；最底下的是 STOP 時傳回空陣列。
+ * 畫面上沒有 DONE（from-state）時讀到第一個結果行為止。依畫面順序傳回指令，去重。
+ */
+export function postlandCommands(tail, n) {
+  const commands = [];
+  let done = false;
+  for (const raw of screenLines(tail).reverse()) {
+    if (PROMPT_CHROME.test(raw)) continue;
+    const result = resultMatch([raw], n);
+    if (result) {
+      if (result.kind === 'DONE' && !done) { done = true; continue; }
+      break;
+    }
+    const line = raw.replace(/^[\s│●⏺⎿]+|[\s│]+$/g, '').replace(/[\u0000-\u001f\u007f]/g, ' ');
+    const command = line.match(new RegExp(`^POSTLAND ${n} (.*\\S)$`))?.[1].trim();
+    if (command && !commands.includes(command)) commands.unshift(command);
+  }
+  return commands;
+}
+
 /** 這個 worker 的結果行，去掉號碼：`DONE <sha>`、`STOP <cause>`，沒有時、或最後一個結果行（去框線後的整行）就是 `ignore` 時 null。 */
 export function resultLine(tail, n, ignore) {
   const match = resultMatch(tail, n);
@@ -693,11 +715,13 @@ const SCROLLBACK_LINES = 2000;
 /**
  * 畫面上沒有結果行、畫面也不是工作中時，往回讀累積輸出（`terminal read` 不帶 `--screen`，含捲出畫面的行）找最後一個結果行，同 resultMatch（#537：
  * watcher 啟動前 `DONE <n> <sha>` 已捲出 40 行的畫面，Probe 與 watch 都報 RUNNING，分頁標題卻已是 `待關閉｜`）。
- * 工作中不讀：每輪多一次讀取沒有用，worker 還沒寫結果行。
+ * 工作中不讀：每輪多一次讀取沒有用，worker 還沒寫結果行。找到時多帶 tail（讀到的累積輸出），pilot-watch.mjs 從同一份讀 DONE 之前的 POSTLAND（#502）。
  */
 export async function scrollbackMatch(ctx, handle, n) {
   const { terminal } = await orca(ctx, 'terminal', 'read', '--terminal', handle, '--limit', String(SCROLLBACK_LINES));
-  return resultMatch(terminal?.tail ?? [], n);
+  const tail = screenLines(terminal?.tail);
+  const match = resultMatch(tail, n);
+  return match && { ...match, tail };
 }
 
 /** pilot-watch.mjs 記結果行的目錄（`.scratch/pilot/` 底下）與檔案：一個 handle 一個檔，內容 `<ISO 時間> <結果行>`（#413）。 */

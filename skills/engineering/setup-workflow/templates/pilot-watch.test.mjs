@@ -268,3 +268,69 @@ test('batch 成員印 RESULT 時把結果行記進 results/<handle>；直接給�
   assert.equal(run(['term_x', ...fast]).stdout, 'RESULT - term_x STOP 9 decision x\n');
   assert.throws(() => readFileSync(join(pilot, 'results', 'term_x')), /ENOENT/);
 });
+
+// #502（investing#609 第 1 項，investing#601）：候選落地後必須立刻跑一次的指令只寫在 worker 報告內文，coordinator 看不到，
+// 落地到有人跑之前每次 sync 都 exit 3。worker 在 DONE 之前印 `POSTLAND <n> <command>`，watch 把它記進 batch checkpoint 的 `postland:` 行。
+const POSTLAND = 'scripts/project-sync.py --setup-status-field --apply';
+test('#601 的報告形狀（一行 POSTLAND 在 DONE 之前）：指令記進 checkpoint，RESULT 照舊', t => {
+  const { batch, pilot, run } = fixture(t, { term_601: [{ status: 'running', tail: [
+    '● ## Autonomous decisions', '  - [reversible] Status 改六欄', '', `  POSTLAND 601 ${POSTLAND}`, `  DONE 601 ${SHA}`, '', '❯'] }] });
+  batch('601', [{ n: 601, handle: 'term_601' }]);
+  const result = run(['--batch', '601', '--checkout', 'checkout', ...fast]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `RESULT 601 term_601 DONE 601 ${SHA}\n`);
+  assert.match(readFileSync(join(pilot, 'batch-601.md'), 'utf8'), new RegExp(`\\npostland: #601 ${POSTLAND.replace(/[.*]/g, '\\$&')}\\n$`));
+});
+
+test('多行 POSTLAND 都記下，順序同畫面；同一個 <n> 重跑 watch 不重複記；resume 前的舊 POSTLAND 與別的號碼不記', t => {
+  const old = `DONE 602 ${'a'.repeat(40)}`;
+  const { batch, pilot, run } = fixture(t, { term_602: [{ status: 'running', tail: [
+    'POSTLAND 602 echo old', old, '● 重做', 'POSTLAND 602 make sync', '│ POSTLAND 602 node scripts/x.mjs --apply │', 'POSTLAND 9 echo other', 'POSTLAND 602 make sync', `DONE 602 ${SHA}`, '❯'] }] });
+  batch('602', [{ n: 602, handle: 'term_602' }], `resumed: #602 2026-11-21T10:00:00+08:00 ${old}\n`);
+  const args = ['--batch', '602', '--checkout', 'checkout', ...fast];
+  assert.equal(run(args).stdout, `RESULT 602 term_602 DONE 602 ${SHA}\n`);
+  assert.equal(run(args).stdout, `RESULT 602 term_602 DONE 602 ${SHA}\n`);
+  const lines = readFileSync(join(pilot, 'batch-602.md'), 'utf8').split('\n').filter(line => line.startsWith('postland:'));
+  assert.deepEqual(lines, ['postland: #602 node scripts/x.mjs --apply', 'postland: #602 make sync']);
+});
+
+test('結果是 STOP 時不記 POSTLAND；沒有 POSTLAND 時 checkpoint 一個字都不改', t => {
+  const { batch, pilot, run } = fixture(t, {
+    term_603: [{ status: 'running', tail: ['POSTLAND 603 make sync', 'STOP 603 decision x'] }],
+    term_604: [{ status: 'running', tail: [`DONE 604 ${SHA}`] }],
+  });
+  batch('603', [{ n: 603, handle: 'term_603' }, { n: 604, handle: 'term_604' }]);
+  const before = readFileSync(join(pilot, 'batch-603.md'), 'utf8');
+  assert.equal(run(['--batch', '603', '--checkout', 'checkout', ...fast]).stdout, `RESULT 603 term_603 STOP 603 decision x\nRESULT 603 term_604 DONE 604 ${SHA}\n`);
+  assert.equal(readFileSync(join(pilot, 'batch-603.md'), 'utf8'), before);
+});
+
+test('from-state 的 DONE：已結束畫面上的 POSTLAND 也記下（EXITED 的不記）', t => {
+  const { temp, batch, pilot, run } = fixture(t, {
+    term_605: [{ status: 'exited', tail: ['POSTLAND 605 make sync', '● 結束'] }],
+    term_606: [{ status: 'exited', tail: ['POSTLAND 606 make sync'] }],
+  });
+  const worktree = join(temp, 'wt');
+  const git = (...args) => spawnSync('git', ['-C', worktree, ...args], { encoding: 'utf8', env });
+  spawnSync('git', ['init', '-q', worktree], { env });
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'c');
+  const head = git('rev-parse', 'HEAD').stdout.trim();
+  mkdirSync(join(temp, 'notes/issue-605'), { recursive: true });
+  writeFileSync(join(temp, 'notes/issue-605/state.md'), `State: done, candidate ${head}\n`);
+  batch('605', [{ n: 605, handle: 'term_605', worktree }, { n: 606, handle: 'term_606', worktree }]);
+  const result = run(['--batch', '605', '--checkout', 'checkout', '--worker-state', join(temp, 'notes/issue-<n>/state.md'), ...fast]);
+  assert.equal(result.stdout, `RESULT 605 term_605 DONE 605 ${head} from-state\nEXITED 605 term_606\n`);
+  const lines = readFileSync(join(pilot, 'batch-605.md'), 'utf8').split('\n').filter(line => line.startsWith('postland:'));
+  assert.deepEqual(lines, ['postland: #605 make sync']);
+});
+
+// #502 × #537：DONE 已捲出畫面、從累積輸出讀到時，它之前的 POSTLAND 也只在累積輸出裡，要從同一份讀。
+test('結果行從累積輸出讀到（#537）時，累積輸出裡 DONE 之前的 POSTLAND 也記下', t => {
+  const { batch, pilot, run } = fixture(t, { term_607: [{ status: 'running', tail: ['  報告最後一行', '❯'],
+    scrollback: [`POSTLAND 607 ${POSTLAND}`, `DONE 607 ${SHA}`, '  報告最後一行', '❯'] }] });
+  batch('607', [{ n: 607, handle: 'term_607' }]);
+  const result = run(['--batch', '607', '--checkout', 'checkout', ...fast]);
+  assert.equal(result.stdout, `RESULT 607 term_607 DONE 607 ${SHA}\n`);
+  const lines = readFileSync(join(pilot, 'batch-607.md'), 'utf8').split('\n').filter(line => line.startsWith('postland:'));
+  assert.deepEqual(lines, [`postland: #607 ${POSTLAND}`]);
+});

@@ -392,6 +392,14 @@ test('move 把成員最後一行 resumed 帶到新檔；別的成員的 resumed 
   assert.equal(read('5'), `${batchText('5', 'dispatched 2026-11-18T10:00:00+08:00', [row(5, 'running')])}resumed: #5 2026-11-18T12:00:00+08:00 DONE 5 ${A}\n`);
 });
 
+// #502：成員的 postland 行（pilot-watch 記下的 POSTLAND 指令）跟著成員搬，否則 park 之後落地的 batch 不會印 POSTLAND_PENDING。
+test('move 把成員的每一行 postland 帶到新檔；別的成員的 postland 行不帶', t => {
+  const text = `${batchText('5-6', 'dispatched 2026-11-18T10:00:00+08:00', [row(5, 'running'), row(6, 'running')])}postland: #6 echo six\npostland: #5 make sync\npostland: #5 echo b\n`;
+  const { run, read } = fixture(t, { '5-6': text });
+  assert.equal(run('move', '5-6', '5').stdout, 'MOVED 5-6 5 batch-5\n');
+  assert.equal(read('5'), `${batchText('5', 'dispatched 2026-11-18T10:00:00+08:00', [row(5, 'running')])}postland: #5 make sync\npostland: #5 echo b\n`);
+});
+
 // investing#549 第 1 項（#437）：watcher 已印 DONE 538 <sha>、Probe 還沒寫回時 move 530 538，新列仍是 running，pilot-land 538 印 STOP member 538 running。
 test('move：running 成員畫面已有 DONE <n> <sha>、sha 是分支 HEAD 時新列寫 done＋完整 SHA，先印 APPLIED', t => {
   const batches = { '371-372': batchText('371-372', 'dispatched 2026-11-19T10:00:00+08:00', [row(371, 'running'), row(372, 'running')]) };

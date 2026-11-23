@@ -39,7 +39,7 @@
 //   Integrate   整合分支的 tip 要還是 stage 時記下的那個（不數 parent：ron-skills batch-40-51 用 `$SHA^1` 誤判兩個成員的 batch）；
 //               `switch <整合分支>`、`merge --ff-only`、`branch -d` stage 分支，`current:` 寫成 `merged <sha>`。
 // 重跑：`current:` 是 `staged <sha> onto <tip>`、tip 沒變、stage 分支還在那個 SHA、成員組合與各分支都沒變、最後一個 regression 行是它的 exit 0 時，
-//   不重新 stage、不重跑 Regression，直接從 hold 檢查繼續；其他情況一律從 Stage 重來。已經 `merged` 時只再印一次 MERGED。
+//   不重新 stage、不重跑 Regression，直接從 hold 檢查繼續；其他情況一律從 Stage 重來。已經 `merged` 時只再印一次 MERGED（之前照樣印 POSTLAND_PENDING，#502）。
 // checkpoint 寫回之後再讀一次，沒寫進去就 STOP checkpoint，不會靜默失敗（ron-skills #74）。
 // 請求分支（沒有 Issue 的 `retro/<x>`）：`req-<n> --branch retro/<x>`（<n> 是 requests.md 的行號）在 batch-req-<n>.md 不存在時開出它，
 //   唯一的成員列 Issue 欄是 `-`、state `done`、candidate 是分支 tip；已存在時成員要是同一個分支，否則 STOP checkpoint。之後與一般 batch 相同。
@@ -69,7 +69,8 @@
 //     例：`STOP conflict 108 scripts/lib/hosts.mjs=member 79:code docs/notes.md=integration:other`。以及 `STOP checkpoint …`、`STOP member <n> <state>`、`STOP dirty <worktree>`、
 //   `STOP no-stage-worktree`、`STOP create …`、`STOP merge <n> …`、`STOP git …`、`STOP load <load> <門檻>`，
 //   `STOP member <n> running (<WORKER 狀態>)，先跑 pilot-probe.mjs --apply`。之前的行：`WORKER <n> DONE <sha>`、`WORKER <n> STOP <cause>`（讀畫面寫回的 running 成員）、`STAGED <key> <sha> onto <tip>`、
-//   `RESUME <key> <sha>`、`RESOLVED <n> <解法> <檔案…>`，Bare guard 還原主 checkout 時的 `UNBARE <主 checkout>`。
+//   `RESUME <key> <sha>`、`RESOLVED <n> <解法> <檔案…>`，Bare guard 還原主 checkout 時的 `UNBARE <主 checkout>`；
+//   MERGED 之前（已 merged 的重跑也印）對 checkpoint 每個 done 成員的每條 `postland: #<n> <command>` 印 `POSTLAND_PENDING <n> <command>`（#502，依成員號碼；沒有 postland 行時不印）。
 // exit：0 MERGED；4 STOP；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤；1 其他失敗（程式錯誤，不印 STOP）。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -77,7 +78,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { availableParallelism, loadavg } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { CheckpointLocked, dropRegressing, exitIfLocked, gateIssues, heldIssues, openGates, runInStageWorktree, updateCheckpoint } from './lib/pilot-store.mjs';
+import { CheckpointLocked, dropRegressing, exitIfLocked, gateIssues, heldIssues, openGates, postlandEntries, runInStageWorktree, updateCheckpoint } from './lib/pilot-store.mjs';
 
 const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--check-command <指令>] [--integration <分支>] [--main <分支>] [--resolver <模組>] [--load-max <n>] | sync-main [同上選項，不含 --branch]（--branch 時 key 是 req-<n>；門檻預設 $PILOT_LOAD_MAX，再來 3 × 核心數；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
 const LOAD = /^\d+(\.\d+)?$/;
@@ -497,6 +498,17 @@ async function land(key, loadMax) {
   return sha;
 }
 
+/**
+ * #502：checkpoint 的 `postland: #<n> <command>` 行（pilot-watch 從 worker 的 POSTLAND 行記下）中屬於 done 成員的，依成員號碼、同一成員依檔案順序，
+ * 各一行 `POSTLAND_PENDING <n> <command>`；沒有時空陣列，輸出與以前相同。
+ */
+function postlandPending(key) {
+  const file = join(mainCheckout(), `.scratch/pilot/batch-${key}.md`);
+  const entries = postlandEntries(readFileSync(file, 'utf8'));
+  return readCheckpoint(file).members.filter(m => m.state === 'done')
+    .flatMap(m => entries.filter(entry => entry.n === String(m.n)).map(entry => `POSTLAND_PENDING ${entry.n} ${entry.command}`));
+}
+
 const SYNC_BRANCH = 'pilot/stage-sync-main';
 
 /**
@@ -591,7 +603,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       process.exit(0);
     }
     if (request) openRequest(key, request, Number(loadMax));
-    console.log(`MERGED ${key} ${await land(key, Number(loadMax))}`);
+    const sha = await land(key, Number(loadMax));
+    for (const line of postlandPending(key)) console.log(line);
+    console.log(`MERGED ${key} ${sha}`);
   } catch (error) {
     if (!(error instanceof Stop)) {
       exitIfLocked(error);
