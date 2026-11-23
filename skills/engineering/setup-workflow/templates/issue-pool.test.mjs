@@ -409,6 +409,50 @@ test('--integration 指向不存在的分支時 stderr 印原因、exit 1', () =
   assert.match(result.stderr, /no\/such-branch/);
 });
 
+// #501（investing retro 1122a）：POOL_EMPTY 時 coordinator 逐張手寫 gh api 迴圈查 blocker 是否已在整合分支，每輪約 40 次 gh 呼叫。
+test('--pickable-blocked：blocker 都已落地在整合分支的 blocked 單印 PICKABLE <n>，有 blocker 未合入的印 WAIT <n> <m>:not-integrated', () => {
+  const f = fakeGh({ issues: [
+    // blocker #151 已指派、分支已合入：做完等關單。
+    issue(151, { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(2) }),
+    issue(247, { labels: ['enhancement', 'ready-for-agent'], blockedBy: [151] }),
+    // 第一個 blocker 已合入、第二個沒有：取第一個擋住的。
+    issue(248, { labels: ['enhancement', 'ready-for-agent'], blockedBy: [151, 152] }),
+  ] });
+  integrationBranch(f.repo, { merged: ['issue/151-done'], unmerged: ['issue/152-wip'] });
+  const result = f.run('--pickable-blocked', '--integration', 'pilot/integration');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'PICKABLE 247\nWAIT 248 152:not-integrated\n');
+  assert.deepEqual(f.calls().map(([cmd, sub]) => `${cmd} ${sub}`), ['api graphql'], '唯讀：只讀一次 graphql，不留言、不指派');
+});
+
+test('--pickable-blocked：blocker 已落地但範圍還開著（BLOCKER_OPEN_SCOPE）印 WAIT <n> <m>:open-scope；別的 repo 的 blocker 印 other-repo', () => {
+  const f = fakeGh({ issues: [
+    // blocker #151 已合入，卻沒指派、還掛 ready-for-agent：範圍回到池子。
+    issue(151, { labels: ['enhancement', 'ready-for-agent'] }),
+    issue(247, { labels: ['enhancement', 'ready-for-agent'], blockedBy: [151] }),
+    issue(249, { labels: ['enhancement', 'ready-for-agent'], blockedBy: ['other/repo#9'] }),
+  ] });
+  integrationBranch(f.repo, { subjects: ['加報價來源 (#151)'] });
+  const result = f.run('--pickable-blocked', '--integration', 'pilot/integration');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'WAIT 247 151:open-scope\nWAIT 249 other/repo#9:other-repo\n');
+});
+
+test('--pickable-blocked 沒帶 --integration 時以目前分支判斷落地；和子命令一起用時印用法、exit 2', () => {
+  const f = fakeGh({ issues: [
+    issue(151, { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(2) }),
+    issue(247, { labels: ['enhancement', 'needs-triage'], blockedBy: [151] }),
+  ] });
+  integrationBranch(f.repo, { subjects: ['加報價來源 (#151)'] });
+  // fixture 最後切回 main：main 上沒有 (#151)，切到整合分支才有。
+  assert.equal(f.run('--pickable-blocked').stdout, 'WAIT 247 151:not-integrated\n');
+  git(f.repo, 'checkout', '-q', 'pilot/integration');
+  assert.equal(f.run('--pickable-blocked').stdout, 'PICKABLE 247\n');
+  const result = f.run('--pickable-blocked', 'claim', '247');
+  assert.equal(result.status, 2);
+  assert.deepEqual(f.calls().filter(([cmd]) => cmd === 'issue'), []);
+});
+
 const HOST = (await import('node:os')).hostname();
 const writes = calls => calls.filter(([cmd, sub]) => cmd === 'issue' && ['edit', 'comment'].includes(sub));
 

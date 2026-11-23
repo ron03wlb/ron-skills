@@ -2,6 +2,7 @@
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 把開著的 Issue 逐張分桶，pilot 的 Pool 從 ready 桶依序挑；tracker 支援 GitHub（gh）與 GitLab（glab，含自架），本機 Markdown tracker 不支援。
 // 用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] [--skip-labels <label>,...] [--integration <分支>]
+//       node scripts/issue-pool.mjs --pickable-blocked [--repo <專案>] [--integration <分支>]
 //       node scripts/issue-pool.mjs claim <n> [--repo <專案>] [--session <id>] [--take-stale] [--integration <分支>]
 //       node scripts/issue-pool.mjs children <母單> [--repo <專案>] [--ask-prefix <前綴>]...
 //       node scripts/issue-pool.mjs open-work <n> [--repo <專案>]
@@ -30,6 +31,10 @@
 // adapter 用的 label 不同時以 `--categories` 覆寫（逗號分隔）。exit 0。gh 或 glab 失敗時 stderr 印原因、exit 1；用法錯誤或本機 Markdown tracker 時 exit 2。
 // 有母單的 ready 行在號碼與標題之間多寫 `parent #<p> `（`ready #<n> parent #<p> <標題>`；別的 repo 的母單寫 `<owner>/<repo>#<p>`，GitLab 是父項目），
 // Shared registry 看同一母單不必逐張查 sub-issue（#397）；其他桶不寫。
+// --pickable-blocked（唯讀，#501：POOL_EMPTY 時 coordinator 逐張手寫 gh api 迴圈判斷 blocked 桶，每輪約 40 次 gh 呼叫）不印上面的行，改為 blocked 桶的單依號碼各一行：
+// 開著的 blocker 都已落地在整合分支（判斷同 blocked 行的 `(landed …)`；沒帶 --integration 時是目前分支 HEAD），而且沒有一個命中 blockerOpenScope 時印 `PICKABLE <n>`；
+// 否則以第一個擋住的 blocker 印 `WAIT <n> <blocker>:<原因>`，blocker 本 repo 寫號碼、別的 repo 寫 `<owner>/<repo>#<k>`，原因是 `not-integrated`（還沒落地）、
+// `open-scope`（Probe 會印 BLOCKER_OPEN_SCOPE 的那種）或 `other-repo`（別的 repo，無從在整合分支判斷）。只判 blocker，這張自己的 triage label 照 Pool 處理。不留言、不指派，exit 同上。
 // claim 是 session 開始處理一張 Issue 前的認領：先留「認領：<機器>／<session>」（整則留言只有這一行；<機器> 是 $ISSUE_POOL_HOSTNAME，沒設時 os.hostname()，本機認領者的判斷也用它；session 預設
 // $CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE），再指派給自己（HOSTS.md 的 Assign yourself），印 `CLAIMED <n>`。同一個帳號會在好幾台機器上跑，
 // 指派分不出是誰，所以看認領留言：
@@ -56,14 +61,14 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { codeHost, projectInDoc, trackerKind } from './lib/hosts.mjs';
 
-const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] [--skip-labels <label>,...] [--integration <分支>] | claim <n> [--repo <專案>] [--session <id>] [--take-stale] [--integration <分支>] | children <母單> [--repo <專案>] [--ask-prefix <前綴>]... | open-work <n> [--repo <專案>]';
+const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] [--skip-labels <label>,...] [--integration <分支>] [--pickable-blocked] | claim <n> [--repo <專案>] [--session <id>] [--take-stale] [--integration <分支>] | children <母單> [--repo <專案>] [--ask-prefix <前綴>]... | open-work <n> [--repo <專案>]';
 /** pool() 與 children 共用的 label、blocked-by 欄位片段。 */
 const LABEL_FIELDS = 'labels(first:50){nodes{name}}';
 const BLOCKED_BY_FIELDS = 'blockedBy(first:50){nodes{number state repository{nameWithOwner}}}';
 /** pool() 分桶與排序要的 GitHub Issue 欄位；pilot-probe 的查詢也引用這一段，bucketOf 多要欄位時只改這裡（#240）。
  * body 給 PREREQ，最後 10 則留言的內文給 landed 桶找 `DONE` 結果行（#352），parent 給 ready 行的 `parent #<p>`（#397）。 */
 export const POOL_FIELDS = `number title body ${LABEL_FIELDS} assignees(first:20){nodes{login}} subIssuesSummary{total} ${BLOCKED_BY_FIELDS} blocking(first:50){nodes{number state repository{nameWithOwner}}} comments(last:10){nodes{createdAt body}} timelineItems(last:1,itemTypes:[ASSIGNED_EVENT]){nodes{... on AssignedEvent{createdAt}}} closedByPullRequestsReferences(first:10,includeClosedPrs:false){nodes{state}} parent{number repository{nameWithOwner}}`;
-const QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS}}}}}`;
+const QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} lastEditedAt}}}}`;
 const OPEN_WORK_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){closedByPullRequestsReferences(first:20,includeClosedPrs:false){nodes{number state url headRefName}}}}}`;
 const CHILDREN_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number subIssues(first:100){nodes{number title state ${LABEL_FIELDS} ${BLOCKED_BY_FIELDS} comments(last:1){nodes{body}}}}}}}`;
 // GitLab 的 Issue 是 work item：label、指派、子項目、相依與留言都在 widgets 裡；notes 分成留言（comments）與系統紀錄（activity，指派紀錄在這裡）。
@@ -343,6 +348,22 @@ export function blockerOpenScope(issues, { repo, landed, ...options }) {
     }));
 }
 
+/**
+ * --pickable-blocked 的全部行（格式見檔頭，#501）：blocked 桶的單依號碼各一行，開著的 blocker 都已落地在整合分支（landedOn）、
+ * 而且沒有一個命中 blockerOpenScope 時印 `PICKABLE <n>`，否則以第一個擋住的 blocker 印 `WAIT <n> <blocker>:<原因>`。
+ * 只判 blocker；這張自己的 triage label 照 Pool 處理。blocker 資料與 blocked 行、blockerOpenScope 同一份。
+ */
+export function pickableBlocked(issues, { repo, landed, ...options }) {
+  const openScope = new Set(blockerOpenScope(issues, { repo, landed, ...options }).map(({ n, m }) => `${n}#${m}`));
+  const reason = (n, { ref, number, landedSha }) => ref ? `${ref}:other-repo`
+    : !landedSha ? `${number}:not-integrated`
+      : openScope.has(`${n}#${number}`) ? `${number}:open-scope` : undefined;
+  return pool(issues, { repo, landed, ...options }).filter(({ bucket }) => bucket === 'blocked').map(({ issue }) => {
+    const wait = openBlockers(issue, { repo, landed }).map(blocker => reason(issue.number, blocker)).find(Boolean);
+    return wait ? `WAIT ${issue.number} ${wait}` : `PICKABLE ${issue.number}`;
+  });
+}
+
 /** main 暫停旗標（#379）：`pilot-hold.mjs set-main` 寫的檔，相對於主 checkout；格式見 issue-pilot 的 PILOT-STORE.md。 */
 export const MAIN_PAUSE_FILE = '.scratch/pilot/main-paused';
 const pad = n => String(n).padStart(2, '0');
@@ -532,7 +553,7 @@ function openWork(n, tracker) {
 }
 
 function main(argv) {
-  let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, skipLabels = [], session = defaultSession(), takeStale = false, integration;
+  let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, skipLabels = [], session = defaultSession(), takeStale = false, integration, pickable = false;
   const askPrefixes = [];
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
@@ -542,21 +563,27 @@ function main(argv) {
     else if (argv[i] === '--skip-labels' && argv[i + 1]) skipLabels = argv[++i].split(',').filter(Boolean);
     else if (argv[i] === '--session' && argv[i + 1]) session = argv[++i];
     else if (argv[i] === '--take-stale') takeStale = true;
+    else if (argv[i] === '--pickable-blocked') pickable = true;
     else if (argv[i] === '--integration' && argv[i + 1]) integration = argv[++i];
     else if (argv[i] === '--ask-prefix' && argv[i + 1]) askPrefixes.push(argv[++i]);
     else if (!argv[i].startsWith('-')) positional.push(argv[i]);
     else { console.error(USAGE); return 2; }
   }
   const [command, n] = positional;
-  if (command !== undefined && !(['claim', 'children', 'open-work'].includes(command) && /^\d+$/.test(n ?? '') && positional.length === 2)) { console.error(USAGE); return 2; }
+  if ((pickable && command !== undefined) || command !== undefined && !(['claim', 'children', 'open-work'].includes(command) && /^\d+$/.test(n ?? '') && positional.length === 2)) { console.error(USAGE); return 2; }
   try {
     const tracker = trackerOf(repo);
-    const landed = integration && ['claim', undefined].includes(command) ? landedOn(integration) : undefined;
+    // --pickable-blocked 沒帶 --integration 時以目前分支（HEAD）當整合分支。
+    const landed = pickable ? landedOn(integration ?? 'HEAD') : integration && ['claim', undefined].includes(command) ? landedOn(integration) : undefined;
     if (command === 'claim') return claim(n, tracker, session, takeStale, landed);
     if (command === 'children') return children(n, tracker, askPrefixes);
     if (command === 'open-work') return openWork(n, tracker);
     repo = tracker.repo();
     const issues = tracker.issues(repo);
+    if (pickable) {
+      for (const line of pickableBlocked(issues, { repo, staleHours, skipLabels, landed })) console.log(line);
+      return 0;
+    }
     const checkout = landed && mainCheckout();
     const paused = Boolean(checkout && mainPause(checkout));
     for (const line of poolLines(issues, { repo, staleHours, categories, skipLabels, landed, integration, paused })) console.log(line);
