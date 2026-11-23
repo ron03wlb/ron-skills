@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { FAST, orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 import { copyScripts } from './test/script-deps.mjs';
-import { applyResults, changedUnits } from './pilot-probe.mjs';
+import { ALWAYS_LINES, applyResults, changedUnits } from './pilot-probe.mjs';
 
 const script = new URL('./pilot-probe.mjs', import.meta.url).pathname;
 // pre-commit hook 匯出的 GIT_DIR 等會讓暫存 repo 的 git 指令寫到本 repo。
@@ -140,9 +140,9 @@ ${members.map(m => `| ${m.n} | issue/${m.n}-x | ${m.worktree ?? `/w/issue-${m.n}
   return { repo, pilot, origin, git, log, batch, probe, probeEnv, cli, temp, pilotBatch, ghLog: join(temp, 'gh.log') };
 }
 
-// 池子摘要（POOL_EMPTY｜POOL_READY｜POOL_FAILED，#240）與 HANDOFF_COUNT（#368）每次都印一行；其他測試只看自己的行，比對前去掉它們，
+// 池子摘要與 HANDOFF_COUNT 每次都印一行（probe 匯出的 ALWAYS_LINES）；其他測試只看自己的行，比對前去掉它們，
 // 池子與交接計數的測試另外看 stdout。
-const rest = result => result.stdout.split('\n').filter(line => !/^(POOL_|HANDOFF_COUNT )/.test(line)).join('\n');
+const rest = result => result.stdout.split('\n').filter(line => !ALWAYS_LINES.test(line)).join('\n');
 const lines = result => rest(result).trim().split('\n');
 
 // 重現過的錯：TUI 畫了框線時結果行尾端帶空白和 `│`，不先去掉就比對不到 DONE。

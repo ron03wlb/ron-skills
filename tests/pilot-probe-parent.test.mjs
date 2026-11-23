@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { env, git } from './helpers/git-fixture.mjs';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
+import { ALWAYS_LINES } from '../scripts/pilot-probe.mjs';
 
 const script = new URL('../scripts/pilot-probe.mjs', import.meta.url).pathname;
 
@@ -43,7 +44,10 @@ test('--apply 經 scripts/gh-tracker.mjs 補 parent label、移除 triage label�
   const { probe, writes } = fixture(t);
   const result = probe('--apply');
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(result.stdout.trim().split('\n'), ['PARENT_LABEL 10', 'PARENT_REOPEN 40', 'POOL_READY 11 41', 'HANDOFF_COUNT 0/2']);
+  // 常駐行（池子摘要、HANDOFF_COUNT）用 probe 匯出的 ALWAYS_LINES 去掉，池子那行另外比（#556）。
+  const lines = result.stdout.trim().split('\n');
+  assert.deepEqual(lines.filter(line => !ALWAYS_LINES.test(line)), ['PARENT_LABEL 10', 'PARENT_REOPEN 40']);
+  assert.ok(lines.includes('POOL_READY 11 41'), result.stdout);
   assert.deepEqual(writes(), [
     ['issue', 'edit', '10', '--add-label=parent', '--remove-label=ready-for-agent', '--repo', 'github.com/ron03wlb/ron-skills'],
     ['issue', 'reopen', '40', '--repo', 'github.com/ron03wlb/ron-skills'],
