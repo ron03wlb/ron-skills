@@ -210,7 +210,7 @@ test('probeFilterReason：整份讀、其他旗標與其他指令不攔', () => 
 
 test('hook：probe 被過濾時 exit 2，說明要整份讀', () => {
   const denied = hook(JSON.stringify({ tool_input: { command: 'node scripts/job-status.mjs --probe | grep STALE' } }), ARGS);
-  assert.equal(denied.status, 2); assert.match(denied.stderr, /整份讀/); assert.match(denied.stderr, /grep/);
+  assert.equal(denied.status, 2); assert.match(denied.stderr, /整份讀/); assert.match(denied.stderr, /grep/); assert.match(denied.stderr, /單獨/);
   const allowed = hook(JSON.stringify({ tool_input: { command: 'node scripts/job-status.mjs --probe' } }), ARGS);
   // 沒帶 --whole-output 時不攔過濾。
   assert.equal(hook(JSON.stringify({ tool_input: { command: 'node scripts/job-status.mjs --probe | grep STALE' } })).status, 0);
