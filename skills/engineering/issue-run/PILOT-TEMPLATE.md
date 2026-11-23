@@ -42,7 +42,7 @@ Project settings for the user-level `/issue-pilot` coordinator (`/loop /issue-pi
 
 - **Triage brief.** See `docs/agents/pilot-round.md`: read at Pick, before a subagent refines a `needs-triage` Issue; fetch only this entry with `node scripts/adapter-line.mjs 'Triage brief'`.
 
-- **Batch.** The batch checkpoint is `.scratch/pilot/batch-<key>.md`, created by Dispatch; each Issue's own checkpoint stays in its worktree. Move or park members before staging with `node scripts/pilot-batch.mjs <main checkout> move <key> <n> [--state stop]`, `park <key> <n> --after <m> --reason <text>`, `unpark <n>`, as the Probe's `MOVE` and `UNPARK` lines say. Send a `stop`/`done` worker back to work with `resume <key> <n> --note <text>`, not `terminal send` plus a row edit; adopt its reported candidate with `accept <key> <n> <sha>`.
+- **Batch.** The batch checkpoint is `.scratch/pilot/batch-<key>.md`, created by Dispatch; each Issue's own checkpoint stays in its worktree. Move or park members before staging with `node scripts/pilot-batch.mjs <main checkout> move <key> <n> [--state stop]`, `park <key> <n> --after <m> [--fresh] --reason <text>`, `unpark <n>`, as the Probe's `MOVE` and `UNPARK` lines say (`--fresh` for a member to redispatch fresh once `#m` lands, which the Probe reports as `UNPARK_FRESH`; `park <n> <n>` on a parked member rewrites its `--after` in place). Send a `stop`/`done` worker back to work with `resume <key> <n> --note <text>`, not `terminal send` plus a row edit; adopt its reported candidate with `accept <key> <n> <sha>`.
 
 - **Brief check.** See `docs/agents/pilot-round.md`: read at Dispatch, before dispatching a tooling fix unit; fetch only this entry with `node scripts/adapter-line.mjs 'Brief check'`.
 

@@ -97,6 +97,48 @@ test('park 只收 done 成員；batch 只有它時就地改成 parked，unpark �
   assert.equal(run('unpark', '94').stdout, 'STOP 94 state done\n');
 });
 
+// #469：`park 398 398 --after 344` 印 `STOP 398 state parked after #345`，只能先 unpark 再 park，中間成員是 done、Probe 會印 STAGEABLE。
+test('park 已 parked 的成員就地改寫 --after 與原因，candidate 保留；同一行重跑不再寫；stop、running 仍 STOP', t => {
+  const parked = `${batchText('398', 'dispatched 2026-11-20T10:00:00+08:00', [row(398, 'parked after #345', B)])}parked: after #345 2026-11-20T11:00:00+08:00 等 #345\n`;
+  const { run, read } = fixture(t, {
+    398: parked,
+    40: batchText('40', 'dispatched 2026-11-20T10:00:00+08:00', [row(40, 'stop')]),
+    41: batchText('41', 'dispatched 2026-11-20T10:00:00+08:00', [row(41, 'running')]),
+  });
+  const result = run('park', '398', '398', '--after', '344', '--reason', '改等 #344');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'PARKED_MEMBER 398 after #344 (was #345)\n');
+  const [table, note] = read('398').split(/\n(?=parked: )/);
+  assert.equal(`${table}\n`, batchText('398', 'dispatched 2026-11-20T10:00:00+08:00', [row(398, 'parked after #344', B)]));
+  assert.match(note, /^parked: after #344 \S+ 改等 #344\n$/);
+  const again = read('398');
+  assert.equal(run('park', '398', '398', '--after', '344', '--reason', '改等 #344').stdout, 'PARKED_MEMBER 398 after #344\n');
+  assert.equal(read('398'), again);
+  for (const n of ['40', '41']) {
+    const refused = run('park', n, n, '--after', '9', '--reason', '等 #9');
+    assert.equal(refused.status, 4);
+    assert.equal(refused.stdout, `STOP ${n} state ${n === '40' ? 'stop' : 'running'}\n`);
+  }
+});
+
+// #482：原因是「要 fresh 重派」的成員，Probe 照樣印 UNPARK，unpark 再 stage 必然撞同一個整合衝突；--fresh 記在 state 讓 Probe 分得出來。
+test('park --fresh 在 state 記 fresh（搬移與就地都是），重 park 可加上或拿掉', t => {
+  const { run, read } = fixture(t, {
+    '88-94': batchText('88-94', 'dispatched 2026-10-31T13:57:05+08:00', [row(88, 'done', A), row(94, 'done', B)]),
+    95: batchText('95', 'dispatched 2026-10-31T13:57:05+08:00', [row(95, 'done', A)]),
+  });
+  const moved = run('park', '88-94', '94', '--after', '123', '--fresh', '--reason', '要 fresh 重派');
+  assert.equal(moved.status, 0, moved.stderr);
+  assert.equal(moved.stdout, 'MOVED 88-94 94 batch-94\n');
+  assert.match(read('94'), /\| parked after #123 fresh \| b{40} \|\nparked: after #123 \S+ 要 fresh 重派\n$/);
+
+  assert.equal(run('park', '95', '95', '--after', '123', '--reason', '等 #123', '--fresh').stdout, 'PARKED_MEMBER 95 after #123\n');
+  assert.match(read('95'), /\| parked after #123 fresh \| a{40} \|\n/);
+  assert.equal(run('park', '95', '95', '--after', '123', '--reason', '改成 unpark 就好').stdout, 'PARKED_MEMBER 95 after #123 (was #123)\n');
+  assert.match(read('95'), /\| parked after #123 \| a{40} \|\nparked: after #123 \S+ 改成 unpark 就好\n$/);
+  assert.equal(run('park', '95', '95', '--after', '123', '--fresh', '--fresh', '--reason', 'x').status, 2);
+});
+
 // 中斷在寫好新檔、還沒改舊行時，重跑同一行補完舊行；全部做完後重跑只再印一次結果。
 test('move 重跑：補完舊行、已完成時照印同一行；目標檔已有別的內容或成員不在時 STOP 不動檔', t => {
   const { run, read } = fixture(t, {

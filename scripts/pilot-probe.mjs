@@ -99,7 +99,7 @@
 //          （#191：Regression 沒過、batch 停在 staged，probe 卻什麼都不印；none 是沒有 regression 行、SHA 是先前那次 stage 的，或 SHA 後面沒緊接 exit <code>）；
 //          其中這個 staged SHA 還沒有 regression 行、checkpoint 的 `regressing: <sha> pid <pid>` 是同一個 SHA、那個 pid 還是 pilot-land（ps 的命令列）時
 //          改印 REGRESSING <key> <staged sha>（#361：land 還在跑 Regression，coordinator 等它，不重 stage）；
-//          沒關的 batch 裡 `parked after #<m>` 的成員，在 #m 以 done 留在 `closed` 的 batch 之後印 UNPARK <n>；
+//          沒關的 batch 裡 `parked after #<m>` 的成員，在 #m 以 done 留在 `closed` 的 batch 之後印 UNPARK <n>（state 是 `parked after #<m> fresh` 時印 UNPARK_FRESH <n>，#482）；
 //          current 是 merged／pushed 的 batch 在 git fetch 後比 origin/<主分支>，印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
 //          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA，且那一行是 exit 0），
 //          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> regression-failed <code 或 none>
@@ -929,13 +929,14 @@ export function restageLines(key, current, regression, regressionExit, liveLandS
 /**
  * 沒關的 batch 裡 `parked after #<m>` 的成員：#m 以 done 留在已經 `closed`（合入並收尾）的 batch 時印 UNPARK <n>（#163）。
  * #m 被移走的舊 batch（`closed moved`）裡那一列是 moved、batch 關了卻沒合入的那一列是 stop，都不算。
+ * `pilot-batch.mjs park --fresh` 記成 `parked after #<m> fresh` 的成員改印 UNPARK_FRESH <n>：它要 fresh 重派，unpark 再 stage 會撞同一個整合衝突（#482）。
  */
 export function unparkLines(batches) {
   const closedMembers = new Set(batches.filter(b => /^closed\b/.test(b.current))
     .flatMap(b => b.members.filter(m => m.state === 'done').map(m => m.n)));
   return batches.filter(b => !/^closed\b/.test(b.current)).flatMap(b => b.members)
     .filter(m => closedMembers.has(m.state.match(/^parked after #(\d+)\b/)?.[1]))
-    .map(m => `UNPARK ${m.n}`);
+    .map(m => `${/^parked after #\d+ fresh$/.test(m.state) ? 'UNPARK_FRESH' : 'UNPARK'} ${m.n}`);
 }
 
 /** 跑 fn；checkpoint 鎖等到逾時時傳回 `[CHECKPOINT_LOCKED …]`，其他錯誤照丟（#345：其他 probe 行照印，exit 3）。 */
