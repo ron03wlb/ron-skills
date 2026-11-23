@@ -6,6 +6,7 @@
 // 必須改用 Bash tool 的 run_in_background。與 git 無關，但 settings.json 只有使用者能改，沿用這支既有的 Bash PreToolUse hook。
 // 另攔要整份讀的指令（`--whole-output` 指定）以管線接 grep／head／tail／cut：過濾會丟掉縮排明細行，cut 會截掉長行尾端的指令
 // （文字規則寫了仍再犯，依「prose rules become scripts」改由 hook 擋，與背景化長等待指令同為拒絕）。
+// 拒絕訊息要說明改成單獨一個 Bash 呼叫執行：只拿掉管線仍會與其他指令串在同一呼叫而再被拒或逾時（retro spay2 5014f17f#1、91b73b4b#1）。
 // 另攔長跑 gate（`--exit-gate` 指定）以管線接 grep／head／tail／cut：Bash 回報的 exit code 是管線最後一支的，gate 失敗也通知 exit 0
 // （retro spay2 b949589b#1：`check-contracts.sh | tail -15` 與 `fix-land.mjs … | tail -12` 都假綠，靠讀輸出才發現）。同一指令有 pipefail 時 exit code 正確，不攔；同一支 script 只印資料的形式（EXIT_GATE_READ_ONLY）不攔。
 // 另攔 pilot-handoff.mjs 與其他指令串接（`;`、`&&`、`||`、換行）：內建規則，不需要旗標，見 chainedHandoff。
@@ -728,7 +729,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const found = filteredOutput(command, values(args, '--whole-output'));
   if (found) {
     const { spec, filter } = found;
-    deny(`拒絕：${spec} 的輸出以 ${filter} 過濾。這個輸出要整份讀：底下的縮排明細行會被濾掉，下一輪誤判為沒變。拿掉管線，直接執行。\n`);
+    deny(`拒絕：${spec} 的輸出以 ${filter} 過濾。這個輸出要整份讀：底下的縮排明細行會被濾掉，下一輪誤判為沒變。拿掉管線，把這個指令單獨放在一個 Bash 呼叫執行（不與其他讀檔或指令以 \`;\`／\`&&\` 串接，前面可有 \`cd\`；可能較久時設較長 timeout）。\n`);
   }
   const gate = exitGateReason(command, values(args, '--exit-gate'));
   if (gate) {
