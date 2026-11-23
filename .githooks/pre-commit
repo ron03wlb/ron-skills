@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# 本機 commit 前跑與 CI（.github/workflows/checks.yml）相同的三項檢查，不必等 push 後 CI 才變紅（retro spay2 1021c：先 commit 後測試）。
+# 本機 commit 前跑 bin/check，不必等 push 後 CI 才變紅（retro spay2 1021c：先 commit 後測試）。
+# 只跑和這個分支變更路徑有關的子集（bin/check --changed，CoS item 67：每個 worker 每次 commit 都跑完整套件，WSL load 衝到 110）；
+# 完整套件在 acceptance、pilot 的 Regression 與 CI。要在 commit 時跑完整套件：CHECK_FULL=1 git commit …
 # 啟用：bin/sync-skills 會建連結（#300）；手動是 ln -s ../../.githooks/pre-commit .git/hooks/pre-commit
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -11,9 +13,11 @@ unset $(git rev-parse --local-env-vars)
 export CHECK_INDEX_TREE=$index_tree
 # 成功時往 stderr 印一行，commit 的輸出就分得出這次是哪一種，證據可直接引用（#512）：
 #   CHECK_STAMP_FRESH <tree>   bin/check 剛通過同一棵樹，不再跑（#297）；scripts/check-stamp.mjs 只讀本 worktree 的記錄
-#   CHECK_PASS tests …         跑了 bin/check，印它的最後一行
+#   CHECK_SUBSET …             跑了 bin/check --changed，印它挑的子集（`steps <群組>,… tests <n>`）或退回完整套件的原因（`full <原因>`）
+#   CHECK_PASS_SUBSET tests …  跑了子集，印 bin/check 的最後一行；退回完整套件時是 CHECK_PASS tests …
 if [[ -f scripts/check-stamp.mjs ]] && node scripts/check-stamp.mjs fresh "$index_tree"; then echo "CHECK_STAMP_FRESH $index_tree" >&2; exit 0; fi
 # 失敗時 CHECK_FAIL 在 stdout，必須印出來，否則 commit 只有 exit 1、沒有任何訊息（retro spay2 b949589b#3）。
 log=$(mktemp); trap 'rm -f "$log"' EXIT
-bin/check >"$log" || { tail -n 20 "$log" >&2; exit 1; }
+bin/check --changed >"$log" || { tail -n 20 "$log" >&2; exit 1; }
+grep '^CHECK_SUBSET ' "$log" >&2 || true
 tail -n 1 "$log" >&2

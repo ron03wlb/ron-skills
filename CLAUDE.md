@@ -14,7 +14,7 @@ Single-context: one root GLOSSARY.md plus docs/adr/. See `docs/agents/domain.md`
 
 ### Checks and landing
 
-`bin/check` takes longer than the foreground Bash limit: run it with `run_in_background`; `git commit` also runs it through pre-commit.
+`bin/check` takes longer than the foreground Bash limit: run it with `run_in_background`; `git commit` runs only its changed-path subset through pre-commit (`bin/check --changed`; `CHECK_FULL=1` for the full suite), so acceptance still needs the full `bin/check --upstream`.
 
 Before committing a change to the `SKILL.md` or `ADAPTER.md` of `issue-run`, `issue-pilot`, `retro-collect`, or `setup-workflow`, compare it with `docs/workflow/`, then run `node scripts/build-workflow-site.mjs` and `node scripts/check-workflow-sync.mjs --restamp` (seconds); otherwise pre-commit fails late with `WORKFLOW_SYNC_STALE` (README.md, spay2 retro a78b57aa#1).
 

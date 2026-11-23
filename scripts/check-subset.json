@@ -1,0 +1,77 @@
+{
+  "comment": "bin/check --changed 的對應表，由 scripts/check-subset.mjs 讀。變更路徑符合 full 任一條就跑完整套件；每個路徑都要符合至少一條 rules，有一個不符合也跑完整套件。符合的 rules 取聯集：steps 是 bin/check 的步驟群組，tests 是一定要跑的測試檔（glob，放掃整個目錄、不提及個別檔名的測試），related 為 true 時再加上提及這個路徑的測試（見 check-subset.mjs 檔頭）。always 的步驟與測試每次都跑。",
+  "steps": ["base", "sync-skills", "links", "settings", "workflow-site", "code-lint", "adapter-size", "docs-rules"],
+  "always": {
+    "steps": ["base", "docs-rules"],
+    "tests": []
+  },
+  "full": [
+    "bin/**",
+    ".githooks/**",
+    ".github/**",
+    "package.json",
+    ".gitignore",
+    ".ignore",
+    "scripts/check-subset.*",
+    "tests/check-subset.test.mjs",
+    "tests/helpers/**",
+    "skills/engineering/setup-workflow/templates/test/**",
+    "skills/engineering/setup-workflow/templates/node-test-guarded.mjs"
+  ],
+  "rules": [
+    {
+      "match": ["docs/workflow/**"],
+      "steps": ["links", "workflow-site"],
+      "tests": ["tests/workflow-*.test.mjs", "tests/setup-workflow-stations.test.mjs"],
+      "related": true
+    },
+    {
+      "match": ["docs/agents/**"],
+      "steps": ["links", "settings", "adapter-size"],
+      "tests": ["tests/gh-tracker.test.mjs", "tests/pilot-store-contract.test.mjs", "tests/check-coordinator-permissions.test.mjs"],
+      "related": true
+    },
+    {
+      "match": ["docs/adr/**", "*.md"],
+      "steps": ["links"],
+      "related": true
+    },
+    {
+      "match": ["overlays/**", "*-skills.txt"],
+      "steps": ["sync-skills"],
+      "tests": ["tests/sync-skills*.test.mjs", "tests/overlay-*.test.mjs"],
+      "related": true
+    },
+    {
+      "match": ["skills/**/*.md"],
+      "steps": ["links", "sync-skills", "workflow-site", "adapter-size"],
+      "tests": ["tests/skill-*.test.mjs"],
+      "related": true
+    },
+    {
+      "match": ["skills/**"],
+      "steps": ["sync-skills", "code-lint"],
+      "related": true
+    },
+    {
+      "match": ["skills/engineering/setup-workflow/templates/**"],
+      "steps": ["settings"],
+      "tests": ["tests/template-*.test.mjs", "tests/setup-workflow-*.test.mjs"],
+      "related": true
+    },
+    {
+      "match": ["scripts/**", "hooks/**", "tools/**", ".claude/**"],
+      "steps": ["settings", "code-lint", "adapter-size"],
+      "related": true
+    },
+    {
+      "match": ["scripts/workflow-doc-sync.json"],
+      "steps": ["workflow-site"]
+    },
+    {
+      "match": ["tests/*.test.mjs", "tests/fixtures/**"],
+      "steps": ["code-lint"],
+      "related": true
+    }
+  ]
+}

@@ -23,7 +23,7 @@ agent 每個 session 都從零開始。踩過的坑要不再踩，就得寫在�
 | 導讀站從實例專案改寫時，專案名與內網位址混進通用版 | 改寫時注意 | `scripts/check-workflow-strings.mjs` |
 | skill 規範改了，導讀還是舊說法 | 改 skill 的人記得改導讀 | `scripts/check-workflow-sync.mjs`：規範一改就失敗，對照後 `--restamp` |
 
-每一條都在 `bin/check` 裡，所以 pre-commit、CI、`/issue-run` 的 acceptance 都會跑到，不必再記得。
+每一條都在 `bin/check` 裡，所以 CI、`/issue-run` 的 acceptance 與 pilot 的 Regression 都會跑到，pre-commit 跑其中和變更路徑有關的幾條，不必再記得。
 
 ## 新檢查要先證明自己
 

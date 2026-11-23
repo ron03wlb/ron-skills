@@ -31,7 +31,7 @@ L1 必接的只有 zsh 這一個 hook（語言、分頁狀態 hook 看 repo 的�
 
 | 校驗 | 強度 | 檢查什麼 | 不能證明什麼 |
 | --- | --- | --- | --- |
-| pre-commit 跑單一檢查入口 | 本地強制 | 工作樹目前的內容通過所有檢查（ron-skills：`.githooks/pre-commit` 跑 `bin/check`） | 檢查的是工作樹，不是 commit 本身；`git add -p` 留在工作樹的改動也一起被檢查到 |
+| pre-commit 跑單一檢查入口 | 本地強制 | 要 commit 的內容通過和變更路徑有關的檢查（ron-skills：`.githooks/pre-commit` 跑 `bin/check --changed`，依對應表只挑相關步驟與測試，拿不準時跑完整套件） | 子集不是完整套件：漏挑的測試要等 acceptance、Regression 或 CI 的完整套件才抓到；每個 worker 每次 commit 都跑完整套件時，多 worker 並行會把機器 load 推到跑不動 |
 
 沒有 pre-commit 的 repo，錯誤會留到 push 或 CI 才被抓到。
 
