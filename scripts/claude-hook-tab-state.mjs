@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // Claude Code 分頁狀態 hook：能用程式偵測的分頁狀態轉換（GLOSSARY.md「分頁狀態」）自動以 tab-state.mjs 換掉目前分頁標題的狀態前綴，
-// Stop 時標題沒有合法前綴就自行補上處理中。只在 Orca 裡跑的 session（有 ORCA_TERMINAL_HANDLE）才動作。
+// Stop 時標題沒有合法前綴就自行補上處理中。只在 Orca 裡跑的 session 才動作：terminal 分頁（ORCA_TERMINAL_HANDLE），或 Orca 聊天（tab-state.mjs 的 sessionTarget，#335）。
 // 依 stdin hook JSON 的 hook_event_name：
 // - PostToolUse（matcher Bash）：輸出命中 PostToolUse 觸發條件就換狀態；指令裡有改本分頁標題的 `orca terminal rename … --title <標題>`
 //   時記下這個標題（Orca 查不到分頁時的備援，見 tab-state.mjs）。
@@ -14,12 +14,12 @@
 // 新增、覆寫或停用觸發條件：`{ "triggers": { "<名稱>": { "event": "PostToolUse"|"Stop", "match": "<regex，逐行比對>", "skipCommand": "<regex>", "state": "<狀態>" } | null } }`，
 // 同名覆寫、null 停用；PostToolUse 的 match 比對 Bash 的 stdout，Stop 的比對最後一段 assistant 文字；
 // 選填的 skipCommand 命中 Bash 指令時不觸發（Stop 沒有指令，不看它）。檔案不存在或不是合法 JSON 就用預設值。
-// 沒有 ORCA_TERMINAL_HANDLE、輸入不合法、Orca 呼叫失敗時一律 exit 0 不輸出。
+// 不在 Orca 裡、輸入不合法、Orca 呼叫失敗時一律 exit 0 不輸出。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { STATES, currentTitle, hasState, orcaContext, recordTitle, recordedTitle, setState, titleMismatch } from './tab-state.mjs';
+import { STATES, currentTitle, hasState, orcaContext, recordTitle, recordedTitle, sessionTarget, setState, titleMismatch } from './tab-state.mjs';
 
 export const DEFAULT_TRIGGERS = {
   // land.mjs 合入後的最後一行；pilot 的 coordinator 以 `--keep-branch` 落地整合分支，它還在運作，不算
@@ -146,7 +146,7 @@ async function addWorkingPrefix(ctx, handle, title) {
 const output = response => typeof response === 'string' ? response : String(response?.stdout ?? '');
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const handle = process.env.ORCA_TERMINAL_HANDLE;
+  const handle = sessionTarget();
   let input;
   try { input = JSON.parse(readFileSync(0, 'utf8')); } catch { process.exit(0); }
   if (!handle || !input) process.exit(0);

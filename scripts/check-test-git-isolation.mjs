@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 const SPAWNS_GIT = /node:child_process/;
 const ISOLATED = /import\s+(?:[^;]*?from\s+)?['"]\.{1,2}\/(?:[\w.-]+\/)*(?:isolate-git-env|repo-fixture)\.mjs['"]/;
 const ORCA_ISOLATED = /import\s+(?:[^;]*?from\s+)?['"]\.{1,2}\/(?:[\w.-]+\/)*(?:isolate-orca-env|isolate-git-env|repo-fixture)\.mjs['"]/;
-const ORCA_NAMES = new Set(['ORCA_CLI_COMMAND', 'ORCA_TERMINAL_HANDLE', 'orcaReplySource']);
+const ORCA_NAMES = new Set(['ORCA_CLI_COMMAND', 'ORCA_TERMINAL_HANDLE', 'ORCA_STRUCTURED_SESSION', 'ORCA_AGENT_SESSION_ID', 'orcaReplySource']);
 const SPAWN_CALLS = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync']);
 const SHELL_CALLS = new Set(['exec', 'execSync']);
 // 這些字元或關鍵字之後的 `/` 是 regex 字面值起點，不是除號。

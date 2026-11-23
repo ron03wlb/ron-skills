@@ -3,6 +3,10 @@
 // 分頁狀態（GLOSSARY.md「分頁狀態」）：Orca 分頁標題最前面的 `<狀態>｜` 前綴，狀態是處理中、待 Retro、待關閉。
 // 只回答問題、工作區乾淨也沒有 commit 的 session 直接用待關閉，不必為問答跑 /retro（#399）。
 // 換目前分頁（ORCA_TERMINAL_HANDLE）標題的狀態前綴，沒有前綴就補上；agent、skill、pilot script 與 claude-hook-tab-state.mjs 都用它。
+// Orca 聊天 session（ORCA_STRUCTURED_SESSION，沒有 ORCA_TERMINAL_HANDLE，只有 ORCA_AGENT_SESSION_ID；#335）改用 `chat:<session id>` 當 handle：
+//   改名用 `orca chat rename --session <id> --name <標題>`，讀回用 `agent list` 該 session 那列的 title；bot 的聊天（有 ORCA_BOT_TOOLS_TOKEN）那欄是 bot 名稱、
+//   不是分頁標題，改讀 `bot chats` 該 id 那列（2026-11-23 macOS Orca 1.4.271 實測：Home Chat 是 `Home`，排程開的是 `每晚 20:30 … run 1`）。
+//   聊天沒有 split，也沒有以 session id 關閉的指令，`/retro-collect` 不關它。
 // 目前標題以 Orca 的分頁資料為準：`terminal list --include-visual-layouts` 的 tab title；`terminals[].title` 是程式自己的標題（Claude 的自動標題），不是分頁標題。
 // 每個 handle 最後設定的標題另記在本機 TAB_STATE_DIR（預設 ~/.local/state/orca-tab-titles）的 `<handle>` 檔：本腳本改名前寫入（改名失敗時還原），hook 從 Bash 的
 // `orca terminal rename` 指令擷取寫入；Orca 查不到分頁時才用它，其他會改標題的 hook 也靠它判斷標題歸本腳本管理。
@@ -28,7 +32,7 @@
 //   原因：2026-11-05 低負載實測 rename 後第一次 list 就是新標題，但 2026-11 investing 高負載（load 約 18）多次 MISMATCH、actual 是上一次要求的標題，
 //   約 10 分鐘後 --title 才讀到新標題（#332 第 4 項）；舊版只讀 3 次、間隔 400 ms。另有 actual 一直停在同一個舊標題、重跑也不變的情形（#336 第 1 項，未重現），診斷行就是為它留的。
 //   --title 讀不到 Orca（`terminal list` 實測 3–8.5 秒、高負載 7.9 秒（#520）、最多 12.8 秒（#295），上限 ORCA_LIST_MS，不受 TAB_STATE_BUDGET_MS 限制）而退回記錄時，stderr 印 `TAB_TITLE_FROM_RECORD <handle>`：這是最後設定的標題，不代表分頁實際如此（同一 retro 就把它讀成改名已生效）。
-// exit：0 已改名，或沒有 ORCA_TERMINAL_HANDLE（不輸出）、Orca 呼叫失敗（不擋 hook 與 script）；1 讀回的標題不符；2 狀態不合法、--topic 沒有值。
+// exit：0 已改名，或沒有 ORCA_TERMINAL_HANDLE 也不是 Orca 聊天（不輸出）、Orca 呼叫失敗（不擋 hook 與 script）；1 讀回的標題不符；2 狀態不合法、--topic 沒有值。
 // ORCA_CLI_COMMAND 沒設時用 PATH 上的 `orca`。
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -69,6 +73,18 @@ async function orca({ cli, signal }, ...args) {
   if (!body.ok) throw new Error(body.error?.code ?? body.error?.message ?? 'orca 失敗');
   return body.result;
 }
+
+const CHAT = 'chat:';
+
+/** handle 是不是 Orca 聊天 session（`chat:<session id>`）。 */
+export const isChat = handle => String(handle ?? '').startsWith(CHAT);
+
+/**
+ * 這個 session 要改標題的對象：terminal 分頁是 ORCA_TERMINAL_HANDLE；Orca 聊天沒有 handle（#335），是 `chat:<ORCA_AGENT_SESSION_ID>`；都不是時 null。
+ * 聊天以 ORCA_STRUCTURED_SESSION 認：只看 ORCA_AGENT_SESSION_ID 的話，別的程式帶著它開的 terminal 子行程也會被當成聊天。
+ */
+export const sessionTarget = (env = process.env) => env.ORCA_TERMINAL_HANDLE
+  || (env.ORCA_STRUCTURED_SESSION && env.ORCA_AGENT_SESSION_ID ? `${CHAT}${env.ORCA_AGENT_SESSION_ID}` : null);
 
 /** 去掉標題最前面的狀態前綴。 */
 export const stripState = title => String(title ?? '').replace(PREFIX, '');
@@ -130,10 +146,24 @@ function tabOf(node, handle) {
 /** 含 `handle` 這個 pane 的分頁標題；找不到時為 null。 */
 export const tabTitleOf = (node, handle) => tabOf(node, handle)?.title ?? null;
 
+/**
+ * 聊天 session 的分頁那一列 `{ id, title }`；讀不到時為 null。bot 的聊天在 `agent list` 的 title 是 bot 名稱，所以讀 `bot chats`；
+ * 排程開的聊天也只在 `bot chats` 裡（`agent list` 只列行程還在的）。
+ */
+async function liveChat(ctx, handle) {
+  const id = handle.slice(CHAT.length);
+  const rows = process.env.ORCA_BOT_TOOLS_TOKEN
+    ? (await orca(ctx, 'bot', 'chats')).chats
+    : (await orca(ctx, 'agent', 'list')).agents.map(agent => ({ id: agent.orcaSessionId, title: agent.title }));
+  const row = rows.find(chat => chat.id === id);
+  return typeof row?.title === 'string' ? { id, title: row.title } : null;
+}
+
 /** Orca 裡含 `handle` 的分頁那一列；讀不到時為 null（舊版 Orca 沒有這個旗標、Orca 暫時連不上，或太慢）。 */
 async function liveTab(ctx, handle) {
   try {
     const limit = AbortSignal.timeout(ORCA_LIST_MS);
+    if (isChat(handle)) return await liveChat({ ...ctx, signal: ctx.signal ? AbortSignal.any([ctx.signal, limit]) : limit }, handle);
     const { visualLayouts } = await orca({ ...ctx, signal: ctx.signal ? AbortSignal.any([ctx.signal, limit]) : limit }, 'terminal', 'list', '--include-visual-layouts');
     const tab = tabOf(visualLayouts, handle);
     return tab?.title != null ? tab : null;
@@ -164,6 +194,7 @@ export async function currentTitle(ctx, handle) {
   if (live !== null) return live;
   const recorded = recordedTitle(handle);
   if (recorded !== null) return recorded;
+  if (isChat(handle)) return '';
   const { terminals } = await orca(ctx, 'terminal', 'list');
   return terminals.find(terminal => terminal.handle === handle)?.title ?? '';
 }
@@ -175,7 +206,9 @@ export async function setState(ctx, handle, state, topic) {
   const previous = recordedTitle(handle);
   recordTitle(handle, title);
   try {
-    const reply = await orca(ctx, 'terminal', 'rename', '--terminal', handle, '--title', title);
+    const reply = isChat(handle)
+      ? await orca(ctx, 'chat', 'rename', '--session', handle.slice(CHAT.length), '--name', title)
+      : await orca(ctx, 'terminal', 'rename', '--terminal', handle, '--title', title);
     ctx.onRename?.(reply);
   } catch (error) {
     if (previous === null) forgetTitleRecord(handle);
@@ -243,7 +276,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error(`用法：node scripts/tab-state.mjs <${STATES.join('|')}> [--topic <主題>]`);
     process.exit(2);
   }
-  const handle = process.env.ORCA_TERMINAL_HANDLE;
+  const handle = sessionTarget();
   if (!handle) process.exit(0);
   // split 出來的 pane 不改分頁標題：標題歸分頁擁有者（例如 coordinator），子 session 改了就蓋掉它（#378）。
   const tab = await liveTab({ cli: orcaContext().cli }, handle);

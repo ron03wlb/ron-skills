@@ -1,0 +1,15 @@
+{
+  "bot": "sample",
+  "chats": [
+    {
+      "id": "00000000-0000-4000-8000-000000000000",
+      "title": "Home",
+      "lastActivityAt": 1795438473672,
+      "lastAsked": "sample",
+      "lastSaid": "sample",
+      "home": true,
+      "self": true,
+      "closed": false
+    }
+  ]
+}

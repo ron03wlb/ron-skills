@@ -2,6 +2,11 @@
 // 測試行程一載入就清掉 session 繼承的 Orca 環境變數：在 Orca 分頁裡跑測試時，被測腳本以 `...process.env` 繼承到真的 ORCA_CLI_COMMAND，
 // 會呼叫真的 Orca（#524：pilot-batch move 對 running 成員 `terminal read term_134`，只因 handle 不存在印 WARN 而照樣通過）；
 // ORCA_TERMINAL_HANDLE 留著的話，tab-state 這類腳本在 ORCA_CLI_COMMAND 清掉後改用 PATH 上的 `orca`，改到本 session 的分頁。
+// 在 Orca 聊天裡跑時同理：ORCA_STRUCTURED_SESSION 與 ORCA_AGENT_SESSION_ID 留著，tab-state 會以 `orca chat rename` 改到本聊天的標題（#335）；
+// ORCA_BOT_TOOLS_TOKEN 留著會讓它改讀 `bot chats`。
 // 要用假 Orca 或 handle 的測試自己設。會 spawn 讀這些變數的腳本的測試檔要 import 本檔（check-test-git-isolation.mjs 檢查）。
 delete process.env.ORCA_CLI_COMMAND;
 delete process.env.ORCA_TERMINAL_HANDLE;
+delete process.env.ORCA_STRUCTURED_SESSION;
+delete process.env.ORCA_AGENT_SESSION_ID;
+delete process.env.ORCA_BOT_TOOLS_TOKEN;

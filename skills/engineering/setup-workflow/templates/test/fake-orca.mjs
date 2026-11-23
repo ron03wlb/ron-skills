@@ -9,6 +9,8 @@
 // list-visual.json 是 `terminal list --include-visual-layouts` 的 result，形狀依 WSL 真實輸出；macos/ 那份是同形狀的副本，還沒在 macOS 重錄。
 // worktree-list.json 是 `worktree list --json` 的 result（WSL Orca 錄，只留一列，路徑是 WSL 的 UNC 形式 `\\wsl.localhost\<distro>\…`）；
 // macos/ 那份是同形狀的副本、路徑改成 POSIX，還沒在 macOS 重錄（#394）。
+// chat-rename.json、agent-list.json、bot-chats.json 是 `chat rename`、`agent list`、`bot chats` 的 result（macOS Orca 1.4.271 錄，#335，只留一列並去識別化）；
+// 頂層 fixtures/orca/ 那份是同形狀的副本，Orca 聊天只在 macOS 錄過。
 // 用法：在假 CLI 的原始碼裡放 `${orcaReplySource()}`，之後 `reply('wait', { wait: { satisfied } })` 印出 `{ ok: true, result }`。
 // patch 只能覆寫樣本已有的欄位；寫了樣本沒有的欄位會丟錯，替身因此無法自創真實 Orca 沒有的形狀。陣列整個取代，每個元素以樣本第一個元素為底。
 // 物件 patch 逐鍵合併：樣本有、patch 沒寫的兄弟鍵照樣留下（陣列元素也一樣，以樣本第一個元素為底）。例如 list-visual 的
