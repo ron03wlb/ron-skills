@@ -891,6 +891,18 @@ test('parked after #m 的成員在 #m 以 done 留在 closed 的 batch 後印 UN
   assert.ok(!out.includes('UNPARK 88'), out.join('\n'));
 });
 
+// #482：原因是要 fresh 重派的成員，UNPARK 之後 unpark、stage 必然撞同一個整合衝突（#361、#356）；fresh 標記的成員改印 UNPARK_FRESH。
+test('parked after #m fresh 的成員在 #m 合入後印 UNPARK_FRESH <n>，不印 UNPARK <n>', t => {
+  const { batch, probe } = fixture(t);
+  batch('361', 'dispatched 2026-11-20T10:00:00+08:00', [{ n: 361, state: 'parked after #123 fresh', candidate: SHA }]);
+  batch('362', 'dispatched 2026-11-20T10:00:00+08:00', [{ n: 362, state: 'parked after #124 fresh', candidate: SHA }]);
+  batch('123', 'closed', [{ n: 123, state: 'done', candidate: SHA }]);
+  const out = lines(probe());
+  assert.ok(out.includes('UNPARK_FRESH 361'), out.join('\n'));
+  assert.ok(!out.includes('UNPARK 361'), out.join('\n'));
+  assert.ok(!out.some(line => / 362$/.test(line) && /^UNPARK/.test(line)), out.join('\n'));
+});
+
 // 整合分支與主分支是專案的值：由參數傳入，預設 pilot/integration 與 main。
 test('--integration、--main 換掉整合分支與主分支', t => {
   const { repo, git, pilot, probe } = fixture(t);
