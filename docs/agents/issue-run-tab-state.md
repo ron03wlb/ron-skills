@@ -8,3 +8,4 @@
 - **待關閉.** `/retro` 採用的項目已合入或開成 Issue，或候選已交給收集流程之後，由 `/retro` 最後一步在該分頁自己跑 `tab-state 待關閉`（`overlays/retro.patch`）。每個分頁都先經過待 Retro（只回答問題的 session 例外，見上一條）；待關閉的分頁由 `/retro-collect` 收集後關，其餘由使用者手動關。
 - **擴充.** hook 的觸發條件要新增、覆寫或停用時，在本檔旁放 `docs/agents/tab-state.json`（格式見 `scripts/claude-hook-tab-state.mjs` 檔頭）；本 repo 目前沒有這個檔，用預設值。
 - **讀不回標題.** Orca 讀不回 `terminal rename` 設的分頁標題，`tab-state` 以 handle 在本機記錄最後設定的標題（hook 也從 Bash 的 `orca terminal rename` 指令擷取）；不經 Bash 的改名（例如在 Orca 介面手動改）不會被記到，下次 `tab-state` 會以記錄的標題為準。
+- **bot 聊天.** Orca bot（`~/.orca/bots/<bot>`）的 Home 聊天與排程、orchestration 開的聊天不載入本 repo 的 hook，改由使用者層 `~/.claude/settings.json` 的 `UserPromptSubmit`、`Stop` 掛 `scripts/claude-hook-bot-chat-state.mjs`（指向主 checkout，指令先以 shell 判斷 `ORCA_BOT_TOOLS_TOKEN`，一般 session 不啟動 node）。收到訊息開工換處理中；一輪結束時 Home 聊天維持處理中（它不會被關，一輪結束就是在等下一則訊息），其他聊天換待關閉（bot 聊天不跑 /retro）。只換前綴，Orca 取的原標題（`Home`、`每晚 20:30 … run 1`）不動；改名在 detached 子行程做，hook 不輸出、不等 Orca（事項 #89）。
