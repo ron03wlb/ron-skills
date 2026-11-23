@@ -31,7 +31,7 @@ L1 必接的只有 zsh 這一個 hook（語言、分頁狀態 hook 看 repo 的�
 
 | 校驗 | 強度 | 檢查什麼 | 不能證明什麼 |
 | --- | --- | --- | --- |
-| pre-commit 跑單一檢查入口 | 本地強制 | 要 commit 的內容通過和變更路徑有關的檢查（ron-skills：`.githooks/pre-commit` 跑 `bin/check --changed`，依對應表只挑相關步驟與測試，拿不準時跑完整套件） | 子集不是完整套件：漏挑的測試要等 acceptance、Regression 或 CI 的完整套件才抓到；每個 worker 每次 commit 都跑完整套件時，多 worker 並行會把機器 load 推到跑不動 |
+| pre-commit 跑單一檢查入口 | 本地強制 | 要 commit 的內容通過和變更路徑有關的檢查（ron-skills：`.githooks/pre-commit` 經 `scripts/heavy-slot.mjs` 的全機共用 slot 跑 `bin/check --changed`，依對應表只挑相關步驟與測試，拿不準時跑完整套件；排不到 slot 時印 `SLOT_TIMEOUT`，是負載關卡不是檢查失敗） | 子集不是完整套件：漏挑的測試要等 acceptance、Regression 或 CI 的完整套件才抓到；每個 worker 每次 commit 都跑完整套件時，多 worker 並行會把機器 load 推到跑不動 |
 
 沒有 pre-commit 的 repo，錯誤會留到 push 或 CI 才被抓到。
 

@@ -86,7 +86,10 @@ test('對應表與 bin/check 的步驟群組一致，每條規則的步驟都在
 });
 
 test('pre-commit 跑子集；CHECK_PASS_SUBSET 不以 `CHECK_PASS ` 開頭（pilot-land.mjs 只認後者為 Regression 通過）', () => {
-  assert.match(readFileSync(join(root, '.githooks/pre-commit'), 'utf8'), /^bin\/check --changed /m);
+  // 直接跑與經 heavy-slot 跑的兩種寫法都帶 --changed。
+  const hook = readFileSync(join(root, '.githooks/pre-commit'), 'utf8');
+  assert.match(hook, /^check=\(bin\/check --changed\)$/m);
+  assert.match(hook, /heavy-slot\.mjs run [^\n]*-- bin\/check --changed\)$/m);
   assert.match(source, /^echo "CHECK_PASS\$\{subset:\+_SUBSET\} tests /m);
   assert.match(readFileSync(join(root, 'scripts/pilot-land.mjs'), 'utf8'), /startsWith\('CHECK_PASS '\)/);
 });

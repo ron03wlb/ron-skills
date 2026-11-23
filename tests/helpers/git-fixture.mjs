@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+// pilot-land.mjs、land.mjs 經 heavy-slot.mjs 跑檢查：鎖檔目錄換成本行程的暫存目錄，env 取值之前就要設好。
+import '../../skills/engineering/setup-workflow/templates/test/isolate-heavy-slot-env.mjs';
 
 export const env = {
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
