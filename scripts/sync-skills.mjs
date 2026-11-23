@@ -13,15 +13,15 @@
 //           HOOK_DIR（預設 ~/.claude/hooks）
 //           WIN_SKILL_DIR（Windows 目標的 WSL 路徑；預設在 WSL 裡取 %USERPROFILE%\.claude\skills；設成空字串、或有設 SKILL_DIRS 而沒設它時不碰 Windows）
 // 清單檔：matt-skills.txt（相對 skills/，兩層 <類別>/<名稱>）、pstack-skills.txt（相對 skills/，一層 <名稱>）、
-//         windows-skills.txt（本 repo 的 skills/，兩層 <類別>/<名稱>；連到 Windows ~/.claude/skills，給 Windows 上的 Claude Code，例如 Orca bot）。
-// Windows 目標：透過 interop 以 `cmd.exe /c mklink /D` 建 Windows 原生 symlink，指向主 checkout 的 `\\wsl.localhost\<distro>\…`。
+//         windows-skills.txt（本 repo 的 skills/，兩層 <類別>/<名稱>；overlay/<名稱> 是 overlay build 的 skill；連到 Windows ~/.claude/skills，給 Windows 上的 Claude Code，例如 Orca bot）。
+// Windows 目標：透過 interop 以 `cmd.exe /c mklink /D` 建 Windows 原生 symlink，指向主 checkout（overlay 項目指向 overlay build）的 `\\wsl.localhost\<distro>\…`。
 //   從 /mnt/c 用 ln -s 建的是 WSL 專用 symlink，Windows 打不開；junction 不能指向 UNC。建立 symlink 要開發人員模式或系統管理員權限。
-//   只新增或更新清單上的項目；不在清單上的項目一律不碰（也不刪），連到本 repo 的由 --check 印 WIN_ORPHAN 提示。
+//   只新增或更新清單上的項目；不在清單上的項目一律不碰（也不刪），連到本 repo 或 overlay build 的由 --check 印 WIN_ORPHAN 提示。
 // 清單內 `# pin: <SHA>` 註明驗證過的上游版本；checkout 的 HEAD 不同時只警告。
 // stdout：--list 每個 skill 一行；--check 成功時 `CHECK_OK <n> skills`；同步成功時先印內容有變的 overlay `SKILL_CHANGED <名稱>`（已安裝的全域行為變了，retro spay2 b949589b#2），再印 `SYNCED <n> skills → <dirs>`。
 // stderr：MISSING、DUPLICATE、OVERLAY_FAILED、WIN_LINK_FAILED（exit 1），NEW、SKIP、WARN、DANGLING <連結> -> <目標>、EXTERNAL <連結> -> <真實路徑>、SKILLS_BEHIND <repo> <落後 commit 數>（只提示）。exit 0 成功、1 有任何 exit 1 的行或檢查失敗、2 參數錯誤（印用法）。
 //   Windows 目標：WIN_SKIP <原因>（不在 WSL 等，略過）；--check 回報 WIN_MISSING、WIN_WRONG <連結> -> <目前目標>（應為 …）、WIN_NOT_LINK、
-//   WIN_ORPHAN <連結> -> <目標>（目標在本 repo 底下、已不在 windows-skills.txt；只提示，這台機器的狀態）；同步時建立或更新印 WIN_LINKED <連結> -> <目標>。
+//   WIN_ORPHAN <連結> -> <目標>（目標在本 repo 或 overlay build 底下、已不在 windows-skills.txt；只提示，這台機器的狀態）；同步時建立或更新印 WIN_LINKED <連結> -> <目標>。
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
 import { homedir, release, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
@@ -306,29 +306,34 @@ function windowsDir() {
 }
 
 /**
- * 讀 windows-skills.txt：清單錯（不是本 repo 的 skill、同名）回傳 null，由呼叫端 exit 1，CI 也驗得到；Windows 目標略過時 dir 是空字串。
- * 連結指向主 checkout：worktree 會被刪掉，Windows 端要跟著 main。
+ * 讀 windows-skills.txt：清單錯（不是本 repo 的 skill 或可用的 overlay、同名）回傳 null，由呼叫端 exit 1，CI 也驗得到；Windows 目標略過時 dir 是空字串。
+ * 連結指向主 checkout：worktree 會被刪掉，Windows 端要跟著 main；overlay 項目指向 BUILD，同步時從主 checkout 或 worktree 重建的都是同一份。
  */
 function windowsPlan() {
   const listed = [];
   let ok = true;
   for (const rel of readFileSync(WIN_LIST, 'utf8').split('\n').map(line => line.trim())) {
     if (!rel || rel.startsWith('#')) continue;
-    if (!hasSkill(join(ROOT, 'skills', rel))) {
+    // overlay/<名稱>：套了 overlays/<名稱>.patch 的上游 skill，連到 overlay build（#400 的 retro）。
+    const overlay = rel.startsWith('overlay/') ? rel.slice('overlay/'.length) : null;
+    if (overlay !== null && !(isFile(join(ROOT, 'overlays', `${overlay}.patch`)) && upstreamSkill(overlay))) {
+      warn(`MISSING windows ${rel}（本 repo 沒有 overlays/${overlay}.patch，或上游清單沒有啟用 ${overlay}，請更新 windows-skills.txt）`);
+      ok = false;
+    } else if (overlay === null && !hasSkill(join(ROOT, 'skills', rel))) {
       warn(`MISSING windows ${rel}（本 repo 沒有 skills/${rel}/SKILL.md，請更新 windows-skills.txt）`);
       ok = false;
     } else if (listed.some(({ name }) => name === basename(rel))) {
       warn(`DUPLICATE ${basename(rel)}（windows-skills.txt 同名）`);
       ok = false;
     } else {
-      listed.push({ name: basename(rel), rel });
+      listed.push({ name: basename(rel), source: overlay === null ? join(mainCheckout(), 'skills', rel) : join(BUILD, overlay) });
     }
   }
   if (!ok) return null;
   // 清單空了也要取目錄：--check 才看得到移除最後一項後留下的 WIN_ORPHAN。
   const dir = windowsDir();
   if (!dir) return { dir, entries: [] };
-  return { dir, entries: listed.map(({ name, rel }) => ({ name, path: join(dir, name), to: toWin(join(mainCheckout(), 'skills', rel)) })) };
+  return { dir, entries: listed.map(({ name, source }) => ({ name, path: join(dir, name), to: toWin(source) })) };
 }
 
 /** `dir /AL` 列出的 Windows 連結：名稱 → 目標（junction 的 `\??\` 前綴去掉）。沒有任何連結時 dir 回 exit 1，視為空。 */
@@ -364,13 +369,13 @@ function checkWindows(plan) {
 
 /**
  * 從 windows-skills.txt 移除的項目，同步不刪 Windows 端的連結（清單外一律不碰），所以只在 --check 提示（#389-2）。
- * 只看目標在本 repo（主 checkout 或目前 worktree）底下的 Windows 連結；其他來源（例如 C:\Workspace\open_source\skills）不報。
+ * 只看目標在本 repo（主 checkout 或目前 worktree）或 overlay build 底下的 Windows 連結；其他來源（例如 C:\Workspace\open_source\skills）不報。
  * Windows 路徑不分大小寫；`\\wsl$\` 是 `\\wsl.localhost\` 的舊寫法。
  */
 function reportWindowsOrphans({ dir, entries }) {
   if (!dir || !isDir(dir)) return;
   const norm = path => path.toLowerCase().replace(/^\\\\wsl\$\\/, '\\\\wsl.localhost\\');
-  const repos = [...new Set([mainCheckout(), ROOT])].map(path => `${norm(toWin(path))}\\`);
+  const repos = [...new Set([mainCheckout(), ROOT, BUILD])].map(path => `${norm(toWin(path))}\\`);
   const listed = new Set(entries.map(({ name }) => name));
   for (const [name, to] of windowsLinks(dir)) {
     if (!listed.has(name) && repos.some(repo => norm(to).startsWith(repo))) warn(`WIN_ORPHAN ${join(dir, name)} -> ${to}（不在 windows-skills.txt；不再需要就在 Windows 端 rmdir）`);
