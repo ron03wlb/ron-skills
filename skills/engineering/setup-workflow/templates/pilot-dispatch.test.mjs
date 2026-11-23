@@ -1072,6 +1072,15 @@ test('Env sync：宣告的指令在新 worktree 內、開分頁前跑一次；�
   assert.deepEqual(orcaLines(fx.calls()), ['worktree create', `SYNC ${tree}`, 'terminal create', `SYNC ${tree}`, 'terminal create']);
 });
 
+// CoS item 41：Coordinator model 只給交接開的後繼 coordinator；worker 仍跑裸 claude（吃全域模型），防有人把宣告接到 dispatch。
+test('adapter 宣告 Coordinator model 時，worker 的啟動指令仍是裸 claude', t => {
+  const fx = fixture(t, { adapter: { 'issue-run.md': '# adapter\n\n## Pilot\n\nCoordinator model: claude-sonnet-5-5\n' } });
+  const result = fx.dispatch(['46', '46:pilot-dispatch']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(fx.calls(), /^terminal create --worktree path:\S+ --title 處理中｜#46 --command claude --json$/m);
+  assert.doesNotMatch(fx.calls(), /--model/);
+});
+
 test('Env sync：宣告寫在 Pilot 段連到的檔、寫成 `- **Env sync.**` 條目也照跑', t => {
   const fx = fixture(t, { adapter: { 'issue-run.md': '# adapter\n\n## Pilot\n\n見 [pilot.md](pilot.md)。\n' } });
   writeFileSync(join(fx.repo, 'docs/agents', 'pilot.md'), `# pilot\n\n- **Env sync.** \`${syncInto(fx.log)}\`（建好 worktree 後同步相依）\n`);
