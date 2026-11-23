@@ -65,9 +65,10 @@ test('check：合計加上新增人數不超過上限印 CAPACITY ok，超過印
   assert.equal(raised.stdout, 'CAPACITY ok 5/6\n');
 });
 
-test('沒有帳本時 check 以 0 起算；上限沒設時先印 CAPACITY_ENV_MISSING 再用預設 4', t => {
+// #494：缺變數的行自帶預設值與處理方式（設在哪裡），coordinator 不必去 adapter 的長條目找。
+test('沒有帳本時 check 以 0 起算；上限沒設時先印 CAPACITY_ENV_MISSING（附預設 4 與設定位置）再用預設 4', t => {
   const file = ledger(t);
-  const missing = 'CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP\n';
+  const missing = 'CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP default 4 → 告訴人：設在 ~/.claude/settings.json 的 env\n';
   assert.equal(run(file, ['check', '4']).stdout, `${missing}CAPACITY ok 4/4\n`);
   assert.equal(run(file, ['check', '5']).stdout, `${missing}STOP capacity 5/4 +5\n`);
   assert.equal(run(file, ['check', '5'], { PILOT_MACHINE_WORKER_CAP: '' }).stdout, `${missing}STOP capacity 5/4 +5\n`);
@@ -81,9 +82,9 @@ test('env：INVESTING_DATA_ROOT 未設或空字串時印 CAPACITY_ENV_MISSING IN
   const file = ledger(t);
   const unset = run(file, ['env', 'INVESTING_DATA_ROOT'], { PILOT_MACHINE_WORKER_CAP: '4', INVESTING_DATA_ROOT: undefined });
   assert.equal(unset.status, 0, unset.stderr);
-  assert.equal(unset.stdout, 'CAPACITY_ENV_MISSING INVESTING_DATA_ROOT\n');
+  assert.equal(unset.stdout, 'CAPACITY_ENV_MISSING INVESTING_DATA_ROOT → 告訴人：設在 ~/.claude/settings.json 的 env\n');
   const both = run(file, ['env', 'INVESTING_DATA_ROOT'], { PILOT_MACHINE_WORKER_CAP: '', INVESTING_DATA_ROOT: '' });
-  assert.equal(both.stdout, 'CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP\nCAPACITY_ENV_MISSING INVESTING_DATA_ROOT\n');
+  assert.equal(both.stdout, 'CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP default 4 → 告訴人：設在 ~/.claude/settings.json 的 env\nCAPACITY_ENV_MISSING INVESTING_DATA_ROOT → 告訴人：設在 ~/.claude/settings.json 的 env\n');
   const set = run(file, ['env', 'INVESTING_DATA_ROOT'], { PILOT_MACHINE_WORKER_CAP: '4', INVESTING_DATA_ROOT: '/data' });
   assert.equal(set.stdout, 'CAPACITY_ENV ok\n');
   assert.equal(run(file, ['env'], { PILOT_MACHINE_WORKER_CAP: '4' }).stdout, 'CAPACITY_ENV ok\n');

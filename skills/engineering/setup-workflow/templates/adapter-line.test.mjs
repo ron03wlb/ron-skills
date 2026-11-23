@@ -32,7 +32,10 @@ function fixture(t) {
     '  縮排的子行併入條目', '',
     '- **Watch.** 背景跑',
   ].join('\n'));
-  writeFileSync(join(root, 'docs/agents/pilot-round.md'), ['# 每輪', '', '- **Probe.** 在主 checkout 跑 `node scripts/pilot-probe.mjs`。', '', '- **Watch dog.** 同名前綴在另一檔', '', '- **Defaults for `preferences.md`.** 本文', ''].join('\n'));
+  writeFileSync(join(root, 'docs/agents/pilot-round.md'), ['# 每輪', '', '- **Probe.** 在主 checkout 跑 `node scripts/pilot-probe.mjs`。', '', '- **Watch dog.** 同名前綴在另一檔', '', '- **Defaults for `preferences.md`.** 本文', '',
+    // 仿 pilot-exceptions.md 的 **Probe lines.**：一行 9 KB，以 `；`<行名>` 逐行說明
+    `- **Probe lines.** 各行：\`PARKED <key>\`（沒有 done 成員）不 stage；${'填充說明，不提行名。'.repeat(900)}\`UNBLOCKED <key> <n>\`（blocker 都關了，見 \`UNBLOCKED_X\`。不切）：照 Fresh redispatch 重派；原因是別的就照 \`PARKED\` 處理。\`UNBLOCKED_X\` 是別的行。\`UNPARK <n>\` 改回 done。`,
+    '', '## Stage', '', 'Stage 印 `STOP conflict <n> <檔>=<來源>:<種類>` 時照 Stage conflict 處理. 其他句子不印.', ''].join('\n'));
   writeFileSync(join(root, 'docs/agents/other.md'), '- **Other.** 不在預算表，不讀\n');
   return root;
 }
@@ -92,4 +95,24 @@ test('--list 每條印 `<檔> <名稱>`；用法錯誤或沒有預算表 exit 2'
   const missing = run(root, 'Probe');
   assert.equal(missing.status, 2);
   assert.match(missing.stderr, /adapter-size-budget\.json/);
+});
+
+test('全大寫的結果行名稱找不到條目時，只印各條目裡提及它的句子，不印整條（#459）', t => {
+  const root = fixture(t);
+  const result = run(root, 'UNBLOCKED');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, [
+    '== docs/agents/pilot-round.md:9 Probe lines',
+    '`UNBLOCKED <key> <n>`（blocker 都關了，見 `UNBLOCKED_X`。不切）：照 Fresh redispatch 重派；原因是別的就照 `PARKED` 處理。', '',
+  ].join('\n'));
+  assert.ok(result.stdout.length < 200, '9 KB 的條目只印那一句');
+  // 多字的結果行（`STOP conflict`）也行；條目外的段落行以所在標題當名稱
+  const stop = run(root, 'STOP conflict');
+  assert.equal(stop.status, 0, stop.stderr);
+  assert.equal(stop.stdout, '== docs/agents/pilot-round.md:13 Stage\nStage 印 `STOP conflict <n> <檔>=<來源>:<種類>` 時照 Stage conflict 處理.\n');
+  const none = run(root, 'NOT_MENTIONED', 'UNPARK');
+  assert.equal(none.status, 1, '沒提及就照舊找不到');
+  assert.equal(none.stderr, 'ADAPTER_LINE_NOT_FOUND NOT_MENTIONED\n');
+  assert.match(none.stdout, /^== docs\/agents\/pilot-round\.md:9 Probe lines\n`UNPARK <n>` 改回 done。\n$/);
+  assert.equal(run(root, 'Unblocked').status, 1, '不是全大寫就不找提及');
 });

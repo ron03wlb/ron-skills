@@ -161,10 +161,16 @@ else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
     writeFileSync(join(temp, 'docs/agents/issue-run.md'), '# adapter\n\n## Tracker\n\nhttps://github.com/acme/app\n');
     dispatchScript = join(scripts, 'pilot-dispatch.mjs');
   }
-  const dispatch = (args, extra = {}) => spawnSync('node', [dispatchScript, ...args], {
+  // 帳本一律指向暫存檔（#534：派工預設做容量檢查，不能碰到真的 ~/.local/state/pilot-workers.tsv）。
+  const dispatchRaw = (args, extra = {}) => spawnSync('node', [dispatchScript, ...args], {
     cwd: repo, encoding: 'utf8', input: 'leftover-line\nanother-line\n', timeout: 60000,
-    env: { ...env, PATH: `${bin}:${env.PATH}`, CLAUDE_CODE_SESSION_ID: SESSION, ORCA_CLI_COMMAND: cli, ORCA_BIN: '', ...FAST, PILOT_DISPATCH_REGISTER_POLL_MS: '1', TAB_STATE_DIR: join(root, 'titles'), ...extra },
+    env: { ...env, PATH: `${bin}:${env.PATH}`, CLAUDE_CODE_SESSION_ID: SESSION, ORCA_CLI_COMMAND: cli, ORCA_BIN: '', ...FAST, PILOT_DISPATCH_REGISTER_POLL_MS: '1', TAB_STATE_DIR: join(root, 'titles'),
+      PILOT_WORKERS_LEDGER: join(temp, 'default-ledger.tsv'), ...extra },
   });
+  // 不測容量的測試照舊只看成員行：派工路徑（不是草稿）沒帶任何容量旗標時補 --no-capacity；要測預設行為用 dispatchRaw。
+  const capacityFlags = ['--capacity', '--repo-cap', '--no-capacity'];
+  const draftArgs = args => args.includes('--fresh') && !args.includes('--note');
+  const dispatch = (args, extra = {}) => dispatchRaw(args.some(arg => capacityFlags.includes(arg)) || draftArgs(args) ? args : [...args, '--no-capacity'], extra);
   const checkpoint = key => readFileSync(join(repo, `.scratch/pilot/batch-${key}.md`), 'utf8');
   const calls = () => readFileSync(log, 'utf8');
   const sent = () => (existsSync(`${log}.sent`) ? readFileSync(`${log}.sent`, 'utf8') : '');
@@ -173,7 +179,7 @@ else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
   const ghCalls = () => (existsSync(join(temp, 'gh.log')) ? readFileSync(join(temp, 'gh.log'), 'utf8') : '');
   const comment = (issue, body) => writeFileSync(comments, JSON.stringify([...posted(), { issue, body }]));
   const assigned = n => (existsSync(join(temp, 'assignees.json')) ? JSON.parse(readFileSync(join(temp, 'assignees.json'), 'utf8'))[n] : undefined) ?? ['me'];
-  return { temp, repo, root, log, cli, dispatch, checkpoint, calls, sent, open, posted, ghCalls, comment, assigned };
+  return { temp, repo, root, log, cli, dispatch, dispatchRaw, checkpoint, calls, sent, open, posted, ghCalls, comment, assigned };
 }
 
 const lines = result => result.stdout.trim().split('\n');
@@ -195,21 +201,23 @@ test('--capacity：帳本合計加上這批人數超過上限時 STOP capacity�
   const capped = { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '4' };
   const over = dispatch(['23-133', '23:pilot-probe', '133:pilot-dispatch', '--capacity'], capped);
   assert.equal(over.status, 4, over.stdout + over.stderr);
-  assert.deepEqual(lines(over), ['STOP capacity 5/4 acme=2 investing=1 +2', 'RELEASED 23', 'RELEASED 133']);
+  assert.deepEqual(lines(over), ['CAPACITY ok repo 2/4', 'STOP capacity 5/4 acme=2 investing=1 +2', 'RELEASED 23', 'RELEASED 133']);
   assert.equal(calls(), '');
   assert.equal(existsSync(join(repo, '.scratch/pilot/batch-23-133.md')), false);
   const fresh = dispatch(['133', '--fresh', '133:pilot-dispatch', '--note', ledger, '--capacity'], { ...capped, PILOT_MACHINE_WORKER_CAP: '3' });
-  assert.deepEqual(lines(fresh), ['STOP capacity 4/3 acme=2 investing=1 +1', 'RELEASED 133']);
+  assert.deepEqual(lines(fresh), ['CAPACITY ok repo 1/4', 'STOP capacity 4/3 acme=2 investing=1 +1', 'RELEASED 133']);
   assert.equal(calls(), '');
   const ok = dispatch(['23', '23:pilot-probe', '--capacity'], capped);
   assert.equal(ok.status, 0, ok.stdout + ok.stderr);
-  assert.deepEqual(lines(ok), ['CAPACITY ok 4/4', 'DISPATCHED 23 term_23', 'REPORTED repo 1 4/4']);
+  assert.deepEqual(lines(ok), ['CAPACITY ok repo 1/4', 'CAPACITY ok 4/4', 'DISPATCHED 23 term_23', 'REPORTED repo 1 4/4']);
   const uncapped = dispatch(['133', '133:pilot-dispatch'], { ...capped, PILOT_MACHINE_WORKER_CAP: '1' });
   assert.equal(uncapped.status, 0, uncapped.stdout + uncapped.stderr);
   assert.deepEqual(lines(uncapped), ['DISPATCHED 133 term_133']);
 });
 
 // #396：--capacity 時 $PILOT_MACHINE_WORKER_CAP 空白，先印 CAPACITY_ENV_MISSING 再照預設 4 檢查。
+// #494：這一行自帶預設值與處理方式（告訴人設在哪裡），coordinator 不必去 pilot-exceptions.md 找。
+const CAP_MISSING = 'CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP default 4 → 告訴人：設在 ~/.claude/settings.json 的 env';
 test('--capacity：$PILOT_MACHINE_WORKER_CAP 空白時先印 CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP，照預設 4 比', t => {
   const { temp, dispatch } = fixture(t, { tracker: true });
   const ledger = join(temp, 'pilot-workers.tsv');
@@ -217,28 +225,28 @@ test('--capacity：$PILOT_MACHINE_WORKER_CAP 空白時先印 CAPACITY_ENV_MISSIN
   const blank = { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '' };
   const over = dispatch(['23-133', '23:pilot-probe', '133:pilot-dispatch', '--capacity'], blank);
   assert.equal(over.status, 4, over.stdout + over.stderr);
-  assert.deepEqual(lines(over), ['CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP', 'STOP capacity 5/4 acme=3 +2', 'RELEASED 23', 'RELEASED 133']);
+  assert.deepEqual(lines(over), ['CAPACITY ok repo 2/4', CAP_MISSING, 'STOP capacity 5/4 acme=3 +2', 'RELEASED 23', 'RELEASED 133']);
   const ok = dispatch(['23', '23:pilot-probe', '--capacity'], blank);
   assert.equal(ok.status, 0, ok.stdout + ok.stderr);
-  assert.deepEqual(lines(ok), ['CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP', 'CAPACITY ok 4/4', 'DISPATCHED 23 term_23', 'REPORTED repo 1 4/4']);
+  assert.deepEqual(lines(ok), ['CAPACITY ok repo 1/4', CAP_MISSING, 'CAPACITY ok 4/4', 'DISPATCHED 23 term_23', 'REPORTED repo 1 4/4']);
 });
 
 // #353：帳本只在 Probe 寫入時，同一輪連續兩次 dispatch 的第二次看不到第一次的成員。
 // 帶 --capacity 派出成員後，以帳本本 repo（主 checkout 目錄名）的現值加上這次派出的人數改寫那一列，印 REPORTED。
-test('--capacity：派出後把本 repo 的帳本列加上派出人數，第二次 dispatch 的合計含第一次的成員；沒帶旗標不寫帳本', t => {
+test('--capacity：派出後把本 repo 的帳本列加上派出人數，第二次 dispatch 的合計含第一次的成員；--no-capacity 不寫帳本', t => {
   const { temp, dispatch } = fixture(t, { modes: { 47: 'fail' } });
   const ledger = join(temp, 'pilot-workers.tsv');
   writeFileSync(ledger, `acme\t1\t${new Date().toISOString()}\nrepo\t1\t${new Date().toISOString()}\n`);
   const capped = { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '5' };
   const first = dispatch(['23-47', '23:pilot-probe', '47:fail', '--capacity'], capped);
   assert.equal(first.status, 4, first.stdout + first.stderr);
-  assert.deepEqual(lines(first), ['CAPACITY ok 4/5', 'DISPATCHED 23 term_23', 'STOP 47 create orca worktree create：invalid_argument row=stop', 'REPORTED repo 2 3/5']);
+  assert.deepEqual(lines(first), ['CAPACITY ok repo 2/4', 'CAPACITY ok 4/5', 'DISPATCHED 23 term_23', 'STOP 47 create orca worktree create：invalid_argument row=stop', 'REPORTED repo 2 3/5']);
   assert.match(readFileSync(ledger, 'utf8'), /^repo\t2\t/m);
   const second = dispatch(['46', '46:pilot-dispatch', '--capacity'], capped);
   assert.equal(second.status, 0, second.stdout + second.stderr);
-  assert.deepEqual(lines(second), ['CAPACITY ok 4/5', 'DISPATCHED 46 term_46', 'REPORTED repo 3 4/5']);
+  assert.deepEqual(lines(second), ['CAPACITY ok repo 2/4', 'CAPACITY ok 4/5', 'DISPATCHED 46 term_46', 'REPORTED repo 3 4/5']);
   const before = readFileSync(ledger, 'utf8');
-  const plain = dispatch(['48', '48:plain']);
+  const plain = dispatch(['48', '48:plain', '--no-capacity']);
   assert.deepEqual(lines(plain), ['DISPATCHED 48 term_48']);
   assert.equal(readFileSync(ledger, 'utf8'), before);
 });
@@ -262,9 +270,10 @@ test('--repo-cap：本 repo running 列加本批成員超過上限時 STOP capac
   assert.equal(calls(), '');
   assert.equal(existsSync(join(repo, '.scratch/pilot/batch-46.md')), false);
   assert.deepEqual(assigned('46'), []);
-  const ok = dispatch(['46', '46:pilot-dispatch', '--repo-cap', '4']);
+  const ok = dispatch(['46', '46:pilot-dispatch', '--repo-cap', '4'], { PILOT_MACHINE_WORKER_CAP: '4' });
   assert.equal(ok.status, 0, ok.stdout + ok.stderr);
-  assert.deepEqual(lines(ok), ['CAPACITY ok repo 4/4', 'DISPATCHED 46 term_46']);
+  // #534：全機檢查與帳本回報也是預設，--repo-cap 不再只比 repo。
+  assert.deepEqual(lines(ok), ['CAPACITY ok repo 4/4', 'CAPACITY ok 1/4', 'DISPATCHED 46 term_46', 'REPORTED repo 1 1/4']);
   // 本批成員自己的 running 列（重跑）不重複計：running 是 1、2、剛派出的 46，加上這次的 3 共 4。
   const rerun = dispatch(['1-2-3', '3:x', '--repo-cap', '4']);
   assert.equal(lines(rerun)[0], 'CAPACITY ok repo 4/4');
@@ -274,6 +283,38 @@ test('--repo-cap：本 repo running 列加本批成員超過上限時 STOP capac
   assert.equal(dispatch(['46', '--fresh', '46:pilot-dispatch', '--repo-cap', '3']).status, 2);
 });
 
+// #534：coordinator 從草稿切到派工時只加 --note，漏了 --capacity --repo-cap 4：session 326317eb 跑
+// `pilot-dispatch.mjs 466 --fresh 466:investing-retro-1121g --note …/fresh-466.md` 只印 DISPATCHED、PRIOR、DRAFT_ARCHIVED，
+// 沒有 CAPACITY ok、也沒寫帳本（沒有 REPORTED）。派工路徑（一般派工與帶 --note 的 --fresh）預設照 --capacity --repo-cap 4 檢查並回報，
+// 只有顯式 --no-capacity 才略過；--no-capacity 和 --capacity、--repo-cap 一起帶是用法錯誤。
+test('派工路徑沒帶容量旗標：預設照 --capacity --repo-cap 4 檢查並回報帳本；--no-capacity 才略過', t => {
+  const fx = conflicted(t);
+  const ledger = join(fx.temp, 'pilot-workers.tsv');
+  writeFileSync(ledger, `acme\t1\t${new Date().toISOString()}\n`);
+  const capped = { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '4' };
+  // Issue 的指令形狀：--fresh <n>:<slug> --note <檔>，沒有任何容量旗標。
+  const result = fx.dispatchRaw(['23-46', '--fresh', '46:pilot-dispatch', '--note', fx.note], capped);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['CAPACITY ok repo 1/4', 'CAPACITY ok 2/4', 'DISPATCHED 46 term_46_3', `PRIOR 46 issue/46-pilot-dispatch-prior ${fx.head}`, 'REPORTED repo 1 2/4']);
+  assert.match(readFileSync(ledger, 'utf8'), /^repo\t1\t/m);
+
+  const { repo, temp, dispatchRaw, calls } = fixture(t, { tracker: true });
+  repoBatches(repo);
+  const own = { PILOT_WORKERS_LEDGER: join(temp, 'pilot-workers.tsv'), PILOT_MACHINE_WORKER_CAP: '9' };
+  // 一般派工也一樣：本 repo 已有 3 個 running，再派 2 個超過預設的 repo 上限 4。
+  const over = dispatchRaw(['23-133', '23:pilot-probe', '133:pilot-dispatch'], own);
+  assert.equal(over.status, 4, over.stdout + over.stderr);
+  assert.deepEqual(lines(over), ['STOP capacity repo 5/4', 'RELEASED 23', 'RELEASED 133']);
+  assert.equal(calls(), '');
+  const skipped = dispatchRaw(['23-133', '23:pilot-probe', '133:pilot-dispatch', '--no-capacity'], own);
+  assert.equal(skipped.status, 0, skipped.stdout + skipped.stderr);
+  assert.deepEqual(lines(skipped), ['DISPATCHED 23 term_23', 'DISPATCHED 133 term_133']);
+  assert.equal(existsSync(own.PILOT_WORKERS_LEDGER), false);
+  for (const bad of [['--no-capacity', '--capacity'], ['--no-capacity', '--repo-cap', '4'], ['--no-capacity', '--no-capacity']]) {
+    assert.equal(dispatchRaw(['46', '46:pilot-dispatch', ...bad], own).status, 2, bad.join(' '));
+  }
+});
+
 // #353：STOP capacity 時 Issue 仍指派給自己，別台機器要等它變成 stale；只放掉最近認領屬本 session 的成員。
 test('STOP capacity：放掉本 session 認領的成員並印 RELEASED，別人的認領不動；放掉失敗只警告，exit 仍 4', t => {
   const { temp, dispatch, ghCalls, assigned } = fixture(t, { tracker: true, claims: { 133: [MINE, '認領：other-box／their-session'] }, editFails: ['134'] });
@@ -281,7 +322,7 @@ test('STOP capacity：放掉本 session 認領的成員並印 RELEASED，別人�
   writeFileSync(ledger, `acme\t3\t${new Date().toISOString()}\n`);
   const result = dispatch(['23-133-134', '23:a', '133:b', '134:c', '--capacity'], { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '4' });
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['STOP capacity 6/4 acme=3 +3', 'RELEASED 23']);
+  assert.deepEqual(lines(result), ['CAPACITY ok repo 3/4', 'STOP capacity 6/4 acme=3 +3', 'RELEASED 23']);
   assert.match(result.stderr, /^WARN release 134 edit /m);
   assert.deepEqual(assigned('23'), []);
   assert.deepEqual(assigned('133'), ['me']);
@@ -615,6 +656,42 @@ test('--fresh 的對象與 done（未合入）成員改同一個條目：STOP ov
   assert.match(allowed.stdout, /^PRIOR 46 issue\/46-pilot-dispatch-prior /m);
 });
 
+// #460：戳記檔（repo 的 scripts/restamp.mjs 匯出的 STAMP_FILES，land.mjs 認的同一份清單）Stage 會自己取聯集再 restamp，不算重疊。
+// session 86a8cb03 的 `pilot-dispatch.mjs 345 --fresh 345:checkpoint-lock --note … --capacity --repo-cap 4` 只因兩邊都改了戳記檔就印
+// `STOP 345 overlap 344 docs/agents/workflow-templates.json`。起點：batch 344-345-398 都 done；三個都改了戳記檔，344 與 398 另外都改了 shared.txt。
+test('只有戳記檔（scripts/restamp.mjs 的 STAMP_FILES）重疊時不 STOP overlap；另有非戳記檔重疊照舊 STOP，只列非戳記檔', t => {
+  const fx = fixture(t);
+  const stamp = 'docs/agents/workflow-templates.json';
+  writeFileSync(join(fx.repo, '.gitignore'), '.scratch/\n');
+  mkdirSync(join(fx.repo, 'scripts'));
+  mkdirSync(join(fx.repo, 'docs/agents'), { recursive: true });
+  writeFileSync(join(fx.repo, 'scripts/restamp.mjs'), `export const STAMP_FILES = ['scripts/workflow-doc-sync.json', '${stamp}'];\n`);
+  writeFileSync(join(fx.repo, stamp), '{}\n');
+  writeFileSync(join(fx.repo, 'shared.txt'), 'base\n');
+  git(fx.repo, 'add', '.');
+  git(fx.repo, 'commit', '-qm', 'stamps');
+  git(fx.repo, 'branch', '-f', 'pilot/integration', 'main');
+  assert.equal(fx.dispatch(['344-345-398', '344:adapter-core-read', '345:checkpoint-lock', '398:probe-budget']).status, 0);
+  const work = (n, files) => {
+    const tree = join(fx.root, `issue-${n}`);
+    for (const [path, body] of Object.entries(files)) writeFileSync(join(tree, path), body);
+    git(tree, 'commit', '-qam', `worker ${n}`);
+  };
+  work('344', { [stamp]: '{"344":1}\n', 'shared.txt': '344\n' });
+  work('345', { [stamp]: '{"345":1}\n' });
+  work('398', { [stamp]: '{"398":1}\n', 'shared.txt': '398\n' });
+  const file = join(fx.repo, '.scratch/pilot/batch-344-345-398.md');
+  writeFileSync(file, readFileSync(file, 'utf8').replace(/ running \| \|$/gm, ' done | abc1234 |'));
+  const note = join(fx.temp, 'note.md');
+  writeFileSync(note, '重派。\n');
+  const only = fx.dispatch(['344-345-398', '--fresh', '345:checkpoint-lock', '--note', note]);
+  assert.equal(only.status, 0, only.stdout + only.stderr);
+  assert.match(only.stdout, /^PRIOR 345 issue\/345-checkpoint-lock-prior /m);
+  const mixed = fx.dispatch(['344-345-398', '--fresh', '398:probe-budget', '--note', note]);
+  assert.equal(mixed.status, 4, mixed.stdout + mixed.stderr);
+  assert.deepEqual(lines(mixed), ['STOP 398 overlap 344 shared.txt row=kept']);
+});
+
 // 整合分支與 stuck-after 是專案的值：由參數傳入，預設 pilot/integration 與 90m。
 test('--integration 換掉 worktree 的 base 與表頭的整合分支，--stuck-after 換掉成員行的 stuck-after', t => {
   const { repo, dispatch, calls, checkpoint } = fixture(t);
@@ -903,6 +980,9 @@ test('--fresh 不帶 --note：印 NOTE_DRAFT，草稿有原 Issue、prior、merg
   assert.match(common, /^- 成員：.*docs\/pilot\.md \| +6 \+\+\+---`；條目：Probe、Stage；另有條目外的改動$/m);
   assert.match(common, /^- 整合分支：.*docs\/pilot\.md \| +4 \+\+--`；條目：Close、Probe$/m);
   assert.match(common, /^- 成員：.*src\.mjs \| +2 \+-`$/m);
+  assert.ok(common.includes(`- 逐檔取 prior 新增的字詞：\`git diff ${fx.base} ${fx.candidate} --word-diff=porcelain -- docs/pilot.md | grep '^+[^+]'\``), common);
+  assert.ok(common.includes(`- 逐檔取 prior 的 diff：\`git diff ${fx.base} ${fx.candidate} -- src.mjs\``), common);
+  assert.doesNotMatch(common, /word-diff=porcelain -- src\.mjs/);
   assert.doesNotMatch(draft, /member-only|integration-only|later\.txt/);
   // 不印完整 diff。
   assert.doesNotMatch(draft, /^@@|^[-+]- \*\*|成員改的|整合分支改的|a = 46|b = 99/m);
@@ -939,6 +1019,16 @@ test('--fresh 不帶 --note：成員沒有分支時 STOP，不寫草稿', t => {
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.match(result.stdout, /^STOP 99 git 沒有分支 issue\/99-nothing row=kept$/m);
   assert.equal(existsSync(join(fx.repo, '.scratch/pilot/fresh-99.md')), false);
+  // #469：`pilot-dispatch.mjs 398 --fresh 398:x` 只印「git 沒有分支 issue/398-x」，正確的分支只在 batch checkpoint 的成員行；STOP 行直接附上它。
+  const wrong = fx.dispatch(['23-46', '--fresh', '46:x']);
+  assert.equal(wrong.status, 4, wrong.stdout + wrong.stderr);
+  assert.deepEqual(lines(wrong), ['STOP 46 git 沒有分支 issue/46-x；checkpoint batch-23-46.md 的分支是 issue/46-pilot-dispatch row=kept']);
+  assert.equal(existsSync(join(fx.repo, '.scratch/pilot/fresh-46.md')), false);
+  const note = join(fx.temp, 'note.md');
+  writeFileSync(note, '重派。\n');
+  const dispatched = fx.dispatch(['23-46', '--fresh', '46:x', '--note', note]);
+  assert.equal(dispatched.status, 4, dispatched.stdout + dispatched.stderr);
+  assert.deepEqual(lines(dispatched), ['STOP 46 git 沒有分支 issue/46-x；checkpoint batch-23-46.md 的分支是 issue/46-pilot-dispatch row=kept']);
 });
 
 test('--fresh 不帶 --note：草稿的「怎麼整併」已經補過時 STOP draft-filled、不覆寫；空白的草稿照常重寫', t => {
@@ -956,7 +1046,7 @@ test('--fresh 不帶 --note：草稿的「怎麼整併」已經補過時 STOP dr
 
 test('--fresh 不帶 --note 又帶派工才用的旗標時 exit 2，不寫草稿', t => {
   const fx = drafted(t);
-  for (const extra of [['--allow-overlap'], ['--capacity'], ['--stuck-after', '30m']]) {
+  for (const extra of [['--allow-overlap'], ['--capacity'], ['--no-capacity'], ['--stuck-after', '30m']]) {
     const result = fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch', ...extra]);
     assert.equal(result.status, 2, `${extra.join(' ')}：${result.stdout}${result.stderr}`);
   }

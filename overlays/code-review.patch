@@ -1,7 +1,8 @@
 diff --git a/SKILL.md b/SKILL.md
+index 83183e0..2732adf 100644
 --- a/SKILL.md
 +++ b/SKILL.md
-@@ -59,6 +59,16 @@
+@@ -59,6 +59,18 @@ Each smell reads *what it is* → *how to fix*; match it against the diff:
  
  Issue both sub-agent calls together, in the foreground, and aggregate the reports they return.
  
@@ -10,6 +11,8 @@ diff --git a/SKILL.md b/SKILL.md
 +**Commit trailers.** Add to both the Standards and the Spec brief: "Skip commit trailers such as `Co-Authored-By`: they name the calling session's model, not yours, and the repo's own checks cover them." (spay2 retro 1e05a1e4#3: a sonnet Standards sub-agent flagged `Co-Authored-By: Claude Opus` as the wrong attribution; spay2 retro 94e9ac01#1: a sonnet Spec sub-agent reported the correct `Claude Opus 5.5` trailer as P3.)
 +
 +**Tool evidence.** Add to both briefs: "A finding that rests on a search or command quotes that command and its output; with no tool run, say so and drop the claim." (spay2 retro 94e9ac01#2: a Standards sub-agent that said it ran no tools claimed a grep hit that exits 1.)
++
++**Line evidence.** Add to both briefs, next to the tool-evidence sentence: "Each finding at P2 or above, and each hard violation, cites the code line that supports it as `path:line` plus that line's text. Before asserting how code outside the diff behaves, read that line." (ron-skills retro #531-1: a Standards sub-agent that read only the diff reported a P2 that checkpoint targets carry no `worktree`; the caller's loop gives them one.)
 +
 +**Test results.** Add to both briefs the test commands the caller ran and their exit codes, and: "Review the diff only; rerun no test — the caller already ran these. With no test results given, you may run one single test file." (spay2 retro 00588b5c#1: a Spec sub-agent reran three test files the worker had already passed, hit the 110–120 s tool limit twice in 390 s, and reported no result.)
 +

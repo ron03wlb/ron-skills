@@ -363,6 +363,53 @@ test('--staged：正本已暫存可複製、記 HEAD；未暫存與沒帶旗標�
   assert.equal(JSON.parse(readFileSync(join(target, 'docs/agents/workflow-templates.json'), 'utf8')).copies['scripts/b.mjs'].commit, commit);
 });
 
+// #454 第 2 項：--staged 對每個 UPDATE 印整份 diff（就是剛暫存的改動，git diff --cached 已有），agent 得接 grep 才看得到結果行。
+test('--staged 的 UPDATE 只印結果行、不接 diff；沒帶 --staged 照舊接 diff', t => {
+  const { source, target, copier } = fixture(t);
+  assert.equal(run(copier, target, '--no-tests', 'b').status, 0);
+  const template = join(source, 'skills/engineering/setup-workflow/templates/b.mjs');
+  writeFileSync(template, 'export const b = 2;\n');
+  git(source, 'add', '.');
+  const staged = run(copier, target, '--no-tests', '--staged', 'b');
+  assert.equal(staged.status, 0, staged.stderr);
+  assert.deepEqual(staged.stdout.trim().split('\n'), ['UPDATE scripts/b.mjs', 'COPIED 1']);
+  git(source, 'commit', '-qm', 'b 2');
+  writeFileSync(template, 'export const b = 3;\n');
+  git(source, 'commit', '-qam', 'b 3');
+  assert.match(run(copier, target, '--no-tests', 'b').stdout, /^UPDATE scripts\/b\.mjs\n[^]*\+export const b = 3;/m);
+});
+
+// #526：scripts/check-node-version.mjs 手建時是 755、正本 644；template-copies 只比內容，重拷才在 diff 冒出 mode change。
+test('既有副本權限和正本不同時印 MODE <副本> <舊>→<新>（SAME 也印），複製後與正本一致；相同時不印', t => {
+  const { source, target, copier } = fixture(t);
+  assert.equal(run(copier, target, '--no-tests', 'b').status, 0);
+  const template = join(source, 'skills/engineering/setup-workflow/templates/b.mjs');
+  const want = (statSync(template).mode & 0o777).toString(8);
+  chmodSync(join(target, 'scripts/b.mjs'), 0o755);
+  const result = run(copier, target, '--no-tests', 'b');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), ['SAME scripts/b.mjs', `MODE scripts/b.mjs 755→${want}`, 'COPIED 1']);
+  assert.equal((statSync(join(target, 'scripts/b.mjs')).mode & 0o777).toString(8), want);
+  assert.deepEqual(run(copier, target, '--no-tests', 'b').stdout.trim().split('\n'), ['SAME scripts/b.mjs', 'COPIED 1']);
+});
+
+// #454 第 1 項：範本的測試分兩處，tests/<名稱>.test.mjs 跑的是 scripts/ 副本；只跑正本旁的那份，bin/check 才紅。
+test('目標 repo 有 tests/<名稱>.test.mjs 時，複製（不是 SAME）的副本下一行印 ALSO_TESTED', t => {
+  const { target, copier } = fixture(t);
+  write(target, { 'tests/b.test.mjs': '// 測 scripts/b.mjs\n', 'tests/lib/pre.test.mjs': '// 測 scripts/lib/pre.mjs\n' });
+  const result = run(copier, target, '--no-tests', 'a');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    'COPY scripts/a.mjs',
+    'COPY scripts/b.mjs',
+    'ALSO_TESTED tests/b.test.mjs',
+    'COPY scripts/lib/pre.mjs',
+    'ALSO_TESTED tests/lib/pre.test.mjs',
+    'COPIED 3',
+  ]);
+  assert.doesNotMatch(run(copier, target, '--no-tests', 'a').stdout, /ALSO_TESTED/);
+});
+
 test('--exclude：列出的檔與目錄不複製、不記清單、不追它們的相依，本地版留著不動；接受 scripts/ 前綴', t => {
   const { target, copier } = fixture(t);
   write(target, { 'scripts/test/helper.mjs': '// 本地版\n', 'scripts/test/fixtures/orca/send.json': '{"local":true}\n' });

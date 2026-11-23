@@ -3,11 +3,11 @@ import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { realTmpdir } from './test/real-tmpdir.mjs';
-import { BRIEF_FIELDS, briefRejectLine, missingFields, skeleton } from './brief-check.mjs';
+import { BRIEF_FIELDS, briefRejectLine, missingFields, missingPaths, pathCandidates, skeleton } from './brief-check.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./brief-check.mjs', import.meta.url));
 const HERE = dirname(SCRIPT);
@@ -83,4 +83,57 @@ test('--skeleton 在 git repo 外：Standing orders 用 cwd', t => {
   assert.equal(out.status, 0, out.stderr);
   assert.deepEqual(missingFields(out.stdout), []);
   assert.match(out.stdout, /^Standing orders：.*\.scratch\/pilot\/preferences\.md$/m);
+});
+
+// ron-skills retro #515-1：#381 的 Agent Brief 原句，`issue-pilot/ADAPTER.md` 不存在（真正的骨架在 issue-run/ADAPTER.md 的 Pilot 段）。
+const ISSUE_381 = ['## Agent Brief', '',
+  '`issue-pilot/ADAPTER.md` 骨架加 **Triage brief** 條目：一段 `{main_checkout}`、`{integration_branch}`、`{timeout_cmd}` 等 placeholder 的範本，由各 adapter 填值；issue-pilot SKILL 的派 triage 步驟指向它。',
+  '改正本 `skills/engineering/setup-workflow/templates/` 再同步 `scripts/`；改 `SKILL.md` 後比對 `docs/workflow/`，跑 `node scripts/build-workflow-site.mjs` 與 `bin/check`。', ''].join('\n');
+
+/** 有幾個檔的暫存 git repo（未追蹤的檔也算 repo 內）。 */
+const fixtureRepo = t => {
+  const dir = tempDir(t);
+  spawnSync('git', ['init', '-q', dir]);
+  for (const file of ['skills/engineering/issue-pilot/SKILL.md', 'skills/engineering/issue-run/ADAPTER.md', 'skills/engineering/setup-workflow/templates/brief-check.mjs',
+    'scripts/build-workflow-site.mjs', 'docs/workflow/01.md', 'bin/check', '.github/workflows/ci.yml']) {
+    mkdirSync(join(dir, dirname(file)), { recursive: true });
+    writeFileSync(join(dir, file), '');
+  }
+  return dir;
+};
+
+test('pathCandidates：只收行內反引號裡像 repo 路徑的字串，略過 URL、placeholder、glob、~/、絕對路徑、指令、執行時路徑、分支名與 fenced block', () => {
+  const top = new Set(['bin', 'scripts', 'skills', 'docs', '.github']);
+  assert.deepEqual(pathCandidates(ISSUE_381, top),
+    ['issue-pilot/ADAPTER.md', 'skills/engineering/setup-workflow/templates/', 'scripts/', 'docs/workflow/', 'bin/check']);
+  const noise = ['`https://github.com/a/b.md`', '`<repo>/scripts/x.mjs`', '`scripts/*.mjs`', '`~/code/x/y.md`', '`/home/ron/x.md`',
+    '`node scripts/x.mjs`', '`.scratch/pilot/preferences.md`', '`a/.scratch/x.md`', '`issue/7-fix`', '`origin/main`', '`ron03wlb/ron-skills`',
+    '`{main_checkout}/x.md`', '`$HOME/x.md`', '`../x/y.md`', '`pass/fail`', '`SKILL.md`',
+    '```sh', 'cat `scripts/fenced.mjs`', '```'].join('\n');
+  assert.deepEqual(pathCandidates(noise, top), []);
+  assert.deepEqual(pathCandidates('`./scripts/a.mjs:12` `scripts/a.mjs` `.github/workflows/ci.yml` `bin/`', top),
+    ['scripts/a.mjs', '.github/workflows/ci.yml', 'bin/'], '去 ./ 與 :行號、去重；點目錄與尾斜線目錄保留');
+});
+
+test('missingPaths：完整路徑或「repo 裡有檔或目錄以這段結尾」算存在', () => {
+  const entries = new Set(['skills/engineering/issue-pilot/SKILL.md', 'skills/', 'skills/engineering/', 'skills/engineering/issue-pilot/', 'bin/check', 'bin/']);
+  assert.deepEqual(missingPaths(['issue-pilot/SKILL.md', 'engineering/issue-pilot/', 'issue-pilot', 'bin/check', 'issue-pilot/ADAPTER.md', 'pilot/SKILL.md', 'gineering/issue-pilot/SKILL.md'], entries),
+    ['issue-pilot/ADAPTER.md', 'pilot/SKILL.md', 'gineering/issue-pilot/SKILL.md'], '部分路徑要對齊段落邊界；無副檔名的目錄名也找得到');
+});
+
+test('--paths：#381 本文印 BRIEF_PATH_MISSING issue-pilot/ADAPTER.md，其餘簡寫不誤報；advisory 一律 exit 0', t => {
+  const repo = fixtureRepo(t);
+  const body = join(repo, '..', `${repo.split('/').pop()}-381.md`); writeFileSync(body, ISSUE_381);
+  t.after(() => rmSync(body, { force: true }));
+  const out = spawnSync('node', [SCRIPT, '--paths', body], { encoding: 'utf8', cwd: repo });
+  assert.deepEqual([out.status, out.stdout], [0, 'BRIEF_PATH_MISSING issue-pilot/ADAPTER.md\n'], out.stderr);
+  const fixed = join(repo, 'fixed.md'); writeFileSync(fixed, ISSUE_381.replace('issue-pilot/ADAPTER.md', 'issue-run/ADAPTER.md'));
+  assert.deepEqual([cli('--paths', fixed, '--root', repo).status, cli('--paths', fixed, '--root', repo).stdout], [0, `BRIEF_PATHS_OK ${fixed} checked=5\n`], '--root 指定 repo');
+  assert.equal(cli('--paths').status, 2);
+  assert.equal(cli('--paths', fixed, '--root').status, 2, '--root 缺值');
+  assert.equal(cli('--paths', fixed, '--nope', 'x').status, 2);
+  assert.equal(cli('--paths', join(repo, 'none.md'), '--root', repo).status, 2, '讀不到檔');
+  const outside = tempDir(t);
+  const notRepo = spawnSync('node', [SCRIPT, '--paths', fixed], { encoding: 'utf8', cwd: outside, env: { ...process.env, GIT_CEILING_DIRECTORIES: dirname(outside) } });
+  assert.equal(notRepo.status, 2, 'root 不是 git repo');
 });

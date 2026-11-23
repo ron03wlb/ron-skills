@@ -175,12 +175,31 @@ test('TEMPLATE_COPY：給的檔是 workflow-templates.json 列出的副本時，
   assert.deepEqual(result.stdout.trim().split('\n'), [
     `TEMPLATE_COPY scripts/run-codex-review.mjs ${template}`,
     'TEMPLATE_COPY scripts/x.mjs skills/engineering/setup-workflow/templates/x.mjs',
+    '  開上游單前：node <ron-skills>/skills/engineering/setup-workflow/scripts/copy-templates.mjs <本 worktree> --dry-run --no-tests run-codex-review.mjs x.mjs'
+      + '（<ron-skills> 先更新到 origin/main）；SAME 才用範本重現、可能是上游問題；UPDATE（副本落後）或 DIFF（副本的 sha256 和 workflow-templates.json 記的不同，被手改過）'
+      + '先在本 repo 重跑 copy-templates 同步再重現，不開上游單',
     'OVERLAP_WT issue/1-a docs/agents/pilot.md **Probe.**',
     'OVERLAP_WT issue/2-b scripts/x.mjs',
   ]);
   // 不帶檔案時不印；清單看的是 cwd 所在 worktree，b 沒有這份清單。
   assert.doesNotMatch(run(main).stdout, /TEMPLATE_COPY/);
   assert.doesNotMatch(run(b, 'scripts/run-codex-review.mjs').stdout, /TEMPLATE_COPY/);
+});
+
+// #503：consumer 為副本開上游單前沒比對副本與範本，兩次開出早已修好的單；#498 真正擋住那條指令的是另一支 PreToolUse hook（bash-pitfalls）。
+test('TEMPLATE_COPY：PreToolUse Bash hook 的副本多一行 hook 類比對；正本就在本 repo（ron-skills）時不印開上游單前', t => {
+  const { main } = fixture(t);
+  const template = name => `skills/engineering/setup-workflow/templates/${name}`;
+  const entry = name => ({ template: template(name), commit: '0'.repeat(40), sha256: '0'.repeat(64) });
+  const manifest = { source: 'ron03wlb/ron-skills', copies: { 'scripts/claude-hook-bash-pitfalls.mjs': entry('claude-hook-bash-pitfalls.mjs'), 'scripts/y.mjs': entry('y.mjs') } };
+  writeFileSync(join(main, 'docs/agents/workflow-templates.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  const lines = run(main, 'scripts/claude-hook-bash-pitfalls.mjs').stdout.trim().split('\n');
+  assert.equal(lines.length, 3, lines.join('\n'));
+  assert.match(lines[1], /^  開上游單前：.*--dry-run --no-tests claude-hook-bash-pitfalls\.mjs（/);
+  assert.match(lines[2], /^  hook 類：.*for h in zsh-equals bash-pitfalls git-bypass main-checkout; do node <ron-skills>\/skills\/engineering\/setup-workflow\/templates\/claude-hook-\$h\.mjs < <fixture\.json>.*exit 2.*不開上游單$/);
+  mkdirSync(join(main, template('')), { recursive: true });
+  writeFileSync(join(main, template('y.mjs')), '// 正本\n');
+  assert.deepEqual(run(main, 'scripts/y.mjs').stdout.trim().split('\n').filter(line => !line.startsWith('OVERLAP_WT')), [`TEMPLATE_COPY scripts/y.mjs ${template('y.mjs')}`]);
 });
 
 // retro spay2 e9234021#1：spay2 的 followups.mjs 頂層 import 本檔，batch-merge.test 以 `node --input-type=module -e` 載入時 argv[1] 是 undefined，

@@ -2,14 +2,20 @@
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 會 spawn git 的 *.test.mjs 必須 import test/isolate-git-env.mjs（或已 import 它的 repo-fixture.mjs），
 // 否則在 git hook 或帶 GIT_DIR 的環境執行時，fixture 會改到真正的 repo（retro 2026-10-16：user.name=fixture 寫進 .git/config）。
+// 同理，用到 node:child_process、且本檔或同名被測腳本（`<名稱>.test.mjs` 旁的 `<名稱>.mjs`）的程式碼用到 ORCA_CLI_COMMAND、ORCA_TERMINAL_HANDLE
+// 或假 Orca（orcaReplySource）的 *.test.mjs 必須 import test/isolate-orca-env.mjs（isolate-git-env.mjs、repo-fixture.mjs 也清 ORCA_CLI_COMMAND，同樣算），
+// 否則在 Orca 分頁裡跑時被測腳本繼承真的 ORCA_CLI_COMMAND、呼叫真的 Orca（#524：pilot-batch move 讀了真的 `terminal read term_134`，測試照樣通過）。
+// 字串與註解裡的這些名字不算（測試資料）。
 // 用法：node scripts/check-test-git-isolation.mjs <目錄>...（掃描範圍由專案傳入：寫死的目錄不存在時會 ENOENT 當掉）。
-// exit：0 通過；1 有違規（stderr 列出檔案）；2 沒帶目錄或目錄不存在。
+// exit：0 通過；1 有違規（stderr 分 git、Orca 兩段列出檔案）；2 沒帶目錄或目錄不存在。
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const SPAWNS_GIT = /node:child_process/;
 const ISOLATED = /import\s+(?:[^;]*?from\s+)?['"]\.{1,2}\/(?:[\w.-]+\/)*(?:isolate-git-env|repo-fixture)\.mjs['"]/;
+const ORCA_ISOLATED = /import\s+(?:[^;]*?from\s+)?['"]\.{1,2}\/(?:[\w.-]+\/)*(?:isolate-orca-env|isolate-git-env|repo-fixture)\.mjs['"]/;
+const ORCA_NAMES = new Set(['ORCA_CLI_COMMAND', 'ORCA_TERMINAL_HANDLE', 'orcaReplySource']);
 const SPAWN_CALLS = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync']);
 const SHELL_CALLS = new Set(['exec', 'execSync']);
 // 這些字元或關鍵字之後的 `/` 是 regex 字面值起點，不是除號。
@@ -106,6 +112,14 @@ export function missingIsolation(text) {
   return SPAWNS_GIT.test(text) && spawnsGit(text) && !ISOLATED.test(text);
 }
 
+/** 程式碼（字串與註解除外，template 的 `${…}` 算）是否用到 Orca 的環境變數或假 Orca。 */
+export const usesOrca = text => tokens(text).list.some(token => token.kind === 'id' && ORCA_NAMES.has(token.value));
+
+/** 回傳測試檔是否會 spawn 用到 Orca 環境變數的程式卻沒有 import 隔離模組；`script` 是同名被測腳本的原始碼（沒有時空字串）。 */
+export function missingOrcaIsolation(text, script = '') {
+  return SPAWNS_GIT.test(text) && (usesOrca(text) || usesOrca(script)) && !ORCA_ISOLATED.test(text);
+}
+
 function testFiles(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     const path = join(dir, entry.name);
@@ -120,10 +134,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error(missing.length ? `目錄不存在：${missing.join(' ')}` : '用法：node scripts/check-test-git-isolation.mjs <目錄>...');
     process.exit(2);
   }
-  const problems = roots.flatMap(testFiles).filter(file => missingIsolation(readFileSync(file, 'utf8')));
-  if (problems.length) {
-    console.error(`以下測試會 spawn git 卻沒有 import test/isolate-git-env.mjs（或 repo-fixture.mjs），請在檔首加上 import：\n${problems.join('\n')}`);
-    process.exit(1);
-  }
-  console.log('測試 git 環境隔離檢查通過。');
+  const files = roots.flatMap(testFiles);
+  const problems = files.filter(file => missingIsolation(readFileSync(file, 'utf8')));
+  const sibling = file => file.replace(/\.test\.mjs$/, '.mjs');
+  const orcaProblems = files.filter(file => missingOrcaIsolation(readFileSync(file, 'utf8'), existsSync(sibling(file)) ? readFileSync(sibling(file), 'utf8') : ''));
+  if (problems.length) console.error(`以下測試會 spawn git 卻沒有 import test/isolate-git-env.mjs（或 repo-fixture.mjs），請在檔首加上 import：\n${problems.join('\n')}`);
+  if (orcaProblems.length) console.error(`以下測試會 spawn 用到 ORCA_CLI_COMMAND／ORCA_TERMINAL_HANDLE 的程式卻沒有 import test/isolate-orca-env.mjs，請在檔首加上 import：\n${orcaProblems.join('\n')}`);
+  if (problems.length || orcaProblems.length) process.exit(1);
+  console.log('測試 git／Orca 環境隔離檢查通過。');
 }

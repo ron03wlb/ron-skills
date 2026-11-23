@@ -9,9 +9,12 @@
 //   `TEMPLATE_COPY <file> <template>` 與下一步（同 worktree-overlap.mjs；沒有清單或讀不懂時不印，不改 exit code）。看到這行不要直接改副本：
 //   改 ron-skills 正本 → 在 ron-skills 跑 copy-templates.mjs --staged 帶回它自己的副本 → ron-skills commit 並 push → 再 copy 到這個 worktree。
 //   否則 ron-skills pre-commit 報 CHECK_FAIL docs-rules、這邊 check-template-copies 報不一致（retro spay2 ddc8bd0e#1：舊版對副本只印 CLEAR）。
+//   正本不在本 repo（consumer）時再印 `  開上游單前：<copy-templates --dry-run 指令>…`：SAME 才用範本重現、可能開上游 ron-skills 單，
+//   UPDATE（副本落後）、DIFF（被手改）先同步副本；範本是 PreToolUse Bash hook 時多一行 `  hook 類：…`，把 fixture 送過範本每支 PreToolUse Bash hook，
+//   有一支已 exit 2 就同步那支（#503：兩次開出範本早已修好的單，另一次真正擋住的是另一支 hook 範本）。
 // exit code：0 無命中、3 有命中、2 用法錯誤、1 git 失敗。
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
 const USAGE = '用法：node scripts/concurrent-edits.mjs [--base <sha>] [--json] <file>...';
@@ -58,13 +61,36 @@ export function findTemplateCopies(files, copies) {
   return files.filter(file => copies?.[file]?.template).map(file => ({ file, template: copies[file].template }));
 }
 
-/** TEMPLATE_COPY 行與下一步；<x> 是 copy-templates.mjs 接受的範本名（templates/ 下的路徑）。 */
-export function templateCopyLines({ file, template }) {
+/** 範本裡掛在 `PreToolUse` matcher `Bash` 的 hook（setup-workflow SKILL.md 的表）；hook 類問題要把 fixture 送過每一支。 */
+const PRE_TOOL_USE_BASH_HOOKS = ['zsh-equals', 'bash-pitfalls', 'git-bypass', 'main-checkout'];
+
+/**
+ * consumer 為副本開上游 ron-skills 單之前的比對（#503：兩次開出範本早已修好的單，另一次真正擋住的是另一支 PreToolUse hook 範本）。
+ * copy-templates --dry-run 對每個副本印 SAME（與範本相同）／UPDATE（與清單 sha256 相同的舊版）／DIFF（被手改）。
+ */
+function upstreamCheckLines(names) {
+  const lines = [`  開上游單前：node <ron-skills>/skills/engineering/setup-workflow/scripts/copy-templates.mjs <本 worktree> --dry-run --no-tests ${names.join(' ')}`
+    + '（<ron-skills> 先更新到 origin/main）；SAME 才用範本重現、可能是上游問題；UPDATE（副本落後）或 DIFF（副本的 sha256 和 workflow-templates.json 記的不同，被手改過）'
+    + '先在本 repo 重跑 copy-templates 同步再重現，不開上游單'];
+  if (names.some(name => PRE_TOOL_USE_BASH_HOOKS.some(hook => name === `claude-hook-${hook}.mjs`))) {
+    lines.push(`  hook 類：把重現的 fixture 送過範本每支 PreToolUse Bash hook：for h in ${PRE_TOOL_USE_BASH_HOOKS.join(' ')}; do`
+      + ' node <ron-skills>/skills/engineering/setup-workflow/templates/claude-hook-$h.mjs < <fixture.json>; echo "$h exit=$?"; done'
+      + '；有一支已 exit 2 就是本 repo 該同步（或裝上）那支，不開上游單');
+  }
+  return lines;
+}
+
+/**
+ * TEMPLATE_COPY 行與下一步；<x> 是 copy-templates.mjs 接受的範本名（templates/ 下的路徑）。
+ * 給了 repo 根目錄 `top` 而正本就在 top 裡（本 repo 是 ron-skills）時，不印開上游單前的比對。
+ */
+export function templateCopyLines({ file, template }, top) {
   const name = template.startsWith(TEMPLATES) ? template.slice(TEMPLATES.length) : template;
   return [
     `TEMPLATE_COPY ${file} ${template}`,
     `  下一步：改 ron-skills 正本 → node skills/engineering/setup-workflow/scripts/copy-templates.mjs <ron-skills> --no-tests --yes --staged ${name}`
       + ` → ron-skills commit 並 push → node <ron-skills>/skills/engineering/setup-workflow/scripts/copy-templates.mjs <本 worktree> --no-tests --yes ${name}`,
+    ...(top && existsSync(join(top, template)) ? [] : upstreamCheckLines([name])),
   ];
 }
 
@@ -112,7 +138,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const hits = findHits(facts);
     if (options.json) console.log(JSON.stringify({ integration: facts.integration, base: facts.base, hits, templateCopies: facts.templateCopies }, null, 2));
     else {
-      for (const line of facts.templateCopies.flatMap(templateCopyLines)) console.log(line);
+      for (const line of facts.templateCopies.flatMap(copy => templateCopyLines(copy, facts.self))) console.log(line);
       if (!hits.length) console.log('CLEAR');
       else for (const hit of hits) console.log([hit.kind, hit.worktree ?? hit.branch, hit.file, hit.detail].filter(Boolean).join(' '));
     }

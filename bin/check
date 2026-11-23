@@ -81,12 +81,14 @@ node scripts/check-test-child-kill.mjs scripts skills tests > /dev/null
 # 以真實 .claude/settings.json 的 matcher 驗每個 hook 的 exit code，案例在 scripts/hook-acceptance-cases.json（#348）。--project-dir 指向受檢的這棵樹，
 # 不用 session 的 $CLAUDE_PROJECT_DIR（coordinator 在 stage worktree 跑時它指向主 checkout）。通過時不印。
 hook_out=$(node scripts/hook-acceptance.mjs --project-dir "$PWD") || { echo "$hook_out"; false; }
-# adapter 必讀核心（issue-run.md、pilot.md）各 14000 bytes、拆出檔 58000 bytes，預算表 scripts/adapter-size-budget.json（#344）；通過時不印，失敗時印超過的檔與拆檔提示。
-node scripts/check-adapter-size.mjs > /dev/null
+# adapter 必讀核心（issue-run.md、pilot.md）各 14000 bytes、拆出檔 58000 bytes，預算表 scripts/adapter-size-budget.json（#344）；通過時只把餘裕不到 1 KB 的
+# `WARN <檔> 餘裕 <n> bytes` 印到 stderr（#470），失敗時印超過的檔與拆檔提示。
+size_out=$(node scripts/check-adapter-size.mjs) || { echo "$size_out"; false; }
+grep '^WARN' <<<"$size_out" >&2 || true
 # 只讀文件與清單的規則不到兩秒，在整條測試之前先跑：副本與 sha256（#267：第四次踩到）、pilot.md 大小、docs/agents 的裸 gh 寫入與 allow 規則清單（#274：改 adapter 文字等一分鐘才報，
 # 本機只跑 check-coordinator-permissions.mjs 看不到 allow 清單那條，開了 PR #280 才在 CI 失敗）。通過時不印（整組測試裡會再跑一次），失敗時印 node 的 failing tests 段。
 step=docs-rules
-docs_rules=(tests/template-copies.test.mjs tests/pilot-split.test.mjs tests/gh-tracker.test.mjs tests/check-coordinator-permissions.test.mjs tests/pilot-probe-adapter-entries.test.mjs tests/pilot-push-gate-scripts.test.mjs tests/pilot-project-flags.test.mjs)
+docs_rules=(tests/template-copies.test.mjs tests/pilot-split.test.mjs tests/gh-tracker.test.mjs tests/check-coordinator-permissions.test.mjs tests/pilot-probe-adapter-entries.test.mjs tests/pilot-push-gate-scripts.test.mjs tests/pilot-project-flags.test.mjs tests/pilot-store-usage.test.mjs)
 "${isolated[@]}" node --test --test-reporter=spec "${docs_rules[@]}" > "$tmp/docs-rules.log" 2>&1 || { sed -n '/failing tests:/,$p' "$tmp/docs-rules.log"; false; }
 step=tests
 # 每組測試各印一行 `ℹ tests <n>`，只看尾段會漏掉前面幾組（retro a6：PR #63、#64 只記到第二組的 120），所以最後彙總成一行。

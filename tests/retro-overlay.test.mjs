@@ -1,25 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { realTmpdir } from './helpers/real-tmpdir.mjs';
-
-const patch = new URL('../overlays/retro.patch', import.meta.url).pathname;
-const upstream = join(process.env.MATT_SKILLS ?? join(homedir(), 'code/skills'), 'skills/engineering/retro');
-// pre-commit hook 會匯出 GIT_DIR，git apply 繼承後會套到本 repo（#25）。
-const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+import { applyOverlay } from './helpers/apply-overlay.mjs';
 
 // #73／#76、#74／#75：兩個退役 coordinator 的 retro 各開一張重複單。查重要在開單前做，有沒有收集器都一樣（#95）。
 test('retro overlay 在開 tracker Issue 前依候選提到的名稱查開著的 Issue', t => {
-  const dir = mkdtempSync(join(realTmpdir(), 'retro-overlay-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  cpSync(upstream, dir, { recursive: true });
-  const applied = spawnSync('git', ['apply', patch], { cwd: dir, encoding: 'utf8', env });
-  assert.equal(applied.status, 0, applied.stderr);
-
-  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
+  const skill = applyOverlay(t, 'retro');
   const step = skill.split('\n\n').find(paragraph => paragraph.includes('gh issue list --state open --search'));
   assert.ok(step, 'overlay 沒有查開著 Issue 的段落');
   assert.match(step, /in:title,body/);
@@ -30,13 +15,7 @@ test('retro overlay 在開 tracker Issue 前依候選提到的名稱查開著的
 
 // #126：/retro 結束時由該分頁自己切成待關閉；收集模式略過步驟 5、6，但這一步不能跟著略過。
 test('retro overlay 的最後一步呼叫 tab-state 待關閉，一般模式與收集模式都要', t => {
-  const dir = mkdtempSync(join(realTmpdir(), 'retro-overlay-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  cpSync(upstream, dir, { recursive: true });
-  const applied = spawnSync('git', ['apply', patch], { cwd: dir, encoding: 'utf8', env });
-  assert.equal(applied.status, 0, applied.stderr);
-
-  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
+  const skill = applyOverlay(t, 'retro');
   const steps = skill.split('## Reference')[0].split('\n\n');
   const last = steps.findLast(paragraph => /^\d+\. /.test(paragraph));
   assert.match(last, /node scripts\/tab-state\.mjs 待關閉/);
@@ -48,13 +27,7 @@ test('retro overlay 的最後一步呼叫 tab-state 待關閉，一般模式與�
 // #106：收集模式綁在 `scripts/retro-collect.mjs` 與 Orca 分頁點名，只有退役 coordinator 用得到，候選也只寫在本機檔。
 // 改成任何 session 都把候選開成一張 `retro-candidates` Issue，不自己實作，另一台機器也看得到（ADR 0003）。
 test('retro overlay 收集模式：每個 session 把候選開成一張 retro-candidates Issue，不實作', t => {
-  const dir = mkdtempSync(join(realTmpdir(), 'retro-overlay-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  cpSync(upstream, dir, { recursive: true });
-  const applied = spawnSync('git', ['apply', patch], { cwd: dir, encoding: 'utf8', env });
-  assert.equal(applied.status, 0, applied.stderr);
-
-  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
+  const skill = applyOverlay(t, 'retro');
   const step = skill.split('\n\n').find(paragraph => paragraph.includes('**Collect mode.**'));
   assert.ok(step, 'overlay 沒有 Collect mode 段落');
   assert.doesNotMatch(step, /retro-collect\.mjs|--role/, '收集模式不能再依賴收集腳本');
@@ -74,13 +47,7 @@ test('retro overlay 收集模式：每個 session 把候選開成一張 retro-ca
 
 // #293：spay2 選本機檔案（G77），它的收集指令還會回 NORMAL（不是退役 coordinator 就照常實作），所以開單不能是唯一路線。
 test('retro overlay：條目宣告 Collect command 時照它的第一行走路線，不開 retro-candidates Issue', t => {
-  const dir = mkdtempSync(join(realTmpdir(), 'retro-overlay-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  cpSync(upstream, dir, { recursive: true });
-  const applied = spawnSync('git', ['apply', patch], { cwd: dir, encoding: 'utf8', env });
-  assert.equal(applied.status, 0, applied.stderr);
-
-  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
+  const skill = applyOverlay(t, 'retro');
   const collect = skill.split('\n\n').find(paragraph => paragraph.includes('**Collect mode.**'));
   assert.match(collect, /declares none of those lines/, '三行都沒宣告才走開單的收集模式');
   assert.ok(skill.indexOf('**Declared collect.**') < skill.indexOf('**Collect mode.**'), '先判斷宣告完不完整：只宣告一部分時，照順序讀不能先開單才停');
@@ -101,13 +68,8 @@ test('retro overlay：條目宣告 Collect command 時照它的第一行走路�
 // #327：retro 是 disable-model-invocation，coordinator 交接後、worker DONE 後都沒辦法以 Skill tool 跑，
 // 分頁停在「待 Retro」等 Operator 一個個打 /retro（investing session cf6ac0fd：26 個分頁）。拿掉之後 description 要限定觸發時機。
 test('retro overlay 拿掉 disable-model-invocation，description 限定只在使用者輸入或 issue-pilot／issue-run 指示時跑', t => {
-  const dir = mkdtempSync(join(realTmpdir(), 'retro-overlay-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  cpSync(upstream, dir, { recursive: true });
-  const applied = spawnSync('git', ['apply', patch], { cwd: dir, encoding: 'utf8', env });
-  assert.equal(applied.status, 0, applied.stderr);
-
-  const frontmatter = readFileSync(join(dir, 'SKILL.md'), 'utf8').split('\n---\n')[0];
+  const skill = applyOverlay(t, 'retro');
+  const frontmatter = skill.split('\n---\n')[0];
   assert.doesNotMatch(frontmatter, /disable-model-invocation/);
   const description = frontmatter.match(/^description:\s*(.*)$/m)?.[1] ?? '';
   assert.match(description, /Use only when the user runs \/retro/);
@@ -115,7 +77,6 @@ test('retro overlay 拿掉 disable-model-invocation，description 限定只在�
   assert.match(description, /issue-run/);
   assert.match(description, /never on your own initiative/);
 
-  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
   // 由 Skill tool 啟動時沒有人在畫面前挑採用項：會實作的路線只列候選。
   const started = skill.split('\n\n').find(paragraph => paragraph.includes('**Started by a skill.**'));
   assert.ok(started, 'overlay 沒有 Started by a skill 段落');
@@ -133,13 +94,7 @@ test('retro overlay 拿掉 disable-model-invocation，description 限定只在�
 // #358（#340 第 1 項）：main 暫停時 hook 跑主 checkout 的舊版 script，retro 把整合分支早已修好的 hook 問題重複回報（investing#407、#424）。
 // 重現要排在列出候選之前（步驟 4），否則照順序讀會先回報才重現。
 test('retro overlay：候選牽涉 HOOK_BEHIND 的 hook script 時，先在整合分支版重現再列出', t => {
-  const dir = mkdtempSync(join(realTmpdir(), 'retro-overlay-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  cpSync(upstream, dir, { recursive: true });
-  const applied = spawnSync('git', ['apply', patch], { cwd: dir, encoding: 'utf8', env });
-  assert.equal(applied.status, 0, applied.stderr);
-
-  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
+  const skill = applyOverlay(t, 'retro');
   const behind = skill.split('\n\n').find(paragraph => paragraph.includes('**Hook behind.**'));
   assert.ok(behind, 'overlay 沒有 Hook behind 段落');
   assert.match(behind, /`HOOK_BEHIND <file>`/);

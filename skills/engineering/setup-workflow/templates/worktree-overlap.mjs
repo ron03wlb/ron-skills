@@ -55,6 +55,9 @@
 //   是清單裡的副本就在 OVERLAP_WT 之前印一行（依輸入順序），<正本路徑> 是清單的 template（ron-skills 內的路徑）。不改 exit code。
 //   看到這行：不要直接改這個檔，改 ron-skills 的正本再以 copy-templates 帶回（retro spay2 0cd3fdeb#1：計畫把副本派給子代理直接改，
 //   到 check-contracts --static 的 TEMPLATE_COPY_MISMATCH 才發現，多走兩輪 PR）。不帶檔案時不印。
+//   正本不在本 repo（consumer）時，TEMPLATE_COPY 之後再印一行 `  開上游單前：<copy-templates --dry-run 指令>…`（SAME 才用範本重現、可能開上游
+//   ron-skills 單；UPDATE 副本落後、DIFF 被手改，先同步副本），其中有 PreToolUse Bash hook 時多一行 `  hook 類：…`（把 fixture 送過範本每支
+//   PreToolUse Bash hook，有一支已 exit 2 就同步那支）。#503：兩次開出範本早已修好的單，另一次真正擋住的是另一支 hook 範本。
 //   LANDED_SINCE <檔案> <commit7> <subject>
 //   帶 `--since <ISO 時間>`（要給檔案，不能和 --mine 併用）時，<主分支> 第一父線上 committer 時間不早於它、改到這個檔的 commit
 //   各印一行，依輸入的檔案順序、同一檔新的在前，排在 TEMPLATE_COPY 之後、OVERLAP_WT 之前。以落地時間算：側分支較早的 commit
@@ -108,7 +111,31 @@ export function templateCopies(cwd, files) {
   } catch {
     return [];
   }
-  return files.filter(file => copies[file]?.template).map(file => `TEMPLATE_COPY ${file} ${copies[file].template}`);
+  const hits = files.filter(file => copies[file]?.template);
+  const upstream = hits.map(file => copies[file].template).filter(template => !existsSync(join(top, template)));
+  return [
+    ...hits.map(file => `TEMPLATE_COPY ${file} ${copies[file].template}`),
+    ...(upstream.length ? upstreamCheckLines(upstream.map(template => template.replace(/^.*\/setup-workflow\/templates\//, ''))) : []),
+  ];
+}
+
+/** 範本裡掛在 `PreToolUse` matcher `Bash` 的 hook（setup-workflow SKILL.md 的表）；hook 類問題要把 fixture 送過每一支。 */
+const PRE_TOOL_USE_BASH_HOOKS = ['zsh-equals', 'bash-pitfalls', 'git-bypass', 'main-checkout'];
+
+/**
+ * consumer 為副本開上游 ron-skills 單之前的比對（#503，同 concurrent-edits.mjs）：
+ * copy-templates --dry-run 對每個副本印 SAME（與範本相同）／UPDATE（與清單 sha256 相同的舊版）／DIFF（被手改）。
+ */
+function upstreamCheckLines(names) {
+  const lines = [`  開上游單前：node <ron-skills>/skills/engineering/setup-workflow/scripts/copy-templates.mjs <本 worktree> --dry-run --no-tests ${names.join(' ')}`
+    + '（<ron-skills> 先更新到 origin/main）；SAME 才用範本重現、可能是上游問題；UPDATE（副本落後）或 DIFF（副本的 sha256 和 workflow-templates.json 記的不同，被手改過）'
+    + '先在本 repo 重跑 copy-templates 同步再重現，不開上游單'];
+  if (names.some(name => PRE_TOOL_USE_BASH_HOOKS.some(hook => name === `claude-hook-${hook}.mjs`))) {
+    lines.push(`  hook 類：把重現的 fixture 送過範本每支 PreToolUse Bash hook：for h in ${PRE_TOOL_USE_BASH_HOOKS.join(' ')}; do`
+      + ' node <ron-skills>/skills/engineering/setup-workflow/templates/claude-hook-$h.mjs < <fixture.json>; echo "$h exit=$?"; done'
+      + '；有一支已 exit 2 就是本 repo 該同步（或裝上）那支，不開上游單');
+  }
+  return lines;
 }
 
 /**

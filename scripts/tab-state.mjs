@@ -21,11 +21,13 @@
 //   確定沒生效就再送一次（retro spay2 b1549391#4：agent 只能自己 --title 再重跑）；仍逾時才印，這時改名可能已送達，分頁實際標題要另外看。
 //   讀回的標題不符時再送一次、再讀回：別的寫入者可能剛蓋掉（retro 2de453a3#6：orca-tab-title hook 的背景工作在讀到記錄之前就決定要清標題，幾秒後才送出，清掉本腳本剛設的標題）。
 //   讀回在 TAB_STATE_VERIFY_MS（預設 5000）內每隔 TAB_STATE_VERIFY_RETRY_MS（預設 400）讀一次，相符就停；重送後同樣輪詢一輪。
+//   兩輪都不符時再等 TAB_STATE_MISMATCH_RECHECK_MS（預設 1000）讀最後一次（#520：list 慢到一輪只讀得到一次，兩輪都停在舊標題、之後才讀到新標題）。
 //   仍不符才印 `TAB_STATE_MISMATCH <應有標題> actual=<實際標題>`，不印 TAB_STATE，下一行 `TAB_STATE_RENAME <最後一次 rename 的回傳 JSON>`、
-//   再下一行 `TAB_STATE_TAB <最後一次讀回時 visualLayouts 裡該分頁那一列的 JSON>`，分得出 rename 沒生效、讀回延遲或別的寫入者蓋回。
+//   再下一行 `TAB_STATE_TAB <最後一次讀回時 visualLayouts 裡該分頁那一列的 JSON>`，分得出 rename 沒生效、讀回延遲或別的寫入者蓋回：
+//   兩行都帶 tabId，不同表示改名落在別的分頁。
 //   原因：2026-11-05 低負載實測 rename 後第一次 list 就是新標題，但 2026-11 investing 高負載（load 約 18）多次 MISMATCH、actual 是上一次要求的標題，
 //   約 10 分鐘後 --title 才讀到新標題（#332 第 4 項）；舊版只讀 3 次、間隔 400 ms。另有 actual 一直停在同一個舊標題、重跑也不變的情形（#336 第 1 項，未重現），診斷行就是為它留的。
-//   --title 讀不到 Orca（`terminal list` 實測 3–8.5 秒，上限 ORCA_LIST_MS）而退回記錄時，stderr 印 `TAB_TITLE_FROM_RECORD <handle>`：這是最後設定的標題，不代表分頁實際如此（同一 retro 就把它讀成改名已生效）。
+//   --title 讀不到 Orca（`terminal list` 實測 3–8.5 秒、高負載 7.9 秒（#520）、最多 12.8 秒（#295），上限 ORCA_LIST_MS，不受 TAB_STATE_BUDGET_MS 限制）而退回記錄時，stderr 印 `TAB_TITLE_FROM_RECORD <handle>`：這是最後設定的標題，不代表分頁實際如此（同一 retro 就把它讀成改名已生效）。
 // exit：0 已改名，或沒有 ORCA_TERMINAL_HANDLE（不輸出）、Orca 呼叫失敗（不擋 hook 與 script）；1 讀回的標題不符；2 狀態不合法、--topic 沒有值。
 // ORCA_CLI_COMMAND 沒設時用 PATH 上的 `orca`。
 import { spawn } from 'node:child_process';
@@ -41,11 +43,16 @@ const SEP = '｜';
 const PREFIX = new RegExp(`^(?:${STATES.join('|')})${SEP}`);
 /** 一次 tab-state 或 hook 呼叫裡全部 Orca 呼叫共用的上限。 */
 const ORCA_BUDGET_MS = Number(process.env.TAB_STATE_BUDGET_MS || 10000);
-/** 讀目前標題的 `terminal list --include-visual-layouts` 另外的上限：它在這台機器花過 12.8 秒（#295），不留時間給改名的話，整次都被中止。逾時就改用記錄的標題。 */
-const ORCA_LIST_MS = Number(process.env.TAB_STATE_LIST_BUDGET_MS || 6000);
+/**
+ * 每次 `terminal list --include-visual-layouts` 另外的上限：它在這台機器花過 12.8 秒（#295），不留時間給改名的話，整次都被中止。逾時就改用記錄的標題。
+ * 舊預設 6000 比高負載時實測的 7.9 秒短（#520）：--title 退回記錄印出舊標題，讀回第一次就讀不到而無從比對、直接算成功。
+ */
+const ORCA_LIST_MS = Number(process.env.TAB_STATE_LIST_BUDGET_MS || 12000);
 /** 改名後讀回：輪詢的時間上限與間隔，新標題可能要過一下才反映在 visualLayouts（高負載時更久，#332）。 */
 const VERIFY_MS = Number(process.env.TAB_STATE_VERIFY_MS || 5000);
 const VERIFY_RETRY_MS = Number(process.env.TAB_STATE_VERIFY_RETRY_MS || 400);
+/** 重送後仍不符：等這麼久再讀最後一次才判定不符（#520）。 */
+const RECHECK_MS = Number(process.env.TAB_STATE_MISMATCH_RECHECK_MS || 1000);
 
 /**
  * Orca CLI 呼叫；回傳 JSON 的 result，失敗丟出含錯誤碼的 Error，`signal` 中止時殺掉 CLI。
@@ -222,7 +229,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       process.exit(2);
     }
     const ctx = orcaContext();
-    const live = await liveTitle(ctx, args[1]);
+    // 讀實際標題只受 ORCA_LIST_MS 限制：共用的 TAB_STATE_BUDGET_MS（10 秒）比 list 最慢的實測短（#520）。
+    const live = await liveTitle({ cli: ctx.cli }, args[1]);
     if (live !== null) { console.log(live); process.exit(0); }
     if (recordedTitle(args[1]) !== null) console.error(`TAB_TITLE_FROM_RECORD ${args[1]}`);
     console.log(await currentTitle(ctx, args[1]).catch(() => recordedTitle(args[1]) ?? ''));
@@ -271,6 +279,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       // 重送失敗就照實回報不符，不改成 TAB_STATE_FAILED：剛才讀到的標題確實不對。
       const resent = await setState(ctx(), handle, state, stripState(title)).then(() => true, () => false);
       if (resent) actual = await titleMismatch(verify, handle, title, seen);
+    }
+    if (actual !== null) {
+      await sleep(RECHECK_MS);
+      const tab = await liveTab(verify, handle);
+      if (tab !== null) {
+        seen.tab = tab;
+        actual = tab.title.trim() === title.trim() ? null : tab.title;
+      }
     }
     if (actual !== null) {
       console.error(`TAB_STATE_MISMATCH ${title} actual=${actual}`);

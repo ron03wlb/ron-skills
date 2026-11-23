@@ -65,7 +65,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Adapter ref | 選用：本機整合分支可能落後時（別台機器會 push），coordinator 改從哪個 ref 讀 adapter（例如 `origin/develop`，先 fetch）；預設是本機整合分支 |
 | Pool | 挑單的查詢與排序；被擋住或已在其他批次的單怎麼濾掉 |
 | Batch | 批次 checkpoint 由哪個步驟建立；檔名、欄位與狀態值照 [`PILOT-STORE.md`](../../skills/engineering/issue-pilot/PILOT-STORE.md) |
-| Brief check | 拒絕缺欄位 brief 的指令（goal、scope、acceptance、verify、timebox、forbidden、report、standing orders 路徑）；有 setup-workflow 正本時用 `brief-check`，`--skeleton` 印可直接填的骨架 |
+| Brief check | 拒絕缺欄位 brief 的指令（goal、scope、acceptance、verify、timebox、forbidden、report、standing orders 路徑）；有 setup-workflow 正本時用 `brief-check`，`--skeleton` 印可直接填的骨架；`--paths <Issue 本文>` 在標 ready 前列出不存在的 repo 路徑（advisory） |
 | Triage brief | 選用：Pick 時交給子代理細化 `needs-triage` 單的 prompt 範本；repo 事實（限時寫法、tracker 寫入指令、踩過的坑）setup 時填好，主 checkout 與 `ADAPTER_AHEAD` 時的 stage worktree 由 coordinator 每輪代入；有 setup-workflow 正本時照 PILOT-ROUND-TEMPLATE 的同名條目 |
 | Dispatch | 開 worktree 與 terminal 並送出 `/issue-run <n> --worker …` 的指令 |
 | Watch | 唯讀讀取 worker 畫面的指令；最後一行 `DONE`／`STOP` 就是做完 |

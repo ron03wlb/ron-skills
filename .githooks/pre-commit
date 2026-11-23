@@ -9,8 +9,11 @@ index_tree=$(git write-tree)
 unset $(git rev-parse --local-env-vars)
 # 讀檔的守門（流程站的兩道）要比對要 commit 的樹，不是工作區：別的 session 留著沒 stage 的 docs/workflow/ 修改會擋下無關的 commit（#329-4）。
 export CHECK_INDEX_TREE=$index_tree
-# bin/check 剛通過同一棵樹就不再跑（#297）；scripts/check-stamp.mjs 只讀本 worktree 的記錄。
-if [[ -f scripts/check-stamp.mjs ]] && node scripts/check-stamp.mjs fresh "$index_tree"; then exit 0; fi
-# 成功時不吵；失敗時 CHECK_FAIL 在 stdout，必須印出來，否則 commit 只有 exit 1、沒有任何訊息（retro spay2 b949589b#3）。
+# 成功時往 stderr 印一行，commit 的輸出就分得出這次是哪一種，證據可直接引用（#512）：
+#   CHECK_STAMP_FRESH <tree>   bin/check 剛通過同一棵樹，不再跑（#297）；scripts/check-stamp.mjs 只讀本 worktree 的記錄
+#   CHECK_PASS tests …         跑了 bin/check，印它的最後一行
+if [[ -f scripts/check-stamp.mjs ]] && node scripts/check-stamp.mjs fresh "$index_tree"; then echo "CHECK_STAMP_FRESH $index_tree" >&2; exit 0; fi
+# 失敗時 CHECK_FAIL 在 stdout，必須印出來，否則 commit 只有 exit 1、沒有任何訊息（retro spay2 b949589b#3）。
 log=$(mktemp); trap 'rm -f "$log"' EXIT
 bin/check >"$log" || { tail -n 20 "$log" >&2; exit 1; }
+tail -n 1 "$log" >&2

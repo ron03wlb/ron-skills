@@ -22,7 +22,7 @@
 
 - **Defaults for `preferences.md`.** 見 [pilot-round.md](pilot-round.md)：第一輪 seed `preferences.md`，或查 worker 上限、批次大小與誰 push 時讀；整條用 `node scripts/adapter-line.mjs 'Defaults for'` 取（名稱含反引號，前綴唯一）。
 
-- **Integration branch.** 本機 `pilot/integration`，第一次用時從 `main` 開（`git branch pilot/integration main`）。push、開 PR、合進 `main` 和之後跟上 `origin/main` 都見 Push gate。要讓它跟上 `origin/main` 時（例如 retro 分支直接落地進 `main` 之後、下一次 Stage 之前）在主 checkout 跑 `node scripts/pilot-land.mjs sync-main --check-command 'bin/check --upstream' --resolver scripts/pilot-resolve.mjs`（見 Push gate 第 3 步，入口自己轉到 stage worktree 的版本，不必算路徑）：切分支與快轉都在 `<stage worktree>` 做，主 checkout 不切分支，也不再手打 `merge --ff-only`。
+- **Integration branch.** 本機 `pilot/integration`，第一次用時從 `main` 開（`git branch pilot/integration main`）。push、開 PR、合進 `main` 和之後跟上 `origin/main` 都見 Push gate。要讓它跟上 `origin/main` 時（例如 retro 分支直接落地進 `main` 之後、下一次 Stage 之前）在主 checkout 用 Bash `run_in_background` 跑 `node scripts/pilot-land.mjs sync-main --check-command 'bin/check --upstream' --resolver scripts/pilot-resolve.mjs`、等完成通知（同 Stage，超過 600 秒，#528；見 Push gate 第 3 步，入口自己轉到 stage worktree 的版本，不必算路徑）：切分支與快轉都在 `<stage worktree>` 做，主 checkout 不切分支，也不再手打 `merge --ff-only`。
 
 - **Stage worktree.** 下文的 `<stage worktree>` 是 `git -C <主 checkout> worktree list --porcelain` 裡分支（`branch refs/heads/…` 行）為 `pilot/integration` 或 `pilot/stage-*` 的那個 worktree，取它的 `worktree ` 行的路徑；找不到就是還沒建，照 Stage 用 Orca 建好後再找一次。Stage、Regression、Integrate 全在這裡做，`pilot/integration` 也只在這裡前進。主 checkout 一直停在 `main`，coordinator 在主 checkout 只做 fetch、讀狀態、快轉 `main`（`git -C <主 checkout> merge --ff-only origin/main`）：在主 checkout 切到還沒合入的分支，工作樹會帶出那個分支的 `.claude/settings.json`，在主 checkout 跑的 session 會即時載入它的 hook（#21）。
 
@@ -40,7 +40,7 @@
 
 - **Resume.** 見 [pilot-round.md](pilot-round.md)：要請 `stop`／`done` 的 worker 繼續，或採用它已回報的 candidate 時讀（`pilot-batch.mjs resume`／`accept`，不用裸 `terminal send` 加手改列，#356）；整條用 `node scripts/adapter-line.mjs 'Resume'` 取。
 
-- **Brief check.** worker 的 brief 就是 `/issue-run <n> --worker <checkpoint>` 加上 Issue 本文，不跑這條。tooling fix unit 的 brief：先用 `node scripts/brief-check.mjs --skeleton` 印出帶標籤的骨架（`目標：`、`範圍：`、`驗收：`、`驗證：`、`TIMEBOX：<n> 分鐘`、`禁止：`、`回報：`、`Standing orders：` 已填主 checkout 的 `preferences.md`），寫進 `.scratch/pilot/briefs/<檔>` 填好內容，再跑 `node scripts/brief-check.mjs <brief> [--batch <key>] [--iid <n>]`：印 `BRIEF_OK <brief>`（exit 0）才派；`BRIEF_REJECTED … missing=<欄位,…>`（exit 1）時補 brief 再跑，不改 worker 的 prompt（#346）。
+- **Brief check.** worker 的 brief 就是 `/issue-run <n> --worker <checkpoint>` 加上 Issue 本文，不跑這條（路徑由 triage 的 `--paths` 查過）。tooling fix unit 的 brief：先用 `node scripts/brief-check.mjs --skeleton` 印出帶標籤的骨架（`目標：`、`範圍：`、`驗收：`、`驗證：`、`TIMEBOX：<n> 分鐘`、`禁止：`、`回報：`、`Standing orders：` 已填主 checkout 的 `preferences.md`），寫進 `.scratch/pilot/briefs/<檔>` 填好內容，再跑 `node scripts/brief-check.mjs <brief> [--batch <key>] [--iid <n>]`：印 `BRIEF_OK <brief>`（exit 0）才派；`BRIEF_REJECTED … missing=<欄位,…>`（exit 1）時補 brief 再跑，不改 worker 的 prompt（#346）。
 
 - **Dispatch.** 見 [pilot-round.md](pilot-round.md)：Dispatch 認領、開 worktree 與派 worker 時讀；整條用 `node scripts/adapter-line.mjs 'Dispatch'` 取。
 

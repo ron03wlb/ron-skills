@@ -6,12 +6,14 @@
 // 預算表在 scripts/adapter-size-budget.json（{ 路徑: bytes }），adapter-line.mjs 也以它的檔為範圍；拆出新檔時加一行 58000。
 // 用法：node scripts/check-adapter-size.mjs [--root <dir>]（預設 repo 根目錄）
 // 通過：stdout 每檔一行 `<檔> <bytes>／<預算>，餘裕 <n> bytes`，最後一行 `adapter 檔大小預算檢查通過。`，exit 0；清單上不存在的檔略過。
+//   餘裕低於 1024 bytes 的檔另印一行 `WARN <檔> 餘裕 <n> bytes`（在通過行之前，exit 不變；#470：下一張改這檔的單就得先刪別人的字，趁現在拆檔）。
 // 超過：stderr 每檔一行 `ADAPTER_SIZE_OVER <檔> <bytes> > <預算>` 加一行拆檔提示，exit 1。沒有預算表 exit 2。
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const BUDGET_FILE = 'scripts/adapter-size-budget.json';
+export const WARN_MARGIN = 1024;
 
 /** root 的預算表 { 路徑: bytes }；沒有預算表時 null。 */
 export function budgets(root) {
@@ -39,5 +41,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     process.exit(1);
   }
   for (const { file, bytes, budget } of all) console.log(`${file} ${bytes}／${budget}，餘裕 ${budget - bytes} bytes`);
+  for (const { file, bytes, budget } of all) if (budget - bytes < WARN_MARGIN) console.log(`WARN ${file} 餘裕 ${budget - bytes} bytes`);
   console.log('adapter 檔大小預算檢查通過。');
 }
