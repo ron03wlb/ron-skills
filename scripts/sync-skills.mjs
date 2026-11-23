@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 // 重建 skill 連結：上游原版（Matt、pstack，皆唯讀）＋ overlays/ 補丁＋本 repo 自有 skills。
 // 由 bin/sync-skills 呼叫；原本是 bash，macOS 內建 bash 3.2 沒有 `declare -A`，改寫成 node（#85）。
-// 用法：bin/sync-skills [--check | --list]；--help、-h、未知旗標或多餘參數印用法到 stderr 並 exit 2，不同步（retro spay2 8fb55a3a#4）。
+// 用法：bin/sync-skills [--check | --list] [--dest <dir>]；--help、-h、未知旗標或多餘參數印用法到 stderr 並 exit 2，不同步（retro spay2 8fb55a3a#4）。
 //   --check  只檢查 overlay 能否套用在目前的上游 checkout，不改任何連結；也回報 SKILL_DIRS 裡的失效連結與 repo 外的來源（#287）、連結來源 repo 落後上次 fetch 的 upstream（#380），這是這台機器的狀態，不影響 exit。
 //   --list   列出目前可用的 skill：user/model、名稱、來源（含目前目錄的 .claude/skills 專案 skill）。
+//   --dest <dir>  三個目的地一起改到 <dir> 底下：overlay build 在 <dir>/data（取代 XDG_DATA_HOME）、連結在 <dir>/skills（取代 SKILL_DIRS）、
+//            hook 在 <dir>/hooks（取代 HOOK_DIR），也不碰 Windows 目標；worktree 裡驗收 overlay 不會把全域連結指到 worktree（#462-2）。
+// 匯出 upstreamSkill(name)、applyPatch(patch, dir) 給 scripts/overlay-edit.mjs；被 import 時不執行同步。
 // 同步時也把 hooks/ 的檔案連到 HOOK_DIR：沒版控的全域 hook 只存在一台機器，換機就失效。實體檔內容相同才換成連結，不同就 SKIP。
 // 環境變數：MATT_SKILLS（預設 ~/code/skills）、PSTACK_SKILLS（預設 ~/code/pstack）、
 //           SKILL_DIRS（預設 ~/.claude/skills 與 ~/.agents/skills）、
@@ -23,19 +26,55 @@ import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, re
 import { homedir, release, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 // 不用 import.meta.url：node 會解開 symlink，ROOT 要和 bash 版的 `cd "$(dirname "$0")/.." && pwd` 一樣是呼叫時的路徑。
 const ROOT = resolve(dirname(process.argv[1]), '..');
 const HOME = homedir();
 const MATT = process.env.MATT_SKILLS || join(HOME, 'code/skills');
 const PSTACK = process.env.PSTACK_SKILLS || join(HOME, 'code/pstack');
-const BUILD = join(process.env.XDG_DATA_HOME || join(HOME, '.local/share'), 'ron-skills/overlay');
-const HOOK_DIR = process.env.HOOK_DIR || join(HOME, '.claude/hooks');
 const WIN_LIST = join(ROOT, 'windows-skills.txt');
-const DESTS = (process.env.SKILL_DIRS || `${HOME}/.claude/skills ${HOME}/.agents/skills`).split('\n')[0].split(/[ \t]+/).filter(Boolean);
+// 三個目的地由 configure() 設定：預設跟著環境變數；--dest <dir> 一次全改到 <dir>/data、<dir>/skills、<dir>/hooks（#462-2）。
+let BUILD, HOOK_DIR, DESTS, DEST_ROOT;
+/** 受管來源，依 --list 判斷來源的順序；同步時只清掉指向這些位置的舊連結。 */
+let MANAGED;
+function configure(destRoot) {
+  DEST_ROOT = destRoot;
+  BUILD = join(destRoot ? join(destRoot, 'data') : process.env.XDG_DATA_HOME || join(HOME, '.local/share'), 'ron-skills/overlay');
+  HOOK_DIR = destRoot ? join(destRoot, 'hooks') : process.env.HOOK_DIR || join(HOME, '.claude/hooks');
+  DESTS = destRoot ? [join(destRoot, 'skills')] : (process.env.SKILL_DIRS || `${HOME}/.claude/skills ${HOME}/.agents/skills`).split('\n')[0].split(/[ \t]+/).filter(Boolean);
+  MANAGED = [{ base: BUILD, label: 'overlay' }, { base: MATT, label: 'matt' }, { base: PSTACK, label: 'pstack' }, { base: ROOT, label: 'ron-skills' }];
+}
+configure();
 // git hook（pre-commit 跑 bin/check）會匯出這些變數，`git -C <上游 checkout>` 繼承後讀到的是本 repo。
 const env = { ...process.env };
 for (const key of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE']) delete env[key];
+
+/** 上游來源：<標籤> <checkout> <清單檔名> <SKILL.md 相對 skills/ 的層數>。 */
+const SOURCES = [
+  { label: 'Matt', base: MATT, list: 'matt-skills.txt', depth: 2 },
+  { label: 'pstack', base: PSTACK, list: 'pstack-skills.txt', depth: 1 },
+];
+/** 清單檔的項目：`-<path>` 是刻意略過（disabled）。空行與 `#` 註解不算。 */
+const listEntries = text => text.split('\n').map(line => line.trim()).filter(rel => rel && !rel.startsWith('#'))
+  .map(rel => ({ rel: rel.replace(/^-/, ''), disabled: rel.startsWith('-') }));
+
+/** overlay <name> 套用的上游 skill：{ label, dir }；清單沒有啟用這個名稱時回傳 null。scripts/overlay-edit.mjs 也用（#462-1）。 */
+export function upstreamSkill(name, root = ROOT) {
+  for (const { label, base, list } of SOURCES) {
+    const found = listEntries(readFileSync(join(root, list), 'utf8')).find(({ rel, disabled }) => !disabled && basename(rel) === name);
+    if (found) return { label, dir: join(base, 'skills', found.rel) };
+  }
+  return null;
+}
+
+/**
+ * 在 dir 裡 `git apply <patch>`，和同步時套 overlay 的方式相同；回傳 spawnSync 結果。
+ * dir 在某個 repo 底下（例如 .scratch/overlay-edit/）時，git apply 會以那個 repo 的根目錄解讀路徑，略過 dir 外的檔案、仍然 exit 0；
+ * GIT_CEILING_DIRECTORIES 擋住往上找 repo。
+ */
+export const applyPatch = (patch, dir, stdio = ['ignore', 'inherit', 'inherit']) =>
+  spawnSync('git', ['apply', patch], { cwd: dir, env: { ...env, GIT_CEILING_DIRECTORIES: dirname(resolve(dir)) }, stdio, encoding: 'utf8' });
 
 const warn = line => console.error(line);
 const isDir = path => statSync(path, { throwIfNoEntry: false })?.isDirectory() ?? false;
@@ -64,9 +103,6 @@ const logicalCwd = () => {
   } catch {}
   return process.cwd();
 };
-
-/** 受管來源，依 --list 判斷來源的順序；同步時只清掉指向這些位置的舊連結。 */
-const MANAGED = [{ base: BUILD, label: 'overlay' }, { base: MATT, label: 'matt' }, { base: PSTACK, label: 'pstack' }, { base: ROOT, label: 'ron-skills' }];
 
 /** 主 checkout：從 worktree 跑時 ROOT 是 worktree，已安裝的連結指向主 checkout 不算外部來源。 */
 const mainCheckout = () => dirname(resolve(ROOT, git(ROOT, ['rev-parse', '--git-common-dir'], { fallback: '.git' })));
@@ -134,10 +170,9 @@ function sync(check) {
       if (pin && head !== pin) warn(`WARN ${label} HEAD ${head.slice(0, 12)} 不是 ${listName} 的 pin ${pin.slice(0, 12)}；驗證後更新 pin`);
 
       const listed = new Set();
-      for (const rel of text.split('\n').map(line => line.trim())) {
-        if (!rel || rel.startsWith('#')) continue;
-        listed.add(rel.replace(/^-/, ''));
-        if (rel.startsWith('-')) continue;
+      for (const { rel, disabled } of listEntries(text)) {
+        listed.add(rel);
+        if (disabled) continue;
         const name = basename(rel), src = join(base, 'skills', rel);
         if (!isDir(src)) {
           warn(`MISSING ${label} ${rel}（上游已移除或改名，請更新 ${listName}）`);
@@ -152,7 +187,7 @@ function sync(check) {
         const patch = join(ROOT, 'overlays', `${name}.patch`);
         if (isFile(patch)) {
           cpSync(src, join(tmp, name), { recursive: true, verbatimSymlinks: true });
-          if (spawnSync('git', ['apply', patch], { cwd: join(tmp, name), env, stdio: ['ignore', 'inherit', 'inherit'] }).status !== 0) {
+          if (applyPatch(patch, join(tmp, name)).status !== 0) {
             warn(`OVERLAY_FAILED ${name}：${patch} 無法套用在目前的 ${label} 版本，請重做補丁`);
             failed = true;
             continue;
@@ -172,8 +207,7 @@ function sync(check) {
       }
     };
 
-    syncSource('Matt', MATT, join(ROOT, 'matt-skills.txt'), 2);
-    syncSource('pstack', PSTACK, join(ROOT, 'pstack-skills.txt'), 1);
+    for (const { label, base, list, depth } of SOURCES) syncSource(label, base, join(ROOT, list), depth);
 
     for (const dir of entries(join(ROOT, 'skills')).flatMap(entries)) {
       if (hasSkill(dir)) target.set(basename(dir), dir);
@@ -252,6 +286,10 @@ function windowsDir() {
   }
   if (process.env.SKILL_DIRS) {
     warn('WIN_SKIP 有設 SKILL_DIRS，Windows 目標要另設 WIN_SKILL_DIR，略過');
+    return '';
+  }
+  if (DEST_ROOT) {
+    warn('WIN_SKIP 有 --dest，Windows 目標要另設 WIN_SKILL_DIR，略過');
     return '';
   }
   if (!(process.env.WSL_DISTRO_NAME || /microsoft/i.test(release())) || !isDir('/mnt/c')) {
@@ -417,16 +455,40 @@ function move(from, to) {
   }
 }
 
-// 只認不帶旗標、--check、--list；其他（--help、-h、未知旗標、多餘參數）印用法並 exit 2，不同步（retro spay2 8fb55a3a#4：--help 直接執行了同步）。
-const USAGE = `用法：bin/sync-skills [--check | --list]
+// 只認不帶旗標、--check、--list，可再加一個 --dest <dir>；其他（--help、-h、未知旗標、多餘參數）印用法並 exit 2，不同步（retro spay2 8fb55a3a#4：--help 直接執行了同步）。
+const USAGE = `用法：bin/sync-skills [--check | --list] [--dest <dir>]
   （不帶旗標）  重建 skill 連結並套用 overlays/
   --check       只檢查 overlay 能否套用，不改任何連結
-  --list        列出目前可用的 skill`;
-const args = process.argv.slice(2);
-const arg = args[0];
-if (args.length > 1 || (arg !== undefined && arg !== '--check' && arg !== '--list')) {
-  console.error(USAGE);
-  process.exitCode = 2;
-} else {
-  process.exitCode = arg === '--list' ? list() : sync(arg === '--check');
+  --list        列出目前可用的 skill
+  --dest <dir>  三個目的地都改到 <dir> 底下（data、skills、hooks），不碰全域連結與 Windows；worktree 裡驗收 overlay 用`;
+
+/** 解析參數：回傳 { mode, dest }；不認得時回傳 null。 */
+function parseArgs(args) {
+  let mode, dest;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if ((arg === '--check' || arg === '--list') && mode === undefined) mode = arg;
+    else if (arg === '--dest' && dest === undefined && args[i + 1] && !args[i + 1].startsWith('-')) dest = resolve(args[++i]);
+    else return null;
+  }
+  return { mode, dest };
+}
+
+// 被 scripts/overlay-edit.mjs import 時不執行；bin/sync-skills 以實際路徑呼叫本檔。
+const invoked = (() => {
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+if (invoked) {
+  const parsed = parseArgs(process.argv.slice(2));
+  if (!parsed) {
+    console.error(USAGE);
+    process.exitCode = 2;
+  } else {
+    if (parsed.dest) configure(parsed.dest);
+    process.exitCode = parsed.mode === '--list' ? list() : sync(parsed.mode === '--check');
+  }
 }

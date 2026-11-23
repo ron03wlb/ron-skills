@@ -12,6 +12,8 @@
 // 不放掉認領：blocker 的最新候選還沒 stage，worker 開工就得自己 merge 它（#436 的 blocker #434 照 G69 修完多 5 個 commit）；下一輪 stage 之後用同一個 key 只帶它重跑。
 // 重疊（#174）：認領檢查之後、動手之前，成員分支（本機已有時；--fresh 是要另存成 prior 的那個）和 `.scratch/pilot/` 開著的 batch 裡其他 running、done 成員
 // 照 pilot-probe.mjs 的 OVERLAP 同一套比法（同一個檔，或 `.md` 的同一個 `- **<名稱>.**` 條目）比對，有重疊就印 `STOP <n> overlap <m> <檔案>[:<條目>]…`
+// （戳記檔不算，#460：主 checkout 有 scripts/restamp.mjs 時取它匯出的 STAMP_FILES，land.mjs 認的同一份清單；Stage 遇到它們會自己取聯集再 restamp。
+// 只差戳記檔的成員不列、不 STOP；載入失敗時 stderr 印 `WARN stamp-files <原因>`，照舊全比）
 // （多個成員時以 `, <m> …` 接著列），什麼都不動、成員列也不改寫；`--allow-overlap` 才照派。還沒派過、本機沒有分支的成員沒有東西可比。
 // 比對本身失敗（git）時印 `STOP <n> overlap-check <錯誤>`：一般派工的成員記 stop，--fresh 什麼都不動。
 // worktree 已存在（重跑）時，開新分頁前先關掉 worktree 裡每個 terminal，同 --fresh；那一列還是 running、它的分頁也還開著時
@@ -45,12 +47,15 @@
 //   prior 已在、分支又有了 commit 就是第二次重派：印 `STOP refresh-twice <n>`，由 coordinator 開 gate；gate 選了再重派時帶 --again，另存成 `-prior2`（依序編號）。
 //   認領不在這裡做：coordinator 照 Dispatch 先跑 claim；這裡只在動手前同樣檢查認領，不是這個 session 的就 `STOP <n> not-claimed`，什麼都不動。
 //   沒帶 --note（#227）時只寫 `<主 checkout>/.scratch/pilot/fresh-<n>.md` 草稿、印 `NOTE_DRAFT <path>`，不派工：唯讀（只有 gh 讀 Issue 標題），
-//   不檢查認領、不需要 ORCA_CLI_COMMAND，不改名分支、不開關分頁、不留言；帶派工才用的 --again、--allow-overlap、--capacity、--repo-cap、--stuck-after 是用法錯誤（exit 2）。
+//   不檢查認領、不需要 ORCA_CLI_COMMAND，不改名分支、不開關分頁、不留言；帶派工才用的 --again、--allow-overlap、--capacity、--no-capacity、--repo-cap、--stuck-after 是用法錯誤（exit 2）。
+//   成員分支不在時印 `STOP <n> git 沒有分支 <分支>`；batch-<key>.md 有這個成員的列、分支不同時（slug 打錯）行尾再接 `；checkpoint batch-<key>.md 的分支是 <分支>`（#469，帶 --note 的 --fresh 同）。
 //   帶 --note 的 --fresh 印 DISPATCHED 之後，草稿（不論 --note 指哪個檔）改名成第一個空號的 `fresh-<n>-r<k>.md`（k 從 1 起），印 `DRAFT_ARCHIVED <n> <path>`（#437：
 //   下一輪的草稿撞上前一輪已填的 fresh-<n>.md，只能手動 mv）；STOP 時不歸檔。
 //   草稿已在時覆寫，但它的「怎麼整併」已經有內容（coordinator 補過、漏帶 --note 重跑）時印 `STOP <n> draft-filled <path>`，不動它。內容：原 Issue 號碼與標題；
 //   prior 分支與 SHA（batch-<key>.md 那列的 candidate，空的取分支 tip）與 `git merge-base <分支> <整合分支>`；成員（prior SHA）與整合分支
 //   自 merge-base 以來共同改過的檔，各附兩邊的 `git diff --stat` 那一行，`.md` 再附兩邊改到的 `- **<名稱>.**` 條目（pilot-probe 的 changedUnits；有條目外的改動時另註明），不印完整 diff；
+//   每檔另附一行 worker 可逐檔取用 prior 改動的指令（#484：整批 diff 撞輸出上限）：`.md` 是 `git diff <merge-base> <prior> --word-diff=porcelain -- <檔> | grep '^+[^+]'`（只取新增字詞），
+//   其他檔是 `git diff <merge-base> <prior> -- <檔>`；
 //   worker checkpoint（`<worktree>/.scratch/issue-run-<n>/state.md`）最後一個含 `review-only` 的行（如 `final review-only round`）到結果行（`DONE|STOP <n>`）的原文，
 //   沒有結果行時到下一個 `#`／`##` 標題（不含）或檔尾（worker 的 checkpoint 沒有固定寫法），
 //   沒有這段時改抄 worker 分頁尾段（#261）：batch-<key>.md 那列有 handle、設了 ORCA_CLI_COMMAND 時讀 pilot.md 的 Watch 同一個來源
@@ -58,10 +63,13 @@
 //   讀不到（沒有 handle、分頁已關、沒有 ORCA_CLI_COMMAND、找不到起訖行）時才寫明要補 worker 分頁尾段；
 //   最後一段空白的「怎麼整併」給 coordinator 補，補完再帶 --note 重跑。
 //
+// 容量檢查是派工路徑（一般派工與帶 --note 的 --fresh）的預設（#534：從草稿切到派工時只加 --note，漏了 --capacity --repo-cap 4 就無聲派出）：
+//   沒帶旗標時同帶 `--capacity --repo-cap 4`；--capacity 照舊可帶（無作用），--repo-cap <n> 換掉 repo 上限；只有顯式 --no-capacity 才兩項都略過、不讀也不寫帳本
+//   （--no-capacity 和 --capacity、--repo-cap 一起帶是用法錯誤）。下面寫「帶 --capacity」「帶 --repo-cap」的段落都是指這個預設。
 // 全機上限（#178）：帶 --capacity 時，動手前先以同目錄 pilot-capacity.mjs 的 check 合計全機帳本、加上這次要派的人數（--fresh 是 1）：
 //   超過 $PILOT_MACHINE_WORKER_CAP 就只印 `STOP capacity <合計>/<上限> [<repo>=<n>...] +<人數>`（計入的列，#408）、exit 4，不寫 checkpoint、不建 worktree、不開分頁；沒超過先印 `CAPACITY ok <合計>/<上限>`。
-//   $PILOT_MACHINE_WORKER_CAP 空白時先印 `CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP`，照預設 4 比（#396）。
-//   沒帶時不讀帳本。帳本的本 repo 那一列由 pilot-probe.mjs --capacity 每輪更新，所以派工前要先跑過這一輪的 probe。
+//   $PILOT_MACHINE_WORKER_CAP 空白時先印 `CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP default 4 → 告訴人：設在 ~/.claude/settings.json 的 env`，照預設 4 比（#396、#494）。
+//   --no-capacity 時不讀帳本。帳本的本 repo 那一列由 pilot-probe.mjs --capacity 每輪更新，所以派工前要先跑過這一輪的 probe。
 //   有成員 DISPATCHED 時（#353），最後以帳本本 repo 那一列的現值加上派出人數改寫那一列（pilot-capacity 的 report，讀寫在同一把鎖裡），
 //   印 `REPORTED <repo> <running> <合計>/<上限>`：同一輪連續兩次 dispatch，第二次的合計就含第一次的成員。<repo> 是主 checkout 的目錄名，
 //   Probe 的 `--capacity <repo>` 要用同一個名稱。寫不進帳本時 stderr 印 `WARN capacity-report <原因>`，exit 不變。
@@ -72,12 +80,12 @@
 //   `edit <n> --remove-assignee @me` 放掉指派、印 `RELEASED <n>`；別人的認領不動。讀不到留言時 stderr 印 `WARN release <n> claim-check …`（或 `timeout`，認領者不明，不放），
 //   放掉失敗時印 `WARN release <n> edit <原因>`；exit 都仍是 4。
 //
-// 用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--repo-cap <n>] [--integration <分支>] [--stuck-after <分鐘>m]（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
-//       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--repo-cap <n>] [--integration <分支>] [--stuck-after <分鐘>m]
+// 用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--repo-cap <n>|--no-capacity] [--integration <分支>] [--stuck-after <分鐘>m]（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
+//       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--repo-cap <n>|--no-capacity] [--integration <分支>] [--stuck-after <分鐘>m]
 //       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--integration <分支>]（草稿，不需要 ORCA_CLI_COMMAND）
-//   --integration worktree 的 base 與表頭的整合分支，預設 pilot/integration；--stuck-after 成員行的 stuck-after，預設 90m。
-// stdout：容量行（CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP、CAPACITY ok repo …、CAPACITY ok …，或 STOP capacity repo …、STOP capacity … 接 RELEASED <n>）、Orca 不能用時唯一的成員外 STOP orca-unavailable <第一行>（見上）、最後的 REPORTED <repo> …（見上）；
-//   stderr 另有 WARN release …、WARN capacity-report …、WARN orca-register …。每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、worktree-branch、create、unbare、terminal、tui-timeout、send、orca、timeout、signal），Env sync 失敗是 `STOP sync <n> exit <code>`（見上）；
+//   --integration worktree 的 base 與表頭的整合分支，預設 pilot/integration；--stuck-after 成員行的 stuck-after，預設 90m；--repo-cap 預設 4（見上）。
+// stdout：容量行（CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP default 4 → …、CAPACITY ok repo …、CAPACITY ok …，或 STOP capacity repo …、STOP capacity … 接 RELEASED <n>）、Orca 不能用時唯一的成員外 STOP orca-unavailable <第一行>（見上）、最後的 REPORTED <repo> …（見上）；
+//   stderr 另有 WARN release …、WARN capacity-report …、WARN orca-register …、WARN stamp-files …。每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、worktree-branch、create、unbare、terminal、tui-timeout、send、orca、timeout、signal），Env sync 失敗是 `STOP sync <n> exit <code>`（見上）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
 //   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop；running、overlap 的 STOP 不改寫那一列；
 //   send 的 STOP 記 running：worker 可能其實已在跑，交給 Probe 判定，#354），STOP 原因只在 stdout。
@@ -97,8 +105,8 @@ import { ADAPTER, changedUnits, memberOverlaps, parseBatch, pilotFiles, pilotSec
 import { envMissingLines, check as capacityCheck, ledgerPath, machineCap, report as capacityReport, stopLine as capacityStopLine } from './pilot-capacity.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
 
-const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--repo-cap <n>] [--integration <分支>] [--stuck-after <分鐘>m]（需要 ORCA_CLI_COMMAND）\n'
-  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--repo-cap <n>] [--integration <分支>] [--stuck-after <分鐘>m]\n'
+const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--repo-cap <n>|--no-capacity] [--integration <分支>] [--stuck-after <分鐘>m]（需要 ORCA_CLI_COMMAND；容量檢查預設做，--repo-cap 預設 4）\n'
+  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--repo-cap <n>|--no-capacity] [--integration <分支>] [--stuck-after <分鐘>m]\n'
   + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--integration <分支>]（只寫 fresh-<n>.md 草稿、不派工）';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const WORKTREE_CREATE = fileURLToPath(new URL('./orca-worktree-create.mjs', import.meta.url));
@@ -108,6 +116,11 @@ const DEADLINE = Date.now() + BUDGET_MS;
 // 上限用 ??：0 是合法值（只查一次，測試用），間隔與預算的 || 則把 0 當成沒設。
 const REGISTER_MS = Number(process.env.PILOT_DISPATCH_REGISTER_MS ?? 60000);
 const REGISTER_POLL_MS = Number(process.env.PILOT_DISPATCH_REGISTER_POLL_MS || 2000);
+/** 派工路徑預設的單一 repo 上限（#534：沒帶 --repo-cap 時用它，--no-capacity 才略過）。 */
+const DEFAULT_REPO_CAP = 4;
+/** 戳記檔（#460）：main 開頭由 stampFilesOf 載入，overlapStop 比對時略過。 */
+let stampFiles = [];
+
 /** Orca 還沒登記 worktree 時 `terminal create` 的 error code（orca-session-send 的 orca() 以它當錯誤訊息）。 */
 const SELECTOR_NOT_FOUND = 'selector_not_found';
 
@@ -344,11 +357,31 @@ function unstagedBlockers(main, integration, blockers) {
   });
 }
 
-/** 重疊檢查：`branch` 和開著的 batch 裡其他 running、done 成員有重疊時傳回 STOP 原因（不含 `STOP <n> ` 前綴），否則 undefined。 */
+/**
+ * 主 checkout 的戳記檔（#460）：有 scripts/restamp.mjs 時取它匯出的 STAMP_FILES（land.mjs 的 restampConflicts 讀的同一份，不另抄），沒有時空陣列。
+ * 載入失敗時 stderr 印 `WARN stamp-files <原因>`，傳回空陣列（照舊全比，寧可多擋）。
+ */
+async function stampFilesOf(main) {
+  const script = join(main, 'scripts/restamp.mjs');
+  if (!existsSync(script)) return [];
+  try {
+    const { STAMP_FILES = [] } = await import(pathToFileURL(script).href);
+    return Array.isArray(STAMP_FILES) ? STAMP_FILES : [];
+  } catch (error) {
+    console.error(`WARN stamp-files ${error.message.replace(/\s*\n\s*/g, ' ')}`);
+    return [];
+  }
+}
+
+/** 重疊的一處（`<檔案>` 或 `<檔案>:<條目>`）是不是戳記檔。 */
+const isStamp = where => stampFiles.some(file => where === file || where.startsWith(`${file}:`));
+
+/** 重疊檢查：`branch` 和開著的 batch 裡其他 running、done 成員有重疊（戳記檔不算，#460）時傳回 STOP 原因（不含 `STOP <n> ` 前綴），否則 undefined。 */
 function overlapStop(main, n, branch, integration) {
   let found;
   try {
-    found = memberOverlaps(main, n, branch, { integration });
+    found = memberOverlaps(main, n, branch, { integration })
+      .map(({ m, where }) => ({ m, where: where.filter(place => !isStamp(place)) })).filter(({ where }) => where.length);
   } catch (error) {
     return `overlap-check ${error.message.replace(/\s*\n\s*/g, ' ')}`;
   }
@@ -471,6 +504,12 @@ async function dispatchMember(cli, main, checkpoint, integration, { n, branch },
   return { worktree, handle, ...(sent.stop && signal.aborted ? { stop: signal.reason } : sent) };
 }
 
+/** 成員分支不在時的 STOP 原因（不含 `STOP `，#469）：batch-<key>.md 有這個成員的列、分支不同（slug 打錯）時附上 checkpoint 的分支。 */
+function missingBranch(main, key, { n, branch }) {
+  const listed = rowOf(join(main, `.scratch/pilot/batch-${key}.md`), n)?.[2];
+  return `${n} git 沒有分支 ${branch}${listed && listed !== branch ? `；checkpoint batch-${key}.md 的分支是 ${listed}` : ''}`;
+}
+
 const priorName = (branch, k) => `${branch}-prior${k > 1 ? k : ''}`;
 const hasBranch = (main, branch) => run('git', ['-C', main, 'rev-parse', '--verify', '-q', `refs/heads/${branch}`]).status === 0;
 
@@ -488,7 +527,7 @@ async function refresh(cli, main, key, integration, { n, branch }, note, again, 
   const resuming = latest && (!hasBranch(main, branch)
     || run('git', ['-C', main, 'rev-list', '--count', `${integration}..${branch}`]).stdout.trim() === '0');
   if (latest && !resuming && !again) return { stop: `refresh-twice ${n}` };
-  if (!latest && !hasBranch(main, branch)) return { stop: `${n} git 沒有分支 ${branch}` };
+  if (!latest && !hasBranch(main, branch)) return { stop: missingBranch(main, key, { n, branch }) };
   // fresh worker 要重做的是 prior 那份改動：比對它（中斷後續做時是已另存的 prior）。
   const overlap = !allowOverlap && overlapStop(main, n, resuming ? latest : branch, integration);
   if (overlap) return { stop: `${n} ${overlap}` };
@@ -569,7 +608,7 @@ function screenTail(n, handle) {
  * 沒帶 --note 的 --fresh：寫 fresh-<n>.md 草稿（內容見檔頭），傳回 `{ path }` 或 `{ stop }`（不含 `STOP `）。只讀 git、gh 與檔案，不改任何狀態。
  */
 function freshDraft(main, key, integration, { n, branch }) {
-  if (!hasBranch(main, branch)) return { stop: `${n} git 沒有分支 ${branch}` };
+  if (!hasBranch(main, branch)) return { stop: missingBranch(main, key, { n, branch }) };
   const path = join(main, `.scratch/pilot/fresh-${n}.md`);
   const merge = existsSync(path) ? readFileSync(path, 'utf8').split(/^## 怎麼整併$/m)[1] : undefined;
   if (merge?.trim()) return { stop: `${n} draft-filled ${path}` };
@@ -599,10 +638,14 @@ function freshDraft(main, key, integration, { n, branch }) {
   const entries = (path, unit) => !path.endsWith('.md') ? ''
     : (unit.entries.size ? `；條目：${[...unit.entries].sort().join('、')}` : '') + (unit.whole ? '；另有條目外的改動' : '');
   const side = (label, ref, unit, path) => `- ${label}：\`${stat(ref, path)}\`${entries(path, unit)}`;
+  // 逐檔取 prior 改動的指令（#484）：`.md` 常有整段單行的條目，一般 diff 一個字就整行印兩次，只取新增的字詞。
+  const fetch = path => (path.endsWith('.md')
+    ? `- 逐檔取 prior 新增的字詞：\`git diff ${base} ${prior} --word-diff=porcelain -- ${path} | grep '^+[^+]'\``
+    : `- 逐檔取 prior 的 diff：\`git diff ${base} ${prior} -- ${path}\``);
   let common;
   try {
     common = [...member.keys()].filter(path => other.has(path)).sort()
-      .map(path => [`### ${path}`, '', side('成員', prior, member.get(path), path), side('整合分支', integration, other.get(path), path)].join('\n'));
+      .map(path => [`### ${path}`, '', side('成員', prior, member.get(path), path), side('整合分支', integration, other.get(path), path), fetch(path)].join('\n'));
   } catch (error) {
     return { stop: `${n} git ${error.message}` };
   }
@@ -666,6 +709,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (args[i] === '--again') { bad ||= 'again' in given; given.again = true; continue; }
     if (args[i] === '--allow-overlap') { bad ||= 'allowOverlap' in given; given.allowOverlap = true; continue; }
     if (args[i] === '--capacity') { bad ||= 'capacity' in given; given.capacity = true; continue; }
+    if (args[i] === '--no-capacity') { bad ||= 'noCapacity' in given; given.noCapacity = true; continue; }
     const name = new Map(Object.entries({ '--integration': 'integration', '--stuck-after': 'stuckAfter', '--fresh': 'fresh', '--note': 'note', '--repo-cap': 'repoCap' })).get(args[i]);
     const value = args[++i];
     if (!name || !value || value.startsWith('--') || name in given) bad = true;
@@ -677,11 +721,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const fresh = 'fresh' in given;
   // --fresh 只帶一個成員；沒帶 --note 是草稿（#227），不能再帶派工才用的旗標；--note 與 --again 只跟 --fresh 一起用。
   const draft = fresh && !('note' in given);
-  if (draft ? given.again || given.allowOverlap || given.capacity || 'repoCap' in given || 'stuckAfter' in given : 'note' in given && !existsSync(given.note)) bad = true;
+  if (draft ? given.again || given.allowOverlap || given.capacity || given.noCapacity || 'repoCap' in given || 'stuckAfter' in given : 'note' in given && !existsSync(given.note)) bad = true;
+  // 派工路徑預設做容量檢查（#534）；--no-capacity 是唯一的略過方式，和要求檢查的旗標一起帶是矛盾。
+  if (given.noCapacity && (given.capacity || 'repoCap' in given)) bad = true;
+  const capacity = !draft && !given.noCapacity;
   if (fresh ? specs.length : 'note' in given || given.again) bad = true;
   const members = (fresh ? [given.fresh] : specs).map(spec => spec.match(/^(\d+):([a-z0-9][a-z0-9-]*)$/)).map(m => m && { n: m[1], branch: `issue/${m[1]}-${m[2]}` });
   const cli = process.env.ORCA_CLI_COMMAND;
-  if (bad || !key || !members.length || members.some(m => !m) || (!cli && !draft) || (given.capacity && machineCap() === undefined)) {
+  if (bad || !key || !members.length || members.some(m => !m) || (!cli && !draft) || (capacity && machineCap() === undefined)) {
     console.error(USAGE);
     process.exit(2);
   }
@@ -701,6 +748,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       clearTimeout(budget);
       process.exit(written.stop ? 4 : 0);
     }
+    stampFiles = await stampFilesOf(main);
     let envSync;
     try {
       envSync = envSyncCommand(main);
@@ -714,13 +762,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       clearTimeout(budget);
       process.exit(4);
     };
-    if ('repoCap' in given) {
+    if (capacity) {
       const total = repoRunning(main, new Set(members.map(({ n }) => n))) + members.length;
-      const repoCap = Number(given.repoCap);
+      const repoCap = Number(given.repoCap ?? DEFAULT_REPO_CAP);
       if (total > repoCap) stopCapacity(`STOP capacity repo ${total}/${repoCap}`);
       console.log(`CAPACITY ok repo ${total}/${repoCap}`);
     }
-    if (given.capacity) {
+    if (capacity) {
       for (const line of envMissingLines()) console.log(line);
       const result = capacityCheck(ledgerPath(), members.length);
       const { ok, total, cap } = result;
@@ -736,7 +784,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     }
     // 派出後把派出人數加進帳本本 repo 那一列（#353）；寫不進去只警告。
     const reportDispatched = count => {
-      if (!given.capacity || !count) return;
+      if (!capacity || !count) return;
       try {
         const { running, total, cap } = capacityReport(ledgerPath(), basename(main), count, { add: true });
         console.log(`REPORTED ${basename(main)} ${running} ${total}/${cap}`);

@@ -136,7 +136,7 @@ test('同步：overlay 內容變了才印 SKILL_CHANGED <名稱>', t => {
 });
 
 // retro spay2 b949589b#3：`bin/check >/dev/null` 吞掉 stdout 的 CHECK_FAIL，commit 只有 exit 1、沒有任何訊息。
-test('pre-commit：bin/check 失敗時把 stdout 的 CHECK_FAIL 印到 stderr；成功時安靜', t => {
+test('pre-commit：bin/check 失敗時把 stdout 的 CHECK_FAIL 印到 stderr；成功時只把最後一行印到 stderr（#512）', t => {
   const repo = join(scratch(t), 'repo');
   mkdirSync(join(repo, 'bin'), { recursive: true });
   spawnSync('git', ['init', '-q', repo], { env });
@@ -146,10 +146,11 @@ test('pre-commit：bin/check 失敗時把 stdout 的 CHECK_FAIL 印到 stderr；
   const failed = spawnSync('bash', [hook], { cwd: repo, env, encoding: 'utf8' });
   assert.equal(failed.status, 1);
   assert.match(failed.stderr, /CHECK_FAIL step/);
-  fake('echo noise');
+  fake('echo noise; echo CHECK_PASS tests 1');
   const passed = spawnSync('bash', [hook], { cwd: repo, env, encoding: 'utf8' });
   assert.equal(passed.status, 0);
-  assert.equal(passed.stdout + passed.stderr, '');
+  assert.equal(passed.stdout, '');
+  assert.equal(passed.stderr, 'CHECK_PASS tests 1\n', '只印 bin/check 的最後一行，前面的輸出不印');
 });
 
 // #300：3c9db54 只改正本、630edfb 才改副本，pre-commit 該擋卻進了分支；hook 要每個 clone 手動 ln，Mac 那份 clone 有沒有做過看不出來。
@@ -236,3 +237,27 @@ for (const flag of ['--help', '-h', '--bogus']) {
     assert.equal(existsSync(xdg), false);
   });
 }
+
+// #462-2：在 worktree 驗收 overlay 要自己湊 XDG_DATA_HOME、SKILL_DIRS、HOOK_DIR 三個變數，否則全域連結會指到 worktree。
+test('--dest <dir>：overlay build、skill 連結、hook 都放在 <dir> 底下，不碰環境變數指的目的地與 Windows', t => {
+  const tmp = scratch(t);
+  const dest = join(tmp, 'dest'), elsewhere = join(tmp, 'elsewhere');
+  const { SKILL_DIRS, WIN_SKILL_DIR, ORCA_CLI_COMMAND, ...base } = env;
+  const extra = { XDG_DATA_HOME: join(elsewhere, 'xdg'), HOOK_DIR: join(elsewhere, 'hooks'), GIT_HOOKS_DIR: join(tmp, 'git-hooks') };
+  const result = spawnSync(sync, ['--dest', dest], { encoding: 'utf8', cwd: root, env: { ...base, ...extra } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`^SYNCED \\d+ skills → ${join(dest, 'skills')}$`, 'm'));
+  assert.match(result.stderr, /^WIN_SKIP 有 --dest/m);
+  assert.equal(readlinkSync(join(dest, 'skills/issue-run')), join(root, 'skills/engineering/issue-run'));
+  assert.equal(readlinkSync(join(dest, 'skills/code-review')), join(dest, 'data/ron-skills/overlay/code-review'));
+  assert.equal(existsSync(join(dest, 'data/ron-skills/overlay/code-review/SKILL.md')), true);
+  assert.equal(readlinkSync(join(dest, 'hooks/orca-tab-title.sh')), join(root, 'hooks/orca-tab-title.sh'));
+  assert.equal(existsSync(elsewhere), false, '--dest 優先於 XDG_DATA_HOME、HOOK_DIR');
+
+  const list = spawnSync(sync, ['--list', '--dest', dest], { encoding: 'utf8', cwd: tmp, env: { ...base, ...extra } });
+  assert.equal(list.status, 0, list.stderr);
+  assert.match(list.stdout, /^model\tcode-review\toverlay$/m);
+  const missing = run(['--dest']);
+  assert.equal(missing.status, 2);
+  assert.match(missing.stderr, /--dest <dir>/);
+});

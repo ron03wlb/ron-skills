@@ -1,7 +1,7 @@
 // /setup-workflow 一次完成（#278，取代 #91 的分段確認）：環境 → Host → 安裝目標都自動偵測、正常情況不問人，
 // 寫入全在另開 worktree 的分支上，最後開 PR，人合併 PR 就是確認；全程用人的語言、不講等級代號。導讀站 docs/workflow/ 同步轉述。
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -107,4 +107,61 @@ test('#344：PILOT-TEMPLATE 本文在核心預算內留 2 KB，搬出的條目�
     assert.match(body, new RegExp(`^- \\*\\*${entry}\\.\\*\\* See \`docs/agents/pilot-round\\.md\`.*adapter-line\\.mjs '${entry}'`, 'm'), `PILOT-TEMPLATE 的 ${entry} pointer`);
   }
   assert.match(read('skills/engineering/issue-run/ADAPTER.md'), /\[PILOT-ROUND-TEMPLATE\.md\]\(PILOT-ROUND-TEMPLATE\.md\)/);
+});
+
+/** Markdown 裡 `- **<名稱>.** <本文>` 條目 → Map(名稱 → 本文)。 */
+const entries = text => new Map([...text.matchAll(/^- \*\*(.+?)\.\*\* (.*)$/gm)].map(([, name, body]) => [name, body]));
+/** 刻意和 ADAPTER.md 的範本指令不同的 PILOT-TEMPLATE 條目：`['<條目>', '<原因>']`。 */
+const PILOT_TEMPLATE_EXEMPT = new Map([]);
+
+/**
+ * ADAPTER.md Pilot 段寫了「with the setup-workflow templates, …」的條目，子句裡的 `node scripts/<x>.mjs` 與裸寫的範本名稱 `<x>`
+ * 都要在 PILOT-TEMPLATE.md 同名條目出現 `scripts/<x>.mjs`；條目是 `See \`docs/agents/pilot-round.md\`` pointer 時看 PILOT-ROUND-TEMPLATE.md 的同名條目。
+ * 回傳 `PILOT_TEMPLATE_MISSING <條目> scripts/<x>.mjs` 行（條目整個不在時 `<x>` 印 `-`）。
+ */
+function pilotTemplateDrift(adapter, pilot, round) {
+  const isTemplate = name => existsSync(new URL(`../skills/engineering/setup-workflow/templates/${name}.mjs`, import.meta.url));
+  const [pilotEntries, roundEntries] = [entries(pilot), entries(round)];
+  const lines = [];
+  for (const [name, body] of entries(adapter.split('\n## Pilot\n')[1].split('\n## ')[0])) {
+    if (PILOT_TEMPLATE_EXEMPT.has(name)) continue;
+    const clause = body.split('with the setup-workflow templates,')[1]?.split(/\.(?: |$)(?=(?:[^`]*`[^`]*`)*[^`]*$)/)[0];
+    if (!clause) continue;
+    const scripts = new Set([...clause.matchAll(/`node scripts\/([\w./-]+)\.mjs\b/g), ...clause.matchAll(/`([\w-]+)`/g)].map(match => match[1]).filter(isTemplate));
+    if (!scripts.size) continue;
+    let text = pilotEntries.get(name);
+    if (text?.startsWith('See `docs/agents/pilot-round.md`')) text = roundEntries.get(name);
+    if (text === undefined) { lines.push(`PILOT_TEMPLATE_MISSING ${name} -`); continue; }
+    for (const script of scripts) if (!text.includes(`scripts/${script}.mjs`)) lines.push(`PILOT_TEMPLATE_MISSING ${name} scripts/${script}.mjs`);
+  }
+  return lines;
+}
+
+// #461：#346 把 brief-check.mjs 升為正本、ADAPTER.md 的 Brief check 補了 Default 指令，PILOT-TEMPLATE 還留著「No command」，bin/check 全綠。
+test('#461：ADAPTER.md Pilot 段的範本指令，PILOT-TEMPLATE（或它指去的 PILOT-ROUND-TEMPLATE）同名條目都提到', () => {
+  const adapter = read('skills/engineering/issue-run/ADAPTER.md');
+  const pilot = read('skills/engineering/issue-run/PILOT-TEMPLATE.md');
+  const round = read('skills/engineering/issue-run/PILOT-ROUND-TEMPLATE.md');
+  const before346 = pilot.replace(/^- \*\*Brief check\.\*\* .*$/m, "- **Brief check.** No command: a worker's brief is `/issue-run <n> --worker <checkpoint>` plus the Issue body.");
+  assert.match(before346, /^- \*\*Brief check\.\*\* No command:/m);
+  assert.deepEqual(pilotTemplateDrift(adapter, before346, round), ['PILOT_TEMPLATE_MISSING Brief check scripts/brief-check.mjs']);
+  const drift = pilotTemplateDrift(adapter, pilot, round);
+  assert.deepEqual(drift, [], `PILOT-TEMPLATE 條目沒跟上 ADAPTER.md 的範本指令（刻意不同就登記到 PILOT_TEMPLATE_EXEMPT）：\n${drift.join('\n')}`);
+});
+
+// #459：ADAPTER.md 要 Pilot 段連 pilot.md 與 pilot-round.md（pilot.md 在前），Probe 的 ADAPTER_AHEAD 只比對 Pilot 段連到的檔。
+test('#459：setup-workflow step 7 要 Pilot 段連到 pilot.md 與 pilot-round.md，PILOT-ROUND-TEMPLATE 註解不再要人加預算行', () => {
+  const adapter = steps(read(SKILL)).find(step => step.name === 'Adapter');
+  assert.match(adapter.text, /`## Pilot` section links `docs\/agents\/pilot\.md` and `docs\/agents\/pilot-round\.md`, `pilot\.md` first/);
+  assert.doesNotMatch(adapter.text, /only points to `docs\/agents\/pilot\.md`/);
+  const comment = read('skills/engineering/issue-run/PILOT-ROUND-TEMPLATE.md').split('-->')[0];
+  assert.match(comment, /\[optional: …\]/);
+  assert.doesNotMatch(comment, /give it a 58000 line/);
+  assert.equal(JSON.parse(read('skills/engineering/setup-workflow/templates/adapter-size-budget.json'))['docs/agents/pilot-round.md'], 58000);
+});
+
+// #526：consumer 的舊副本早於來源行，--verify 會印 NO_ORIGIN；step 8 要說怎麼處理。
+test('#526：step 8 說明 --verify 的 NO_ORIGIN 是重跑 copy-templates（sha 與清單一致時是不必確認的 UPDATE）', () => {
+  const copy = steps(read(SKILL)).find(step => step.name === 'Copy templates and gates');
+  assert.match(copy.text, /`NO_ORIGIN <copy>`[\s\S]*?source line: the copy predates that line, so rerun `copy-templates\.mjs <repo> <template>`[\s\S]*?as an `UPDATE` without asking when its sha256 still matches the record/);
 });

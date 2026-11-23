@@ -105,7 +105,26 @@ test('CLI：檔案是 workflow-templates.json 列出的副本時，在 CLEAR／�
   const lines = result.stdout.trimEnd().split('\n');
   assert.equal(lines[0], `TEMPLATE_COPY scripts/claude-hook-language.mjs ${template}`);
   assert.match(lines[1], /^  下一步：改 ron-skills 正本 → .*copy-templates\.mjs <ron-skills> --no-tests --yes --staged claude-hook-language\.mjs → ron-skills commit 並 push → .*copy-templates\.mjs <本 worktree> --no-tests --yes claude-hook-language\.mjs$/);
-  assert.equal(lines[2], 'CLEAR');
-  assert.equal(lines.length, 3, result.stdout);
+  assert.match(lines[2], /^  開上游單前：node <ron-skills>\/\S*copy-templates\.mjs <本 worktree> --dry-run --no-tests claude-hook-language\.mjs（.*SAME.*UPDATE.*DIFF.*workflow-templates\.json.*不開上游單$/);
+  assert.equal(lines[3], 'CLEAR');
+  assert.equal(lines.length, 4, result.stdout);
   assert.deepEqual(JSON.parse(run(mine, '--json', 'scripts/claude-hook-language.mjs').stdout).templateCopies, [{ file: 'scripts/claude-hook-language.mjs', template }]);
+});
+
+// #503：consumer 為副本開上游單前沒比對副本與範本，兩次開出早已修好的單；#498 真正擋住那條指令的是另一支 PreToolUse hook（bash-pitfalls）。
+test('TEMPLATE_COPY：PreToolUse Bash hook 的副本多一行，把 fixture 送過每支 PreToolUse Bash hook；正本在本 repo（ron-skills）時不印開上游單前', t => {
+  const { mine } = fixture(t);
+  const template = name => `skills/engineering/setup-workflow/templates/${name}`;
+  mkdirSync(join(mine, 'docs', 'agents'), { recursive: true });
+  writeFileSync(join(mine, 'docs', 'agents', 'workflow-templates.json'), JSON.stringify({ copies: {
+    'scripts/claude-hook-zsh-equals.mjs': { template: template('claude-hook-zsh-equals.mjs') },
+    'scripts/x.mjs': { template: template('x.mjs') },
+  } }));
+  const lines = run(mine, 'scripts/claude-hook-zsh-equals.mjs').stdout.trimEnd().split('\n');
+  assert.equal(lines.length, 5, lines.join('\n'));
+  assert.match(lines[2], /^  開上游單前：.*--dry-run --no-tests claude-hook-zsh-equals\.mjs（/);
+  assert.match(lines[3], /^  hook 類：.*for h in zsh-equals bash-pitfalls git-bypass main-checkout; do node <ron-skills>\/skills\/engineering\/setup-workflow\/templates\/claude-hook-\$h\.mjs < <fixture\.json>.*exit 2.*不開上游單$/);
+  mkdirSync(join(mine, 'skills', 'engineering', 'setup-workflow', 'templates'), { recursive: true });
+  writeFileSync(join(mine, template('x.mjs')), '// 正本\n');
+  assert.deepEqual(run(mine, 'scripts/x.mjs').stdout.trimEnd().split('\n').map(line => line.split('：')[0]), ['TEMPLATE_COPY scripts/x.mjs skills/engineering/setup-workflow/templates/x.mjs', '  下一步', 'CLEAR']);
 });

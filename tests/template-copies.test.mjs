@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { pilotFiles } from '../scripts/pilot-probe.mjs';
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url));
@@ -18,6 +18,10 @@ for (const [path, entry] of Object.entries(copies)) {
     assert.equal(createHash('sha256').update(read(path)).digest('hex'), entry.sha256,
       `${path} 與清單記錄的 sha256 不同：不手動 cp、不手算 sha256，git add 正本後執行 ${RECOPY}，它複製副本並更新清單（#250）`);
     assert.match(entry.commit, /^[0-9a-f]{40}$/);
+    // #526：scripts/check-node-version.mjs 手建時是 755、正本 644，內容一樣沒人發現，重拷才在 diff 冒出 mode change。
+    const executable = file => Boolean(statSync(new URL(`../${file}`, import.meta.url)).mode & 0o100);
+    assert.equal(executable(path), executable(entry.template),
+      `${path} 與正本的執行權限不同：副本該可執行就 chmod 正本、git add 後執行 ${RECOPY}；否則直接執行 ${RECOPY}，它把副本權限改成正本的（印 MODE）`);
   });
 }
 

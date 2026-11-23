@@ -1,4 +1,5 @@
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
+import './test/isolate-orca-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -16,8 +17,8 @@ const SELF = 'term_self';
 // `failing` 為真時每個呼叫都回錯。標題記錄放在 fixture 的 TAB_STATE_DIR，不碰家目錄。
 // `tabTitle` 有值時 rename 會改掉回報的分頁標題；`stuck` 為真時 rename 回 ok、回報的標題不變（2026-11-02 coordinator 回報改名成功，分頁實際沒變）。
 // 本分頁預設是分頁的第一個 pane（擁有者）；`splitChild` 為真時本 pane 排在別的 pane 之後（orca-session-split 的 split 模式開出來的，#378）。
-// `lagReads` 是改名後還回舊標題的讀取次數。`overwrittenOnce` 為真時第一次 rename 回 ok、標題隨即被別的寫入者蓋回（retro 2de453a3#6：orca-tab-title hook 較晚送出的清標題）。
-function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTitle, slow = '', stuck = false, lagReads = 0, firstRenameFails = false, slowRenames = 0, renameLands = false, overwrittenOnce = false, splitChild = false } = {}) {
+// `lagReads` 是改名後還回舊標題的讀取次數。`listDelayMs` 是每次 `terminal list --include-visual-layouts` 回應前睡的毫秒數（高負載的 Orca，#520）。`overwrittenOnce` 為真時第一次 rename 回 ok、標題隨即被別的寫入者蓋回（retro 2de453a3#6：orca-tab-title hook 較晚送出的清標題）。
+function fixture(t, { autoTitle = 'Claude 自動標題', failing = false, tabTitle, slow = '', stuck = false, lagReads = 0, firstRenameFails = false, slowRenames = 0, renameLands = false, overwrittenOnce = false, splitChild = false, listDelayMs = 0 } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'tab-state-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const log = join(temp, 'orca.log');
@@ -41,6 +42,7 @@ if (b === 'rename' && fs.readFileSync(${JSON.stringify(log)}, 'utf8').split('ter
 if (${failing}) fail('runtime_unavailable');
 else if (${firstRenameFails} && b === 'rename' && fs.readFileSync(${JSON.stringify(log)}, 'utf8').split('terminal rename').length === 2) fail('runtime_unavailable');
 else if (b === 'list' && fs.existsSync(${JSON.stringify(live)}) && process.argv.includes('--include-visual-layouts')) {
+  if (${listDelayMs}) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${listDelayMs});
   const left = Number(fs.readFileSync(${JSON.stringify(lag)}, 'utf8'));
   if (fs.existsSync(${JSON.stringify(pending)})) {
     if (left > 0) fs.writeFileSync(${JSON.stringify(lag)}, String(left - 1));
@@ -210,10 +212,28 @@ test('--title：Orca 讀得到印實際標題、stderr 無聲；讀不到退回�
   assert.equal(fallback.stderr.trim(), `TAB_TITLE_FROM_RECORD ${SELF}`);
 });
 
+// #520 第 1 項：高負載時單次 `terminal list --include-visual-layouts` 實測 7.9 秒，舊的 ORCA_LIST_MS 預設 6000 讀不到，--title 退回記錄、印出舊標題。
+test('--title：list 要 7 秒才回時，在預設的 list 上限內讀到實際標題，不退回記錄', t => {
+  const { record, run } = fixture(t, { tabTitle: '處理中｜#407 新標題', listDelayMs: 7000 });
+  record('處理中｜#407 investing retro');
+  const result = run(['--title', SELF]);
+  assert.equal(result.stdout.trim(), '處理中｜#407 新標題');
+  assert.equal(result.stderr, '');
+});
+
+// #520（investing #640、#648、#650）：list 慢到讀回窗口內只讀得到一次，兩輪讀回都還是舊標題、之後才是新標題；舊版直接印 TAB_STATE_MISMATCH。
+test('兩輪讀回都只讀到一次舊標題：等一下再讀一次，相符就印 TAB_STATE、exit 0', t => {
+  const { run } = fixture(t, { tabTitle: '處理中｜#640', lagReads: 2, listDelayMs: 300 });
+  const result = run(['處理中', '--topic', '#640 門檻測試｜實作'], { TAB_STATE_VERIFY_MS: '100', TAB_STATE_MISMATCH_RECHECK_MS: '50' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'TAB_STATE 處理中｜#640 門檻測試｜實作');
+  assert.equal(result.stderr, '');
+});
+
 // #336 第 1 項：MISMATCH 分不出 rename 沒生效、讀回延遲或別的寫入者蓋回，附上 rename 回傳與 Orca 該分頁那一列。
 test('改名回 ok 但讀回一直是舊標題：不印 TAB_STATE，印 TAB_STATE_MISMATCH 與 rename 回傳、分頁列，exit 1', t => {
   const { run } = fixture(t, { tabTitle: 'Loop issue-pilot command', stuck: true });
-  const result = run(['處理中', '--topic', '[維運] 主題'], { TAB_STATE_VERIFY_RETRY_MS: '1', TAB_STATE_VERIFY_MS: '50' });
+  const result = run(['處理中', '--topic', '[維運] 主題'], { TAB_STATE_VERIFY_RETRY_MS: '1', TAB_STATE_VERIFY_MS: '50', TAB_STATE_MISMATCH_RECHECK_MS: '1' });
   assert.equal(result.status, 1, result.stderr);
   assert.equal(result.stdout, '');
   const [mismatch, rename, tab, ...rest] = result.stderr.trim().split('\n');
@@ -230,7 +250,7 @@ test('改名回 ok 但讀回一直是舊標題：不印 TAB_STATE，印 TAB_STAT
 // #362 review：讀回窗口長過共用的 TAB_STATE_BUDGET_MS 時，後段讀取被中止、讀不到分頁，舊寫法把它當成沒有不符而印 TAB_STATE。
 test('讀回窗口比共用時間上限長：上限到了仍照實印 TAB_STATE_MISMATCH', t => {
   const { run } = fixture(t, { tabTitle: '舊標題', stuck: true });
-  const result = run(['處理中', '--topic', '主題'], { TAB_STATE_BUDGET_MS: '1500', TAB_STATE_VERIFY_MS: '3000', TAB_STATE_VERIFY_RETRY_MS: '50' });
+  const result = run(['處理中', '--topic', '主題'], { TAB_STATE_BUDGET_MS: '1500', TAB_STATE_VERIFY_MS: '3000', TAB_STATE_VERIFY_RETRY_MS: '50', TAB_STATE_MISMATCH_RECHECK_MS: '1' });
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /^TAB_STATE_MISMATCH 處理中｜主題 actual=舊標題$/m);
 });

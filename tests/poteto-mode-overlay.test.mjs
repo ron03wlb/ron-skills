@@ -1,26 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { realTmpdir } from './helpers/real-tmpdir.mjs';
+import { applyOverlay, upstreamDir } from './helpers/apply-overlay.mjs';
 
 const root = new URL('..', import.meta.url).pathname;
-const patch = join(root, 'overlays/poteto-mode.patch');
-const upstream = join(process.env.PSTACK_SKILLS ?? join(homedir(), 'code/pstack'), 'skills/poteto-mode');
-// pre-commit hook 會匯出 GIT_DIR，git apply 繼承後會套到本 repo（#25）。
-const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+const upstream = upstreamDir('poteto-mode');
 
 // #342：上游 SKILL.md 要每個子代理 kickoff 第一行讀 worker.md，它的規則和 issue-run 的 review、本機 candidate、pr skill 衝突。
 test('poteto-mode overlay 的 Local harness 寫明 kickoff 不帶 worker.md', t => {
-  const dir = mkdtempSync(join(realTmpdir(), 'poteto-overlay-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  cpSync(upstream, dir, { recursive: true });
-  const applied = spawnSync('git', ['apply', patch], { cwd: dir, encoding: 'utf8', env });
-  assert.equal(applied.status, 0, applied.stderr);
-
-  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
+  const skill = applyOverlay(t, 'poteto-mode');
   const harness = skill.split('## Local harness')[1]?.split('\n## ')[0];
   assert.ok(harness, 'overlay 沒有 Local harness 段');
   const line = harness.split('\n').find(text => text.includes('worker.md'));

@@ -1,0 +1,7 @@
+// 用法：node scripts/pilot-register.mjs <checkout> --name <session name> --loop yes|no [--pid <pid>] [--session <id>] [--sources-file <path>] [<source>...]
+// stdout：`REGISTERED pid <pid>   since <since>`；`<HOME>/.claude/sessions/<pid>.json` 的 `name` 與 --name 不同時接 `NAME_CHECK <現名> registered <--name>`
+//   （照常登記、exit 0，coordinator 該重取 ListAgents 名稱重跑，#364；檔案不存在、讀不成 JSON 或沒有 name 時不印），有附加 start 行時接 `SESSION_APPENDED`，再接 pilot-sources 的結果行（有來源時）；
+//   已退役時只印 `STOP retired`（先於清單檔的檢查）；清單檔不存在時只印 `STOP sources-file <path>`（照傳入的寫法），不寫任何檔。
+//   讀 sessions.md 到寫完都在 `coordinator` 與 `sessions.md` 的 checkpoint 鎖內（lib/pilot-store.mjs 的 withCheckpointLock，#345）：逾時印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，什麼都沒寫。
+//   exit：0 成功；4 STOP；3 CHECKPOINT_LOCKED；2 用法錯誤。
+const USAGE = '用法：node scripts/pilot-register.mjs <checkout> --name <name> --loop yes|no [--pid <pid>] [--session <id>] [--sources-file <path>] [<source>...]';

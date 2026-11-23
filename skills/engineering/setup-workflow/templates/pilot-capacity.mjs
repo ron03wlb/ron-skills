@@ -9,17 +9,18 @@
 //   超過 2 小時沒更新的列（coordinator 已經停了）與解析不了的列不算進合計，也不刪。改寫時先寫暫存檔再 rename，讀的一方不會讀到半份；
 //   讀、改、寫整段持有 `<帳本>.lock` 目錄鎖（mkdir），兩個 coordinator 同時 report 也不會蓋掉對方的列；鎖超過 30 秒沒放（持有者被殺）視為遺留、拿掉重來，
 //   等 10 秒還拿不到就失敗（exit 1）。
-// 上限：$PILOT_MACHINE_WORKER_CAP，沒設時 4；CLI 的 report、check 這時先印 `CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP` 再用 4（#396）。
+// 上限：$PILOT_MACHINE_WORKER_CAP，沒設時 4；CLI 的 report、check 這時先印 `CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP default 4 → 告訴人：設在 ~/.claude/settings.json 的 env` 再用 4（#396）。
 // 環境變數（#396）：Bash tool 的 shell 不讀 ~/.zshrc，寫在那裡的變數在 coordinator 那裡是空的，容量檢查會默默用預設值或略過別的 repo；
 //   每台機器把這些變數設在 Bash tool 讀得到的地方（使用者層級 ~/.claude/settings.json 的 `env`）。
 //   `env [<名稱>...]` 檢查 $PILOT_MACHINE_WORKER_CAP 與帶入的名稱（例如 INVESTING_DATA_ROOT），空白（未設或空字串）的各印一行
-//   `CAPACITY_ENV_MISSING <名稱>`，都有值時印 `CAPACITY_ENV ok`；只回報，exit 0。
+//   `CAPACITY_ENV_MISSING <名稱>[ default <預設>] → 告訴人：設在 ~/.claude/settings.json 的 env`（#494：處理方式寫在行裡，coordinator 看到行就知道要在 Report 告訴人設哪裡，
+//   不自己改使用者的設定；有預設值的變數附 `default <預設>`），都有值時印 `CAPACITY_ENV ok`；只回報，exit 0。
 // 匯出的 report 另有 `add` 選項（#353，pilot-dispatch.mjs 派出後用）：寫入的是那一列的現值（2 小時內更新過才算）加上人數，讀寫在同一把鎖裡。
 //
 // 用法：node scripts/pilot-capacity.mjs report <repo> <running>
 //       node scripts/pilot-capacity.mjs check <新增人數>
 //       node scripts/pilot-capacity.mjs env [<環境變數名稱>...]
-// stdout：$PILOT_MACHINE_WORKER_CAP 空白時 report、check 先印 `CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP`；env 見上；report 印 `REPORTED <repo> <running> <合計>/<上限>`；
+// stdout：$PILOT_MACHINE_WORKER_CAP 空白時 report、check 先印 `CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP default 4 → 告訴人：…`（同上）；env 見上；report 印 `REPORTED <repo> <running> <合計>/<上限>`；
 //         check 在「合計＋新增人數」不超過上限時印 `CAPACITY ok <合計>/<上限>`，超過時印 `STOP capacity <合計>/<上限> [<repo>=<n>...] +<新增人數>`（合計已含新增人數；中間列出計入且 running 大於 0 的列，#408）。
 // exit：0 report 完成、CAPACITY ok 或 env；4 STOP capacity；2 用法錯誤；1 其他失敗（讀寫帳本失敗）。
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -81,9 +82,15 @@ export function missingEnv(names, env = process.env) {
   return names.filter(name => env[name] === undefined || env[name] === '');
 }
 
-/** names（預設只有 $PILOT_MACHINE_WORKER_CAP）裡空白的各一行 `CAPACITY_ENV_MISSING <名稱>`，都有值時是空陣列（#396：不再默默用預設值）。 */
+/** 缺變數時告訴人的處理方式（#494）：設定位置見檔頭的環境變數段。 */
+export const ENV_HOWTO = '→ 告訴人：設在 ~/.claude/settings.json 的 env';
+
+/**
+ * names（預設只有 $PILOT_MACHINE_WORKER_CAP）裡空白的各一行 `CAPACITY_ENV_MISSING <名稱>[ default <預設>] <ENV_HOWTO>`，都有值時是空陣列
+ * （#396：不再默默用預設值；#494：行裡自帶預設值與處理方式）。
+ */
 export function envMissingLines(names = [CAP_ENV], env = process.env) {
-  return missingEnv(names, env).map(name => `CAPACITY_ENV_MISSING ${name}`);
+  return missingEnv(names, env).map(name => ['CAPACITY_ENV_MISSING', name, ...(name === CAP_ENV ? ['default', DEFAULT_CAP] : []), ENV_HOWTO].join(' '));
 }
 
 /** 上限；設了卻不是正整數時傳回 undefined（用法錯誤）。 */

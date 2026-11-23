@@ -24,7 +24,21 @@ test('都在預算內：每檔一行用量與餘裕，清單上不存在的檔�
   writeFileSync(join(root, 'docs/agents/pilot-round.md'), '中');
   const result = run(root);
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, 'docs/agents/issue-run.md 10／10，餘裕 0 bytes\ndocs/agents/pilot-round.md 3／58000，餘裕 57997 bytes\nadapter 檔大小預算檢查通過。\n');
+  assert.equal(result.stdout, 'docs/agents/issue-run.md 10／10，餘裕 0 bytes\ndocs/agents/pilot-round.md 3／58000，餘裕 57997 bytes\nWARN docs/agents/issue-run.md 餘裕 0 bytes\nadapter 檔大小預算檢查通過。\n');
+});
+
+test('餘裕低於 1 KB 的檔另印 WARN，exit 仍是 0（#470：issue-run.md 餘裕 353、pilot.md 416）', t => {
+  const root = fixture(t, { 'docs/agents/issue-run.md': 14000, 'docs/agents/pilot.md': 14000, 'docs/agents/pilot-round.md': 58000 });
+  writeFileSync(join(root, 'docs/agents/issue-run.md'), 'x'.repeat(14000 - 353));
+  writeFileSync(join(root, 'docs/agents/pilot.md'), 'x'.repeat(14000 - 416));
+  writeFileSync(join(root, 'docs/agents/pilot-round.md'), 'x'.repeat(58000 - 1024));
+  const result = run(root);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.split('\n').filter(line => line.startsWith('WARN')), [
+    'WARN docs/agents/issue-run.md 餘裕 353 bytes',
+    'WARN docs/agents/pilot.md 餘裕 416 bytes',
+  ], '餘裕剛好 1024 不印');
+  assert.match(result.stdout, /adapter 檔大小預算檢查通過。\n$/);
 });
 
 test('超過預算：stderr 每檔一行 ADAPTER_SIZE_OVER 加拆檔提示，exit 1', t => {

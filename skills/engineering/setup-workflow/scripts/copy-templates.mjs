@@ -9,7 +9,12 @@
 //       目標 repo 固定的本地例外寫在清單的 `localExceptions`（路徑字串陣列，格式同 --exclude），每次複製自動排除，不必記得帶 --exclude
 //       （retro spay2 1bb1d94c#1(a)：忘了帶就連 --yes 一起蓋掉 fake-orca）；不是字串陣列時 exit 2。
 //       --staged：正本已 `git add`、還沒 commit 時用（本 repo 的副本要和正本同一個 commit，bin/check 才過）：工作樹與 index 不同才擋，清單的 commit 記現在的 HEAD。
-// 輸出每檔一行 `COPY|SAME|UPDATE|DIFF <副本路徑>`（UPDATE、DIFF 後接 unified diff；UPDATE 是 sha256 與清單記錄一致、沒手改過的舊副本，直接覆寫），最後一行：
+// 輸出每檔一行 `COPY|SAME|UPDATE|DIFF <副本路徑>`（UPDATE、DIFF 後接 unified diff，--staged 的 UPDATE 不接：diff 已在 git diff --cached；
+//   UPDATE 是 sha256 與清單記錄一致、沒手改過的舊副本，直接覆寫），其下視情況多一行：
+//   `MODE <副本路徑> <舊>→<新>`：既有副本的權限位元（八進位，例如 755→644）和正本不同，複製時改成正本的（#526：
+//     scripts/check-node-version.mjs 手建時是 755、正本 644，重拷才在 diff 冒出 mode change）。正本權限才對就照常複製；副本該可執行時改正本的權限。
+//   `ALSO_TESTED tests/<名稱>.test.mjs`：目標 repo 另有測副本的測試（不是 SAME 才印）；改範本時它和正本旁的測試都要跑（#454：只跑正本旁的那份，bin/check 才紅）。
+// 最後一行：
 //   PLANNED <n>（--dry-run）、COPIED <n>、CONFIRM_OVERWRITE <路徑...>（exit 3：既有檔內容不同且與清單記錄不一致，人確認後加 --yes 重跑；不是明列的範本時路徑緊接來源，例如 `scripts/b.mjs（a、c 的相依）`）、
 //   VERIFIED <n>（--verify 全部一致；有 MISMATCH／MISSING／NO_ORIGIN 或沒有清單時 exit 1）。
 // --verify 另查每個登記的 .mjs／.sh 副本（fixtures/ 下的不算）前三行有沒有來源行（ORIGIN），沒有印 `NO_ORIGIN <副本路徑>`：
@@ -170,13 +175,19 @@ const plan = [...broughtBy.keys()].filter(file => !unlisted.includes(file)).sort
   return { file, template, dest, target, state };
 });
 
+/** 權限位元的八進位字串（例如 755）。 */
+const modeOf = path => (statSync(path).mode & 0o777).toString(8);
 for (const file of [...skipped].sort()) console.log(`EXCLUDE ${join('scripts', file)}`);
 for (const file of unlisted) console.log(`SKIP_UNLISTED ${file}`);
 const diffs = [];
 for (const { file, dest, target, state } of plan) {
   console.log(`${state} ${dest}`);
+  if (state !== 'COPY' && modeOf(target) !== modeOf(join(TEMPLATES, file))) console.log(`MODE ${dest} ${modeOf(target)}→${modeOf(join(TEMPLATES, file))}`);
+  const alsoTested = join('tests', file.replace(/\.(mjs|sh)$/, '.test.mjs'));
+  if (state !== 'SAME' && !file.endsWith('.test.mjs') && /\.(mjs|sh)$/.test(file) && existsSync(join(repo, alsoTested))) console.log(`ALSO_TESTED ${alsoTested}`);
   if (state === 'DIFF') diffs.push(`${dest}${origin(file)}`);
-  if (state === 'DIFF' || state === 'UPDATE') {
+  // --staged 的 UPDATE 不印 diff：內容就是剛暫存的正本改動，已在 git diff --cached（#454 第 2 項）。
+  if (state === 'DIFF' || (state === 'UPDATE' && !flags.has('--staged'))) {
     process.stdout.write(spawnSync('git', ['diff', '--no-index', '--', target, join(TEMPLATES, file)], { encoding: 'utf8' }).stdout);
   }
 }

@@ -9,6 +9,11 @@
 //   2. 標題：沒有相符條目時，找文字相同的 Markdown 標題（`#`～`######`，程式碼區塊內不算），印到下一個同級或更高標題之前。
 //   3. 前綴：仍找不到時，名稱以 <條目名> 開頭、下一字不是英數字的條目只有一種名稱（核心 pointer 與拆出檔本文同名算一種），就先印 `ADAPTER_LINE_PREFIX <條目名> → <實際名稱>`
 //      再照 1 的格式印那些條目（資訊輸出；名稱含反引號時引用處可只寫前綴）；有多種名稱時算找不到，stderr 逐條列 `  candidate <檔>:<行> <實際名稱>`。
+//   4. 結果行名稱（#459）：仍找不到、名稱第一個字是兩字以上的全大寫（`UNBLOCKED`、`CAPACITY_ENV_MISSING`，或多字的 `STOP conflict`）時，
+//      不印整條，改印各檔提及 `` `<名稱>`` 的句子（後一字不得是英數字或底線，`UNBLOCKED_X` 不算）：每個條目（或條目外的段落行，名稱取所在標題）
+//      先印 `== <檔>:<行> <條目名>`，再一句一行。句子以 `。`、後接空白的 `.`、換行、後接反引號的 `；` 切開（**Probe lines.** 這類條目以
+//      `；`<行名>…` 逐行說明；其他 `；` 多接同一行的下一步，不切），行內程式碼與括號內不切（**Probe lines.** 一行 18 KB，
+//      coordinator 要的只是 `UNBLOCKED` 那一段）。要讀整條就用印出的條目名再查。資訊輸出。
 // stdout：每條前一行 `== <檔>:<行>`，再印本文。--list 每條印 `<檔> <名稱>`。
 // exit：0 全部找到；1 有條目找不到（stderr `ADAPTER_LINE_NOT_FOUND <條目名>`，其他條目照印）；2 用法錯誤或沒有預算表。
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
@@ -65,15 +70,69 @@ export function prefixEntries(all, wanted) {
   return all.filter(({ name }) => name.length > wanted.length && name.startsWith(wanted) && !/[\p{L}\p{N}_]/u.test(name[wanted.length]));
 }
 
-/** 依查法找 wanted：{ hits: [{ file, line, text }], prefix: 實際名稱或 null, candidates: [{ file, line, name }] }。 */
+/** 文件內容 → 區塊 [{ name, line, text }]：每個條目一塊，條目外的非空段落行各一塊（name 取所在標題，沒有標題時空字串）；標題與程式碼區塊不算。 */
+export function blocks(content) {
+  const owned = new Map(entries(content).map(entry => [entry.line, entry]));
+  const found = [];
+  let heading = '';
+  let fence = false;
+  let inEntry = false;
+  content.split('\n').forEach((text, index) => {
+    if (FENCE.test(text)) { fence = !fence; inEntry = false; return; }
+    if (fence) return;
+    const entry = owned.get(index + 1);
+    if (entry) { found.push(entry); inEntry = true; return; }
+    if (inEntry && /^\s+\S/.test(text)) return;
+    inEntry = false;
+    const match = text.match(HEADING);
+    if (match) { heading = match[2]; return; }
+    if (text.trim()) found.push({ name: heading, line: index + 1, text });
+  });
+  return found;
+}
+
+/** 名稱像結果行（第一個字是兩字以上的全大寫，例如 `UNBLOCKED`、`STOP conflict`）。 */
+export const RESULT_LINE = /^[A-Z][A-Z0-9_]+(?= |$)/;
+
+/** 區塊文字切句（`。`、後接空白或結尾的 `.`、換行、後接反引號的 `；`；行內程式碼與括號內不切）後，含 `` `<名稱>`` 的句子，去重。 */
+export function mentionSentences(text, name) {
+  const mention = new RegExp('`' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9_])');
+  const sentences = [];
+  let current = '';
+  let code = false;
+  let depth = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '\n') { sentences.push(current); current = ''; code = false; depth = 0; continue; }
+    if (ch === '`') code = !code;
+    current += ch;
+    if (code) continue;
+    if (ch === '(' || ch === '（') depth += 1;
+    if ((ch === ')' || ch === '）') && depth > 0) depth -= 1;
+    const next = text[i + 1];
+    if (!depth && (ch === '。' || (ch === '.' && (next === undefined || /\s/.test(next))) || (ch === '；' && next === '`'))) { sentences.push(current); current = ''; }
+  }
+  sentences.push(current);
+  return [...new Set(sentences.map(sentence => sentence.trim()).filter(sentence => mention.test(sentence)))];
+}
+
+/** 各檔提及 `` `<名稱>`` 的區塊與句子：[{ file, line, name, sentences }]。 */
+export function mentions(files, wanted) {
+  return files.flatMap(({ file, content }) => blocks(content)
+    .map(block => ({ file, line: block.line, name: block.name, sentences: mentionSentences(block.text, wanted) }))
+    .filter(({ sentences }) => sentences.length));
+}
+
+/** 依查法找 wanted：{ hits: [{ file, line, text }], prefix: 實際名稱或 null, candidates: [{ file, line, name }], mentioned: 查法 4 的區塊（或空陣列） }。 */
 export function lookup(files, wanted) {
   const all = files.flatMap(({ file, content }) => entries(content).map(entry => ({ file, ...entry })));
   let hits = all.filter(({ name }) => name === wanted);
   if (!hits.length) hits = files.flatMap(({ file, content }) => headingSections(content, wanted).map(section => ({ file, ...section })));
-  if (hits.length) return { hits, prefix: null, candidates: [] };
+  if (hits.length) return { hits, prefix: null, candidates: [], mentioned: [] };
   const prefixed = prefixEntries(all, wanted);
-  if (new Set(prefixed.map(({ name }) => name)).size === 1) return { hits: prefixed, prefix: prefixed[0].name, candidates: [] };
-  return { hits: [], prefix: null, candidates: prefixed };
+  if (new Set(prefixed.map(({ name }) => name)).size === 1) return { hits: prefixed, prefix: prefixed[0].name, candidates: [], mentioned: [] };
+  const mentioned = RESULT_LINE.test(wanted) ? mentions(files, wanted) : [];
+  return { hits: [], prefix: null, candidates: mentioned.length ? [] : prefixed, mentioned };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
@@ -93,9 +152,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
   }
   let missing = false;
   for (const wanted of args) {
-    const { hits, prefix, candidates } = lookup(files, wanted);
+    const { hits, prefix, candidates, mentioned } = lookup(files, wanted);
     if (prefix) console.log(`ADAPTER_LINE_PREFIX ${wanted} → ${prefix}`);
-    if (!hits.length) {
+    for (const { file, line, name, sentences } of mentioned) console.log(`== ${file}:${line} ${name}\n${sentences.join('\n')}`);
+    if (!hits.length && !mentioned.length) {
       console.error(`ADAPTER_LINE_NOT_FOUND ${wanted}`);
       for (const { file, line, name } of candidates) console.error(`  candidate ${file}:${line} ${name}`);
       missing = true;

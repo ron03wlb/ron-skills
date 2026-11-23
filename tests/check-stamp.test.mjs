@@ -10,13 +10,14 @@ const env = {
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
   GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com',
 };
-// 假 bin/check：和真的一樣開始時取樹、通過時記下，另外數跑了幾次。
+// 假 bin/check：和真的一樣開始時取樹、通過時記下、最後一行印 CHECK_PASS，另外數跑了幾次。
 const FAKE_CHECK = `#!/usr/bin/env bash
 set -euo pipefail
 tree=$(node scripts/check-stamp.mjs tree)
 echo run >> "$CHECK_LOG"
 if [[ -f fail ]]; then exit 1; fi
 node scripts/check-stamp.mjs record "$tree"
+echo "CHECK_PASS tests 3"
 `;
 
 function fixture(t) {
@@ -54,6 +55,10 @@ test('bin/check 通過後 commit 同一棵樹：pre-commit 不再跑，commit �
   const commit = git('commit', '-qm', 'x');
   assert.equal(commit.status, 0, commit.stderr);
   assert.equal(runs(), 1);
+  // #512：成功時 stderr 有一行分得出是 stamp 跳過，不必讀 hook 或 check-pass 檔。
+  const tree = git('rev-parse', 'HEAD^{tree}').stdout.trim();
+  assert.match(commit.stderr, new RegExp(`^CHECK_STAMP_FRESH ${tree}$`, 'm'));
+  assert.doesNotMatch(commit.stderr, /CHECK_PASS/);
 });
 
 test('通過之後又改檔、或只暫存一部分：pre-commit 照跑', t => {
@@ -62,8 +67,12 @@ test('通過之後又改檔、或只暫存一部分：pre-commit 照跑', t => {
   check();
   write('a.txt', 'a2\n');
   git('add', 'a.txt');
-  assert.equal(git('commit', '-qm', 'changed after check').status, 0);
+  const ran = git('commit', '-qm', 'changed after check');
+  assert.equal(ran.status, 0, ran.stderr);
   assert.equal(runs(), 2);
+  // #512：真的跑了 bin/check，stderr 有它的最後一行。
+  assert.match(ran.stderr, /^CHECK_PASS tests 3$/m);
+  assert.doesNotMatch(ran.stderr, /CHECK_STAMP_FRESH/);
 
   write('a.txt', 'a3\n');
   write('b.txt', 'b3\n');

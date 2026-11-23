@@ -285,7 +285,7 @@ test('--capacity 時 $PILOT_MACHINE_WORKER_CAP 空白印 CAPACITY_ENV_MISSING PI
   const ledger = join(repo, '..', 'pilot-workers.tsv');
   const blank = probe({ args: ['--capacity', 'acme'], extraEnv: { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '' } });
   assert.equal(blank.status, 0, blank.stderr);
-  assert.ok(lines(blank).includes('CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP'), blank.stdout);
+  assert.ok(lines(blank).includes('CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP default 4 → 告訴人：設在 ~/.claude/settings.json 的 env'), blank.stdout);
   assert.match(readFileSync(ledger, 'utf8'), /^acme\t1\t/);
   const set = probe({ args: ['--capacity', 'acme'], extraEnv: { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '4' } });
   assert.ok(!lines(set).some(line => line.startsWith('CAPACITY_ENV_MISSING')), set.stdout);

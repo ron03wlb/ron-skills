@@ -11,6 +11,9 @@
 // macos/ 那份是同形狀的副本、路徑改成 POSIX，還沒在 macOS 重錄（#394）。
 // 用法：在假 CLI 的原始碼裡放 `${orcaReplySource()}`，之後 `reply('wait', { wait: { satisfied } })` 印出 `{ ok: true, result }`。
 // patch 只能覆寫樣本已有的欄位；寫了樣本沒有的欄位會丟錯，替身因此無法自創真實 Orca 沒有的形狀。陣列整個取代，每個元素以樣本第一個元素為底。
+// 物件 patch 逐鍵合併：樣本有、patch 沒寫的兄弟鍵照樣留下（陣列元素也一樣，以樣本第一個元素為底）。例如 list-visual 的
+//   `panes: { second: { handle: SELF } }` 合併後 `first` 仍是樣本的 term_sample，tab-state 的 isSplitChild 就把本 pane 當成 split 出來的
+//   （#503 第 2 項：只印 TAB_STATE_SKIP split，測試看起來像「記錄沒變」）。要整個換掉一個物件時，把樣本上它的每個鍵都寫進 patch（如 `panes: { first: …, second: … }`）。
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 

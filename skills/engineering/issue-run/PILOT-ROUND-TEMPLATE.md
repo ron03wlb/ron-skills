@@ -2,8 +2,9 @@
 Skeleton for a repo's docs/agents/pilot-round.md, copied together with PILOT-TEMPLATE.md (#344).
 docs/agents/pilot.md is a required core of at most 14000 bytes (scripts/adapter-size-budget.json); these step entries are the longest,
 so they live here in full and pilot.md keeps a one-line pointer for each. Replace every {{placeholder}} as PILOT-TEMPLATE.md's comment defines it
-({{repo}}, {{main}}, {{worker cap}}, {{owner/repo}}, {{timeout cmd}}, {{tracker write}}, {{triage traps}}), delete this comment, link this file from the adapter's Pilot section, list it in docs/agents/pilot-sources.txt,
-and give it a 58000 line in scripts/adapter-size-budget.json.
+({{repo}}, {{main}}, {{worker cap}}, {{owner/repo}}, {{timeout cmd}}, {{tracker write}}, {{triage traps}}), drop the bracketed [optional: …] sentences
+that do not apply (the Pool entry's --skip-labels and whole-Spec ones, for instance), delete this comment, link this file from the adapter's Pilot section
+after pilot.md, and list it in docs/agents/pilot-sources.txt. The adapter-size-budget.json template already gives it its 58000 line.
 -->
 # Pilot step entries: {{repo}}
 
