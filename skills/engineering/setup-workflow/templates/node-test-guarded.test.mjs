@@ -38,6 +38,9 @@ test('parseRan／reportedTotal／lostFiles：以 spec 輸出的名稱逐檔比�
   assert.equal(reportedTotal('no summary'), null);
   assert.deepEqual(lostFiles(ran, output), [{ file: '/a.test.mjs', ran: 3, missing: 1 }, { file: '/b.test.mjs', ran: 3, missing: 2 }]);
   assert.deepEqual(lostFiles(parseRan('{"file":"/a.test.mjs","names":["x","v"]}\n'), output), []);
+  // skip／todo 帶原因字串時 spec 印 `# <原因>`；名稱本身含 ` # ` 時 duration 在最後（#517 的捷徑改用 lostFiles 後不能多印）
+  const reasons = '✔ t (1.02ms) # later\n﹣ s (0.25ms) # why\n✔ a # b (0.15ms)\nℹ tests 3\n';
+  assert.deepEqual(lostFiles(parseRan('{"file":"/c.test.mjs","names":["t","s","a # b"]}\n'), reasons), []);
   assert.equal(untraced('{"file":"/a.test.mjs","names":[],"traced":false}\n{"file":"/b.test.mjs","names":[],"traced":false}\n'), true);
   assert.equal(untraced('{"file":"/a.test.mjs","names":[],"traced":false}\n{"file":"/b.test.mjs","names":["z"],"traced":true}\n'), false);
   assert.equal(untraced(''), false);
@@ -277,6 +280,19 @@ test('回報遺失且子行程紀錄不完整（有測試沒有結束紀錄）�
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stderr, /^NODE_TEST_LOST lossy\.test\.mjs ran=2 missing=[12]\nNODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
   assert.doesNotMatch(result.stderr, /NODE_TEST_RECORDED/);
+});
+
+// #517：中途 process.exit(0) 的檔被父行程算成 1 個測試；cut 前只有一個測試時，子行程紀錄數（a、ok）恰好等於回報總數 2，
+// 總數相等的捷徑原本放行、exit 0。
+test('中途結束的檔：紀錄數恰好等於回報總數也印 NODE_TEST_LOST，單獨重跑仍不完整即 exit 1', { skip: NO_CHANNEL }, t => {
+  const run = fixture(t, {
+    'lossy.test.mjs': "import { test } from 'node:test';\ntest('a', () => {});\ntest('cut', () => { process.exit(0); });\nfor (const n of [1, 2, 3]) test(`t${n}`, () => {});\n",
+    'ok.test.mjs': "import { test } from 'node:test';\ntest('ok', () => {});\n",
+  });
+  const result = run('--test-reporter=spec', 'lossy.test.mjs', 'ok.test.mjs');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /^NODE_TEST_LOST lossy\.test\.mjs ran=1 missing=1\nNODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
+  assert.doesNotMatch(result.stderr, /ok\.test\.mjs/);
 });
 
 test('測試內再起的 node --test（fixture）不計入、不誤報', t => {

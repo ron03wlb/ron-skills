@@ -20,7 +20,7 @@ test('bin/check 裡帶 --test-force-exit 的 node --test 都經 node-test-guarde
 });
 
 // #483 的 fixture：一個測試檔的後段結果整段沒出現（子行程中途結束），bin/check 原本的裸跑寫法 exit 0、總數變少；經 guard 判失敗。
-// cut 前放兩個測試：只有一個時子行程紀錄數恰好等於父行程回報的總數（遺失的檔算一個），guard 的總數比對會放行（另開 Issue 追）。
+// cut 前放兩個測試；只有一個時紀錄數恰好等於回報總數（遺失的檔算一個）的情形見 node-test-guarded.test.mjs 的 #517 測試。
 test('測試檔後段結果整段遺失：裸跑 node --test exit 0，經 node-test-guarded exit 非 0 並印 NODE_TEST_LOST', t => {
   const dir = mkdtempSync(join(realTmpdir(), 'bin-check-lossy-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

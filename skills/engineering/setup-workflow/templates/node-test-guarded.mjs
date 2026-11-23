@@ -6,8 +6,8 @@
 // 父行程多掛 reporter（含寫檔）時幾乎每次發生，所以本 wrapper 不多掛 reporter，只轉印 spec 輸出。
 // 呼叫端沒給 `--test-reporter` 時明確指定單一的 spec：Node 22 在 stdout 不是 TTY（這裡是 pipe）時預設 tap，Node 23 起才一律 spec。
 // force-exit 是測試 guardrail 的規範，不拿掉，改成比對後單獨重跑遺失的檔：
-//   子行程端由 lib/node-test-count-preload.mjs 記每檔實際跑完的測試名稱，以及開始數、error 事件數與 exit code；父行程的 `ℹ tests <n>` 等於總數即通過，
-//   不等時以 spec 輸出的測試名稱逐檔比對，找出有測試沒出現在輸出的檔。
+//   子行程端由 lib/node-test-count-preload.mjs 記每檔實際跑完的測試名稱，以及開始數、error 事件數與 exit code；父行程的 `ℹ tests <n>` 等於總數、
+//   且 spec 輸出逐檔名稱都對得上即通過（中途結束的檔在輸出只算 1 個，總數可能恰好相等，#517），否則以 spec 輸出的測試名稱逐檔比對，找出有測試沒出現在輸出的檔。
 //   沒有 node.test tracing channel 的 Node（22）記不到名稱：所有記錄都沒收到事件時放行，只回傳 node --test 的 exit code。
 // 用法：node scripts/node-test-guarded.mjs <node --test 的選項（--name=value 形式）…> <測試檔…>
 //   node --test 失敗時，依子行程紀錄（failed、code）找出失敗的檔（沒有紀錄的檔也算），各單獨重跑一次（高負載下才失敗的測試，retro spay2 92fa93fe#3）：
@@ -41,7 +41,8 @@ const FLAKE_MAX_FILES = Number(process.env.NODE_TEST_FLAKE_MAX_FILES ?? 5);
 /** flake 首輪輸出另存的上限：spec reporter 的失敗段落在輸出最後，留尾段（followups 430）。 */
 const FLAKE_OUTPUT_LIMIT = 2 * 1024 * 1024;
 const FLAKE_OUTPUT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
-const RESULT = /^\s*(?:✔|✖|﹣|⚠) (.*?)(?: \(\d+(?:\.\d+)?m?s\))?(?: # (?:SKIP|TODO)\b.*)?$/;
+/** spec 的結果行 → 測試名稱。skip／todo 帶原因字串時 duration 後面接 `# <原因>`（不是 SKIP／TODO），也要剝掉。 */
+const RESULT = /^\s*(?:✔|✖|﹣|⚠) (.*?)(?: \(\d+(?:\.\d+)?m?s\)(?: # .*)?| # (?:SKIP|TODO)\b.*)?$/;
 
 /** preload 的 JSON lines → Map<file, names[]>（同一檔多行時合併）。 */
 export function parseRan(text) {
@@ -131,7 +132,8 @@ async function runOnce(options, files, { timeoutMs } = {}) {
     let text = readText();
     let ran = parseRan(text);
     const total = () => [...ran.values()].reduce((sum, names) => sum + names.length, 0);
-    if (code === 0 && ran.size >= wanted.length && total() === reportedTotal(output)) return { code, lost: [], passed: () => false, failed: [] };
+    // 總數相等還不夠：中途 process.exit(0) 的檔被父行程算成 1 個測試，跑完數恰好相等時會放過（#517），所以逐檔名稱也要對得上。
+    if (code === 0 && ran.size >= wanted.length && total() === reportedTotal(output) && !lostFiles(ran, output).length) return { code, lost: [], passed: () => false, failed: [] };
     // 父行程先結束：還在跑的子行程結束時才寫記錄，等它們寫完再比對。沒有 force-exit 時父行程會等子行程，沒有記錄就是不會有了。
     const orphans = options.includes('--test-force-exit');
     for (const until = Date.now() + ORPHAN_WAIT_MS; orphans && wanted.some(file => !ran.has(file)) && !untraced(text) && Date.now() < until;) {
