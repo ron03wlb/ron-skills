@@ -4,6 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
+import { ALWAYS_LINES } from '../scripts/pilot-probe.mjs';
 
 // pilot-unbare.sh 本身的行為測在 setup-workflow 正本旁（templates/pilot-unbare.test.mjs）；這裡只測本 repo 的副本擺放（#246）。
 // pre-commit hook 會匯出 GIT_DIR、GIT_INDEX_FILE；不清掉的話 `git -C <暫存 repo> config core.bare true` 會寫進本 repo 的共用 config（#20 worker 實測）。
@@ -37,7 +38,8 @@ echo '{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCurso
   const probeEnv = Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'ORCA_CLI_COMMAND'));
   const result = spawnSync('node', [probe, repo], { encoding: 'utf8', env: { ...probeEnv, PATH: `${bin}:${probeEnv.PATH}` } });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(result.stdout.trim().split('\n'), [`UNBARE ${repo}`, 'DIRTY ?? .scratch/', 'POOL_EMPTY', 'HANDOFF_COUNT 0/2']);
+  // 每輪都印的行（池子摘要、HANDOFF_COUNT）用 probe 匯出的 ALWAYS_LINES 去掉：probe 再加常駐行時這裡不必跟著改（#556）。
+  assert.deepEqual(result.stdout.trim().split('\n').filter(line => !ALWAYS_LINES.test(line)), [`UNBARE ${repo}`, 'DIRTY ?? .scratch/']);
   assert.equal(git('rev-parse', '--is-bare-repository').stdout.trim(), 'false');
   assert.match(readFileSync(join(repo, '.scratch/pilot/decisions.md'), 'utf8'), /被設成 true（probe）/);
 });
