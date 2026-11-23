@@ -112,8 +112,8 @@
     },
     "scripts/issue-pool.mjs": {
       "template": "skills/engineering/setup-workflow/templates/issue-pool.mjs",
-      "commit": "0030c2cf54f1ef0e030be595bd0ee256a7fe07f8",
-      "sha256": "cf2ec2e8f8081d09f6bf76c20df5ceb740466e9b66a95ad0cd0a92ab07666041"
+      "commit": "14acc32a0386defa5a1958e59760f1a638b4ccae",
+      "sha256": "a6d4cab206e887b8143330fc1d64facd005fd7db1682ad23fcf1388bdaf8eefc"
     },
     "scripts/land.mjs": {
       "template": "skills/engineering/setup-workflow/templates/land.mjs",
@@ -132,7 +132,7 @@
     },
     "scripts/lib/hosts.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/hosts.mjs",
-      "commit": "0030c2cf54f1ef0e030be595bd0ee256a7fe07f8",
+      "commit": "14acc32a0386defa5a1958e59760f1a638b4ccae",
       "sha256": "ac2958105d54d07b983bbad15f6337b885d81f1442d5f966ecf9be0a484ce8d1"
     },
     "scripts/lib/merge-tree.mjs": {
