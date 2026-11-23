@@ -132,7 +132,7 @@
     },
     "scripts/lib/hosts.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/hosts.mjs",
-      "commit": "970a944a9569163efc15d7230d05fb628f2560bf",
+      "commit": "5403663187dc894f17bdb37ad471e5006f9d661f",
       "sha256": "ac2958105d54d07b983bbad15f6337b885d81f1442d5f966ecf9be0a484ce8d1"
     },
     "scripts/lib/merge-tree.mjs": {
@@ -162,12 +162,12 @@
     },
     "scripts/orca-session-send.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-send.mjs",
-      "commit": "970a944a9569163efc15d7230d05fb628f2560bf",
+      "commit": "5403663187dc894f17bdb37ad471e5006f9d661f",
       "sha256": "66e43d214b69042af06df20d41a2f8da91ca1d881ce4f00a1a42dbddef22f001"
     },
     "scripts/orca-session-split.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-split.mjs",
-      "commit": "8da2bde804f6d83052e49d66cb05d380def34957",
+      "commit": "5403663187dc894f17bdb37ad471e5006f9d661f",
       "sha256": "7efc3e7c0db503ccdfb4aa5e22f3267b97d4597cf4826088a6ec5f60fa4a4dea"
     },
     "scripts/orca-worktree-create.mjs": {
@@ -255,6 +255,11 @@
       "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
       "sha256": "b8202f5979875a98a87aa61ba023ed277df8d98f7db7c25fb19d23325befe48a"
     },
+    "scripts/pilot-retro-due.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/pilot-retro-due.mjs",
+      "commit": "5403663187dc894f17bdb37ad471e5006f9d661f",
+      "sha256": "544c8e492e6b72be7eb235511e02af513c42e004fdd07409532d7aceb55fc204"
+    },
     "scripts/pilot-sources.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-sources.mjs",
       "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
@@ -277,7 +282,7 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "8da2bde804f6d83052e49d66cb05d380def34957",
+      "commit": "5403663187dc894f17bdb37ad471e5006f9d661f",
       "sha256": "881d7fbf7d8d95de4546ddb24728e150a8ac174223f1aa1ab49b237160d3e9d4"
     },
     "scripts/token-usage.mjs": {

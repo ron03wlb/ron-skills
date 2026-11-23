@@ -70,4 +70,4 @@ Project settings for the user-level `/issue-pilot` coordinator (`/loop /issue-pi
 
 - **Retro collect.** None: `/retro` implements its own adopted items in this repo.
 
-- **Retro trigger.** None: the human types `/retro-collect`.
+- **Retro trigger.** None: the human types `/retro-collect`. [optional: `docs/agents/pilot-round.md`'s entry.]
