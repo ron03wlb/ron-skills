@@ -59,9 +59,30 @@ function setup(t) {
   return { tmp, win, run, mklinks };
 }
 
-test('windows-skills.txt 至少列 session-handoff，且每一行都是本 repo 的 skill', () => {
-  assert.ok(listed.includes('productivity/session-handoff'));
-  for (const rel of listed) assert.ok(existsSync(join(root, 'skills', rel, 'SKILL.md')), rel);
+// #400：owner 決定給 Orca bot retro（overlay 副本）、daily-summary、explain；依賴 WSL 主 checkout 的 issue-run、issue-pilot 等不給。
+test('windows-skills.txt 列 #400 決定的 skill；每一行是本 repo 的 skill，或 overlay/<名稱> 且 overlays/<名稱>.patch 存在', () => {
+  for (const rel of ['productivity/session-handoff', 'productivity/daily-summary', 'productivity/explain', 'overlay/retro']) assert.ok(listed.includes(rel), rel);
+  for (const rel of ['engineering/issue-run', 'engineering/issue-pilot', 'engineering/retro-collect', 'engineering/issue-queue']) assert.ok(!listed.includes(rel), rel);
+  for (const rel of listed) {
+    if (rel.startsWith('overlay/')) assert.ok(existsSync(join(root, 'overlays', `${rel.slice('overlay/'.length)}.patch`)), rel);
+    else assert.ok(existsSync(join(root, 'skills', rel, 'SKILL.md')), rel);
+  }
+});
+
+test('overlay/<名稱> 項目的 Windows 連結指向 overlay build；--check 對指向 overlay build、不在清單上的連結印 WIN_ORPHAN', t => {
+  const { tmp, win, run } = setup(t);
+  const result = run([]);
+  assert.equal(result.status, 0, result.stderr);
+  const build = join(tmp, 'xdg/ron-skills/overlay');
+  assert.equal(readlinkSync(join(win, 'retro')), toWin(join(build, 'retro')));
+  assert.ok(existsSync(join(build, 'retro/SKILL.md')));
+
+  const removed = toWin(join(build, 'code-review'));
+  symlinkSync(removed, join(win, 'removed-overlay'));
+  const check = run(['--check']);
+  assert.equal(check.status, 0, check.stderr);
+  assert.match(check.stderr, new RegExp(`^WIN_ORPHAN ${join(win, 'removed-overlay')} -> ${removed.replaceAll('\\', '\\\\')}（`, 'm'));
+  assert.doesNotMatch(check.stderr, /^WIN_(MISSING|WRONG|NOT_LINK|ORPHAN) \S+\/retro\b/m);
 });
 
 test('同步在 Windows 目標建立指向主 checkout 的原生連結；清單外的項目一律不碰；再跑不重建', t => {
@@ -75,7 +96,9 @@ test('同步在 Windows 目標建立指向主 checkout 的原生連結；清單�
   assert.equal(result.status, 0, result.stderr);
   assert.equal(readlinkSync(join(win, 'session-handoff')), expected);
   assert.match(result.stderr, new RegExp(`^WIN_LINKED ${join(win, 'session-handoff')} -> `, 'm'));
-  assert.deepEqual(mklinks(), [`mklink /D ${toWin(join(win, 'session-handoff'))} ${expected}`]);
+  // 清單每一項各建一次（#400 起不只 session-handoff）
+  assert.ok(mklinks().includes(`mklink /D ${toWin(join(win, 'session-handoff'))} ${expected}`));
+  assert.equal(mklinks().length, listed.length);
   assert.equal(readlinkSync(join(win, 'ask-matt')), '\\??\\C:\\Workspace\\open_source\\skills\\skills\\engineering\\ask-matt');
   assert.equal(readlinkSync(join(win, 'issue-run')), join(root, 'skills/engineering/issue-run'));
   assert.equal(readFileSync(join(win, 'learned/note.md'), 'utf8'), 'x');
@@ -85,7 +108,7 @@ test('同步在 Windows 目標建立指向主 checkout 的原生連結；清單�
   const again = run([]);
   assert.equal(again.status, 0, again.stderr);
   assert.doesNotMatch(again.stderr, /WIN_LINKED/);
-  assert.equal(mklinks().length, 1);
+  assert.equal(mklinks().length, listed.length);
 });
 
 test('同步更新指錯的 Windows 連結與 WSL 專用 symlink；同名實體目錄不覆蓋', t => {
@@ -127,7 +150,7 @@ test('--check 回報 Windows 連結缺少、指錯或被實體目錄占用，不
   const ok = run(['--check']);
   assert.equal(ok.status, 0, ok.stderr);
   assert.doesNotMatch(ok.stderr, /^WIN_/m);
-  assert.equal(mklinks().length, 1);
+  assert.equal(mklinks().length, listed.length);
 });
 
 // #389-2：從 windows-skills.txt 移除的項目，同步不刪 Windows 端的連結（清單外一律不碰），之前也沒有任何管道會發現。

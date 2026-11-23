@@ -99,7 +99,7 @@
 //          （#191：Regression 沒過、batch 停在 staged，probe 卻什麼都不印；none 是沒有 regression 行、SHA 是先前那次 stage 的，或 SHA 後面沒緊接 exit <code>）；
 //          其中這個 staged SHA 還沒有 regression 行、checkpoint 的 `regressing: <sha> pid <pid>` 是同一個 SHA、那個 pid 還是 pilot-land（ps 的命令列）時
 //          改印 REGRESSING <key> <staged sha>（#361：land 還在跑 Regression，coordinator 等它，不重 stage）；
-//          沒關的 batch 裡 `parked after #<m>` 的成員，在 #m 以 done 留在 `closed` 的 batch 之後印 UNPARK <n>；
+//          沒關的 batch 裡 `parked after #<m>` 的成員，在 #m 以 done 留在 `closed` 的 batch 之後印 UNPARK <n>（state 是 `parked after #<m> fresh` 時印 UNPARK_FRESH <n>，#482）；
 //          current 是 merged／pushed 的 batch 在 git fetch 後比 origin/<主分支>，印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
 //          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA，且那一行是 exit 0），
 //          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> regression-failed <code 或 none>
@@ -678,6 +678,28 @@ export function resultMatch(tail, n) {
   return null;
 }
 
+/**
+ * worker 在 DONE 之前印的 `POSTLAND <n> <command>`（#502：候選落地後要立刻跑一次的指令），框線、bullet、提示列同 resultMatch 處理。
+ * 從畫面底部往上讀：最底下的結果行是 DONE 時跳過它繼續讀，碰到下一個結果行（resume 前的舊結果）就停；最底下的是 STOP 時傳回空陣列。
+ * 畫面上沒有 DONE（from-state）時讀到第一個結果行為止。依畫面順序傳回指令，去重。
+ */
+export function postlandCommands(tail, n) {
+  const commands = [];
+  let done = false;
+  for (const raw of screenLines(tail).reverse()) {
+    if (PROMPT_CHROME.test(raw)) continue;
+    const result = resultMatch([raw], n);
+    if (result) {
+      if (result.kind === 'DONE' && !done) { done = true; continue; }
+      break;
+    }
+    const line = raw.replace(/^[\s│●⏺⎿]+|[\s│]+$/g, '').replace(/[\u0000-\u001f\u007f]/g, ' ');
+    const command = line.match(new RegExp(`^POSTLAND ${n} (.*\\S)$`))?.[1].trim();
+    if (command && !commands.includes(command)) commands.unshift(command);
+  }
+  return commands;
+}
+
 /** 這個 worker 的結果行，去掉號碼：`DONE <sha>`、`STOP <cause>`，沒有時、或最後一個結果行（去框線後的整行）就是 `ignore` 時 null。 */
 export function resultLine(tail, n, ignore) {
   const match = resultMatch(tail, n);
@@ -693,11 +715,13 @@ const SCROLLBACK_LINES = 2000;
 /**
  * 畫面上沒有結果行、畫面也不是工作中時，往回讀累積輸出（`terminal read` 不帶 `--screen`，含捲出畫面的行）找最後一個結果行，同 resultMatch（#537：
  * watcher 啟動前 `DONE <n> <sha>` 已捲出 40 行的畫面，Probe 與 watch 都報 RUNNING，分頁標題卻已是 `待關閉｜`）。
- * 工作中不讀：每輪多一次讀取沒有用，worker 還沒寫結果行。
+ * 工作中不讀：每輪多一次讀取沒有用，worker 還沒寫結果行。找到時多帶 tail（讀到的累積輸出），pilot-watch.mjs 從同一份讀 DONE 之前的 POSTLAND（#502）。
  */
 export async function scrollbackMatch(ctx, handle, n) {
   const { terminal } = await orca(ctx, 'terminal', 'read', '--terminal', handle, '--limit', String(SCROLLBACK_LINES));
-  return resultMatch(terminal?.tail ?? [], n);
+  const tail = screenLines(terminal?.tail);
+  const match = resultMatch(tail, n);
+  return match && { ...match, tail };
 }
 
 /** pilot-watch.mjs 記結果行的目錄（`.scratch/pilot/` 底下）與檔案：一個 handle 一個檔，內容 `<ISO 時間> <結果行>`（#413）。 */
@@ -905,13 +929,14 @@ export function restageLines(key, current, regression, regressionExit, liveLandS
 /**
  * 沒關的 batch 裡 `parked after #<m>` 的成員：#m 以 done 留在已經 `closed`（合入並收尾）的 batch 時印 UNPARK <n>（#163）。
  * #m 被移走的舊 batch（`closed moved`）裡那一列是 moved、batch 關了卻沒合入的那一列是 stop，都不算。
+ * `pilot-batch.mjs park --fresh` 記成 `parked after #<m> fresh` 的成員改印 UNPARK_FRESH <n>：它要 fresh 重派，unpark 再 stage 會撞同一個整合衝突（#482）。
  */
 export function unparkLines(batches) {
   const closedMembers = new Set(batches.filter(b => /^closed\b/.test(b.current))
     .flatMap(b => b.members.filter(m => m.state === 'done').map(m => m.n)));
   return batches.filter(b => !/^closed\b/.test(b.current)).flatMap(b => b.members)
     .filter(m => closedMembers.has(m.state.match(/^parked after #(\d+)\b/)?.[1]))
-    .map(m => `UNPARK ${m.n}`);
+    .map(m => `${/^parked after #\d+ fresh$/.test(m.state) ? 'UNPARK_FRESH' : 'UNPARK'} ${m.n}`);
 }
 
 /** 跑 fn；checkpoint 鎖等到逾時時傳回 `[CHECKPOINT_LOCKED …]`，其他錯誤照丟（#345：其他 probe 行照印，exit 3）。 */

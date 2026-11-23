@@ -3,18 +3,21 @@
 // pilot 的 batch checkpoint（PILOT-STORE.md 的 `.scratch/pilot/batch-<key>.md`）搬移成員：coordinator 不再手抄表頭與成員行（#163：三個 coordinator
 // 各自用 sed、head、python 拼，抄過去的 state 還是 done，probe 又印 STAGEABLE；全員搬走的 batch 沒有固定的 current: 值）。
 // 用法：node scripts/pilot-batch.mjs <checkout> move <key> <n> [--state stop]
-//       node scripts/pilot-batch.mjs <checkout> park <key> <n> --after <m> --reason <原因>
+//       node scripts/pilot-batch.mjs <checkout> park <key> <n> --after <m> [--fresh] --reason <原因>
 //       node scripts/pilot-batch.mjs <checkout> unpark <n>
 //       node scripts/pilot-batch.mjs <checkout> resume <key> <n> --note <text>（需要 ORCA_CLI_COMMAND）
 //       node scripts/pilot-batch.mjs <checkout> accept <key> <n> <sha>
 //   move   把 batch-<key> 的成員 #n 搬到 batch-<n>.md：表頭（標題換成 `# batch <n>`、current:、integration:）與成員行照抄，
-//          `--state stop` 時新行的 state 寫 stop、candidate 清空；舊行的 state 改成 `moved batch-<n>`，其他格不動。成員最後一行 `resumed:`（見 resume）也抄到新檔。
+//          `--state stop` 時新行的 state 寫 stop、candidate 清空；舊行的 state 改成 `moved batch-<n>`，其他格不動。成員最後一行 `resumed:`（見 resume）與它的每一行 `postland:`（#502）也抄到新檔。
 //          沒帶 --state、成員是 running、有 ORCA_CLI_COMMAND 時（#437：watcher 已印 DONE、Probe 還沒寫回就搬，新列仍是 running，pilot-land 只會 STOP member running），
 //          拿鎖前先讀該列 handle 的畫面最後一個結果行（pilot-probe 的 resultMatch；就是 resumed 記下的那一行時不算）：`DONE <n> <sha>` 的 sha 是成員分支（branch 欄）在 checkout 的 HEAD 時
 //          新行寫 done＋完整 SHA，不是 HEAD 或分支不存在時 `STOP <n> unapplied-result <結果行>`、不動檔（先查清楚或跑 pilot-probe.mjs --apply）；`STOP <n> <cause>` 寫 stop、candidate 不動。
 //          讀不到畫面時 stderr 印 `WARN move <n> orca <錯誤>`，照舊搬成 running。
 //   park   同 move，但新行的 state 寫 `parked after #<m>`、candidate 保留，表格下方加一行 `parked: after #<m> <time> <原因>`；
 //          成員要是 done（暫緩已完成、等 #m 先合入的成員）。<key> 就是 <n> 時就地改 state，不搬；這時 batch 要只有它一個成員。
+//          `--fresh`（#482：等 #m 合入後要 fresh 重派、不該 unpark 再 stage 的成員）讓 state 寫成 `parked after #<m> fresh`，Probe 對它印 UNPARK_FRESH 而不是 UNPARK。
+//          就地 park 也收已是 `parked after #<k>[ fresh]` 的成員（#469：不必先 unpark，中間不會有一瞬間是 done）：改寫 state 與最後一行 `parked:`，
+//          印 `PARKED_MEMBER <n> after #<m> (was #<k>)`；after 與 fresh 都沒變時當作重跑，不寫檔。
 //   unpark 把 batch-<n>.md 裡 `parked after #<m>` 的成員 #n 改回 done（probe 印 UNPARK <n> 之後），candidate 不動。
 //   resume 請停下的 worker 繼續（#356）：batch-<key> 的成員 #n 要是 stop 或 done。先讀該列 handle 的畫面，記下最後一個結果行（`DONE <n> <sha>`／`STOP <n> <cause>`，
 //          pilot-probe 的 resultMatch），再以 orca-session-send 的 sendToSession 送 --note（等 tui-idle、讀畫面確認送達；不用 --wait-submit，WSL 上它常不送出）。
@@ -24,12 +27,12 @@
 //   accept 採用 worker 已回報的 candidate（#338 第 1 項：coordinator 代決 STOP decision、選了候選的做法）：成員要是 running 或 stop，
 //          <sha> 要等於成員分支（branch 欄）在 checkout 的 HEAD；寫 state done、candidate 完整 SHA，Probe 下一輪照常印 STAGEABLE。
 //   搬完舊 batch 的成員全是 moved 時，把 `current:` 寫成 `closed moved`（重跑已做完的 move 也補寫，pilot-dispatch --fresh 共用同一個函式，#205）。
-// stdout：`MOVED <key> <n> batch-<n>`，舊 batch 因此關閉時行尾加 ` closed`，照畫面結果行寫了新列時前面多一行 `APPLIED <n> done <完整 sha>` 或 `APPLIED <n> stop`；park 就地改時印 `PARKED_MEMBER <n> after #<m>`；`UNPARKED <n>`；
+// stdout：`MOVED <key> <n> batch-<n>`，舊 batch 因此關閉時行尾加 ` closed`，照畫面結果行寫了新列時前面多一行 `APPLIED <n> done <完整 sha>` 或 `APPLIED <n> stop`；park 就地改時印 `PARKED_MEMBER <n> after #<m>`（改寫已 parked 的成員時加 ` (was #<k>)`）；`UNPARKED <n>`；
 //   `RESUMED <key> <n>`；`ACCEPTED <key> <n> <完整 sha>`。
 //   重跑已做完的 move／park 照樣印同一行（中斷在寫新檔與改舊行之間時只補完舊行，目標檔已有這個成員就不重寫）。
 //   重跑以目標檔已有這個成員為準，不核對那一列的 state（probe --apply 可能已改過它）：中斷後要換成另一個子命令或 --state 時，先看目標檔。
 //   STOP（檔案不動）：`STOP <key> missing`（沒有 batch-<key>.md）、`STOP <n> rows <列數>`（成員列不是剛好一列）、`STOP <n> same-batch`（move 的 <key> 就是 <n>）、
-//   `STOP <n> members <數目>`（就地 park 的 batch 還有別的成員）、`STOP <n> state <state>`（park 的成員不是 done、unpark 的不是 parked、move／park 的成員已移到別處）、`STOP <n> target batch-<n>.md`（目標檔已存在卻沒有這個成員）、
+//   `STOP <n> members <數目>`（就地 park 的 batch 還有別的成員）、`STOP <n> state <state>`（park 的成員不是 done（就地 park 也收 parked）、unpark 的不是 parked、move／park 的成員已移到別處）、`STOP <n> target batch-<n>.md`（目標檔已存在卻沒有這個成員）、
 //   `STOP <n> unapplied-result <結果行>`（move 見上）、`STOP <n> state missing`（resume／accept 的成員不在 batch 裡）、resume 的成員不是 stop／done 或 accept 的不是 running／stop 時 `STOP <n> state <state>`、
 //   `STOP <n> orca <錯誤碼>`／`STOP <n> send <handle>`／`STOP <n> tui-timeout <handle>`（resume 讀不到畫面或沒送達）、`STOP <n> sha <分支 HEAD|missing>`（accept 的 SHA 不是分支 HEAD、分支不存在）、`STOP <n> delivered <原因>`（resume 送達 note 後鎖內重檢失敗，例如 `delivered state running`：note 已送到，不要重跑）。
 //   讀改寫都在 batch-<key>.md 與 batch-<n>.md 的 checkpoint 鎖內（lib/pilot-store.mjs 的 withCheckpointLock，#345）：逾時印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，什麼都沒寫。
@@ -41,7 +44,7 @@ import { closeIfAllMoved, exitIfLocked, isField, now, storeDir, tableCells, usag
 import { orca, sendToSession } from './orca-session-send.mjs';
 import { resultMatch } from './pilot-probe.mjs';
 
-const USAGE = '用法：node scripts/pilot-batch.mjs <checkout> move <key> <n> [--state stop] | <checkout> park <key> <n> --after <m> --reason <原因> | <checkout> unpark <n>'
+const USAGE = '用法：node scripts/pilot-batch.mjs <checkout> move <key> <n> [--state stop] | <checkout> park <key> <n> --after <m> [--fresh] --reason <原因> | <checkout> unpark <n>'
   + ' | <checkout> resume <key> <n> --note <text> | <checkout> accept <key> <n> <sha>';
 
 class Stop extends Error {}
@@ -143,7 +146,9 @@ function move(pilot, key, n, { state, candidate, note, requireDone, result, chec
     }
     // resume 記下的那一行跟著成員走（#356）：搬走的 running 成員在新檔也要忽略畫面上的舊結果行。
     const resumed = source.lines.filter(line => line.startsWith(`resumed: #${n} `)).slice(-1);
-    writeCheckpoint(target, `${[...header, member, ...resumed, ...(note ? [note] : [])].join('\n')}\n`);
+    // POSTLAND 指令（#502）也跟著成員走：park 之後落地的 batch 才印得出 POSTLAND_PENDING。
+    const postland = source.lines.filter(line => line.startsWith(`postland: #${n} `));
+    writeCheckpoint(target, `${[...header, member, ...resumed, ...postland, ...(note ? [note] : [])].join('\n')}\n`);
   }
   source.lines[i] = setCells(source.lines[i], moved);
   const closed = closeIfAllMoved(source.lines);
@@ -151,8 +156,8 @@ function move(pilot, key, n, { state, candidate, note, requireDone, result, chec
   return `${applied}MOVED ${key} ${n} batch-${n}${closed ? ' closed' : ''}`;
 }
 
-/** park 的 <key> 就是 <n>：就地把 done 改成 parked，加上原因行。 */
-function parkInPlace(pilot, n, after, note) {
+/** park 的 <key> 就是 <n>：就地把 done 改成 parked、加上原因行；已 parked 的改寫 state 與最後一行 `parked:`（#469）。 */
+function parkInPlace(pilot, n, after, parked, note) {
   const file = join(pilot, `batch-${n}.md`);
   if (!existsSync(file)) throw new Stop(`${n} missing`);
   const batch = load(file);
@@ -160,8 +165,16 @@ function parkInPlace(pilot, n, after, note) {
   const members = batch.lines.filter(isMember).length;
   if (members !== 1) throw new Stop(`${n} members ${members}`);
   const state = stateOf(batch.lines[i]);
-  const parked = `parked after #${after}`;
   if (state === parked) return `PARKED_MEMBER ${n} after #${after}`;
+  const was = state.match(/^parked after #(\d+)(?: fresh)?$/)?.[1];
+  if (was) {
+    batch.lines[i] = setCells(batch.lines[i], parked);
+    const last = batch.lines.findLastIndex(line => line.startsWith('parked: '));
+    if (last >= 0) batch.lines[last] = note;
+    else batch.lines.splice(batch.lines.findLastIndex(line => line.trim()) + 1, 0, note);
+    writeCheckpoint(file, batch.lines.join('\n').replace(/\n*$/, '\n'));
+    return `PARKED_MEMBER ${n} after #${after} (was #${was})`;
+  }
   if (state !== 'done') throw new Stop(`${n} state ${state}`);
   batch.lines[i] = setCells(batch.lines[i], parked);
   const text = batch.lines.join('\n').replace(/\n*$/, '\n');
@@ -269,13 +282,18 @@ if (command === 'move') {
     run = () => move(pilot, key, n, { result, checkout });
   }
 } else if (command === 'park') {
-  const [key, n, ...more] = rest;
+  const [key, n, ...args] = rest;
+  // `--fresh` 不帶值：拿掉後其餘照 `--<name> <value>` 解析，給兩次是用法錯誤。
+  const more = args.filter(arg => arg !== '--fresh');
+  const fresh = args.length - more.length;
+  if (fresh > 1) usage(USAGE, '--fresh 只能給一次');
   const { after, reason } = flags(more, ['after', 'reason']);
   if (!isKey(key) || !isNumber(n) || !isNumber(after) || after === n) usage(USAGE);
   if (!isField(reason) || reason.includes('|')) usage(USAGE, '--reason 要是一行，不能空白、含三個連續空白或 |');
   files = [join(pilot, `batch-${key}.md`), join(pilot, `batch-${n}.md`)];
   const note = `parked: after #${after} ${now()} ${reason}`;
-  run = key === n ? () => parkInPlace(pilot, n, after, note) : () => move(pilot, key, n, { state: `parked after #${after}`, note, requireDone: true });
+  const parked = `parked after #${after}${fresh ? ' fresh' : ''}`;
+  run = key === n ? () => parkInPlace(pilot, n, after, parked, note) : () => move(pilot, key, n, { state: parked, note, requireDone: true });
 } else if (command === 'unpark') {
   const [n, ...more] = rest;
   if (!isNumber(n) || more.length) usage(USAGE);

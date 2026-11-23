@@ -10,6 +10,9 @@
 // 有一個 handle 出現新結果或 terminal 已結束（`status: exited`）就印出這一輪的事件並結束：coordinator 以背景執行它，結束即被叫醒，處理後再起一次。
 // batch 成員印 RESULT 時同時把結果行記進 checkpoint 同目錄的 `results/<handle>`（`<ISO 時間> <結果行>`，pilot-probe.mjs 的 recordResult）：
 // 結果行之後可能被捲走、terminal 可能結束，Probe 畫面上讀不到時改讀這份，--apply 照常寫回（#413 第 1 項）。記不進去時照樣印 RESULT、stderr 印原因。
+// batch 成員的結果是 DONE（含 from-state）時，畫面上它之前的 `POSTLAND <n> <command>`（pilot-probe.mjs 的 postlandCommands）在 checkpoint 鎖內補成
+// 表格下方的 `postland: #<n> <command>` 行（已記過的不重記，lib/pilot-store.mjs 的 addPostland），pilot-land.mjs 落地後印 POSTLAND_PENDING（#502）。
+// stdout 不變；寫不進去時 stderr 印 `POSTLAND_RECORD_FAILED <handle> <原因>`。
 //
 // 用法：node scripts/pilot-watch.mjs [<handle>|<checkpoint>.md]... [--batch <key>]... [--checkout <主 checkout>] [--interval <秒>] [--worker-state <路徑>]
 //       node scripts/pilot-watch.mjs --tail <handle> [--lines <n>]
@@ -34,7 +37,8 @@ import { basename, dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { orca } from './orca-session-send.mjs';
-import { WORKER_STATE, parseBatch, recordResult, resultMatch, screenLines, scrollbackMatch, stateResult, workerTail, workingScreen } from './pilot-probe.mjs';
+import { addPostland, updateCheckpoint } from './lib/pilot-store.mjs';
+import { WORKER_STATE, parseBatch, postlandCommands, recordResult, resultMatch, screenLines, scrollbackMatch, stateResult, workerTail, workingScreen } from './pilot-probe.mjs';
 
 const USAGE = '用法：node scripts/pilot-watch.mjs [<handle>|<checkpoint>.md]... [--batch <key>]... [--checkout <主 checkout>] [--interval <秒>] [--worker-state <路徑>]｜node scripts/pilot-watch.mjs --tail <handle> [--lines <n>]（需要 ORCA_CLI_COMMAND）';
 
@@ -89,10 +93,11 @@ export const batchKey = file => basename(file, '.md').replace(/^batch-/, '');
 
 /**
  * 監看主迴圈。targets 是 [{ batch, handle, n, resumed, worktree }]（n 缺省時任何號碼都算；有 n 的是 batch 成員，resumed 是它 `resumed:` 行記下的舊結果行）；read(handle) 傳回 { tail, status }，失敗時丟出；
- * wait(ms) 等下一輪；print(line) 印一行；record(target, line) 在 batch 成員印畫面上的 RESULT 時收到它的結果行（#413；from-state 的不記，Probe 自己重讀 worker checkpoint）。
+ * wait(ms) 等下一輪；print(line) 印一行；record(target, line) 在 batch 成員印畫面上的 RESULT 時收到它的結果行（#413；from-state 的不記，Probe 自己重讀 worker checkpoint）；
+ * postland(target, commands) 在 batch 成員的結果是 DONE（含 from-state）而畫面上有它的 POSTLAND 行時收到那些指令（#502）。
  * 第一輪記基準（已結束的 terminal 直接回報），之後每輪讀一次，有事件就印完這一輪後傳回 0。
  */
-export async function watch({ targets, intervalMs = 60_000, read, scrollback = async () => null, wait = sleep, print = line => process.stdout.write(`${line}\n`), record = () => {}, workerState = WORKER_STATE }) {
+export async function watch({ targets, intervalMs = 60_000, read, scrollback = async () => null, wait = sleep, print = line => process.stdout.write(`${line}\n`), record = () => {}, postland = () => {}, workerState = WORKER_STATE }) {
   const seen = new Map();
   // 同一個 handle 既直接給又是 batch 成員時以 batch 成員為準（只認自己的號碼、標出批次）。
   const unique = [];
@@ -118,18 +123,22 @@ export async function watch({ targets, intervalMs = 60_000, read, scrollback = a
       if (n !== undefined) {
         // batch 成員：與 Probe 的 workerState 同一判斷，沒有畫面基準。
         let match = resultMatch(tail, n);
-        // #537：結果行已捲出畫面、畫面也不是工作中時，往回讀累積輸出（與 Probe 的 workerState 同一判斷）。
+        // #537：結果行已捲出畫面、畫面也不是工作中時，往回讀累積輸出（與 Probe 的 workerState 同一判斷）；那時 POSTLAND 從同一份累積輸出讀（match.tail）。
         if (!match && !workingScreen(tail)) {
           try { match = await scrollback(handle, n); } catch { match = null; }
         }
         if (match && match.line !== target.resumed) {
           record(target, match.line);
+          const commands = match.kind === 'DONE' ? postlandCommands(match.tail ?? tail, n) : [];
+          if (commands.length) postland(target, commands);
           print(`RESULT ${batch} ${handle} ${match.line}`);
           events++;
         }
         else if (terminal.status === 'exited') {
           // #466：分頁已結束卻沒有結果行時讀 worker checkpoint（與 Probe 的 workerState 同一判斷）。
           const sha = stateResult(target, workerState);
+          const commands = sha ? postlandCommands(tail, n) : [];
+          if (commands.length) postland(target, commands);
           print(sha ? `RESULT ${batch} ${handle} DONE ${n} ${sha} from-state` : `EXITED ${batch} ${handle}`);
           events++;
         }
@@ -194,7 +203,7 @@ async function main(argv) {
     }
     const running = parseBatch(text).members.filter(member => member.state === 'running' && member.handle);
     if (!running.length) process.stdout.write(`NO_RUNNING ${key}\n`);
-    targets.push(...running.map(member => ({ batch: key, handle: member.handle, n: member.n, resumed: member.resumed, worktree: member.worktree, pilot: dirname(file) })));
+    targets.push(...running.map(member => ({ batch: key, handle: member.handle, n: member.n, resumed: member.resumed, worktree: member.worktree, pilot: dirname(file), file })));
   }
   const read = async handle => (await orca(ctx, 'terminal', 'read', '--terminal', handle, '--screen')).terminal ?? {};
   const record = (target, line) => {
@@ -204,8 +213,15 @@ async function main(argv) {
       process.stderr.write(`RECORD_FAILED ${target.handle} ${oneLine(error.message)}\n`);
     }
   };
+  const postland = (target, commands) => {
+    try {
+      updateCheckpoint(target.file, text => addPostland(text, target.n, commands));
+    } catch (error) {
+      process.stderr.write(`POSTLAND_RECORD_FAILED ${target.handle} ${oneLine(error.message)}\n`);
+    }
+  };
   const scrollback = (handle, n) => scrollbackMatch(ctx, handle, n);
-  return watch({ targets, intervalMs: options.intervalMs, read, scrollback, record, workerState: options.workerState });
+  return watch({ targets, intervalMs: options.intervalMs, read, scrollback, record, postland, workerState: options.workerState });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

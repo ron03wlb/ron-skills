@@ -48,3 +48,16 @@ test('Sources 清單檔列出 Pilot 段連到的每個檔，來源檢查才涵�
   assert.ok(entry('Sources').includes(`\`${SOURCES_FILE}\``), `Sources 沒指向 ${SOURCES_FILE}`);
   assert.ok(entry('Sessions').includes(`--sources-file ${SOURCES_FILE}`), `Sessions 指令沒帶 --sources-file ${SOURCES_FILE}`);
 });
+
+// #502：pilot-land 落地後印的 POSTLAND_PENDING 要有處理規則：不需要 Operator 的 coordinator 自己跑，需要的一律開 gate。
+// 本 repo 的 Stage 條目與給其他 repo 的範本（PILOT-ROUND-TEMPLATE 的 Stage, regression, integrate）都要寫兩條。
+test('Stage 條目與 PILOT-ROUND-TEMPLATE 寫明 POSTLAND_PENDING 的兩條處理規則', () => {
+  const { line } = pilotEntry('Stage');
+  assert.match(line, /POSTLAND_PENDING <n> <command>/);
+  assert.match(line, /不需要 Operator 的由 coordinator 在 `<stage worktree>` 跑/);
+  assert.match(line, /需要 Operator 的[^。]*一律照 \*\*Gates\.\*\* 開 gate/);
+  const template = readFileSync(new URL('../skills/engineering/issue-run/PILOT-ROUND-TEMPLATE.md', import.meta.url), 'utf8').match(/^- \*\*Stage, regression, integrate\.\*\* .*$/m)?.[0] ?? '';
+  assert.match(template, /POSTLAND_PENDING <n> <command>/);
+  assert.match(template, /run each one that needs no Operator in the stage worktree/);
+  assert.match(template, /open a gate[^.]*for each that needs the Operator/);
+});
