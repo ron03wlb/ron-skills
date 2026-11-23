@@ -255,6 +255,11 @@
       "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
       "sha256": "b8202f5979875a98a87aa61ba023ed277df8d98f7db7c25fb19d23325befe48a"
     },
+    "scripts/pilot-retro-due.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/pilot-retro-due.mjs",
+      "commit": "5403663187dc894f17bdb37ad471e5006f9d661f",
+      "sha256": "544c8e492e6b72be7eb235511e02af513c42e004fdd07409532d7aceb55fc204"
+    },
     "scripts/pilot-sources.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-sources.mjs",
       "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
