@@ -466,3 +466,17 @@ test('stage 前同步失敗（sync-main 衝突）：STOP conflict sync-main、�
   assert.equal(git(f.repo, 'rev-parse', 'pilot/integration'), tip);
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
 });
+
+// #502（investing#601）：worker 的 `POSTLAND <n> <command>` 經 pilot-watch 記成 checkpoint 的 `postland:` 行；落地整合分支後每條印 POSTLAND_PENDING，
+// coordinator 照 adapter 執行或開 gate。MERGED 仍是最後一行；已 merged 的重跑照樣再印（還沒有人跑之前都算 pending）。
+test('checkpoint 有 postland 行：MERGED 之前對每個 done 成員的每條印 POSTLAND_PENDING <n> <command>，不是成員的不印', t => {
+  const f = fixture(t, { members: [{ n: 601, files: { 'a.txt': 'a\n' } }, { n: 602, files: { 'b.txt': 'b\n' } }] });
+  writeFileSync(f.file, `${f.read()}postland: #602 make sync\npostland: #601 scripts/project-sync.py --setup-status-field --apply\npostland: #9 echo other\n`);
+  const result = f.land(f.key);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const tail = ['POSTLAND_PENDING 601 scripts/project-sync.py --setup-status-field --apply', 'POSTLAND_PENDING 602 make sync'];
+  assert.deepEqual(result.lines.slice(-3, -1), tail);
+  assert.match(result.last, /^MERGED 601-602 [0-9a-f]{40}$/);
+  const again = f.land(f.key);
+  assert.deepEqual(again.lines, [...tail, result.last]);
+});

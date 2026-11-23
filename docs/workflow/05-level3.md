@@ -94,7 +94,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | 用途 | 做法 |
 | --- | --- |
 | 派工 | 三步：`orca worktree create`（不帶 `--repo`、不帶 `--agent`）→ `orca terminal create --command claude` → 用會確認送達的送出腳本送 `/issue-run <n> --worker <checkpoint>`；worktree 路徑與 terminal handle 記進批次 checkpoint；`worktree create` 之後確認主 checkout 沒有被設成 bare（見 [08 常見坑](08-pitfalls.md)） |
-| 監看 | 背景跑 `node scripts/pilot-watch.mjs --batch <key>`（可帶多批）：啟動後才出現的 `DONE <n> <sha>`、`STOP <n> <原因>` 印 `RESULT`，terminal 已結束但沒有新結果行印 `EXITED`（卡住），印完就結束；上一輪畫面還在工作的 worker 一閒置（印完結果行、結束那一輪）就立刻讀畫面，不等下一個輪詢間隔；看畫面用 `node scripts/pilot-probe.mjs --tail <handle>` |
+| 監看 | 背景跑 `node scripts/pilot-watch.mjs --batch <key>`（可帶多批）：啟動後才出現的 `DONE <n> <sha>`、`STOP <n> <原因>` 印 `RESULT`（`DONE` 前的 `POSTLAND <n> <指令>` 記進 batch checkpoint，落地後 `pilot-land.mjs` 印 `POSTLAND_PENDING`，coordinator 照跑或開 gate），terminal 已結束但沒有新結果行印 `EXITED`（卡住），印完就結束；上一輪畫面還在工作的 worker 一閒置（印完結果行、結束那一輪）就立刻讀畫面，不等下一個輪詢間隔；看畫面用 `node scripts/pilot-probe.mjs --tail <handle>` |
 | 閒置等待 | 背景跑 `node scripts/pilot-idle-wait.mjs <主 checkout>`：每 300 秒讀只讀的 probe、`.scratch/pilot/gates.md` 與整合分支 HEAD，和第一輪比出現新的 probe 行、gate 檔或 HEAD 變了就印 `WAKE …` 結束，3600 秒沒變印 `IDLE_TIMEOUT` 結束 |
 | 結案 | `orca worktree rm` 移除 worktree，Orca 不會留下孤兒紀錄；rm 之後確認主 checkout 沒有被設成 bare（見 [08 常見坑](08-pitfalls.md)） |
 | 每個 tick | coordinator 每次被叫醒先確認主 checkout 沒有被設成 bare：Orca 的 worktree 操作可能稍後才改動 `core.bare`（見 [08 常見坑](08-pitfalls.md)） |

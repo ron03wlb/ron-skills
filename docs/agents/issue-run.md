@@ -18,7 +18,7 @@ macOS, WSL2, Linux（母單 #82 決策 R1-Q1；原生 Windows 不支援）。本
 
 程式碼 host 是 `github`（`github.com`，`origin` 為 `ron03wlb/ron-skills`），CLI 是 `gh`，和 tracker 同一個 host。PR 的開、讀、等 CI、合併照 [HOSTS.md](../../skills/engineering/setup-workflow/HOSTS.md) 的 GitHub 欄（`gh pr create`、`gh pr view`、`gh pr checks --watch`、`gh pr merge --merge --match-head-commit <sha>`），平常不手打：交付指令是 `node scripts/land.mjs <branch> --body-file <file> --check-command 'bin/check --upstream'`，步驟與結果行見 [Evidence and closing](#evidence-and-closing)。CI 設定在 `.github/workflows/checks.yml`，跑 `bin/check --upstream`。
 
-**CI 執行端**：預設是遠端（GitHub Actions）；`land.mjs` 印 `STOP ci-not-started` 時照 [issue-run-landing.md](issue-run-landing.md) 的 `## CI 執行端` 改用本機。
+**CI 執行端**：只有遠端（GitHub Actions），`main` 有 branch protection（#402）；`land.mjs` 印 `STOP ci-not-started` 時照 [issue-run-landing.md](issue-run-landing.md) 的 `## CI 執行端` 處理。
 
 ## Readiness
 
@@ -36,7 +36,7 @@ Counterpart projects: `spay/spay2`
 
 ## Worktrees and checkpoint
 
-從 `main` 開 `issue/<n>-<slug>` 分支，一張 ticket 也開 worktree：主 checkout 有 `scripts/claude-hook-main-checkout.mjs` 擋寫入（#30）。設了 `ORCA_CLI_COMMAND` 時用 `node scripts/orca-worktree-create.mjs --name issue-<n> --base-branch main --branch issue/<n>-<slug>` 開（看最後一行 JSON 的 `path`），沒有 Orca 時用 `git worktree add`；多張 ticket 依 implement-spec 各開一個。接手已有遠端分支的單（`node scripts/issue-pool.mjs open-work <n>` 印 `OPEN_PR` 或 `BRANCH … origin`）時 `--base-branch origin/<分支> --branch <分支>`；Orca 可能給 `<分支>-2`，腳本在 stderr 印 `BRANCH_RENAMED <拿到的> <要求的>`、JSON 多帶 `requestedBranch`，這時在新 worktree 跑 `git branch -m <要求的>` 與 `git branch -u origin/<要求的>`，否則 `land.mjs` 會另開一個 PR（#300）。checkpoint 放在 `.scratch/issue-run-<n>/state.md`，不 commit；SKILL Decisions 說的 rulings file 是它的 `## rulings` 段。本 repo 沒有 confirm gate：`confirm` ruling 照 SKILL 停下，worker 印 `STOP <n> decision <摘要>`。pilot worker 的結果（Worker result）照 SKILL 的 Worker mode，最後一行 `DONE <n> <sha>` 或 `STOP <n> <cause>`（`pilot-watch.mjs` 只讀這兩種）；Autonomous decisions 與範圍外的 observation 寫在結果行之前的報告裡（#414）。
+從 `main` 開 `issue/<n>-<slug>` 分支，一張 ticket 也開 worktree：主 checkout 有 `scripts/claude-hook-main-checkout.mjs` 擋寫入（#30）。設了 `ORCA_CLI_COMMAND` 時用 `node scripts/orca-worktree-create.mjs --name issue-<n> --base-branch main --branch issue/<n>-<slug>` 開（看最後一行 JSON 的 `path`），沒有 Orca 時用 `git worktree add`；多張 ticket 依 implement-spec 各開一個。接手已有遠端分支的單（`node scripts/issue-pool.mjs open-work <n>` 印 `OPEN_PR` 或 `BRANCH … origin`）時 `--base-branch origin/<分支> --branch <分支>`；Orca 可能給 `<分支>-2`，腳本在 stderr 印 `BRANCH_RENAMED <拿到的> <要求的>`、JSON 多帶 `requestedBranch`，這時在新 worktree 跑 `git branch -m <要求的>` 與 `git branch -u origin/<要求的>`，否則 `land.mjs` 會另開一個 PR（#300）。checkpoint 放在 `.scratch/issue-run-<n>/state.md`，不 commit；SKILL Decisions 說的 rulings file 是它的 `## rulings` 段。本 repo 沒有 confirm gate：`confirm` ruling 照 SKILL 停下，worker 印 `STOP <n> decision <摘要>`。pilot worker 的結果（Worker result）照 SKILL 的 Worker mode，最後一行 `DONE <n> <sha>` 或 `STOP <n> <cause>`（`pilot-watch.mjs` 只讀這兩種，與 `DONE` 前的 `POSTLAND <n> <指令>`，#502）；Autonomous decisions 與範圍外的 observation 寫在結果行之前的報告裡（#414）。
 
 ## Checks
 
