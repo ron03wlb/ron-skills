@@ -4,3 +4,5 @@
 for (const key of Object.keys(process.env)) if (key.startsWith('GIT_')) delete process.env[key];
 // 同時 import isolate-orca-env.mjs 清掉 session 繼承的 ORCA_CLI_COMMAND、ORCA_TERMINAL_HANDLE：測試設的假 Orca 失效時改為失敗，不會碰到真的 Orca；要用假 Orca 的測試自己設（#524）。
 import "./isolate-orca-env.mjs";
+// 也把 heavy-slot.mjs 的鎖檔目錄換成暫存目錄：被測的 pilot-land.mjs、land.mjs 經 slot 跑檢查，不能去排全機真實的 slot。
+import "./isolate-heavy-slot-env.mjs";

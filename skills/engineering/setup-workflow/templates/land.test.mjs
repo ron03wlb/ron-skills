@@ -4,7 +4,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { mergeSample } from './test/fake-orca.mjs';
 import { GH_SAMPLES } from './test/gh-samples.mjs';
 import { checksVerdict, firstSentence, pickMergedPr, pickPr, rollupBucket, rollupChecks } from './land.mjs';
@@ -60,7 +61,7 @@ function fixture(t, { seed = {}, mainMovesAtMerge = null, checks = [PASS], orcaF
   // selfHosted：repo 自己帶 land.mjs 等腳本，從要被移除的 worktree 裡執行（land 合入自己的分支就是這樣）。
   if (selfHosted) {
     mkdirSync(join(main, 'scripts'));
-    for (const name of ['land.mjs', 'orca-session-send.mjs', 'lib/protected-paths.mjs']) cpSync(new URL(`./${name}`, import.meta.url).pathname, join(main, 'scripts', name));
+    for (const name of ['land.mjs', 'heavy-slot.mjs', 'orca-session-send.mjs', 'lib/protected-paths.mjs']) cpSync(new URL(`./${name}`, import.meta.url).pathname, join(main, 'scripts', name));
     sh(main, 'add', 'scripts');
   }
   // 假 bin/check：記下參數、所在 SHA 與工作樹是否乾淨，印 CHECK_PASS 行後以 localCheckExit 結束（--local-checks 用）。
@@ -668,6 +669,29 @@ test('--local-checks 逾時：STOP local-checks-timeout，不合併', t => {
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.match(last(result), new RegExp(`^STOP local-checks-timeout ${tip} `));
   assert.doesNotMatch(calls(), /^gh pr merge /m);
+});
+
+// CoS item 67：--check-command 經全機 heavy-slot 執行；slot 都被佔住而等到上限時 STOP slot-timeout（負載關卡），不跑檢查、不 push。
+test('--local-checks 等 heavy-slot 逾時：STOP slot-timeout <sha> <秒數>s，不跑檢查、不 push、不合併', async t => {
+  const { wt, body, sh, land, calls, remoteHas, last } = fixture(t, { checks: [FAIL] });
+  const tip = sh(wt, 'rev-parse', 'HEAD');
+  const slots = mkdtempSync(join(realTmpdir(), 'land-slots-'));
+  t.after(() => rmSync(slots, { recursive: true, force: true }));
+  const slotEnv = { HEAVY_CHECK_DIR: slots, HEAVY_CHECK_SLOTS: '1', LAND_SLOT_TIMEOUT_S: '0.5' };
+  // 另一個 repo 的重型檢查佔住唯一的 slot，直到 gate 檔出現。
+  const gate = join(slots, 'release');
+  const other = spawn(process.execPath, [new URL('./heavy-slot.mjs', import.meta.url).pathname, 'run', '--label', 'other:check', '--',
+    'sh', '-c', `while [ ! -e ${gate} ]; do sleep 0.05; done`], { env: { ...env, ...slotEnv }, stdio: 'ignore' });
+  t.after(() => other.kill('SIGKILL'));
+  const lock = join(slots, 'slot-1.lock');
+  for (let i = 0; i < 200 && !(existsSync(lock) && readFileSync(lock, 'utf8').includes('other:check')); i++) await sleep(25);
+
+  const result = land(['feature', '--body-file', body, '--local-checks', tip], undefined, slotEnv);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(last(result), new RegExp(`^STOP slot-timeout ${tip} \\d+s$`));
+  assert.doesNotMatch(calls(), /^check /m);
+  assert.equal(remoteHas('feature'), false);
+  writeFileSync(gate, '');
 });
 
 // #297：PR #296 合入時主 checkout 有未提交的改動，輸出 WARN main-not-synced、SYNC_SKILLS ok，已安裝的 retro 其實還是舊版。

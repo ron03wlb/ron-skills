@@ -15,5 +15,9 @@ export CHECK_INDEX_TREE=$index_tree
 if [[ -f scripts/check-stamp.mjs ]] && node scripts/check-stamp.mjs fresh "$index_tree"; then echo "CHECK_STAMP_FRESH $index_tree" >&2; exit 0; fi
 # 失敗時 CHECK_FAIL 在 stdout，必須印出來，否則 commit 只有 exit 1、沒有任何訊息（retro spay2 b949589b#3）。
 log=$(mktemp); trap 'rm -f "$log"' EXIT
-bin/check >"$log" || { tail -n 20 "$log" >&2; exit 1; }
+# 經全機共用的重型檢查 slot 跑（scripts/heavy-slot.mjs，CoS item 67：和 spay2 等 repo 一起限流）。排隊時 stderr 每 30 秒一行 SLOT_WAIT；
+# 等到上限（預設 1800 秒）印 SLOT_TIMEOUT、commit 失敗：是負載關卡，不是檢查沒過，稍後重跑 commit。沒有這支（測試的 fixture repo）時直接跑。
+check=(bin/check)
+[[ ! -f scripts/heavy-slot.mjs ]] || check=(node scripts/heavy-slot.mjs run --label ron-skills:pre-commit -- bin/check)
+"${check[@]}" >"$log" || { tail -n 20 "$log" >&2; exit 1; }
 tail -n 1 "$log" >&2
