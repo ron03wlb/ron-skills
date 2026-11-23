@@ -73,7 +73,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Probe | 每輪對帳的指令或步驟 |
 | Hold flag | 哪個合入步驟在合入前檢查 `hold` |
 | Stage | 開批次分支、依序合入 `DONE` 的成員；哪些衝突 coordinator 可以自己解，哪些改成重派 fresh worker（例如兩邊改了同一條目），重派後又衝突才開 gate；有 setup-workflow 正本時 Stage、Regression、Integrate 是一條 `pilot-land` 指令，它只自己重算副本清單（`workflow-templates.json`），其他衝突解法由專案的 `--resolver` 模組提供，沒有就停下 |
-| Regression | 在 staged SHA 跑什麼、怎樣算過；`pilot-land` 跑 `--check-command` 給的指令（預設 `bin/check`） |
+| Regression | 在 staged SHA 跑什麼、怎樣算過；`pilot-land` 跑 `--check-command` 給的指令（預設 `bin/check`），經 `heavy-slot.mjs` 的全機共用 slot 執行，同一台機器上各 repo 的重型檢查合計不超過全機設定的 slot 數（`~/.config/orca-heavy-check/slots`，預設 2） |
 | Integrate | 合進整合分支的條件與指令；`pilot-land` 在 Regression 通過、沒有 hold、整合分支沒前進時快轉 |
 | Push gate | 整合分支 tip 等於最後通過回歸的 SHA 時要跑的 push 指令：交給人，或 adapter 允許時由 coordinator 依序 push、開 PR／MR、合併，再讓整合分支跟上主線（允不允許是 `/setup-workflow` 升 L3 時問的一題，預設交給人；答是才在 `.claude/settings.json` 放行 `land.mjs`、`pilot-close.mjs`，`check-coordinator-permissions.mjs --push` 檢查兩者一致）；PR body 有 setup-workflow 正本時用 `pilot-pr-body` 從 merged 的 batch checkpoint 產生 |
 | Close | 進到主線之後的證據留言、關單、關掉成員 terminal、移除 worktree 與分支（遠端沒有該分支時略過）；有 setup-workflow 正本時用 `pilot-close`（`--repo` 給 tracker 專案），每一步做過就略過，可以重跑 |
@@ -94,7 +94,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | 用途 | 做法 |
 | --- | --- |
 | 派工 | 三步：`orca worktree create`（不帶 `--repo`、不帶 `--agent`）→ `orca terminal create --command claude` → 用會確認送達的送出腳本送 `/issue-run <n> --worker <checkpoint>`；worktree 路徑與 terminal handle 記進批次 checkpoint；`worktree create` 之後確認主 checkout 沒有被設成 bare（見 [08 常見坑](08-pitfalls.md)） |
-| 監看 | 背景跑 `node scripts/pilot-watch.mjs --batch <key>`（可帶多批）：啟動後才出現的 `DONE <n> <sha>`、`STOP <n> <原因>` 印 `RESULT`，terminal 已結束但沒有新結果行印 `EXITED`（卡住），印完就結束；看畫面用 `node scripts/pilot-probe.mjs --tail <handle>` |
+| 監看 | 背景跑 `node scripts/pilot-watch.mjs --batch <key>`（可帶多批）：啟動後才出現的 `DONE <n> <sha>`、`STOP <n> <原因>` 印 `RESULT`，terminal 已結束但沒有新結果行印 `EXITED`（卡住），印完就結束；上一輪畫面還在工作的 worker 一閒置（印完結果行、結束那一輪）就立刻讀畫面，不等下一個輪詢間隔；看畫面用 `node scripts/pilot-probe.mjs --tail <handle>` |
 | 閒置等待 | 背景跑 `node scripts/pilot-idle-wait.mjs <主 checkout>`：每 300 秒讀只讀的 probe、`.scratch/pilot/gates.md` 與整合分支 HEAD，和第一輪比出現新的 probe 行、gate 檔或 HEAD 變了就印 `WAKE …` 結束，3600 秒沒變印 `IDLE_TIMEOUT` 結束 |
 | 結案 | `orca worktree rm` 移除 worktree，Orca 不會留下孤兒紀錄；rm 之後確認主 checkout 沒有被設成 bare（見 [08 常見坑](08-pitfalls.md)） |
 | 每個 tick | coordinator 每次被叫醒先確認主 checkout 沒有被設成 bare：Orca 的 worktree 操作可能稍後才改動 `core.bare`（見 [08 常見坑](08-pitfalls.md)） |

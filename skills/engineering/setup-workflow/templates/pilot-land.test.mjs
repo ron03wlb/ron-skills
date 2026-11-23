@@ -2,9 +2,10 @@
 import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
@@ -92,6 +93,35 @@ test('預設 regression 指令是 bin/check；--check-command 以 sh 跑指定�
   const flagged = custom.land(custom.key, '--check-command', 'bin/check --upstream');
   assert.equal(flagged.status, 0, flagged.stdout + flagged.stderr);
   assert.equal(custom.checks(), 'check --upstream\n');
+});
+
+// CoS item 67：Regression 經全機共用的 heavy-slot 執行；slot 都被佔住而等到上限時是負載關卡，不是 Regression 沒過。
+test('Regression 經 heavy-slot 執行；等 slot 逾時印 STOP load slot-timeout、exit 4，regression 行記 exit 75，下一輪拿得到 slot 就 MERGED', async t => {
+  const slots = mkdtempSync(join(realTmpdir(), 'pilot-land-slots-'));
+  t.after(() => rmSync(slots, { recursive: true, force: true }));
+  const slotEnv = { HEAVY_CHECK_DIR: slots, HEAVY_CHECK_SLOTS: '1', HEAVY_CHECK_TIMEOUT: '0.5' };
+  const f = fixture(t, { members: [{ n: 67, files: { 'a.txt': 'a\n' } }], extraEnv: slotEnv });
+  // 另一個 repo 的重型檢查佔住唯一的 slot，直到 gate 檔出現。
+  const gate = join(slots, 'release');
+  const other = spawn(process.execPath, [fileURLToPath(new URL('./heavy-slot.mjs', import.meta.url)), 'run', '--label', 'other:check', '--',
+    'sh', '-c', `while [ ! -e ${gate} ]; do sleep 0.05; done`], { env: { ...env, ...slotEnv }, stdio: 'ignore' });
+  t.after(() => other.kill('SIGKILL'));
+  const closed = new Promise(resolve => other.on('close', resolve));
+  for (let i = 0; i < 200 && !(existsSync(join(slots, 'slot-1.lock')) && readFileSync(join(slots, 'slot-1.lock'), 'utf8').includes('other:check')); i++) await sleep(25);
+
+  const blocked = f.land(f.key);
+  assert.equal(blocked.status, 4, blocked.stdout + blocked.stderr);
+  assert.match(blocked.last, /^STOP load slot-timeout \d+s$/);
+  assert.equal(f.checks(), '', '沒拿到 slot 不跑檢查');
+  assert.match(f.read(), /^regression: [0-9a-f]{40} exit 75$/m);
+  assert.match(readFileSync(join(f.repo, `.scratch/pilot/reg-${f.key}.log`), 'utf8'), /^SLOT_TIMEOUT repo:regression \d+s holders=other:check@\d+:\d+s$/m);
+
+  writeFileSync(gate, '');
+  await closed;
+  const merged = f.land(f.key);
+  assert.equal(merged.status, 0, merged.stdout + merged.stderr);
+  assert.match(merged.last, /^MERGED 67 [0-9a-f]{40}$/);
+  assert.match(readFileSync(join(f.repo, `.scratch/pilot/reg-${f.key}.log`), 'utf8'), /^SLOT_ACQUIRED repo:regression slot-1\/1 waited=\d+s$/m);
 });
 
 // #367：gate 用 `- hold：#<n>` 擋住的成員不能被 stage；resolved 之後照常落地。

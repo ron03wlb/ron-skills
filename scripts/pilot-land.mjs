@@ -35,6 +35,8 @@
 //               門檻依序取 --load-max <n>、$PILOT_LOAD_MAX，都沒有時 3 × os.availableParallelism()；$PILOT_LOAD_NOW 取代實測值（測試用）。
 //   Regression  在 staged SHA 跑 Regression 指令，完整輸出寫到 <主 checkout>/.scratch/pilot/reg-<key>.log，
 //               checkpoint 追加 `regression: <sha> exit <code>`（通過、而且輸出最後一行以 `CHECK_PASS ` 開頭時附上那一行），同一次寫入拿掉 regressing 標記。
+//               指令經同目錄 heavy-slot.mjs 的全機共用 slot 執行（label `<主 checkout 目錄名>:regression`，排隊時 log 有 SLOT_WAIT 行）；
+//               等 slot 逾時（exit 75）時 regression 行照記 `exit 75`，印 `STOP load slot-timeout <已等秒數>s`：負載關卡，下一輪重跑同一行，不是 Regression 沒過。
 //   hold        <主 checkout>/.scratch/pilot/hold 存在就停。
 //   Integrate   整合分支的 tip 要還是 stage 時記下的那個（不數 parent：ron-skills batch-40-51 用 `$SHA^1` 誤判兩個成員的 batch）；
 //               `switch <整合分支>`、`merge --ff-only`、`branch -d` stage 分支，`current:` 寫成 `merged <sha>`。
@@ -67,7 +69,7 @@
 //     依號碼先合入、自己的分支改過這個檔的成員）、`integration`（成員開分支之後整合分支改過），或以 + 相連的多個來源（`member 79+integration`、`member 1+member 3`），
 //     都看不出來（不該發生）時是 `unknown`；種類是 resolver 的 conflictKind，沒有時 `code`（程式檔）或 `other`。
 //     例：`STOP conflict 108 scripts/lib/hosts.mjs=member 79:code docs/notes.md=integration:other`。以及 `STOP checkpoint …`、`STOP member <n> <state>`、`STOP dirty <worktree>`、
-//   `STOP no-stage-worktree`、`STOP create …`、`STOP merge <n> …`、`STOP git …`、`STOP load <load> <門檻>`，
+//   `STOP no-stage-worktree`、`STOP create …`、`STOP merge <n> …`、`STOP git …`、`STOP load <load> <門檻>`、`STOP load slot-timeout <秒數>s`，
 //   `STOP member <n> running (<WORKER 狀態>)，先跑 pilot-probe.mjs --apply`。之前的行：`WORKER <n> DONE <sha>`、`WORKER <n> STOP <cause>`（讀畫面寫回的 running 成員）、`STAGED <key> <sha> onto <tip>`、
 //   `RESUME <key> <sha>`、`RESOLVED <n> <解法> <檔案…>`，Bare guard 還原主 checkout 時的 `UNBARE <主 checkout>`。
 // exit：0 MERGED；4 STOP；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤；1 其他失敗（程式錯誤，不印 STOP）。
@@ -75,8 +77,9 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { availableParallelism, loadavg } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { slotCommand, slotTimeoutLine } from './heavy-slot.mjs';
 import { CheckpointLocked, dropRegressing, exitIfLocked, gateIssues, heldIssues, openGates, runInStageWorktree, updateCheckpoint } from './lib/pilot-store.mjs';
 
 const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--check-command <指令>] [--integration <分支>] [--main <分支>] [--resolver <模組>] [--load-max <n>] | sync-main [同上選項，不含 --branch]（--branch 時 key 是 req-<n>；門檻預設 $PILOT_LOAD_MAX，再來 3 × 核心數；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
@@ -367,18 +370,26 @@ function loadGate(max) {
   if (load > max) throw new Stop(`load ${load} ${max}`);
 }
 
-/** Regression：在 stage worktree 以 sh 跑 Regression 指令（--check-command），輸出寫到 reg-<key>.log；傳回 exit code、CHECK_PASS 行與 regression 行的值 `line`。 */
+/**
+ * Regression：在 stage worktree 以 sh 跑 Regression 指令（--check-command），輸出寫到 reg-<key>.log；傳回 exit code、CHECK_PASS 行與 regression 行的值 `line`。
+ * 指令經同目錄 heavy-slot.mjs 的全機 slot 執行（label `<主 checkout 目錄名>:regression`）；等 slot 逾時（exit 75 與 SLOT_TIMEOUT 行）時 `slotTimeout` 是那一行。
+ */
 function regression(main, tree, key, sha) {
   const log = join(main, `.scratch/pilot/reg-${key}.log`);
   mkdirSync(dirname(log), { recursive: true });
   const fd = openSync(log, 'w');
-  const result = spawnSync('sh', ['-c', config.check], { cwd: tree, env: childEnv, stdio: ['ignore', fd, fd] });
+  const [command, args] = slotCommand(`${basename(main)}:regression`, ['sh', '-c', config.check]);
+  const result = spawnSync(command, args, { cwd: tree, env: childEnv, stdio: ['ignore', fd, fd] });
   closeSync(fd);
   const code = result.status ?? 1;
-  const last = readFileSync(log, 'utf8').trimEnd().split('\n').pop() ?? '';
+  const output = readFileSync(log, 'utf8');
+  const last = output.trimEnd().split('\n').pop() ?? '';
   const pass = code === 0 && last.startsWith('CHECK_PASS ') ? last : '';
-  return { code, pass, line: `${sha} exit ${code}${pass ? ` ${pass}` : ''}` };
+  return { code, pass, line: `${sha} exit ${code}${pass ? ` ${pass}` : ''}`, slotTimeout: slotTimeoutLine(code, output) };
 }
+
+/** 等 slot 逾時是負載關卡，不是 Regression 沒過：`STOP load slot-timeout <已等秒數>s`。 */
+const slotStop = slotTimeout => new Stop(`load slot-timeout ${slotTimeout.split(' ')[2]}`);
 
 /**
  * staged SHA 合的還是現在這組成員：每個 done 成員的分支都在裡面，其他成員（如 hold 期間 `moved` 的）的分支沒有被這次 stage 合進來。
@@ -483,8 +494,9 @@ async function land(key, loadMax) {
     sha = stage(tree, key, members, tip);
     markStaged(file, sha, tip);
     console.log(`STAGED ${key} ${sha} onto ${tip}`);
-    const { code, line } = regression(main, tree, key, sha);
+    const { code, line, slotTimeout } = regression(main, tree, key, sha);
     appendRegression(file, line);
+    if (slotTimeout) throw slotStop(slotTimeout);
     if (code !== 0) throw new Stop(`regression ${code}`);
   }
 
@@ -525,7 +537,8 @@ function syncMain(loadMax, main = mainCheckout(), getTree = () => stageWorktree(
   // 合入先記下的 SHA，不是 ref：上面的祖先判斷用的是它，期間別處 fetch 讓 origin/main 前進也合同一個。
   mergeResolving(tree, upstream, 'sync-main', conflicted => `conflict sync-main ${conflicted.join(' ')}`);
   const sha = must(tree, 'rev-parse', 'HEAD');
-  const { code, pass } = regression(main, tree, 'sync-main', sha);
+  const { code, pass, slotTimeout } = regression(main, tree, 'sync-main', sha);
+  if (slotTimeout) throw slotStop(slotTimeout);
   if (code !== 0) throw new Stop(`regression sync-main ${code}`);
   if (must(main, 'rev-parse', config.integration) !== tip) throw new Stop('drift');
   // 先寫 checkpoint 再快轉：寫到一半失敗時整合分支還沒動，重跑會重新合併、再寫一次（最後一行為準）；

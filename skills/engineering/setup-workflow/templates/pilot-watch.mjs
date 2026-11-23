@@ -8,6 +8,9 @@
 // batch 成員照 Probe 的 WORKER 判斷：最後一個結果行就是結果，只略過成員 `resumed:` 行記下的 resume 前舊結果（pilot-batch resume，#356），
 // 啟動時已在畫面上的新結果行第一輪就報（#406：resume 後、watcher 啟動前印的 DONE 被畫面基準吞掉，watcher 一直不通知）。
 // 有一個 handle 出現新結果或 terminal 已結束（`status: exited`）就印出這一輪的事件並結束：coordinator 以背景執行它，結束即被叫醒，處理後再起一次。
+// 兩輪之間不只睡 interval（CoS item 67）：上一次讀到工作中畫面（`esc to interrupt` 或 spinner，pilot-probe.mjs 的 workingScreen）的 handle
+// 各起一個 `terminal wait --for tui-idle`，和 interval 一起等、先到先醒。worker 印完結果行、結束那一輪就是 tui-idle，watcher 隨即讀畫面印 RESULT，
+// 不必等到下一個 interval。畫面已閒置的 handle 不起等待（tui-idle 會立刻成立而空轉）；醒來沒有結果時照常下一輪，那個 handle 讀到閒置就不再起。
 // batch 成員印 RESULT 時同時把結果行記進 checkpoint 同目錄的 `results/<handle>`（`<ISO 時間> <結果行>`，pilot-probe.mjs 的 recordResult）：
 // 結果行之後可能被捲走、terminal 可能結束，Probe 畫面上讀不到時改讀這份，--apply 照常寫回（#413 第 1 項）。記不進去時照樣印 RESULT、stderr 印原因。
 //
@@ -149,6 +152,23 @@ export async function watch({ targets, intervalMs = 60_000, read, scrollback = a
   }
 }
 
+/**
+ * 兩輪之間的等待：ms 毫秒，或 handles 裡任一個 waitIdle(handle, signal) 先以 true resolve（worker 剛閒置）就提早醒。
+ * waitIdle 回 false 或失敗（逾時、handle 已失效、terminal 已結束）不提早醒，留給下一輪的讀取判斷。醒來時中止其餘的等待。
+ */
+export async function wakeOnIdle(ms, handles, waitIdle, wait = sleep) {
+  const controller = new AbortController();
+  const never = new Promise(() => {});
+  try {
+    await Promise.race([
+      wait(ms, undefined, { signal: controller.signal }).catch(() => {}),
+      ...handles.map(handle => waitIdle(handle, controller.signal).then(idle => (idle ? undefined : never), () => never)),
+    ]);
+  } finally {
+    controller.abort();
+  }
+}
+
 /** 目前目錄所屬 repo 的主 checkout（`git worktree list --porcelain` 的第一個 worktree）。 */
 function mainCheckout() {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'].includes(key)));
@@ -196,7 +216,16 @@ async function main(argv) {
     if (!running.length) process.stdout.write(`NO_RUNNING ${key}\n`);
     targets.push(...running.map(member => ({ batch: key, handle: member.handle, n: member.n, resumed: member.resumed, worktree: member.worktree, pilot: dirname(file) })));
   }
-  const read = async handle => (await orca(ctx, 'terminal', 'read', '--terminal', handle, '--screen')).terminal ?? {};
+  // 記下每個 handle 上一次讀到的畫面是不是工作中，兩輪之間只對工作中的起 tui-idle 等待。
+  const working = new Set();
+  const read = async handle => {
+    const terminal = (await orca(ctx, 'terminal', 'read', '--terminal', handle, '--screen')).terminal ?? {};
+    if (terminal.status !== 'exited' && workingScreen(terminal.tail)) working.add(handle);
+    else working.delete(handle);
+    return terminal;
+  };
+  const waitIdle = (handle, signal) => orca({ ...ctx, signal }, 'terminal', 'wait', '--terminal', handle, '--for', 'tui-idle', '--timeout-ms', String(Math.ceil(options.intervalMs))).then(result => result.wait?.satisfied === true);
+  const wait = ms => wakeOnIdle(ms, [...working], waitIdle);
   const record = (target, line) => {
     try {
       recordResult(target.pilot, target.handle, line);
@@ -205,7 +234,7 @@ async function main(argv) {
     }
   };
   const scrollback = (handle, n) => scrollbackMatch(ctx, handle, n);
-  return watch({ targets, intervalMs: options.intervalMs, read, scrollback, record, workerState: options.workerState });
+  return watch({ targets, intervalMs: options.intervalMs, read, scrollback, wait, record, workerState: options.workerState });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
