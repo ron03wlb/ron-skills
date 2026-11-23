@@ -7,6 +7,9 @@
 //   → 改寫為 handoff 行（不含 `pid ` 欄，新 session 視為無人占用）
 //   → 沒有 `--to`：記下主 checkout 現有的分頁 → orca-session-split 在主 checkout 新開分頁 `issue-pilot coordinator` 跑 claude 並送出 `/loop /issue-pilot`
 //     （標題前面由 orca-session-split 加上「處理中｜」；create 失敗時依快照與標題找回已開的分頁關掉）；有 `--to`：orca-session-send 把 `/loop /issue-pilot` 送給既有 session
+//     新開分頁時，主 checkout 的 adapter（Pilot 段與它連到的檔，同 pilot-probe.mjs 的 pilotFiles）宣告 `Coordinator model: <model id>` 就跑 `claude --model <model id>`，
+//     沒宣告跑裸 `claude`；宣告值不只英數字與 `._-`，或宣告了不同的值，stderr 印 `WARN coordinator-model-invalid <值>` 或 `WARN coordinator-model-conflict <值>…`，照裸 `claude` 交接
+//     （不 STOP：宣告寫錯不該擋住交接，舊 coordinator 的 context 已經到上限）。`--to` 交給既有 session，不換模型。
 //   → 等新 session 把 `pid ` 行寫進 coordinator 檔，才算交接完成，這時在 `sessions.md` 附加 handoff 行、在 stderr 提醒停掉 watcher。
 // 任一步失敗就還原 coordinator 檔、關掉這次開的分頁（`--to` 的既有 session 不關）並 STOP，舊 session 照常繼續當 coordinator（新分頁若留著，`/loop` 之後仍可能接手，變成兩個 coordinator）。
 // 沒有 coordinator 檔也是 STOP not-coordinator。
@@ -21,7 +24,7 @@
 //   create、tui-timeout、send、orca、pid-timeout、timeout、signal）。
 //   `orca` 逾時時帶出步驟與已花時間：`STOP orca timeout terminal list 10003ms`（#535）；單獨的 `STOP timeout` 是總預算。
 //   `tui-timeout` 時 stderr 先印新分頁關掉前的畫面尾巴 `SCREEN_TAIL <handle>`（或 `SCREEN_TAIL_UNAVAILABLE`，#536）。
-// stderr：交接完成時提醒停掉本 session 的 watcher。
+// stderr：交接完成時提醒停掉本 session 的 watcher；Coordinator model 宣告寫錯時的 WARN（見上）。
 // exit：0 交接完成；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -29,7 +32,8 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { orca, sendToSession } from './orca-session-send.mjs';
-import { openSession } from './orca-session-split.mjs';
+import { ADAPTER, pilotFiles, pilotSection } from './pilot-probe.mjs';
+import { MODEL_ID, openSession } from './orca-session-split.mjs';
 import { recordedTitle, sameTopic, withState } from './tab-state.mjs';
 
 const USAGE = '用法：node scripts/pilot-handoff.mjs --session <id> --pid <pid> --reason <原因> [--to <name|handle>] [--held-check <指令>]（需要 ORCA_CLI_COMMAND）';
@@ -58,6 +62,24 @@ function worktrees() {
 
 /** coordinator 行的 `name` 欄（pilot-register 寫在行尾）；沒有時傳回 undefined。 */
 const nameOf = text => text.match(/   name (.+)$/m)?.[1].trim() || undefined;
+
+/**
+ * adapter 文字裡的 `Coordinator model: <model id>` 宣告（值可以包在反引號裡）：沒宣告時 `{}`；
+ * 合法時 `{ model }`；不合法（不只英數字與 `._-`）或宣告了不同的值時 `{ warn }`，呼叫者照裸 `claude` 開。
+ */
+export function declaredModel(text) {
+  const values = [...new Set([...String(text ?? '').matchAll(/\bCoordinator model:[ \t]*`?([^\s`]*)/g)].map(match => match[1]))];
+  if (!values.length) return {};
+  if (values.length > 1) return { warn: `coordinator-model-conflict ${values.join(' ')}` };
+  return MODEL_ID.test(values[0]) ? { model: values[0] } : { warn: `coordinator-model-invalid ${values[0] || '(空白)'}` };
+}
+
+/** 主 checkout 的 adapter 的 Pilot 段與它連到的檔宣告的後繼 coordinator 模型（declaredModel）；檔案不在就當沒宣告。 */
+export function coordinatorModel(main) {
+  const read = file => (existsSync(join(main, file)) ? readFileSync(join(main, file), 'utf8') : '');
+  const adapter = read(ADAPTER);
+  return declaredModel([pilotSection(adapter), ...pilotFiles(adapter).map(read)].join('\n'));
+}
 
 /** 等 coordinator 檔出現別人的 `pid ` 行，傳回當時的檔案內容；逾時傳回 null，中止時丟出 AbortError。 */
 async function waitNewCoordinator(file, pid, signal) {
@@ -184,7 +206,9 @@ async function handoff(cli, paths, { session, pid, reason, heldCheck, to }, sign
     } catch (error) {
       return stop(`orca ${error.message}`);
     }
-    const opened = await openSession(ctx, { title: TITLE, prompt: LOOP_COMMAND, main, newTab: true, createSignal: AbortSignal.timeout(CREATE_MS) });
+    const { model, warn } = coordinatorModel(main);
+    if (warn) console.error(`WARN ${warn}`);
+    const opened = await openSession(ctx, { title: TITLE, prompt: LOOP_COMMAND, main, newTab: true, createSignal: AbortSignal.timeout(CREATE_MS), model });
     handle = opened.handle;
     if (opened.stop) return stop(handle ? opened.stop : opened.stop + await closeOrphans(cli, main, before, opened.aborted));
   } else {

@@ -78,6 +78,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Push gate | 整合分支 tip 等於最後通過回歸的 SHA 時要跑的 push 指令：交給人，或 adapter 允許時由 coordinator 依序 push、開 PR／MR、合併，再讓整合分支跟上主線（允不允許是 `/setup-workflow` 升 L3 時問的一題，預設交給人；答是才在 `.claude/settings.json` 放行 `land.mjs`、`pilot-close.mjs`，`check-coordinator-permissions.mjs --push` 檢查兩者一致）；PR body 有 setup-workflow 正本時用 `pilot-pr-body` 從 merged 的 batch checkpoint 產生 |
 | Close | 進到主線之後的證據留言、關單、關掉成員 terminal、移除 worktree 與分支（遠端沒有該分支時略過）；有 setup-workflow 正本時用 `pilot-close`（`--repo` 給 tracker 專案），每一步做過就略過，可以重跑 |
 | Handoff | 交棒的指令 |
+| Coordinator model | 選用：`Coordinator model: <model id>`，交接開的後繼 coordinator 跑 `claude --model <model id>`；worker 與其他 session 照全域模型 |
 | Project tick hooks | 每輪要跑的專案檢查 |
 | Retro collect | `/retro-collect` 需要的事實：retro worktree、檢查、合入與 push |
 | Retro trigger | 選填：`retro-candidates` 累積時 coordinator 怎麼開分頁跑 `/retro-collect`（在哪個 checkout、送什麼指令、怎麼看出已有一個在跑）；沒寫時由人輸入 |

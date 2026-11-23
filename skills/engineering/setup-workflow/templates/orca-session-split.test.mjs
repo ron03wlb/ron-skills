@@ -1,7 +1,7 @@
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { FAST, orcaReplySource } from './test/fake-orca.mjs';
 import { repoFixture, run, source } from './test/repo-fixture.mjs';
@@ -115,4 +115,22 @@ test('開好分頁後 Orca 出錯：STOP orca <錯誤碼>，exit 4；openSession
 test('用法錯誤 exit 2', t => {
   const { open } = fixture(t);
   assert.equal(open(['--title', 'x']).status, 2);
+});
+
+// CoS item 41：openSession 的 `model` 只給 pilot-handoff 開後繼 coordinator 用；命令列不讀 adapter，不合法的值也不拼進 --command。
+test('claudeCommand：合法 model 帶 --model，沒給或含其他字元時裸 claude', async () => {
+  const { claudeCommand } = await import(script);
+  assert.equal(claudeCommand('claude-sonnet-5-5'), 'claude --model claude-sonnet-5-5');
+  assert.equal(claudeCommand(undefined), 'claude');
+  assert.equal(claudeCommand('x; rm -rf ~'), 'claude');
+  assert.equal(claudeCommand('$(id)'), 'claude');
+});
+
+test('命令列開 session 不吃 adapter 的 Coordinator model 宣告：仍是裸 claude', t => {
+  const { repo, log, open } = fixture(t);
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  writeFileSync(join(repo, 'docs/agents/issue-run.md'), '# adapter\n\n## Pilot\n\nCoordinator model: claude-sonnet-5-5\n');
+  assert.equal(open(['--title', 'x', '--prompt', 'y', '--tab']).stdout.trim(), 'OPENED term_new');
+  assert.match(readFileSync(log, 'utf8'), / --command claude --json$/m);
+  assert.doesNotMatch(readFileSync(log, 'utf8'), /--model/);
 });

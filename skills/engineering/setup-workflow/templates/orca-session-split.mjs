@@ -8,6 +8,8 @@
 // 之後等 TUI 就緒（兩輪）→ 送出 prompt 並讀畫面確認送達（orca-session-send.mjs 的 waitTuiReady／sendPrompt）。
 // 送出不帶 `--wait-submit`：Orca 從 WSL 常因無法確認 prompt-delivery 回 runtime_unavailable 且完全不送出。
 // 任何「開新 session 接手」的交接都走這裡，不手動組 create／split／rename／wait／send。
+// 啟動指令預設裸 `claude`（吃全域設定的模型）；openSession 帶 `model` 時改成 `claude --model <model>`。只有 pilot-handoff.mjs 開後繼 coordinator 時
+// 帶它（adapter 的 `Coordinator model:` 宣告）；本支的命令列不讀 adapter、不帶 `--model`，其他用途開的 session 都是裸 `claude`。
 //
 // 用法（cwd 為 repo 內任一 checkout）：node scripts/orca-session-split.mjs --title <分頁標題（split 模式不用）> --prompt <第一個 prompt> [--tab | --worktree <path>]
 // stdout：OPENED <terminal handle>，或 STOP <原因>（create <錯誤>、tui-timeout <handle>、send <handle>、orca <錯誤碼>）。
@@ -20,6 +22,12 @@ import { recordTitle, withState } from './tab-state.mjs';
 
 const USAGE = '用法：node scripts/orca-session-split.mjs --title <分頁標題> --prompt <第一個 prompt> [--tab | --worktree <path>]（需要 ORCA_CLI_COMMAND）';
 
+/** `--model` 值只允許英數字與 `._-`：值原樣拼進 Orca 的 `--command`，其他字元可能被 shell 解讀。 */
+export const MODEL_ID = /^[A-Za-z0-9._-]+$/;
+
+/** 開 session 的指令：`model` 合法時 `claude --model <model>`，沒給或不合法時裸 `claude`（呼叫者先驗過並 WARN，這裡再擋一次）。 */
+export const claudeCommand = model => (model && MODEL_ID.test(model) ? `claude --model ${model}` : 'claude');
+
 /** 主 checkout 路徑（git worktree list 的第一筆）。 */
 export function mainCheckout() {
   const result = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' });
@@ -29,19 +37,21 @@ export function mainCheckout() {
 
 /**
  * 開 Claude session 並送出 prompt；`newTab` 為真時即使在 pane 內也新開分頁。`ctx` 是 `{ cli, signal? }`（同 orca-session-send.mjs）。
+ * `model` 是啟動時的 `--model` 值（見 claudeCommand），沒給時裸 `claude`。
  * `createSignal`（預設 `ctx.signal`）只管開分頁那一步：呼叫者可以讓它不受總預算中止（殺掉 create，Orca 可能已開好分頁卻沒回 handle）。
  * @returns {Promise<{handle: string} | {stop: string, handle?: string, aborted?: boolean}>} 成功回 handle；失敗回 STOP 原因（不含 `STOP ` 前綴），
  *   分頁已開好時附 handle 讓呼叫者關掉；開分頁那一步被中止時 `aborted` 為真。
  */
-export async function openSession(ctx, { title, prompt, main, self = process.env.ORCA_TERMINAL_HANDLE, newTab = false, createSignal = ctx.signal }) {
+export async function openSession(ctx, { title, prompt, main, self = process.env.ORCA_TERMINAL_HANDLE, newTab = false, createSignal = ctx.signal, model }) {
   const tabTitle = withState(title, '處理中');
+  const command = claudeCommand(model);
   let handle;
   try {
     if (self && !newTab) {
       // split 出來的 pane 和呼叫者同一個分頁，分頁標題歸呼叫者：不改名、不記標題（#378）。
-      handle = (await orca({ ...ctx, signal: createSignal }, 'terminal', 'split', '--terminal', self, '--direction', 'vertical', '--command', 'claude')).split.handle;
+      handle = (await orca({ ...ctx, signal: createSignal }, 'terminal', 'split', '--terminal', self, '--direction', 'vertical', '--command', command)).split.handle;
     } else {
-      handle = (await orca({ ...ctx, signal: createSignal }, 'terminal', 'create', '--worktree', `path:${main}`, '--title', tabTitle, '--command', 'claude')).terminal.handle;
+      handle = (await orca({ ...ctx, signal: createSignal }, 'terminal', 'create', '--worktree', `path:${main}`, '--title', tabTitle, '--command', command)).terminal.handle;
       recordTitle(handle, tabTitle);
     }
   } catch (error) {

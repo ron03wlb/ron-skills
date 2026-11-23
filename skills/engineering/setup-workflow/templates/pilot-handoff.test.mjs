@@ -106,6 +106,52 @@ test('交接：改寫為 handoff 行、在主 checkout 開分頁並送出 /loop 
   assert.match(readFileSync(coordinator, 'utf8'), /^pid 99 /);
 });
 
+// CoS item 41：只有交接開的後繼 coordinator 換模型。adapter（主 checkout 的 docs/agents/issue-run.md 的 Pilot 段與它連到的檔）宣告
+// `Coordinator model: <model id>` 時帶 `--model`；沒宣告維持裸 claude；值不合法時 WARN 並照裸 claude 交接（宣告寫錯不該擋住交接）。
+const writeAdapter = (repo, files) => {
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(repo, 'docs/agents', name), text);
+};
+
+test('adapter 的 Pilot 段連到的檔宣告 Coordinator model：新分頁跑 claude --model <宣告值>', t => {
+  const { repo, log, handoff } = fixture(t);
+  writeAdapter(repo, { 'issue-run.md': '# adapter\n\n## Pilot\n\n見 [pilot.md](pilot.md)。\n', 'pilot.md': '- **Coordinator model.** `Coordinator model: claude-sonnet-5-5`。\n' });
+  const result = handoff();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'HANDED_OFF term_pilot name ron-skills-ac');
+  assert.match(readFileSync(log, 'utf8'), /^terminal create --worktree path:\S+ --title 處理中｜\[維運\] issue-pilot coordinator --command claude --model claude-sonnet-5-5 --json$/m);
+  assert.doesNotMatch(result.stderr, /WARN/);
+});
+
+test('adapter 沒宣告 Coordinator model（或宣告在 Pilot 段之外）：新分頁跑裸 claude', t => {
+  const { repo, log, handoff } = fixture(t);
+  writeAdapter(repo, { 'issue-run.md': '# adapter\n\nCoordinator model: claude-sonnet-5-5\n\n## Pilot\n\n沒有宣告。\n' });
+  const result = handoff();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(log, 'utf8'), / --command claude --json$/m);
+  assert.doesNotMatch(readFileSync(log, 'utf8'), /--model/);
+});
+
+test('Coordinator model 宣告值不合法：stderr 印 WARN coordinator-model-invalid，照裸 claude 交接', t => {
+  const { repo, log, handoff } = fixture(t);
+  writeAdapter(repo, { 'issue-run.md': '# adapter\n\n## Pilot\n\nCoordinator model: `opus;touch$IFS/tmp/x`\n' });
+  const result = handoff();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'HANDED_OFF term_pilot name ron-skills-ac');
+  assert.match(result.stderr, /^WARN coordinator-model-invalid opus;touch\$IFS\/tmp\/x$/m);
+  assert.match(readFileSync(log, 'utf8'), / --command claude --json$/m);
+  assert.doesNotMatch(readFileSync(log, 'utf8'), /--model/);
+});
+
+test('declaredModel：反引號包住的值、多處同值算一次；不同值 WARN conflict，空值 WARN invalid', async () => {
+  const { declaredModel } = await import(script);
+  assert.deepEqual(declaredModel('Coordinator model: `claude-sonnet-5-5`\n- **Coordinator model.** `Coordinator model: claude-sonnet-5-5`'), { model: 'claude-sonnet-5-5' });
+  assert.deepEqual(declaredModel('沒有宣告'), {});
+  assert.deepEqual(declaredModel('Coordinator model: a\nCoordinator model: b'), { warn: 'coordinator-model-conflict a b' });
+  assert.deepEqual(declaredModel('Coordinator model:\n'), { warn: 'coordinator-model-invalid (空白)' });
+  assert.deepEqual(declaredModel('Coordinator model: $(id)'), { warn: 'coordinator-model-invalid $(id)' });
+});
+
 // #372：別的 session 要 SendMessage 接手的 coordinator 得知道它的 name；接手 session 的 pid 行沒有 name 欄（舊版 pilot-register）時維持舊格式。
 test('接手 session 的 coordinator 行沒有 name：HANDED_OFF 只帶 handle', t => {
   const { handoff } = fixture(t, { takeoverName: null });
