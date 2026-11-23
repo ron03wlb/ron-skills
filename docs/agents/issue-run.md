@@ -18,7 +18,7 @@ macOS, WSL2, Linux（母單 #82 決策 R1-Q1；原生 Windows 不支援）。本
 
 程式碼 host 是 `github`（`github.com`，`origin` 為 `ron03wlb/ron-skills`），CLI 是 `gh`，和 tracker 同一個 host。PR 的開、讀、等 CI、合併照 [HOSTS.md](../../skills/engineering/setup-workflow/HOSTS.md) 的 GitHub 欄（`gh pr create`、`gh pr view`、`gh pr checks --watch`、`gh pr merge --merge --match-head-commit <sha>`），平常不手打：交付指令是 `node scripts/land.mjs <branch> --body-file <file> --check-command 'bin/check --upstream'`，步驟與結果行見 [Evidence and closing](#evidence-and-closing)。CI 設定在 `.github/workflows/checks.yml`，跑 `bin/check --upstream`。
 
-**CI 執行端**：預設是遠端（GitHub Actions）；`land.mjs` 印 `STOP ci-not-started` 時照 [issue-run-landing.md](issue-run-landing.md) 的 `## CI 執行端` 改用本機。
+**CI 執行端**：只有遠端（GitHub Actions），`main` 有 branch protection（#402）；`land.mjs` 印 `STOP ci-not-started` 時照 [issue-run-landing.md](issue-run-landing.md) 的 `## CI 執行端` 處理。
 
 ## Readiness
 
