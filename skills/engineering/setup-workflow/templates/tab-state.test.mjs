@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
-import { forgetTitleRecord, recordTitle, recordedTitle, sameTopic, setState, stripState, withState } from './tab-state.mjs';
+import { forgetTitleRecord, recordTitle, recordedTitle, sameTopic, sessionTarget, setState, stripState, withState } from './tab-state.mjs';
 
 const script = fileURLToPath(new URL('./tab-state.mjs', import.meta.url));
 const SELF = 'term_self';
@@ -454,4 +454,65 @@ test('未加引號的 `待 Retro --topic …` 與加引號同一個狀態：送�
   assert.equal(b.stdout, 'TAB_STATE 待 Retro｜#12 交付\n');
   assert.equal(b.stdout, a.stdout);
   assert.equal(bare.calls(), quoted.calls());
+});
+
+// Orca 聊天 session（#335）：沒有 ORCA_TERMINAL_HANDLE，只有 ORCA_STRUCTURED_SESSION 與 ORCA_AGENT_SESSION_ID（2026-11-23 macOS Orca 1.4.271 實測）。
+// 假 Orca：`chat rename` 改 `chatTitle`；`agent list` 回本聊天那列，bot 的聊天那欄是 bot 名稱（`agentTitle`）；`bot chats` 回本聊天的實際標題。
+const CHAT_ID = 'a3132cac-0000-4000-8000-000000000000';
+function chatFixture(t, { chatTitle, agentTitle } = {}) {
+  const temp = mkdtempSync(join(realTmpdir(), 'tab-state-chat-'));
+  t.after(() => rmSync(temp, { recursive: true, force: true }));
+  const log = join(temp, 'orca.log');
+  const live = join(temp, 'live-title');
+  writeFileSync(log, '');
+  writeFileSync(live, chatTitle);
+  const cli = join(temp, 'orca');
+  writeFileSync(cli, `#!/usr/bin/env node
+const fs = require('fs'); const [a, b] = process.argv.slice(2); const arg = k => process.argv[process.argv.indexOf(k) + 1];
+fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
+${orcaReplySource()}
+const title = () => fs.readFileSync(${JSON.stringify(live)}, 'utf8');
+if (a === 'chat' && b === 'rename') { fs.writeFileSync(${JSON.stringify(live)}, arg('--name')); reply('chat-rename', { name: arg('--name') }); }
+else if (a === 'agent' && b === 'list') reply('agent-list', { agents: [{ orcaSessionId: 'other', title: '別人' }, { orcaSessionId: ${JSON.stringify(CHAT_ID)}, title: ${JSON.stringify(agentTitle ?? null)} ?? title() }] });
+else if (a === 'bot' && b === 'chats') reply('bot-chats', { chats: [{ id: 'other', title: '別人', self: false }, { id: ${JSON.stringify(CHAT_ID)}, title: title(), self: true }] });
+else fail('unexpected');
+`);
+  chmodSync(cli, 0o755);
+  const env = { ORCA_CLI_COMMAND: cli, ORCA_TERMINAL_HANDLE: '', ORCA_STRUCTURED_SESSION: '1', ORCA_AGENT_SESSION_ID: CHAT_ID, TAB_STATE_DIR: join(temp, 'titles') };
+  const run = (args, extra = {}) => spawnSync('node', [script, ...args], { encoding: 'utf8', env: { ...process.env, ...env, ...extra } });
+  return { run, calls: () => readFileSync(log, 'utf8'), title: () => readFileSync(live, 'utf8') };
+}
+
+test('sessionTarget：terminal 分頁用 handle；只有聊天的 session id 時是 chat:<id>；兩者都沒有、或只有 session id 沒有 ORCA_STRUCTURED_SESSION 時 null', () => {
+  assert.equal(sessionTarget({ ORCA_TERMINAL_HANDLE: 'term_x', ORCA_STRUCTURED_SESSION: '1', ORCA_AGENT_SESSION_ID: 'abc' }), 'term_x');
+  assert.equal(sessionTarget({ ORCA_STRUCTURED_SESSION: '1', ORCA_AGENT_SESSION_ID: 'abc' }), 'chat:abc');
+  assert.equal(sessionTarget({ ORCA_AGENT_SESSION_ID: 'abc' }), null);
+  assert.equal(sessionTarget({}), null);
+});
+
+// #335：investing 的 /retro-collect 在 Orca 聊天裡跑，ORCA_TERMINAL_HANDLE 是空的，tab-state 直接 exit 0，標題從沒改過。
+test('Orca 聊天帶 --topic：以 chat rename 改本聊天的標題、從 agent list 讀回，印 TAB_STATE', t => {
+  const { run, calls, title } = chatFixture(t, { chatTitle: '假日物品歸位與每日流程規劃收斂' });
+  const result = run(['處理中', '--topic', '#335 聊天分頁狀態｜實作']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'TAB_STATE 處理中｜#335 聊天分頁狀態｜實作\n');
+  assert.equal(title(), '處理中｜#335 聊天分頁狀態｜實作');
+  assert.match(calls(), new RegExp(`^chat rename --session ${CHAT_ID} --name 處理中｜#335 聊天分頁狀態｜實作 --json$`, 'm'));
+  assert.doesNotMatch(calls(), /terminal /);
+});
+
+test('bot 的聊天換狀態（不帶 --topic）：目前標題讀 bot chats，不用 agent list 那欄的 bot 名稱', t => {
+  const { run, calls, title } = chatFixture(t, { chatTitle: '處理中｜看板同步｜實作｜跑同步', agentTitle: 'AI 工作流' });
+  const result = run(['待 Retro'], { ORCA_BOT_TOOLS_TOKEN: 'token' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'TAB_STATE 待 Retro｜看板同步\n');
+  assert.equal(title(), '待 Retro｜看板同步');
+  assert.doesNotMatch(calls(), /agent list/);
+});
+
+test('不是 bot 的聊天換成處理中：目前標題讀 agent list 該 session 那列，只補前綴', t => {
+  const { run, title } = chatFixture(t, { chatTitle: '假日物品歸位' });
+  const result = run(['處理中']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(title(), '處理中｜假日物品歸位');
 });

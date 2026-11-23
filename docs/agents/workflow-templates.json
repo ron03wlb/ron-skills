@@ -57,8 +57,8 @@
     },
     "scripts/check-test-git-isolation.mjs": {
       "template": "skills/engineering/setup-workflow/templates/check-test-git-isolation.mjs",
-      "commit": "ca7adba1675c46fbfb602100f4a17076f46e04c1",
-      "sha256": "3037efaa0946ac8bbad863b50db804e6db1dffb8a068848c57dbe1b57fb10a98"
+      "commit": "2ed35c541db8331b995fb8433830bb54673a3b87",
+      "sha256": "e2236e28ceec71201cdd9f7f2e3962b076d791182a5a4c68f7814d638ab65721"
     },
     "scripts/claude-hook-bang-space.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-bang-space.mjs",
@@ -82,8 +82,8 @@
     },
     "scripts/claude-hook-tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-tab-state.mjs",
-      "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
-      "sha256": "007f736f0f688425ae80371ae376496b3a92cdf794abde88e1e0e00ac1feb370"
+      "commit": "2ed35c541db8331b995fb8433830bb54673a3b87",
+      "sha256": "6f21a4403ca411e8ef6af4dff1f665caaae1491a5420bf162706c895f246113f"
     },
     "scripts/claude-hook-unbare.sh": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-unbare.sh",
@@ -287,8 +287,8 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "ca7adba1675c46fbfb602100f4a17076f46e04c1",
-      "sha256": "2516e371ec91ff6fbe0ee783af910ba16910aeed464e392fcf03764a2c94f951"
+      "commit": "2ed35c541db8331b995fb8433830bb54673a3b87",
+      "sha256": "d7a68571baa6d7eebf256af568f7e5d5adab61388ea6e96e1c9361eaa9aa7903"
     },
     "scripts/token-usage.mjs": {
       "template": "skills/engineering/setup-workflow/templates/token-usage.mjs",

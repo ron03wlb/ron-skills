@@ -348,3 +348,40 @@ test('Stop exit 2：乾淨工作區、沒有 commit 的 session，訊息指向�
   assert.equal(dirty, unknown, '不是 git repo（判斷不了）時訊息不變');
   assert.ok(qa.startsWith(dirty.replace(/\n$/, '')), '問答 session 只在原訊息後補一句');
 });
+
+// #335：Orca 聊天 session 沒有 ORCA_TERMINAL_HANDLE，hook 以前一律 exit 0，聊天標題從不帶狀態前綴。
+test('Orca 聊天：LANDED 以 chat rename 轉成待 Retro；Stop 時標題沒有前綴就補處理中', t => {
+  const temp = mkdtempSync(join(realTmpdir(), 'claude-hook-tab-state-chat-'));
+  t.after(() => rmSync(temp, { recursive: true, force: true }));
+  const id = 'a3132cac-0000-4000-8000-000000000000';
+  const log = join(temp, 'orca.log');
+  const live = join(temp, 'chat-title');
+  const cli = join(temp, 'orca');
+  writeFileSync(log, '');
+  writeFileSync(cli, `#!/usr/bin/env node
+const fs = require('fs'); const [a, b] = process.argv.slice(2); const arg = k => process.argv[process.argv.indexOf(k) + 1];
+fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
+${orcaReplySource()}
+if (a === 'chat' && b === 'rename') { fs.writeFileSync(${JSON.stringify(live)}, arg('--name')); reply('chat-rename', { name: arg('--name') }); }
+else if (a === 'agent' && b === 'list') reply('agent-list', { agents: [{ orcaSessionId: ${JSON.stringify(id)}, title: fs.readFileSync(${JSON.stringify(live)}, 'utf8') }] });
+else fail('unexpected');
+`);
+  chmodSync(cli, 0o755);
+  const hook = input => spawnSync('node', [script], {
+    input: JSON.stringify({ cwd: temp, ...input }), encoding: 'utf8',
+    env: { ...process.env, ORCA_CLI_COMMAND: cli, ORCA_TERMINAL_HANDLE: '', ORCA_STRUCTURED_SESSION: '1', ORCA_AGENT_SESSION_ID: id, TAB_STATE_DIR: join(temp, 'titles'), CLAUDE_PROJECT_DIR: temp },
+  });
+
+  writeFileSync(live, '處理中｜#21 雙池採集｜收尾｜land');
+  let result = hook(bash('node scripts/land.mjs issue/21-pool --title x --body-file b.md', `LANDED 130 ${SHA}\n`));
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(live, 'utf8'), '待 Retro｜#21 雙池採集｜收尾｜land');
+  assert.match(readFileSync(log, 'utf8'), new RegExp(`^chat rename --session ${id} --name 待 Retro｜#21 雙池採集｜收尾｜land --json$`, 'm'));
+
+  writeFileSync(live, '假日物品歸位');
+  rmSync(join(temp, 'titles'), { recursive: true, force: true });
+  result = hook({ hook_event_name: 'Stop' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(live, 'utf8'), '處理中｜假日物品歸位');
+  assert.doesNotMatch(readFileSync(log, 'utf8'), /terminal /);
+});
