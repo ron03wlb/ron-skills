@@ -2,7 +2,7 @@
 import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { orcaReplySource } from './test/fake-orca.mjs';
@@ -14,7 +14,8 @@ const SHA = 'b'.repeat(40);
 
 // 假 Orca：`screens` 是 handle → 依序回的畫面（`{ status, tail }`，或 `{ raw }` 原樣印出、不經 JSON.stringify）；讀完最後一個之後一直回最後一個。
 // 不在表裡的 handle 回 terminal_handle_stale。每次呼叫記進 orca.log。
-function fixture(t, screens = {}) {
+// `terminal wait`（tui-idle）不推進畫面、不記進 orca.log，記進 wait.log；waitMs[handle] 毫秒後回 satisfied（沒給時立刻回）。
+function fixture(t, screens = {}, waitMs = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'pilot-watch-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const log = join(temp, 'orca.log');
@@ -22,8 +23,13 @@ function fixture(t, screens = {}) {
   const cli = join(temp, 'orca');
   writeFileSync(cli, `#!/usr/bin/env node
 const fs = require('fs'); const arg = k => process.argv[process.argv.indexOf(k) + 1];
-fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 ${orcaReplySource()}
+if (process.argv[3] === 'wait') {
+  fs.appendFileSync(${JSON.stringify(join(temp, 'wait.log'))}, process.argv.slice(2).join(' ') + '\\n');
+  setTimeout(() => reply('wait', { wait: { satisfied: true } }), ${JSON.stringify(waitMs)}[arg('--terminal')] ?? 0);
+  return;
+}
+fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 const screens = ${JSON.stringify(screens)};
 const handle = arg('--terminal');
 const list = screens[handle];
@@ -52,7 +58,8 @@ ${extra}`);
   const run = (args, extraEnv = { ORCA_CLI_COMMAND: cli }) =>
     spawnSync('node', [script, ...args], { encoding: 'utf8', env: { ...env, ...extraEnv }, cwd: temp, timeout: 20000 });
   const reads = handle => readFileSync(log, 'utf8').split('\n').filter(line => line.includes(`--terminal ${handle} `)).length;
-  return { temp, pilot, batch, run, reads, cli };
+  const waits = () => (existsSync(join(temp, 'wait.log')) ? readFileSync(join(temp, 'wait.log'), 'utf8') : '');
+  return { temp, pilot, batch, run, reads, cli, waits };
 }
 
 const fast = ['--interval', '0.01'];
@@ -267,6 +274,54 @@ test('batch 成員印 RESULT 時把結果行記進 results/<handle>；直接給�
   assert.ok(Date.parse(time) >= before - 1000, time);
   assert.equal(run(['term_x', ...fast]).stdout, 'RESULT - term_x STOP 9 decision x\n');
   assert.throws(() => readFileSync(join(pilot, 'results', 'term_x')), /ENOENT/);
+});
+
+// CoS item 67：worker 印 DONE 後要等到下一個 interval（預設 60 秒）watcher 才讀到；改成工作中的 worker 一閒置就叫醒 watcher。
+const WORKING = ['✻ Running checks… (3m 2s · esc to interrupt)'];
+test('上一輪畫面工作中：兩輪之間起 tui-idle 等待，worker 一閒置就讀畫面印 RESULT，不等 interval', t => {
+  const { run, waits } = fixture(t, { term_67: [
+    { status: 'running', tail: WORKING },
+    { status: 'running', tail: ['● 報告', `DONE 67 ${SHA}`, '❯'] },
+  ] }, { term_67: 300 });
+  const started = Date.now();
+  // interval 60 秒：只靠計時就會被 spawnSync 的 20 秒逾時殺掉。
+  const result = run(['term_67', '--interval', '60']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `RESULT - term_67 DONE 67 ${SHA}\n`);
+  assert.ok(Date.now() - started < 15000, `花了 ${Date.now() - started} 毫秒`);
+  assert.match(waits(), /^terminal wait --terminal term_67 --for tui-idle --timeout-ms 60000 --json$/m);
+});
+
+test('上一輪畫面已閒置（等背景檢查）：不起 tui-idle 等待，照 interval 輪詢', t => {
+  const { run, waits } = fixture(t, { term_68: [
+    { status: 'running', tail: ['● 等背景的 bin/check', '❯'] },
+    { status: 'running', tail: ['● 等背景的 bin/check', '❯'] },
+    { status: 'running', tail: [`DONE 68 ${SHA}`, '❯'] },
+  ] });
+  const result = run(['term_68', '--interval', '0.05']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `RESULT - term_68 DONE 68 ${SHA}\n`);
+  assert.equal(waits(), '', '閒置畫面起 tui-idle 等待會立刻成立而空轉');
+});
+
+test('wakeOnIdle：waitIdle 回 true 提早醒並中止其餘等待；回 false 或失敗不提早醒', async () => {
+  const { wakeOnIdle } = await import('./pilot-watch.mjs');
+  const aborted = [];
+  const pending = (handle, signal) => new Promise(resolve => signal.addEventListener('abort', () => { aborted.push(handle); resolve(false); }));
+  let slept = 0;
+  const fakeSleep = (ms, _, { signal }) => new Promise((resolve, reject) => {
+    slept = ms;
+    signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+  });
+  await wakeOnIdle(60000, ['a', 'b'], (handle, signal) => (handle === 'a' ? Promise.resolve(true) : pending(handle, signal)), fakeSleep);
+  assert.equal(slept, 60000);
+  assert.deepEqual(aborted, ['b'], '醒來時中止還在等的 tui-idle');
+
+  // false 與失敗都不算：只有計時結束才醒。
+  let ticks = 0;
+  const shortSleep = () => new Promise(resolve => setTimeout(() => { ticks++; resolve(); }, 20));
+  await wakeOnIdle(20, ['x', 'y'], handle => (handle === 'x' ? Promise.resolve(false) : Promise.reject(new Error('terminal_handle_stale'))), shortSleep);
+  assert.equal(ticks, 1);
 });
 
 // #502（investing#609 第 1 項，investing#601）：候選落地後必須立刻跑一次的指令只寫在 worker 報告內文，coordinator 看不到，

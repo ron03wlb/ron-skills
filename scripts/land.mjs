@@ -27,8 +27,10 @@
 // PR 已開著又帶 `--title`、`--body-file` 時以 `gh pr edit` 更新，印 PR_UPDATED <pr>；更新失敗 STOP pr-edit <pr> <原因>，不合併（#300）。
 // stdout：每步一行進度（PUSHED、PR、CHECKS_PASSED、RESTAMPED <pr> <新 tip>（合入 main 沒有衝突時是 MAIN_MERGED），`--local-checks` 時是 LOCAL_CHECKS <pr> <sha> <結果行>，收尾的 UNBARE、
 //   WORKTREE_RM_FALLBACK selector_not_found <路徑>（Orca 不認得的乾淨 worktree 改用 git worktree remove）、WORKTREE_REMOVED、BRANCH_DELETED，最後 MAIN、SKILL_CHANGED <名稱>（sync-skills 換掉內容的全域 skill，每個一行）、SYNC_SKILLS）；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
-//   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、pr-edit、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、local-checks-timeout、restamp-checks-failed、restamp-checks-timeout、merge、not-merged、worktree-rm）。
+//   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、pr-edit、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、local-checks-timeout、restamp-checks-failed、restamp-checks-timeout、slot-timeout、merge、not-merged、worktree-rm）。
 // local-checks-timeout、restamp-checks-timeout 是檢查跑到 LAND_LOCAL_CHECKS_TIMEOUT_MS 被中止，不是檢查沒過：結果未知，在該 SHA 跑過檢查才重跑（#297）。
+// `--check-command` 經同目錄 heavy-slot.mjs 的全機共用 slot 執行（label `<主 checkout 目錄名>:land-checks`），最多排 LAND_SLOT_TIMEOUT_S 秒（預設 120，算在上面的時限裡）；
+// 等不到印 `STOP slot-timeout <sha> <已等秒數>s`：負載關卡，還沒 push、沒跑檢查，稍後重跑同一行。
 // 合入之後的收尾問題（main 沒跟上、sync-skills 失敗）印 WARN，不影響 LANDED；main 沒跟上時不跑 sync-skills，印 WARN skills-not-updated <merge sha>（已安裝的 skill 還是舊版，#297）。
 // 主 checkout 的 adapter（docs/agents/issue-run.md）以 `Protected paths:` 行宣告保護路徑時，快轉會讓它們底下的追蹤檔消失（刪除、改名、換類型）就不快轉，
 //   印 WARN main-not-synced 快轉會刪掉被保護的路徑 <檔…>，交給人處理（PR 已合入，照樣 LANDED）；判斷與 pilot-close.mjs 共用 lib/protected-paths.mjs（#303）。
@@ -36,9 +38,10 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
+import { slotCommand, slotTimeoutLine } from './heavy-slot.mjs';
 import { orca } from './orca-session-send.mjs';
 import { protectedReason, readDeclaredPaths, vanishingFiles } from './lib/protected-paths.mjs';
 
@@ -50,6 +53,18 @@ const CHECKS_POLL_MS = Number(process.env.LAND_CHECKS_POLL_MS || 10000);
 const CHECKS_TIMEOUT_MS = Number(process.env.LAND_CHECKS_TIMEOUT_MS || 480000);
 /** `--local-checks` 的檢查：ron-skills 的 bin/check --upstream 實測 166 秒（#137，macOS）；420 秒之後還留 180 秒給 Bash 600 秒內的 push、合併與收尾。 */
 const LOCAL_CHECKS_TIMEOUT_MS = Number(process.env.LAND_LOCAL_CHECKS_TIMEOUT_MS || 420000);
+/** 檢查經全機 heavy-slot 執行，排隊算在上面的 420 秒裡：最多等 120 秒，其餘留給檢查本身；等不到 STOP slot-timeout（負載關卡，稍後重跑）。 */
+const LOCAL_CHECKS_SLOT_TIMEOUT_S = Number(process.env.LAND_SLOT_TIMEOUT_S || 120);
+
+/** 在 tree 以 sh 跑 command，經同目錄 heavy-slot.mjs 的全機 slot（label `<主 checkout 目錄名>:land-checks`）；等 slot 逾時時 Stop slot-timeout。 */
+function runCheckCommand(main, tree, command, sha) {
+  const [cmd, args] = slotCommand(`${basename(main)}:land-checks`, ['sh', '-c', command], { timeoutSec: LOCAL_CHECKS_SLOT_TIMEOUT_S });
+  const result = spawnSync(cmd, args, { cwd: tree, encoding: 'utf8', env: childEnv, timeout: LOCAL_CHECKS_TIMEOUT_MS });
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+  const slotTimeout = slotTimeoutLine(result.status, output);
+  if (slotTimeout) throw new Stop(`slot-timeout ${sha} ${slotTimeout.split(' ')[2]}`);
+  return { result, output };
+}
 /** 伺服器端暫時失敗才重試（retro spay2 86eda4c4#4：GitHub 回 commit_refs，手寫重試迴圈第 3 次成功）；規則拒絕（`pre-receive hook declined`、non-fast-forward）重試無用。 */
 const PUSH_TRANSIENT = /fatal error in commit_refs|\[remote rejected\][^\n]*\(failure\)/;
 const PUSH_RETRIES = 2;
@@ -225,8 +240,7 @@ function runLocalChecks(main, branch, tip, expected, command) {
   try {
     const added = spawnSync('git', ['worktree', 'add', '--detach', '-q', tree, tip], { cwd: main, encoding: 'utf8', env: childEnv });
     if (added.status !== 0) throw new Error(`git worktree add 失敗：${added.stderr.trim()}`);
-    const result = spawnSync('sh', ['-c', command], { cwd: tree, encoding: 'utf8', env: childEnv, timeout: LOCAL_CHECKS_TIMEOUT_MS });
-    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+    const { result, output } = runCheckCommand(main, tree, command, tip);
     mkdirSync(join(main, '.scratch'), { recursive: true });
     const log = join(main, '.scratch', `land-local-checks-${tip}.log`);
     writeFileSync(log, output);
@@ -303,8 +317,7 @@ async function mergeMainAndRestamp(main, branch, tree, number, command) {
       }
     }
     const sha = gitIn(path, 'rev-parse', 'HEAD').stdout.trim();
-    const result = spawnSync('sh', ['-c', command], { cwd: path, encoding: 'utf8', env: childEnv, timeout: LOCAL_CHECKS_TIMEOUT_MS });
-    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+    const { result, output } = runCheckCommand(main, path, command, sha);
     mkdirSync(join(main, '.scratch'), { recursive: true });
     const log = join(main, '.scratch', `land-restamp-checks-${sha}.log`);
     writeFileSync(log, output);

@@ -31,7 +31,7 @@ L1 必接的只有 zsh 這一個 hook（語言、分頁狀態 hook 看 repo 的�
 
 | 校驗 | 強度 | 檢查什麼 | 不能證明什麼 |
 | --- | --- | --- | --- |
-| pre-commit 跑單一檢查入口 | 本地強制 | 工作樹目前的內容通過所有檢查（ron-skills：`.githooks/pre-commit` 跑 `bin/check`） | 檢查的是工作樹，不是 commit 本身；`git add -p` 留在工作樹的改動也一起被檢查到 |
+| pre-commit 跑單一檢查入口 | 本地強制 | 工作樹目前的內容通過所有檢查（ron-skills：`.githooks/pre-commit` 經 `scripts/heavy-slot.mjs` 的全機共用 slot 跑 `bin/check`，排不到時印 `SLOT_TIMEOUT`，是負載關卡不是檢查失敗） | 檢查的是工作樹，不是 commit 本身；`git add -p` 留在工作樹的改動也一起被檢查到 |
 
 沒有 pre-commit 的 repo，錯誤會留到 push 或 CI 才被抓到。
 

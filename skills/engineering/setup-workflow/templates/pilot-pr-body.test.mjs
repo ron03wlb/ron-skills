@@ -127,7 +127,7 @@ function entryRepo(t, branch) {
   };
   const here = fileURLToPath(new URL('.', import.meta.url));
   mkdirSync(join(main, 'scripts/lib'), { recursive: true });
-  for (const name of ['pilot-pr-body.mjs', 'pilot-land.mjs', 'lib/pilot-store.mjs']) copyFileSync(join(here, name), join(main, 'scripts', name));
+  for (const name of ['pilot-pr-body.mjs', 'pilot-land.mjs', 'heavy-slot.mjs', 'lib/pilot-store.mjs']) copyFileSync(join(here, name), join(main, 'scripts', name));
   git(main, 'init', '-q', '-b', 'main');
   git(main, 'add', '.');
   git(main, 'commit', '-qm', 'init');
