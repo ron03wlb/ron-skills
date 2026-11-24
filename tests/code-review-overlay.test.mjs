@@ -16,3 +16,17 @@ test('code-review overlay：兩份 brief 都要求 P2 以上的 finding 引用 p
   assert.match(text, /`path:line` plus that line's text/);
   assert.match(text, /outside the diff[^"]*read that line/);
 });
+
+// #569：Spec sub-agent 把 spay2 adapter 的 `[Drift check]` 報成壞連結 P2，那是 adapter-line.mjs 解析的條目名稱（spay2 retro 9580d1e4#1）。
+// 只在 repo 有 scripts/adapter-line.mjs 時加進 brief。
+test('code-review overlay：repo 有 adapter-line.mjs 時，兩份 brief 說明 docs/agents 的裸 [Entry] 是條目名稱、不報壞連結；沒有該檔不加', t => {
+  const paragraphs = applyOverlay(t, 'code-review').split('\n\n');
+  const text = paragraphs.find(p => p.startsWith('**Adapter entries.**'));
+  assert.ok(text, 'overlay 沒有 Adapter entries 段落');
+  assert.match(text, /When the repo has `scripts\/adapter-line\.mjs`, add to both briefs/);
+  assert.match(text, /`docs\/agents\/\*\*`/);
+  assert.match(text, /bare `\[Entry\]` not followed by `\(` or `:` is an adapter entry name/);
+  assert.match(text, /the repo's checks cover it/);
+  assert.match(text, /do not report it as a broken link/);
+  assert.match(text, /Without `scripts\/adapter-line\.mjs`, leave this sentence out/);
+});
