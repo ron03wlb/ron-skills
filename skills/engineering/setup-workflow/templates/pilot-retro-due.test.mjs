@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_AGE_HOURS, DEFAULT_COUNT, declaredRoster, declaredThreshold, retroDue, rosterItems, trackerItems } from './pilot-retro-due.mjs';
+import { DEFAULT_AGE_HOURS, DEFAULT_COUNT, declaredRoster, declaredThreshold, labelledRetro, retroDue, rosterItems, trackerItems } from './pilot-retro-due.mjs';
 import { FAST, orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
@@ -80,7 +80,11 @@ function fixture(t, { orca = false, trigger = '- **Retro trigger.** `Retro trigg
   }
   const bin = join(temp, 'bin');
   mkdirSync(bin);
-  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nconsole.log(${JSON.stringify(JSON.stringify(issues))});\n`);
+  // 假 gh 照真的 gh 截斷：沒帶 --limit 只回 30 張（1123a 開著 42 張只看到 30 張，CoS item 89）。
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
+const at = process.argv.indexOf('--limit'); const limit = at < 0 ? 30 : Number(process.argv[at + 1]);
+console.log(JSON.stringify(${JSON.stringify(issues)}.slice(0, limit)));
+`);
   chmodSync(join(bin, 'gh'), 0o755);
   // 假 Orca：create 開 term_new；list 只在 tab 檔存在時列出它，標題取 tab 檔（收集者分頁的實際標題）。
   const log = join(temp, 'orca.log');
@@ -166,4 +170,72 @@ test('CLI --start：沒到期時照印那一行、不開分頁', t => {
   assert.match(run('--start').stdout, /^RETRO_IDLE 1 /);
   assert.equal(existsSync(log), false);
   assert.equal(existsSync(join(root, '.scratch/retro/collector')), false);
+});
+
+// CoS item 89：自動觸發沒接上卻沒人發現；觸發與收集各留一行證據，下一次觸發時讀得回來。
+test('觸發條件：count、age、兩者都到；沒到期時 null', () => {
+  assert.equal(retroDue({ items: aged(1, 1, 1, 1, 1), threshold: DEFAULTS, now: NOW }).trigger, 'count');
+  assert.equal(retroDue({ items: aged(9), threshold: DEFAULTS, now: NOW }).trigger, 'age');
+  assert.equal(retroDue({ items: aged(9, 1, 1, 1, 1), threshold: DEFAULTS, now: NOW }).trigger, 'count+age');
+  assert.equal(retroDue({ items: aged(1), threshold: DEFAULTS, now: NOW }).trigger, null);
+});
+
+test('labelledRetro：GraphQL 的 labels.nodes 與 gh 的 labels 陣列都認得', () => {
+  const picked = labelledRetro([
+    { number: 1, labels: { nodes: [{ name: 'retro-candidates' }] } },
+    { number: 2, labels: { nodes: [{ name: 'ready-for-agent' }] } },
+    { number: 3, labels: [{ name: 'retro-candidates' }] },
+  ]);
+  assert.deepEqual(picked.map(issue => issue.number), [1, 3]);
+});
+
+test('CLI：開著的超過 30 張時全部算到（gh 帶 --limit，CoS item 89：1123a 的 42 張只看到 30 張）', t => {
+  const { run } = fixture(t, { issues: Array.from({ length: 42 }, (_, i) => issue(i + 1, 1)) });
+  assert.match(run().stdout, /^RETRO_DUE 42 oldest=1\.0h → /);
+});
+
+test('CLI --start：開分頁後在 triggers.log 追加一行、decisions.md 記一列', t => {
+  const { root, run } = fixture(t, { orca: true, issues: [issue(1, 9), issue(2, 1)] });
+  const started = run('--start');
+  assert.equal(started.status, 0, started.stderr);
+  assert.equal(started.stdout, 'RETRO_STARTED term_new\n');
+  const log = readFileSync(join(root, '.scratch/retro/triggers.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(log, [{ time: new Date(NOW).toISOString(), event: 'start', trigger: 'age', uncollected: 2, oldestHours: 9, handle: 'term_new', threshold: { count: 5, ageHours: 8 } }]);
+  const decisions = readFileSync(join(root, '.scratch/pilot/decisions.md'), 'utf8');
+  assert.match(decisions, /^\| [^|]+ \| retro-collect 自動觸發，開分頁 term_new \| RETRO_DUE age 2 oldest=9\.0h（門檻 count=5 age=8h） \| .*\.scratch\/retro\/triggers\.log \| RETRO_STARTED term_new \|$/m);
+});
+
+test('CLI --log-collect：收集結束時追加 collect 一行；--item 格式錯、和 --start 混用是用法錯誤', t => {
+  const { root, run } = fixture(t);
+  const logged = run('--log-collect', '1124a', '--item', '#12=done 3, covered 1', '--item', '#15=left out: claimed elsewhere');
+  assert.equal(logged.status, 0, logged.stderr);
+  assert.equal(logged.stdout, 'RETRO_LOGGED 1124a 2\n');
+  assert.deepEqual(JSON.parse(readFileSync(join(root, '.scratch/retro/triggers.log'), 'utf8')), {
+    time: new Date(NOW).toISOString(), event: 'collect', key: '1124a', collected: 2,
+    items: [{ ref: '#12', result: 'done 3, covered 1' }, { ref: '#15', result: 'left out: claimed elsewhere' }],
+  });
+  assert.equal(run('--log-collect', '1124a', '--item', 'no-equals').status, 2);
+  assert.equal(run('--item', '#1=done').status, 2);
+  assert.equal(run('--log-collect', '1124a', '--start').status, 2);
+});
+
+// CoS item 89：手動開的 retro-collect（term_41eb9968，標題「Retro-collect retro-candidates issues」，沒有處理中｜前綴）在收 20 張，
+// 這支卻印 RETRO_DUE；修好觸發後 coordinator 會再開第二個收集者。改由計畫檔認出正在收集。
+test('CLI：手動收集者的計畫檔還沒有報告時 RETRO_RUNNING plan-<key>；有報告、collect 紀錄或超過 4 小時沒動時照常到期', t => {
+  const { root, run } = fixture(t, { issues: [issue(1, 9)] });
+  const plan = join(root, '.scratch/retro/plan-1124a.md');
+  mkdirSync(join(root, '.scratch/retro'), { recursive: true });
+  writeFileSync(plan, '# plan\n');
+  utimesSync(plan, (NOW - HOUR) / 1000, (NOW - HOUR) / 1000);
+  assert.equal(run().stdout, 'RETRO_RUNNING plan-1124a 1 oldest=9.0h\n');
+  assert.match(run('--start').stdout, /^RETRO_RUNNING plan-1124a /, '--start 也不開第二個');
+  utimesSync(plan, (NOW - 5 * HOUR) / 1000, (NOW - 5 * HOUR) / 1000);
+  assert.match(run().stdout, /^RETRO_DUE /, '超過 4 小時沒動：當作中斷');
+  utimesSync(plan, (NOW - HOUR) / 1000, (NOW - HOUR) / 1000);
+  mkdirSync(join(root, '.scratch/retro/reports'));
+  writeFileSync(join(root, '.scratch/retro/reports/2026-11-23-1124a.md'), 'x');
+  assert.match(run().stdout, /^RETRO_DUE /, '已寫報告：收完了');
+  rmSync(join(root, '.scratch/retro/reports'), { recursive: true });
+  assert.equal(run('--log-collect', '1124a', '--item', '#1=done').status, 0);
+  assert.match(run().stdout, /^RETRO_DUE /, 'triggers.log 已有 collect 行：收完了');
 });
