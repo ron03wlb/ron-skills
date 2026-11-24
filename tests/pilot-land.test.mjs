@@ -445,14 +445,14 @@ test('衝突 hunk 都是表格列、兩邊改不同列（#123 改 pilot-probe、
   assert.equal(f.checks(), 1, '解完在新的 staged SHA 跑 Regression');
 });
 
-test('表格的同一列兩邊都改（#123 與 #94 都改 pilot-probe）：STOP conflict，stage worktree 乾淨', t => {
+test('表格的同一列兩邊都改、改動逐字不重疊（#123 與 #94 都改 pilot-probe，#94 的改動包含 #123 的）：逐格逐字合併，RESOLVED rows', t => {
   const f = storeFixture(t, 94, 'member-123');
-  const tip = f.tip();
   const result = f.land();
-  assert.equal(result.last, `STOP conflict 94 ${STORE}=integration:other`);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.lines.includes(`RESOLVED 94 rows ${STORE}`), result.stdout);
+  const merged = git(f.repo, 'show', `${f.tip()}:${STORE}`) + '\n';
+  assert.equal(row(merged, 'pilot-probe.mjs'), row(STORE_AT('member-94'), 'pilot-probe.mjs'));
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
-  assert.equal(f.tip(), tip);
-  assert.equal(f.checks(), 0);
 });
 
 const TABLE = '| Script | Note |\n| --- | --- |\n| `a.mjs` | a v1 |\n| `b.mjs` | b v1 |\n| `c.mjs` | c v1 |\n';
