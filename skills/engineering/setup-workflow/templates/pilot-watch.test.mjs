@@ -389,3 +389,25 @@ test('結果行從累積輸出讀到（#537）時，累積輸出裡 DONE 之前�
   const lines = readFileSync(join(pilot, 'batch-607.md'), 'utf8').split('\n').filter(line => line.startsWith('postland:'));
   assert.deepEqual(lines, [`postland: #607 ${POSTLAND}`]);
 });
+
+// #573：WSL 重開後 batch 只重派 #501，#502 的舊 terminal 已結束（成員列仍是 running）；舊版第一輪就印 EXITED #502 而結束，watcher 等於沒在看 #501。
+test('batch 成員 A 活著、成員 B 的舊 terminal 一開始就已結束：不因 B 結束，等 A 的結果（#573）', t => {
+  const { batch, run } = fixture(t, {
+    term_501: [{ status: 'running', tail: ['● 工作中'] }, { status: 'running', tail: [`DONE 501 ${SHA}`] }],
+    term_502: [{ status: 'exited', tail: [] }],
+  });
+  batch('501-502', [{ n: 501, handle: 'term_501' }, { n: 502, handle: 'term_502' }]);
+  const result = run(['--batch', '501-502', '--checkout', 'checkout', ...fast]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `RESULT 501-502 term_501 DONE 501 ${SHA}\n`);
+});
+
+test('batch 成員 A 活著時結束（不是一開始就已結束）：照樣印 EXITED（#573）', t => {
+  const { batch, run } = fixture(t, {
+    term_501: [{ status: 'running', tail: ['● 工作中'] }, { status: 'exited', tail: [] }],
+    term_502: [{ status: 'exited', tail: [] }],
+  });
+  batch('501-502', [{ n: 501, handle: 'term_501' }, { n: 502, handle: 'term_502' }]);
+  const result = run(['--batch', '501-502', '--checkout', 'checkout', ...fast]);
+  assert.equal(result.stdout, 'EXITED 501-502 term_501\n');
+});

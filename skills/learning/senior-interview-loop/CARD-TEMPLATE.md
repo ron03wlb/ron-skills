@@ -1,8 +1,18 @@
-# Practice Attempt Card template
+# Practice Attempt Note template
 
-Hepta Markdown. The H1 is the card title, in the adapter's title format. Keep the card **scannable**: about 60 lines, one line per bullet, the attempt as key points rather than verbatim, and material cards linked rather than restated. Omit a section only where marked optional.
+Obsidian Markdown with frontmatter; the file path and field values come from the adapter. The H1 is the note title, in the adapter's title format; a paused note adds 「（暫停）」 to it and sets `status: paused`. Keep the note **scannable**: about 60 lines, one line per bullet, the attempt as key points rather than verbatim, and Formal Notes linked rather than restated. Omit a section only where marked optional; omit `miroUrl` until a Miro item exists.
 
 ```md
+---
+title: 練習｜<T 題 or question name>｜<YYYY-MM-DD>
+type: practice-attempt
+date: <YYYY-MM-DD>
+tid: <T 題, empty when unbanked>
+category: <adapter category>
+status: <closed / paused>
+miroUrl: <Miro item deep link>
+---
+
 # 練習｜<T 題 or question name>｜<YYYY-MM-DD>
 
 ## 摘要
@@ -21,7 +31,7 @@ Hepta Markdown. The H1 is the card title, in the adapter's title format. Keep th
 
 ## 要記住的修正（optional: when a model answer or correction was given）
 1. <one correction per line>
-教材：<mentions of the existing Heptabase material cards>
+教材：<[[Formal Note]] wikilinks>
 
 ## 背誦大綱（English）（optional: when the user asks for recall material）
 1. "<one recitable interview sentence per line>"

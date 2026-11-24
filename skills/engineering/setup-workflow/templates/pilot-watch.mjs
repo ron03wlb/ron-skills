@@ -30,7 +30,7 @@
 // stdout（<batch> 是批次名，直接給的 handle 是 `-`）：
 //   RESULT <batch> <handle> <結果行>（新的 `DONE <n> <sha>`、`STOP <n> <cause>`，去掉縮排與框線）｜
 //   RESULT <batch> <handle> DONE <n> <sha> from-state（#466：batch 成員的 terminal 已結束、沒有結果行，worker checkpoint 最後一行 `State:` 是
-//     `done, candidate <sha>` 而 sha 等於成員 worktree 的 HEAD；<sha> 是完整的 HEAD，判斷同 Probe 的 `WORKER <n> DONE <sha> from-state`）｜EXITED <batch> <handle>（terminal 已結束且沒有新結果行）
+//     `done, candidate <sha>` 而 sha 等於成員 worktree 的 HEAD；<sha> 是完整的 HEAD，判斷同 Probe 的 `WORKER <n> DONE <sha> from-state`）｜EXITED <batch> <handle>（terminal 已結束且沒有新結果行；batch 成員第一輪就已 exited、沒有結果行也沒有 from-state 時（例如 WSL 重開前的舊 terminal）不算，還有別的 terminal 活著就不印、交給 Probe 的 STUCK exited，全部都已結束才印，#573）
 //   READ_FAILED <batch> <handle> <原因>（讀不到，下一輪重試）｜NO_RUNNING <key>（那一批沒有 running 成員）｜BATCH_FAILED <key> <原因>（checkpoint 讀不到）
 // exit：0 印出 RESULT／EXITED（同一輪的全部印完），或沒有任何可監看的 handle；1 BATCH_FAILED 或 --tail 讀不到；
 //       2 用法錯誤或沒有 $ORCA_CLI_COMMAND。
@@ -110,9 +110,12 @@ export async function watch({ targets, intervalMs = 60_000, read, scrollback = a
     else if (unique[i].n === undefined && target.n !== undefined) unique[i] = target;
   }
   if (!unique.length) return 0;
+  const stale = new Set();
   for (let round = 0; ; round++) {
     if (round) await wait(intervalMs);
     let events = 0;
+    let alive = false;
+    const exitedFirst = [];
     for (const target of unique) {
       const { batch, handle, n } = target;
       let terminal;
@@ -123,6 +126,7 @@ export async function watch({ targets, intervalMs = 60_000, read, scrollback = a
         continue;
       }
       const tail = screenLines(terminal.tail);
+      if (terminal.status !== 'exited') alive = true;
       if (n !== undefined) {
         // batch 成員：與 Probe 的 workerState 同一判斷，沒有畫面基準。
         let match = resultMatch(tail, n);
@@ -138,6 +142,10 @@ export async function watch({ targets, intervalMs = 60_000, read, scrollback = a
           events++;
         }
         else if (terminal.status === 'exited') {
+          // #573：第一輪就已結束的成員（WSL 重開前的舊 terminal，成員列仍是 running）若沒有結果也沒有 from-state，不當事件；
+          // 還有別的 terminal 活著時留給 Probe 的 STUCK exited，全部都已結束時才在這一輪結尾補印 EXITED（沒東西可等）。
+          if (stale.has(handle)) continue;
+          if (round === 0 && !stateResult(target, workerState)) { stale.add(handle); exitedFirst.push(target); continue; }
           // #466：分頁已結束卻沒有結果行時讀 worker checkpoint（與 Probe 的 workerState 同一判斷）。
           const sha = stateResult(target, workerState);
           const commands = sha ? postlandCommands(tail, n) : [];
@@ -157,6 +165,7 @@ export async function watch({ targets, intervalMs = 60_000, read, scrollback = a
       if (match && !seen.get(handle).has(match.line)) { print(`RESULT ${batch} ${handle} ${match.line}`); events++; }
       else if (terminal.status === 'exited') { print(`EXITED ${batch} ${handle}`); events++; }
     }
+    if (!alive) for (const { batch, handle } of exitedFirst) { print(`EXITED ${batch} ${handle}`); events++; }
     if (events) return 0;
   }
 }

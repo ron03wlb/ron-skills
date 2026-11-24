@@ -12,7 +12,7 @@
 //   --integration、--main 原樣交給 probe，--integration 也是要讀 HEAD 的分支（預設 pilot/integration）；
 //   --interval 輪詢間隔秒數（預設 300，可帶小數）；--max-wait 上限秒數（預設 3600，即原本閒置時的 ScheduleWakeup 間隔）。
 // stdout：WAKE probe <新行>（依 probe 輸出順序）｜WAKE gates .scratch/pilot/gates.md｜WAKE integration <舊 SHA 前 7 碼|none> <新 SHA 前 7 碼|none>
-//         ｜IDLE_TIMEOUT <max-wait 秒數>（到上限仍沒有變化）｜ERROR probe exit <code> rounds <n> <stderr 第一行>（probe 連續 3 輪失敗）
+//         ｜IDLE_TIMEOUT <max-wait 秒數>（到上限仍沒有變化；逾時前至少比對過基準一次，probe 慢過 max-wait 時多跑到比對完才印）｜ERROR probe exit <code> rounds <n> <stderr 第一行>（probe 連續 3 輪失敗）
 //   probe 失敗未滿 3 輪：stderr 印 WARN probe exit <code> <stderr 第一行>，該輪不比對。
 // exit：0 印出 WAKE 或 IDLE_TIMEOUT（兩者都喚醒 coordinator）；1 ERROR；2 用法錯誤。
 import { spawnSync } from 'node:child_process';
@@ -80,11 +80,13 @@ async function main(argv) {
   const deadline = Date.now() + options.maxWaitMs;
   let base;
   let failures = 0;
+  let compared = 0;
   for (let round = 0; ; round++) {
     if (round) {
       const left = deadline - Date.now();
-      if (left <= 0) break;
-      await sleep(Math.min(options.intervalMs, left));
+      // 逾時前至少完成一次比對：高負載下 probe 子程序慢過 max-wait 時，只有基準沒有比對，IDLE_TIMEOUT 就不是「沒有變化」的證據（#566）。
+      if (left <= 0 && compared) break;
+      await sleep(Math.max(0, Math.min(options.intervalMs, left)));
     }
     const now = snapshot(options);
     if (now.error) {
@@ -98,6 +100,7 @@ async function main(argv) {
     }
     failures = 0;
     if (!base) { base = now; continue; }
+    compared++;
     const wake = wakeLines(base, now);
     if (wake.length) {
       process.stdout.write(wake.map(line => `${line}\n`).join(''));

@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
+// 這支只讀文件（readFileSync／existsSync），列在 bin/check 的 docs_rules（#567）：不要加會 spawn 或寫檔的測試，那種放別的檔。
+
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
 function steps(skill) {
@@ -97,9 +99,11 @@ test('#281：L3 的 pilot.md 從 PILOT-TEMPLATE.md 複製填值，範本的每�
 });
 
 // #344：填好的 pilot.md 是 14000 bytes 的必讀核心；骨架本文本身就要在預算內留 2 KB 給填值與專案條目，最長的步驟條目在 PILOT-ROUND-TEMPLATE.md。
+// #567：這支只讀文件、秒級，列在 bin/check 的 docs_rules，改 PILOT-TEMPLATE 超預算時在整條測試之前就報（#420：前幾次要等整條 tests 才報）。
 test('#344：PILOT-TEMPLATE 本文在核心預算內留 2 KB，搬出的條目在 PILOT-ROUND-TEMPLATE 有整條、在 PILOT-TEMPLATE 留 pointer', () => {
   const [comment, body] = read('skills/engineering/issue-run/PILOT-TEMPLATE.md').split('-->');
-  assert.ok(Buffer.byteLength(body) <= 14000 - 2000, `PILOT-TEMPLATE 本文 ${Buffer.byteLength(body)} bytes`);
+  const [size, cap] = [Buffer.byteLength(body), 14000 - 2000];
+  assert.ok(size <= cap, `PILOT-TEMPLATE 本文 ${size}/${cap} bytes，超 ${size - cap}`);
   const round = read('skills/engineering/issue-run/PILOT-ROUND-TEMPLATE.md').split('-->')[1];
   for (const name of new Set([...round.matchAll(/\{\{([^}]+)\}\}/g)].map(match => match[1]))) assert.ok(comment.includes(`{{${name}}}`), `PILOT-TEMPLATE 註解沒說明 {{${name}}}`);
   for (const entry of ['Pool', 'Dispatch', 'Probe', 'Brief check', 'Triage brief']) {

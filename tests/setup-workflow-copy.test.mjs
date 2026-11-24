@@ -331,9 +331,73 @@ test('目標是 ron-skills 本身時只處理清單已列的副本，其餘印 S
   write(source, { [MANIFEST]: `${JSON.stringify({ source: 'ron03wlb/ron-skills', copies: { 'scripts/b.mjs': { template: 'x', commit: 'y', sha256: 'z' } } }, null, 2)}\n` });
   const result = run(copier, source, '--no-tests', '--yes', 'a');
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(result.stdout.trim().split('\n').filter(line => !/^[-+@ ]|^diff |^index /.test(line)), ['SKIP_UNLISTED a.mjs', 'SKIP_UNLISTED lib/pre.mjs', 'COPY scripts/b.mjs', 'COPIED 1']);
+  assert.deepEqual(result.stdout.trim().split('\n').filter(line => !/^[-+@ ]|^diff |^index /.test(line)), [
+    'SKIP_UNLISTED a.mjs（新範本：明列它並加 --register 登記）',
+    'SKIP_UNLISTED lib/pre.mjs（新範本：明列它並加 --register 登記）',
+    'COPY scripts/b.mjs',
+    'COPY tests/helpers/fixtures/orca/send.json',
+    'COPIED 2',
+  ]);
   assert.equal(existsSync(join(source, 'scripts/a.mjs')), false);
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(source, MANIFEST), 'utf8')).copies), ['scripts/b.mjs']);
+});
+
+// #420：在 ron-skills 新增範本時只能手寫清單佔位項目（commit／sha256 填 0）再重跑。
+test('--register：ron-skills 本身把明列但未登記的範本登記進清單再複製；帶入的未登記相依照樣 SKIP_UNLISTED；其他目標 exit 2', t => {
+  const { source, target, copier, commit } = fixture(t);
+  write(source, { [MANIFEST]: `${JSON.stringify({ source: 'ron03wlb/ron-skills', copies: {} }, null, 2)}\n` });
+  const dry = run(copier, source, '--no-tests', '--register', '--dry-run', 'a');
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.equal(JSON.parse(readFileSync(join(source, MANIFEST), 'utf8')).copies['scripts/a.mjs'], undefined);
+  const result = run(copier, source, '--no-tests', '--register', 'a', 'b');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    'SKIP_UNLISTED lib/pre.mjs（新範本：明列它並加 --register 登記）',
+    'REGISTER scripts/a.mjs',
+    'REGISTER scripts/b.mjs',
+    'COPY scripts/a.mjs',
+    'COPY scripts/b.mjs',
+    'COPY tests/helpers/fixtures/orca/send.json',
+    'COPIED 3',
+  ]);
+  const { copies } = JSON.parse(readFileSync(join(source, MANIFEST), 'utf8'));
+  assert.deepEqual(copies['scripts/a.mjs'], { template: 'skills/engineering/setup-workflow/templates/a.mjs', commit, sha256: sha256(join(source, 'scripts/a.mjs')) });
+  assert.deepEqual(Object.keys(copies), ['scripts/a.mjs', 'scripts/b.mjs']);
+  const other = run(copier, target, '--no-tests', '--register', 'a');
+  assert.equal(other.status, 2);
+  assert.match(other.stderr, /--register 只在目標是 ron-skills 本身/);
+  assert.equal(existsSync(join(target, MANIFEST)), false);
+});
+
+// #429：tests/helpers 的 fake-orca、real-tmpdir 與 Orca 樣本是正本的手動鏡像，copy-templates 不同步，real-tmpdir 已靜默分歧。
+test('ron-skills 本身另同步 tests/helpers 的正本鏡像：不同的印 COPY／UPDATE 並覆寫、SAME 不印、不記清單', t => {
+  const { source, copier } = fixture(t);
+  write(join(source, 'skills/engineering/setup-workflow/templates'), {
+    'test/fake-orca.mjs': '// fake orca\n',
+    'test/real-tmpdir.mjs': '// origin\n// real tmpdir\n',
+    'test/fixtures/orca/macos/send.json': '{"mac":1}\n',
+  });
+  git(source, 'add', '.');
+  git(source, 'commit', '-qm', 'mirrors');
+  write(source, {
+    [MANIFEST]: `${JSON.stringify({ source: 'ron03wlb/ron-skills', copies: { 'scripts/b.mjs': { template: 'x', commit: 'y', sha256: 'z' } } }, null, 2)}\n`,
+    'tests/helpers/real-tmpdir.mjs': '// real tmpdir\n',
+    'tests/helpers/fixtures/orca/send.json': '{}\n',
+  });
+  const result = run(copier, source, '--no-tests', '--staged', 'b');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    'COPY scripts/b.mjs',
+    'COPY tests/helpers/fake-orca.mjs',
+    'UPDATE tests/helpers/real-tmpdir.mjs',
+    'COPY tests/helpers/fixtures/orca/macos/send.json',
+    'COPIED 4',
+  ]);
+  for (const name of ['fake-orca.mjs', 'real-tmpdir.mjs', 'fixtures/orca/send.json', 'fixtures/orca/macos/send.json']) {
+    assert.equal(readFileSync(join(source, 'tests/helpers', name), 'utf8'), readFileSync(join(source, 'skills/engineering/setup-workflow/templates/test', name), 'utf8'), name);
+  }
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(source, MANIFEST), 'utf8')).copies), ['scripts/b.mjs']);
+  assert.deepEqual(run(copier, source, '--no-tests', 'b').stdout.trim().split('\n'), ['SAME scripts/b.mjs', 'COPIED 1']);
 });
 
 test('#281：真正的 pilot-close 帶上 pilot-counterpart 與 pilot-unbare.sh，不帶只支援 GitHub 的 gh-tracker', () => {
@@ -361,6 +425,27 @@ test('--staged：正本已暫存可複製、記 HEAD；未暫存與沒帶旗標�
   assert.equal(copied.status, 0, copied.stderr);
   assert.equal(readFileSync(join(target, 'scripts/b.mjs'), 'utf8'), 'export const b = 2;\n');
   assert.equal(JSON.parse(readFileSync(join(target, 'docs/agents/workflow-templates.json'), 'utf8')).copies['scripts/b.mjs'].commit, commit);
+});
+
+// #436：--staged 把每個處理到的副本（連 SAME 的相依）的 commit 都改成 HEAD，只改一支範本清單就多出一串無關 diff、和同批 worker 衝突。
+test('--staged：只有 COPY／UPDATE 的副本記 HEAD，SAME 且 sha256 一致的相依副本清單項目整筆不動', t => {
+  const { source, target, copier, commit } = fixture(t);
+  assert.equal(run(copier, target, '--no-tests', 'a').status, 0);
+  const before = JSON.parse(readFileSync(join(target, MANIFEST), 'utf8')).copies;
+  writeFileSync(join(source, 'skills/engineering/setup-workflow/templates/other.mjs'), '// moved HEAD\n');
+  git(source, 'commit', '-qam', 'unrelated');
+  writeFileSync(join(source, 'skills/engineering/setup-workflow/templates/a.mjs'), "import { b } from './b.mjs';\nconst PRELOAD = new URL('./lib/pre.mjs', import.meta.url);\n// a 2\n");
+  git(source, 'add', '.');
+  const head = git(source, 'rev-parse', 'HEAD');
+  assert.notEqual(head, commit);
+  const result = run(copier, target, '--no-tests', '--staged', 'a');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), ['UPDATE scripts/a.mjs', 'SAME scripts/b.mjs', 'SAME scripts/lib/pre.mjs', 'COPIED 3']);
+  const after = JSON.parse(readFileSync(join(target, MANIFEST), 'utf8')).copies;
+  assert.deepEqual(after['scripts/b.mjs'], before['scripts/b.mjs']);
+  assert.deepEqual(after['scripts/lib/pre.mjs'], before['scripts/lib/pre.mjs']);
+  assert.equal(after['scripts/a.mjs'].commit, head);
+  assert.equal(after['scripts/a.mjs'].sha256, sha256(join(target, 'scripts/a.mjs')));
 });
 
 // #454 第 2 項：--staged 對每個 UPDATE 印整份 diff（就是剛暫存的改動，git diff --cached 已有），agent 得接 grep 才看得到結果行。

@@ -105,7 +105,7 @@ pilot 已達標，2026-10-21 起是唯一編排：`deliver-batch`、`deliver-spe
 
 ## learning
 
-`/senior-interview-loop`：一次練一題資深後端面試題。先閉卷作答，再照 `learn-professional-topics` 的方法追問並評分；收尾經人確認後，原始作答寫成一張 Heptabase 練習卡，掌握度只寫入 Growth 的 validation ledger。路徑、Heptabase ID 和門檻都讀 Growth repo 的 `docs/agents/senior-interview-loop.md`；在 Growth checkout 內執行，或設定 `GROWTH_ROOT`。需要 Heptabase MCP。
+`/senior-interview-loop`：一次練一題資深後端面試題。先閉卷作答，再照 `learn-professional-topics` 的方法追問並評分；收尾經人確認後，原始作答寫成 Growth 的一份 private 練習筆記（Practice Attempt Note），另在「生活總控」寫一筆 `kind: "practice"` 總覽記錄，掌握度只寫入 Growth 的 validation ledger；不寫 Heptabase。路徑、ID 和門檻都讀 Growth repo 的 `docs/agents/senior-interview-loop.md`；在 Growth checkout 內執行，或設定 `GROWTH_ROOT`。
 
 `learn-professional-topics` 從舊 fork（`ron03wlb/skills` 的 `skills/personal/`）移入，現以本 repo 為正式版本。
 
@@ -115,7 +115,7 @@ pilot 已達標，2026-10-21 起是唯一編排：`deliver-batch`、`deliver-spe
 
 ## miro
 
-輕量 Miro REST API v2 CLI（`skills/productivity/miro/scripts/miro.mjs`，只用 node 內建 `fetch`，Windows 與 WSL 都能跑）與教 agent 使用的 skill：列白板、在指定座標與 frame 裡放 card、sticky note、text、shape、frame、connector，掛 tag，輸出一律是 JSON 並帶 `moveToWidget` 深連結。Miro 只是地圖，Markdown 才是正本。token 讀 `MIRO_ACCESS_TOKEN`，沒有時讀 `~/.config/miro/token`（Windows 是 `%USERPROFILE%\.config\miro\token`），任何輸出都不印。不自動建白板（Free 方案只有 3 塊可編輯白板），`boards create` 與 `items delete` 都要 `--confirm`，`boards update` 只改名稱與說明；tag 色名只收 Miro 定義的 12 個（沒帶時用 blue，其他在本機擋下）；文字欄位在本機先驗長度與標籤，`--dry-run` 只印 request。透過 `windows-skills.txt` 連到 Windows 上的 Orca bot。
+輕量 Miro REST API v2 CLI（`skills/productivity/miro/scripts/miro.mjs`，只用 node 內建 `fetch`，Windows 與 WSL 都能跑）與教 agent 使用的 skill：列白板、在指定座標與 frame 裡放 card、sticky note、text、shape、frame、connector，上傳圖片（PNG／JPG／SVG／GIF，例如把筆記渲染成 PNG 貼板；筆記改了用 `images update` 原地換圖，不另建新圖），掛 tag，輸出一律是 JSON 並帶 `moveToWidget` 深連結。Miro 只是地圖，Markdown 才是正本。token 讀 `MIRO_ACCESS_TOKEN`，沒有時讀 `~/.config/miro/token`（Windows 是 `%USERPROFILE%\.config\miro\token`），任何輸出都不印。不自動建白板（Free 方案只有 3 塊可編輯白板），`boards create` 與 `items delete` 都要 `--confirm`，`boards update` 只改名稱與說明；tag 色名只收 Miro 定義的 12 個（沒帶時用 blue，其他在本機擋下）；文字欄位在本機先驗長度與標籤，圖片在本機先驗格式（副檔名與檔頭）與 6 MiB 上限，`--dry-run` 只印 request。透過 `windows-skills.txt` 連到 Windows 上的 Orca bot。
 
 ## session-handoff
 

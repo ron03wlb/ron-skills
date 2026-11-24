@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
@@ -37,4 +37,23 @@ test('同一行多處相符、前後文重疊或相鄰時併成一段，不重�
   // 相鄰（前一段的結尾正好是下一段的開頭）也併成一段
   writeFileSync(file, 'xxabyyyyabzz\n');
   assert.equal(run('ab', file, '--width', '2').stdout, `${file}:1: xxabyyyyabzz\n`);
+});
+
+test('目錄參數遞迴讀底下的 *.md，略過 node_modules／.git／.scratch 與非 md；舊版 EISDIR（#586）', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'excerpt-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, 'docs/sub'), { recursive: true });
+  mkdirSync(join(dir, 'docs/node_modules'), { recursive: true });
+  mkdirSync(join(dir, 'docs/.scratch'), { recursive: true });
+  writeFileSync(join(dir, 'docs/a.md'), 'x RECORDED y\n');
+  writeFileSync(join(dir, 'docs/sub/b.md'), 'RECORDED\n');
+  writeFileSync(join(dir, 'docs/c.txt'), 'RECORDED\n');
+  writeFileSync(join(dir, 'docs/node_modules/d.md'), 'RECORDED\n');
+  writeFileSync(join(dir, 'docs/.scratch/e.md'), 'RECORDED\n');
+  const single = join(dir, 'one.txt');
+  writeFileSync(single, 'RECORDED\n');
+
+  const result = run('RECORDED', join(dir, 'docs'), single);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `${dir}/docs/a.md:1: x RECORDED y\n${dir}/docs/sub/b.md:1: RECORDED\n${single}:1: RECORDED\n`);
 });

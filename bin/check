@@ -128,10 +128,10 @@ size_out=$(node scripts/check-adapter-size.mjs) || { echo "$size_out"; false; }
 grep '^WARN' <<<"$size_out" >&2 || true
 fi
 # 只讀文件與清單的規則不到兩秒，在整條測試之前先跑：副本與 sha256（#267：第四次踩到）、pilot.md 大小、docs/agents 的裸 gh 寫入與 allow 規則清單（#274：改 adapter 文字等一分鐘才報，
-# 本機只跑 check-coordinator-permissions.mjs 看不到 allow 清單那條，開了 PR #280 才在 CI 失敗）。通過時不印（整組測試裡會再跑一次），失敗時印 node 的 failing tests 段。
+# 本機只跑 check-coordinator-permissions.mjs 看不到 allow 清單那條，開了 PR #280 才在 CI 失敗）、PILOT-TEMPLATE 本文預算（#567：在 setup-workflow-stations.test.mjs，原本要等整條 tests 才報）。通過時不印（整組測試裡會再跑一次），失敗時印 node 的 failing tests 段。
 step=docs-rules
 if want docs-rules; then
-docs_rules=(tests/template-copies.test.mjs tests/pilot-split.test.mjs tests/gh-tracker.test.mjs tests/check-coordinator-permissions.test.mjs tests/pilot-probe-adapter-entries.test.mjs tests/pilot-push-gate-scripts.test.mjs tests/pilot-project-flags.test.mjs tests/pilot-store-usage.test.mjs)
+docs_rules=(tests/template-copies.test.mjs tests/pilot-split.test.mjs tests/setup-workflow-stations.test.mjs tests/gh-tracker.test.mjs tests/check-coordinator-permissions.test.mjs tests/pilot-probe-adapter-entries.test.mjs tests/pilot-push-gate-scripts.test.mjs tests/pilot-project-flags.test.mjs tests/pilot-store-usage.test.mjs)
 "${isolated[@]}" node --test --test-reporter=spec "${docs_rules[@]}" > "$tmp/docs-rules.log" 2>&1 || { sed -n '/failing tests:/,$p' "$tmp/docs-rules.log"; false; }
 fi
 step=tests
