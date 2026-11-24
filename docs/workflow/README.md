@@ -7,12 +7,12 @@
 ## 給誰看
 
 - 想把同一套流程搬到自己 repo 的同事，以及我自己的其他 repo。
-- skills 放在 private 的 ron-skills repo：要照做，得先能 clone 它（向 repo 擁有者要讀取權限）。只看導讀不需要權限。
+- skills 放在公開的 [ron-skills](https://github.com/ron03wlb/ron-skills) repo，直接 `git clone` 就能照做，不需要另外要權限；三層 skill 各自從哪來、為什麼這樣分，見 [01 參考來源](01-tooling.md#參考來源三層-skill-從哪來)。
 - 預設你已經會用 Claude Code、git 與一個 Issue tracker（GitHub 或 GitLab）。本站的 tracker 指令都 `gh`（GitHub）與 `glab`（GitLab）並列。
 
 ## 導入等級
 
-`/setup-workflow` 依這台機器的工具一次裝到能裝的最完整流程：有 Orca 而且 Issue 在 GitHub 就裝 L3，其他情況裝 L2。它不問進入條件，也不限一次只升一級。下表的「適用情況」說明每一級解決什麼問題，給維護者參考；只有手動導入時才需要自己對照。
+`/setup-workflow` 依這台機器的工具一次裝到能裝的最完整流程：有 Orca 而且 Issue 在 GitHub 就裝 L3，其他情況裝 L2。它不問進入條件，也不限一次只升一級。下表的「適用情況」說明每一級解決什麼問題，給維護者參考；只有手動導入時才需要自己對照。L4 不是 `/setup-workflow` 會裝的一級：它是疊在 L3 之上的可選 bot 調度層，不是必經，要用時照 [10](10-level4-bots.md) 自己在 Orca 建。
 
 | 級 | 你得到什麼 | 適用情況 | 怎麼開始 |
 | --- | --- | --- | --- |
@@ -20,6 +20,7 @@
 | **L1 基本** | 一張 `ready-for-agent` Issue 不中斷地跑到本機 candidate commit，附驗證證據；人 push、開 PR／MR、合併、結案 | 用 Issue tracker（GitHub、GitLab 或本機 Markdown）交付工作；這台機器能裝 ron-skills 的 skills；repo 有（或願意先做）一條能跑完所有檢查的指令 | [03 L1 導入](03-level1.md) |
 | **L2 守門** | 每張 Issue 一個 worktree、一條整合分支、合入有 lock、push 前 hook 重驗、兩段式結案、`/retro` 把失誤變成檢查 | 已用 L1 的 `/issue-run` 交付過幾張 Issue；而且同時開兩個以上 session，或已經發生過繞過檢查、合錯分支、狀態對不上（兩者擇一） | [04 L2 導入](04-level2.md) |
 | **L3 常駐** | `/loop /issue-pilot` 常駐 coordinator 自己挑單、派 worker、整批回歸、合入整合分支；人只剩產品決策、共用環境操作，以及 adapter 沒交給 coordinator 的 push 與合併 | L2 的入口（檢查、合入、push 前 hook）都有固定的 exit code；裝了 Orca；願意讓 agent 在無人值守時跑 git | [05 L3 導入](05-level3.md) |
+| **L4 bot 調度（可選）** | 疊在 L3 之上：一個總調度 bot 加每個專案一個 bot，bot 依決策分級代答 coordinator 的 gate，只有該由 owner 拍板的才送到 owner；owner 同時管多個 repo 時只面對一個決策介面 | 已有一個以上 repo 穩定跑 L3；想讓 gate 不必等 owner 回到 coordinator 分頁；用 Orca bot。不需要的話停在 L3 即可 | [10 L4 bot 調度層](10-level4-bots.md) |
 
 等級是本站與腳本內部的用語。`/setup-workflow` 跟你對話時不講代號，而是直接說明裝了之後 agent 能做什麼、哪些仍由你做，並用你的語言說明。
 
@@ -57,7 +58,7 @@
 
 | 章 | 內容 |
 | --- | --- |
-| [01 工具與角色](01-tooling.md) | Operator、coordinator、worker、subagent、Codex 各負責什麼；Claude Code、skills、hooks、tracker、Orca 的關係 |
+| [01 工具與角色](01-tooling.md) | Operator、coordinator、worker、subagent、Codex 各負責什麼；Claude Code、skills、hooks、tracker、Orca 的關係；[參考來源](01-tooling.md#參考來源三層-skill-從哪來)：Matt Pocock skills、pstack、ron-skills 三層各放什麼、誰改、overlay 機制 |
 | [02 Issue 生命週期](02-lifecycle.md) | 五個 triage label 加 `in-progress`／`completed` 的狀態機與看板；從開單到結案；批次 |
 | [03 L1 導入](03-level1.md) | checklist：`/setup-workflow` 一次完成的環境、Host、安裝目標（含單一檢查入口）、label、adapter、`/triage`、`/issue-run`、PR／MR、`/issue-queue`、`/issue-run --pool` |
 | [04 L2 導入](04-level2.md) | worktree、整合分支與 lock、pre-push、兩段式結案、`/retro`、權限規則；每個入口的契約 |
@@ -66,6 +67,7 @@
 | [07 規則沉澱](07-rules.md) | memory → skill → repo 規範 → 腳本／gate；新檢查要先在歷史錯誤上失敗 |
 | [08 常見坑](08-pitfalls.md) | 換了專案也會踩的坑：症狀、原因、做法 |
 | [09 Skills 索引](09-skills.md) | 依階段列出 skill 與它所屬的導入等級 |
+| [10 L4 bot 調度層（可選）](10-level4-bots.md) | 疊在 L3 之上的總調度 bot 與專案 bot：bot home 結構、A／A2／B 決策分級範本、bot 間溝通、gate 改送專案 bot、session 交接與 retro |
 
 ## 本站怎麼產生
 

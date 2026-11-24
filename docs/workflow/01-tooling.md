@@ -41,16 +41,33 @@ controller 與 worker 是同一個 `/issue-run` skill 的兩種模式：沒有 c
 | Linux | 支援 | 一般發行版；`orca` 這個名稱可能是 GNOME 螢幕閱讀器，Orca 可用與否只看 `ORCA_CLI_COMMAND` |
 | 原生 Windows | 不支援 | 環境站在這裡停下、不寫檔，提示改用 WSL2 |
 
-## 三層 skill 怎麼疊
+## 參考來源：三層 skill 從哪來
 
-| 層 | 來源 | 內容 | 誰改 |
+本流程不是從零寫的。skills 分三層疊起來，下層是兩個公開的上游，上層是 ron-skills 的個人層，再往上是各專案自己的 adapter：
+
+| 層 | 來源 | 放什麼 | 誰改 |
 | --- | --- | --- | --- |
-| Matt 原版 | `mattpocock/skills` 的 fork | 工程方法：`tdd`、`code-review`、`implement`、`implement-spec`、`triage`、`retro`… | 只同步上游 |
-| pstack 原版 | `backnotprop/pstack` | 編排原則：`poteto-mode` 的 Autopilot playbook、`principle-*` | 只同步上游 |
-| ron-skills | 本 repo | `issue-run`、`issue-pilot`、`retro-collect` 編排，以及對上兩層的 overlay | 自己 |
-| 專案 adapter | 各 repo 的 `docs/agents/issue-run.md` | tracker、檢查、candidate、結案指令 | 各專案 |
+| **Matt Pocock skills** | 上游 [mattpocock/skills](https://github.com/mattpocock/skills)；本機 clone 的是 fork [ron03wlb/skills](https://github.com/ron03wlb/skills)，只追上游 | 工程方法：`tdd`、`code-review`、`implement`、`implement-spec`、`triage`、`retro`、`grilling`、`to-spec`… | 不改；只同步上游 |
+| **pstack** | 上游 [backnotprop/pstack](https://github.com/backnotprop/pstack) | 編排原則：`poteto-mode` 的 Autopilot playbook、`principle-*`、`arena` | 不改；只同步上游 |
+| **ron-skills（個人層）** | [ron03wlb/ron-skills](https://github.com/ron03wlb/ron-skills)，本 repo | 交付編排：`issue-run`、`issue-pilot`、`issue-queue`、`retro-collect`、`setup-workflow`、`session-handoff`；對上兩層的 overlay；`setup-workflow` 複製給各專案的 script 正本 | 自己 |
+| **專案 adapter** | 各 repo 的 `docs/agents/issue-run.md` | 這個 repo 的 tracker、檢查、candidate、交付指令 | 各專案 |
 
-Matt 的方法和 adapter 說法不同時，以 adapter 為準；`/issue-run` 會在報告裡列出這次用到的每一條覆寫。
+**為什麼這樣分。** 判斷標準只有一條：上游更新之後，個人層要仍然相容，原有工作流不變。所以：
+
+- **採用 Matt 的方法**當工程程序：測試先行、兩軸 review、spec 拆單這些已經寫得夠好，不重寫，`/issue-run` 直接照它們做。
+- **採用 pstack 的原則**當無人值守時的判斷依據：coordinator 怎麼派工、何時停、怎麼選做法，引用 `poteto-mode` 與 `principle-*`，不自己另訂一套。
+- **不採用的上游 skill 寫明理由**：Matt 要連哪些、刻意不連哪些記在 `matt-skills.txt`；pstack 的白名單記在 `pstack-skills.txt`。pstack 不連結的理由只有三種：與 Matt 或個人層的流程重疊（例如它的 `tdd` 與 Matt 的重複）、與 repo 規範衝突（例如刪註解策略、英文句式規則），或只給 Cursor 用。
+- **個人層只放上游沒有的東西**：Issue 進池子、認領、worktree、整合分支、常駐 coordinator、retro 收集這一整條交付線，以及對上游的最小補丁。「把 skill 都搬進同一個 repo」本身不是目標。
+- **專案事實只放 adapter**：skill 本身不含任何專案路徑或指令，換一個 repo 只要換 adapter。Matt 的方法和 adapter 說法不同時，以 adapter 為準；`/issue-run` 會在報告裡列出這次用到的每一條覆寫。
+
+**overlay 機制。** 個人層要改上游 skill 時，不改上游的 checkout，也不 fork 一份自己維護：
+
+1. 改動寫成 `overlays/<name>.patch`，一個 skill 一個補丁，只放最小差異（例如給 `code-review` 的子代理指定模型、讓 `retro` 在有收集條目時改開 Issue）。
+2. `bin/sync-skills` 把上游的 skill 複製到 `~/.local/share/ron-skills/overlay/<name>`，在副本上套補丁，再把 `~/.claude/skills/<name>` 連到副本。上游 checkout（`~/code/skills`、`~/code/pstack`）本身一個字都不動，`git pull` 永遠是快轉。
+3. `bin/sync-skills --check` 只檢查不寫：每個補丁能不能套在目前的上游版本、上游有沒有新增 skill 要決定連不連。上游改到補丁的位置時印 `OVERLAY_FAILED`，連結保持舊版，重做那個補丁再同步。
+4. 升級上游時，先 `--check` 通過、試跑過，再更新 `matt-skills.txt`／`pstack-skills.txt` 的 `# pin:`（驗證過的上游 SHA）。ron-skills 的 CI 每週對上游最新 main 跑一次 `bin/check --upstream`，上游一改到補丁位置就先在 CI 變紅。
+
+每個補丁改了什麼，列在 ron-skills 根目錄 [`README.md`](../../README.md) 的「overlays 清單」。
 
 ## 常見的線
 
