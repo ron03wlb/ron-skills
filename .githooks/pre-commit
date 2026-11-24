@@ -2,6 +2,9 @@
 # 本機 commit 前跑 bin/check，不必等 push 後 CI 才變紅（retro spay2 1021c：先 commit 後測試）。
 # 只跑和這個分支變更路徑有關的子集（bin/check --changed，CoS item 67：每個 worker 每次 commit 都跑完整套件，WSL load 衝到 110）；
 # 完整套件在 acceptance、pilot 的 Regression 與 CI。要在 commit 時跑完整套件：CHECK_FULL=1 git commit …
+# 何時經全機共用的重型檢查 slot（scripts/heavy-slot.mjs，CoS item 67）：子集輕（不是 full、測試檔數 ≤ CHECK_SLOT_FREE_TESTS，預設 10）時直接跑，
+# 其餘（子集大、退回完整套件、CHECK_FULL=1、算不出子集）照舊經 slot。#605：只挑到兩個檔相關測試的子集和完整套件排同一個 slot，
+# worker 兩次各等 1800 秒 SLOT_TIMEOUT，而不經 slot 的完整 bin/check 一跑就過；限流只罰到最輕的那條。
 # 啟用：bin/sync-skills 會建連結（#300）；手動是 ln -s ../../.githooks/pre-commit .git/hooks/pre-commit
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -18,10 +21,31 @@ export CHECK_INDEX_TREE=$index_tree
 if [[ -f scripts/check-stamp.mjs ]] && node scripts/check-stamp.mjs fresh "$index_tree"; then echo "CHECK_STAMP_FRESH $index_tree" >&2; exit 0; fi
 # 失敗時 CHECK_FAIL 在 stdout，必須印出來，否則 commit 只有 exit 1、沒有任何訊息（retro spay2 b949589b#3）。
 log=$(mktemp); trap 'rm -f "$log"' EXIT
-# 經全機共用的重型檢查 slot 跑（scripts/heavy-slot.mjs，CoS item 67：和 spay2 等 repo 一起限流）。排隊時 stderr 每 30 秒一行 SLOT_WAIT；
-# 等到上限（預設 1800 秒）印 SLOT_TIMEOUT、commit 失敗：是負載關卡，不是檢查沒過，稍後重跑 commit。沒有這支（測試的 fixture repo）時直接跑。
+# 經全機共用的重型檢查 slot 跑（CoS item 67：和 spay2 等 repo 一起限流）。排隊時 stderr 每 30 秒一行 SLOT_WAIT；
+# 等到上限（預設 1800 秒）印 SLOT_TIMEOUT、exit 75、commit 失敗：是負載關卡，不是檢查沒過。沒有 heavy-slot.mjs（測試的 fixture repo）時直接跑。
+# 小子集不經 slot（#605）：門檻 10 個測試檔，約全部測試檔（tests/ 約 80 支加各 skill 的測試）的一成，這種子集幾十秒內跑完，
+# 負載遠小於完整套件，排隊等 slot 的時間卻可能是 30 分鐘。用和 bin/check --changed 相同的計算（base 同為 origin/main，沒有時 main；樹是 index_tree）。
+# 計畫出錯或沒有 check-subset.mjs 時照舊經 slot。stderr 印 `CHECK_SLOT_SKIP tests <n>`，看得出這次沒排隊。
 check=(bin/check --changed)
-[[ ! -f scripts/heavy-slot.mjs ]] || check=(node scripts/heavy-slot.mjs run --label ron-skills:pre-commit -- bin/check --changed)
-"${check[@]}" >"$log" || { tail -n 20 "$log" >&2; exit 1; }
+if [[ -f scripts/heavy-slot.mjs ]]; then
+  slot=1
+  if [[ -z ${CHECK_FULL:-} && -f scripts/check-subset.mjs ]] && plan=$(node scripts/check-subset.mjs --tree "$index_tree" 2>/dev/null) \
+    && [[ $plan == SUBSET_STEPS* ]]; then
+    tests=$(sed -n 's/^SUBSET_TESTS *//p' <<<"$plan" | wc -w | tr -d ' ')
+    limit=${CHECK_SLOT_FREE_TESTS:-10}; [[ $limit =~ ^[0-9]+$ ]] || limit=10
+    if ((tests <= limit)); then slot=; echo "CHECK_SLOT_SKIP tests $tests" >&2; fi
+  fi
+  [[ -z $slot ]] || check=(node scripts/heavy-slot.mjs run --label ron-skills:pre-commit -- bin/check --changed)
+fi
+status=0
+"${check[@]}" >"$log" || status=$?
+if ((status == 75)) && [[ -n ${slot:-} ]]; then
+  # SLOT_TIMEOUT 行 heavy-slot 已印在 stderr。附上誰占著 slot，並寫明下一步：直接重跑 commit 多半只是再等 30 分鐘（#605）。
+  node scripts/heavy-slot.mjs status >&2 || true
+  echo "下一步：先在要 commit 的樹上跑完整 bin/check（不經 slot），通過後再 git commit；同一棵樹 pre-commit 會印 CHECK_STAMP_FRESH 直接放行。" >&2
+  echo "        stamp 要求工作樹與要 commit 的樹相同（scripts/check-stamp.mjs fresh），沒 stage 的修改要先 stage 或移開。" >&2
+  exit 1
+fi
+((status == 0)) || { tail -n 20 "$log" >&2; exit 1; }
 grep '^CHECK_SUBSET ' "$log" >&2 || true
 tail -n 1 "$log" >&2

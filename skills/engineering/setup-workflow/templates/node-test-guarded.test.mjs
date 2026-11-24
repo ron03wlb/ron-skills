@@ -17,6 +17,9 @@ function fixture(t, files, extraEnv = {}) {
   for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
   const env = { ...process.env };
   for (const key of ['NODE_TEST_CONTEXT', 'NODE_TEST_COUNT_FILE', 'NODE_TEST_COUNT_ROOT', 'NODE_TEST_COUNTED', 'NODE_OPTIONS', 'NODE_TEST_GUARD_WAIT_MS', 'NODE_TEST_RERUN_TIMEOUT_MS', 'NODE_TEST_FLAKE_MAX_FILES']) delete env[key];
+  // flake 首輪輸出在不在 git repo 時放 tmpdir()：每個 fixture 用自己的 TMPDIR，並行跑多份（或別的 worktree 同時跑）時才不共用 /tmp/node-test-flake-output 互相覆寫、清除
+  mkdirSync(join(dir, '.tmp'));
+  env.TMPDIR = join(dir, '.tmp');
   Object.assign(env, extraEnv);
   return (...args) => spawnSync(process.execPath, [SCRIPT, '--test-force-exit', ...args], { cwd: dir, encoding: 'utf8', env });
 }
@@ -130,7 +133,8 @@ test('flake 由 wrapper 自己寫 followups [tooling]：每個呼叫端都記到
     writeFileSync(join(dir, 'flaky.test.mjs'), FLAKY);
     writeFileSync(join(dir, 'ok.test.mjs'), OK);
     writeFileSync(join(dir, 'FAIL_ONCE'), '');
-    const env = { ...process.env, FOLLOWUPS_EXIT: exit };
+    mkdirSync(join(dir, '.tmp'));
+    const env = { ...process.env, FOLLOWUPS_EXIT: exit, TMPDIR: join(dir, '.tmp') };
     for (const key of ['NODE_TEST_CONTEXT', 'NODE_TEST_COUNT_FILE', 'NODE_TEST_COUNT_ROOT', 'NODE_TEST_COUNTED', 'NODE_OPTIONS']) delete env[key];
     const result = spawnSync(process.execPath, [SCRIPT, '--test-force-exit', 'flaky.test.mjs', 'ok.test.mjs'], { cwd: dir, encoding: 'utf8', env });
     assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -331,12 +335,12 @@ test('hasTestChannel：與實際探測一致', () => {
 const MISSING_CASES = {
   // 整個檔的結果遺失：第一個測試前就結束，父行程只把檔名算成一個通過的測試
   'gone.test.mjs': ["import { test } from 'node:test';\nprocess.exit(0);\ntest('g1', () => {});\ntest('g2', () => {});\n", 'no-events'],
-  // 只收到一半：第二個測試後結束，後面的測試從沒開始，紀錄與輸出都只有前兩個
+  // 只收到一半：第二個測試後結束，後面的測試從沒開始，紀錄與輸出都只有前兩個（後面的測試永不結束，只有 exit 能讓行程結束，結果不靠排程時序）
   'half.test.mjs': ["import { test } from 'node:test';\ntest('h1', () => {});\ntest('h2', () => { setImmediate(() => process.exit(0)); });\n"
-    + 'for (const n of [3, 4, 5]) test(`h${n}`, async () => { await new Promise(done => setTimeout(done, 50)); });\n', 'not-finished started=3 ended=2'],
+    + 'for (const n of [3, 4, 5]) test(`h${n}`, async () => { await new Promise(() => {}); });\n', 'not-finished started=3 ended=2'],
   // force-exit 截斷：父行程不再收結果（吞掉輸出），子行程再跑一個測試後在收齊前結束
   'trunc.test.mjs': ["import { test } from 'node:test';\ntest('c1', () => {});\ntest('c2', () => { process.stdout.write = () => true; });\n"
-    + "test('c3', () => { setImmediate(() => process.exit(0)); });\nfor (const n of [4, 5, 6]) test(`c${n}`, async () => { await new Promise(done => setTimeout(done, 50)); });\n", 'not-finished started=4 ended=3'],
+    + "test('c3', () => { setImmediate(() => process.exit(0)); });\nfor (const n of [4, 5, 6]) test(`c${n}`, async () => { await new Promise(() => {}); });\n", 'not-finished started=4 ended=3'],
 };
 
 for (const [name, [source, reason]] of Object.entries(MISSING_CASES)) {
@@ -361,8 +365,8 @@ test('half 的情境在改前的捷徑會放行：總數相等、逐檔名稱也
 
 test('第一次沒收齊、單獨重跑收齊：印 MISSING_RESULTS 與 NODE_TEST_RERUN PASS，exit 0', { skip: NO_CHANNEL }, t => {
   const once = "import { test } from 'node:test';\nimport { existsSync, rmSync } from 'node:fs';\ntest('h1', () => {});\n"
-    + "test('h2', () => { if (existsSync('CUT_ONCE')) { rmSync('CUT_ONCE'); setImmediate(() => process.exit(0)); } });\n"
-    + 'for (const n of [3, 4]) test(`h${n}`, async () => { await new Promise(done => setTimeout(done, 50)); });\n';
+    + "test('h2', () => { if (existsSync('CUT_ONCE')) { rmSync('CUT_ONCE'); globalThis.cut = true; setImmediate(() => process.exit(0)); } });\n"
+    + 'for (const n of [3, 4]) test(`h${n}`, async () => { await new Promise(done => { if (!globalThis.cut) setTimeout(done, 50); }); });\n';
   const run = fixture(t, { 'half.test.mjs': once, 'ok.test.mjs': OK, CUT_ONCE: '' });
   const result = run('half.test.mjs', 'ok.test.mjs');
   assert.equal(result.status, 0, result.stdout + result.stderr);
