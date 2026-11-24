@@ -1,0 +1,23 @@
+{
+  "agents": [
+    {
+      "orcaSessionId": "00000000-0000-4000-8000-000000000000",
+      "kind": "chat",
+      "agent": "claude",
+      "state": "done",
+      "worktreeId": "00000000-0000-4000-8000-000000000001::/sample/repo",
+      "workspace": "main",
+      "repo": "sample",
+      "hostId": "local",
+      "paneKey": "structured-agent-session-00000000-0000-4000-8000-000000000000:00000000-0000-4000-8000-000000000002",
+      "title": "sample",
+      "lastAssistantMessage": "sample",
+      "updatedAt": 1795438484676
+    }
+  ],
+  "truncated": false,
+  "hostScope": {
+    "hostIds": ["local"],
+    "omittedHostIds": []
+  }
+}

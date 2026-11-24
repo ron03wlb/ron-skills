@@ -47,7 +47,9 @@
 //   prior 已在、分支又有了 commit 就是第二次重派：印 `STOP refresh-twice <n>`，由 coordinator 開 gate；gate 選了再重派時帶 --again，另存成 `-prior2`（依序編號）。
 //   認領不在這裡做：coordinator 照 Dispatch 先跑 claim；這裡只在動手前同樣檢查認領，不是這個 session 的就 `STOP <n> not-claimed`，什麼都不動。
 //   沒帶 --note（#227）時只寫 `<主 checkout>/.scratch/pilot/fresh-<n>.md` 草稿、印 `NOTE_DRAFT <path>`，不派工：唯讀（只有 gh 讀 Issue 標題），
-//   不檢查認領、不需要 ORCA_CLI_COMMAND，不改名分支、不開關分頁、不留言；帶派工才用的 --again、--allow-overlap、--capacity、--no-capacity、--repo-cap、--stuck-after 是用法錯誤（exit 2）。
+//   不檢查認領、不需要 ORCA_CLI_COMMAND，不改名分支、不開關分頁、不留言；帶派工才用的 --again、--capacity、--no-capacity、--repo-cap、--stuck-after 是用法錯誤（exit 2）。
+//   寫草稿前先做帶 --note 時同一套重疊檢查（#425：coordinator 補完整併範圍帶 --note 重跑才撞上 `STOP <n> overlap`，那份範圍要等 #m 合入後重寫）：
+//   有重疊印 `STOP <n> overlap <m> …`（比對失敗是 `STOP <n> overlap-check …`），不寫草稿；--allow-overlap 照寫。
 //   成員分支不在時印 `STOP <n> git 沒有分支 <分支>`；batch-<key>.md 有這個成員的列、分支不同時（slug 打錯）行尾再接 `；checkpoint batch-<key>.md 的分支是 <分支>`（#469，帶 --note 的 --fresh 同）。
 //   帶 --note 的 --fresh 印 DISPATCHED 之後，草稿（不論 --note 指哪個檔）改名成第一個空號的 `fresh-<n>-r<k>.md`（k 從 1 起），印 `DRAFT_ARCHIVED <n> <path>`（#437：
 //   下一輪的草稿撞上前一輪已填的 fresh-<n>.md，只能手動 mv）；STOP 時不歸檔。
@@ -57,6 +59,9 @@
 //   每檔另附一行 worker 可逐檔取用 prior 改動的指令（#484：整批 diff 撞輸出上限）：`.md` 是 `git diff <merge-base> <prior> --word-diff=porcelain -- <檔> | grep '^+[^+]'`（只取新增字詞），
 //   其他檔是 `git diff <merge-base> <prior> -- <檔>`；非 `.md` 的共同檔另列兩邊 `git diff -U0` 的 hunk 標頭（`@@ … @@ <所在函式>`）都出現的函式行
 //   （`- 兩邊都改過的函式：…`，沒有交集時不印；#551：#502 與 #537 都改 pilot-watch 的 watch()，機械式兩邊都留、測試全綠，交會路徑卻漏記 POSTLAND）；
+//   「沿用 prior 的 patch」一行整份套用指令 `git diff <merge-base> <prior> -- . ':!<路徑>'… | git apply -3`（#572），排除 prior 改過的戳記檔（STAMP_FILES 與副本清單本身）、
+//   主 checkout 有 scripts/build-workflow-site.mjs 時的 docs/workflow/site（重產的流程站），與副本清單 docs/agents/workflow-templates.json 登記的副本：
+//   副本只由 copy-templates 從正本產生，worker 不必判斷 copy-templates 的 CONFIRM_OVERWRITE 該不該加 --yes（fresh-502 套了 prior 的副本改動，exit 3 重跑）；
 //   worker checkpoint（`<worktree>/.scratch/issue-run-<n>/state.md`）最後一個含 `review-only` 的行（如 `final review-only round`）到結果行（`DONE|STOP <n>`）的原文，
 //   沒有結果行時到下一個 `#`／`##` 標題（不含）或檔尾（worker 的 checkpoint 沒有固定寫法），
 //   沒有這段時改抄 worker 分頁尾段（#261）：batch-<key>.md 那列有 handle、設了 ORCA_CLI_COMMAND 時讀 pilot.md 的 Watch 同一個來源
@@ -86,7 +91,7 @@
 //
 // 用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--repo-cap <n>|--no-capacity] [--integration <分支>] [--stuck-after <分鐘>m]（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
 //       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--repo-cap <n>|--no-capacity] [--integration <分支>] [--stuck-after <分鐘>m]
-//       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--integration <分支>]（草稿，不需要 ORCA_CLI_COMMAND）
+//       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--allow-overlap] [--integration <分支>]（草稿，不需要 ORCA_CLI_COMMAND）
 //   --integration worktree 的 base 與表頭的整合分支，預設 pilot/integration；--stuck-after 成員行的 stuck-after，預設 90m；--repo-cap 預設 4（見上）。
 // stdout：容量行（CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP default 4 → …、CAPACITY ok repo …、CAPACITY ok …，或 STOP capacity repo …、STOP capacity … 接 RELEASED <n>）、Orca 不能用時唯一的成員外 STOP orca-unavailable <第一行>（見上）、最後的 REPORTED <repo> …（見上）；
 //   stderr 另有 WARN release …、WARN capacity-report …、WARN orca-register …、WARN stamp-files …。每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、worktree-branch、create、unbare、terminal、tui-timeout、send、orca、timeout、signal），Env sync 失敗是 `STOP sync <n> exit <code>`（見上）；
@@ -95,7 +100,7 @@
 //   send 的 STOP 記 running：worker 可能其實已在跑，交給 Probe 判定，#354），STOP 原因只在 stdout。
 //   每個成員的 STOP 行（含 --fresh 與草稿的）最後一欄是 ` row=<kept|stop|running>`：這一行之後成員列沒動（kept），或寫成 stop、running（investing#481：
 //   哪些 STOP 改寫成員列以前只能讀程式碼）。HOLD 行不改成員列。不屬於成員的 STOP capacity、STOP orca-unavailable 不寫任何列，也沒有這一欄。
-//   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`，有草稿時再印 `DRAFT_ARCHIVED <n> <path>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
+//   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`，有草稿時再印 `DRAFT_ARCHIVED <n> <path>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> overlap …`、`STOP <n> overlap-check …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
 // exit：0 全部派出（草稿：寫好）；4 有成員 STOP 或 HOLD（或 STOP capacity、STOP orca-unavailable）；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤（含草稿帶了派工旗標、Env sync 宣告寫錯）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -111,7 +116,7 @@ import { recordTitle, withState } from './tab-state.mjs';
 
 const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--repo-cap <n>|--no-capacity] [--integration <分支>] [--stuck-after <分鐘>m]（需要 ORCA_CLI_COMMAND；容量檢查預設做，--repo-cap 預設 4）\n'
   + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--repo-cap <n>|--no-capacity] [--integration <分支>] [--stuck-after <分鐘>m]\n'
-  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--integration <分支>]（只寫 fresh-<n>.md 草稿、不派工）';
+  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--allow-overlap] [--integration <分支>]（只寫 fresh-<n>.md 草稿、不派工）';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const WORKTREE_CREATE = fileURLToPath(new URL('./orca-worktree-create.mjs', import.meta.url));
 const TRACKER = fileURLToPath(new URL('./gh-tracker.mjs', import.meta.url));
@@ -122,6 +127,8 @@ const REGISTER_MS = Number(process.env.PILOT_DISPATCH_REGISTER_MS ?? 60000);
 const REGISTER_POLL_MS = Number(process.env.PILOT_DISPATCH_REGISTER_POLL_MS || 2000);
 /** 派工路徑預設的單一 repo 上限（#534：沒帶 --repo-cap 時用它，--no-capacity 才略過）。 */
 const DEFAULT_REPO_CAP = 4;
+/** 副本清單（copy-templates.mjs 的同一份）：草稿的 patch 指令排除它登記的副本（#572）。 */
+const MANIFEST = 'docs/agents/workflow-templates.json';
 /** 戳記檔（#460）：main 開頭由 stampFilesOf 載入，overlapStop 比對時略過。 */
 let stampFiles = [];
 
@@ -616,8 +623,11 @@ export function hunkFunctions(diff) {
 /**
  * 沒帶 --note 的 --fresh：寫 fresh-<n>.md 草稿（內容見檔頭），傳回 `{ path }` 或 `{ stop }`（不含 `STOP `）。只讀 git、gh 與檔案，不改任何狀態。
  */
-function freshDraft(main, key, integration, { n, branch }) {
+function freshDraft(main, key, integration, { n, branch }, allowOverlap) {
   if (!hasBranch(main, branch)) return { stop: missingBranch(main, key, { n, branch }) };
+  // 同帶 --note 時的檢查（#425）：重疊就不寫草稿，免得 coordinator 寫完整併範圍才撞上 STOP。
+  const overlap = !allowOverlap && overlapStop(main, n, branch, integration);
+  if (overlap) return { stop: `${n} ${overlap}` };
   const path = join(main, `.scratch/pilot/fresh-${n}.md`);
   const merge = existsSync(path) ? readFileSync(path, 'utf8').split(/^## 怎麼整併$/m)[1] : undefined;
   if (merge?.trim()) return { stop: `${n} draft-filled ${path}` };
@@ -670,6 +680,7 @@ function freshDraft(main, key, integration, { n, branch }) {
   } catch (error) {
     return { stop: `${n} git ${error.message}` };
   }
+  const patch = `git diff ${base} ${prior} -- . ${patchExcludes(main, [...member.keys()]).map(path => `':!${path}'`).join(' ')} | git apply -3`.replace('.  |', '. |');
   const worktree = worktreeOf(main, branch);
   const state = worktree && join(worktree, `.scratch/issue-run-${n}/state.md`);
   const lines = state && existsSync(state) ? readFileSync(state, 'utf8').split('\n') : [];
@@ -694,6 +705,10 @@ function freshDraft(main, key, integration, { n, branch }) {
     '',
     common.length ? common.join('\n\n') : '沒有。',
     '',
+    '## 沿用 prior 的 patch',
+    '',
+    `\`${patch}\``,
+    '',
     '## 最後一輪 review-only',
     '',
     `來源：${source}`,
@@ -710,6 +725,20 @@ function freshDraft(main, key, integration, { n, branch }) {
     '',
   ].join('\n'));
   return { path };
+}
+
+/**
+ * 草稿 patch 指令要排除的路徑（#572）：`changed`（prior 改過的檔）裡的戳記檔與副本清單、清單登記的副本，以及有 scripts/build-workflow-site.mjs 時
+ * docs/workflow/site 底下的檔（整個目錄只列一次）；依路徑排序。副本清單讀不到或不是 JSON 時不排除副本（照舊套）。
+ */
+function patchExcludes(main, changed) {
+  let copies = [];
+  try {
+    copies = Object.keys(JSON.parse(readFileSync(join(main, MANIFEST), 'utf8')).copies ?? {});
+  } catch { copies = []; }
+  const site = existsSync(join(main, 'scripts/build-workflow-site.mjs')) ? 'docs/workflow/site' : undefined;
+  const skip = new Set([...stampFiles, MANIFEST, ...copies]);
+  return [...new Set(changed.map(path => (site && path.startsWith(`${site}/`) ? site : path)).filter(path => path === site || skip.has(path)))].sort();
 }
 
 /**
@@ -748,7 +777,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const fresh = 'fresh' in given;
   // --fresh 只帶一個成員；沒帶 --note 是草稿（#227），不能再帶派工才用的旗標；--note 與 --again 只跟 --fresh 一起用。
   const draft = fresh && !('note' in given);
-  if (draft ? given.again || given.allowOverlap || given.capacity || given.noCapacity || 'repoCap' in given || 'stuckAfter' in given : 'note' in given && !existsSync(given.note)) bad = true;
+  if (draft ? given.again || given.capacity || given.noCapacity || 'repoCap' in given || 'stuckAfter' in given : 'note' in given && !existsSync(given.note)) bad = true;
   // 派工路徑預設做容量檢查（#534）；--no-capacity 是唯一的略過方式，和要求檢查的旗標一起帶是矛盾。
   if (given.noCapacity && (given.capacity || 'repoCap' in given)) bad = true;
   const capacity = !draft && !given.noCapacity;
@@ -769,13 +798,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       console.error(`整合分支 ${options.integration} 不存在\n${USAGE}`);
       process.exit(2);
     }
+    stampFiles = await stampFilesOf(main);
     if (draft) {
-      const written = freshDraft(main, key, options.integration, members[0]);
+      const written = freshDraft(main, key, options.integration, members[0], Boolean(given.allowOverlap));
       console.log(written.stop ? `STOP ${written.stop} row=kept` : `NOTE_DRAFT ${written.path}`);
       clearTimeout(budget);
       process.exit(written.stop ? 4 : 0);
     }
-    stampFiles = await stampFilesOf(main);
     let envSync;
     try {
       envSync = envSyncCommand(main);

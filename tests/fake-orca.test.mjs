@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { orcaSamples, ORCA_PLATFORMS } from './helpers/fake-orca.mjs';
 
 const helpers = new URL('./helpers/', import.meta.url).pathname;
@@ -34,13 +34,13 @@ test('WSL 樣本的每個欄位在 macOS 樣本都在、型別相同：腳本讀
   }
 });
 
-test('tests/helpers 的 fake-orca 與樣本和 setup-workflow 正本一致', () => {
-  assert.equal(readFileSync(`${helpers}fake-orca.mjs`, 'utf8'), readFileSync(`${templates}fake-orca.mjs`, 'utf8'));
-  for (const platform of ORCA_PLATFORMS) {
-    const sub = platform === 'wsl' ? '' : `${platform}/`;
-    for (const name of Object.keys(orcaSamples(platform))) {
-      const file = `fixtures/orca/${sub}${name}.json`;
-      assert.equal(readFileSync(`${helpers}${file}`, 'utf8'), readFileSync(`${templates}${file}`, 'utf8'), file);
-    }
+// #429：tests/helpers 下的正本鏡像由 copy-templates 對 ron-skills 本身同步（MIRRORS）；這裡守住每一份，含 real-tmpdir 與兩邊各自多出的樣本。
+test('tests/helpers 的 fake-orca、real-tmpdir 與 Orca 樣本和 setup-workflow 正本一致', () => {
+  for (const file of ['fake-orca.mjs', 'real-tmpdir.mjs']) assert.equal(readFileSync(`${helpers}${file}`, 'utf8'), readFileSync(`${templates}${file}`, 'utf8'), file);
+  const samples = root => readdirSync(`${root}fixtures/orca`, { recursive: true }).map(String).filter(name => name.endsWith('.json')).sort();
+  assert.deepEqual(samples(helpers), samples(templates), '樣本檔名（copy-templates . --staged --no-tests <名稱> 會補上缺的；正本刪掉的樣本要手動 rm 鏡像）');
+  for (const name of samples(templates)) {
+    const file = `fixtures/orca/${name}`;
+    assert.equal(readFileSync(`${helpers}${file}`, 'utf8'), readFileSync(`${templates}${file}`, 'utf8'), file);
   }
 });

@@ -24,6 +24,8 @@
 //   create、tui-timeout、send、orca、pid-timeout、timeout、signal）。
 //   `orca` 逾時時帶出步驟與已花時間：`STOP orca timeout terminal list 10003ms`（#535）；單獨的 `STOP timeout` 是總預算。
 //   `tui-timeout` 時 stderr 先印新分頁關掉前的畫面尾巴 `SCREEN_TAIL <handle>`（或 `SCREEN_TAIL_UNAVAILABLE`，#536）。
+//   HANDED_OFF 行由 claude-hook-tab-state.mjs（旁邊的正本）的 DEFAULT_TRIGGERS['pilot-handoff'] 以 regex 逐行比對，把舊 coordinator 分頁切成待 Retro；
+//   改這行的格式時一起改那裡的 regex 與 claude-hook-tab-state.test.mjs（#440）。
 // stderr：交接完成時提醒停掉本 session 的 watcher；Coordinator model 宣告寫錯時的 WARN（見上）。
 // exit：0 交接完成；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';

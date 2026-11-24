@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { checkPiped, ghViewCommentsWithoutJson, unquotedHeredocs } from './claude-hook-bash-pitfalls.mjs';
+import { checkPiped, ghViewCommentsWithoutJson, truncatedDocGrep, unquotedHeredocs } from './claude-hook-bash-pitfalls.mjs';
 
 const HOOK = fileURLToPath(new URL('./claude-hook-bash-pitfalls.mjs', import.meta.url));
 const run = input => spawnSync('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8' });
@@ -94,6 +94,40 @@ test('bin/check 導到 log、有 pipefail／PIPESTATUS、|| 或只是讀 bin/che
     'sed -n 1,20p bin/check | cat',
     'timeout 5 cat bin/check | head',
     'echo "bin/check | tail"',
+  ]) assert.equal(bash(command).status, 0, command);
+});
+
+// #571：#402 worker（session 6c132d80 第 243 行）跑這條，issue-run-landing.md:16 真正命中的 `STOP local-checks-timeout` 在第 160 字元之後被切掉，判定沒有殘留。
+const ISSUE_571 = 'grep -rn "local-checks\\|ci-not-started" docs/agents GLOSSARY.md docs/adr 2>/dev/null | cut -c1-160';
+
+test('grep 文件後接 cut -c／head -c／awk substr：exit 2，改用 doc-excerpt（#571）', () => {
+  const result = bash(ISSUE_571);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /#571/);
+  assert.match(result.stderr, /node scripts\/doc-excerpt\.mjs '<regex>' <檔案或目錄>\.\.\./);
+  assert.deepEqual(truncatedDocGrep(ISSUE_571), ['grep -rn local-checks\\|ci-not-started docs/agents GLOSSARY.md docs/adr']);
+  for (const command of [
+    "grep -n foo docs/agents/issue-run.md | cut -c 1-200",
+    "cd x && grep -rn foo docs | sort | cut -b1-120",
+    "grep -rn -e foo -e bar README.md | head -c 2000",
+    "LC_ALL=C grep -rn foo . --include=*.md | cut -c1-100",
+    "rg -n foo skills/x/SKILL.md | awk '{print substr($0, 1, 160)}'",
+    "grep -n foo -- GLOSSARY.md | cut --characters=1-80",
+  ]) assert.equal(bash(command).status, 2, command);
+});
+
+test('欄位切、head -n、grep 程式碼、沒截斷、引號裡的字放行（#571 反例）', () => {
+  for (const command of [
+    'grep -rn "local-checks" docs/agents GLOSSARY.md docs/adr',
+    'grep -rln foo docs/agents | cut -d: -f1',
+    "grep -rn foo docs/agents | cut -d':' -f1,2 | sort -u",
+    'grep -rn foo docs/agents | head -n 20',
+    'grep -rn foo scripts src | cut -c1-160',
+    'grep -rn docs scripts | cut -c1-160',
+    'grep -e README.md scripts/x.mjs | cut -c1-80',
+    "grep -rn foo docs/agents; echo x | cut -c1-3",
+    'echo "grep -rn foo docs | cut -c1-160"',
+    "node scripts/doc-excerpt.mjs 'local-checks' docs/agents/*.md | cut -c1-300",
   ]) assert.equal(bash(command).status, 0, command);
 });
 
