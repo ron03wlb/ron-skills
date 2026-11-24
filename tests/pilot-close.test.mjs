@@ -28,9 +28,10 @@ const REPO = 'ron03wlb/ron-skills';
 //   unmerged   合入之後 issue 分支又多一個 commit（branch -d 會拒絕）；
 //   body       Issue #76 的本文；
 //   siblings   母單 #35 其他子單 { 號碼: 'OPEN' | 'CLOSED' }；
-//   orcaDeletesBranch  Orca rm 一起刪掉已合入的本機分支（真實行為；false 時 branch 步驟由腳本 branch -d）。
+//   orcaDeletesBranch  Orca rm 一起刪掉已合入的本機分支（真實行為；false 時 branch 步驟由腳本 branch -d）；
+//   rmFailures 前幾次 Orca worktree rm 照 #432 的實況失敗：stderr 印 WSL vsock 逾時行、回 runtime_error、exit 1，什麼都不動。
 // 假 gh 的輸出從 helpers/fixtures/gh 的真實樣本長出來（同 land.test.mjs）；Orca rm 沒有樣本，比照 land.test.mjs 回空的 result，腳本只看 ok。
-function fixture(t, { pushed = false, unmerged = false, body = '', siblings = { 70: 'CLOSED' }, orcaDeletesBranch = true, request = false } = {}) {
+function fixture(t, { pushed = false, unmerged = false, body = '', siblings = { 70: 'CLOSED' }, orcaDeletesBranch = true, request = false, rmFailures = 0 } = {}) {
   // request：成員是沒有 Issue 的請求分支（Issue 欄 `-`，#143），batch 是 req-10。
   const branch = request ? 'retro/hook-c-var' : BRANCH;
   const key = request ? 'req-10' : '76';
@@ -155,6 +156,11 @@ const block = selector && execFileSync('git', ['-C', ${JSON.stringify(repo)}, 'w
 if (selector && !block) fail('selector_not_found');
 else if (a === 'terminal' && b === 'list') reply('list', { terminals: open.map(handle => ({ handle, worktreePath: selector.slice(5) })), totalCount: open.length });
 else if (a === 'terminal' && b === 'close') { fs.writeFileSync(${JSON.stringify(terminals)}, JSON.stringify(open.filter(h => h !== arg('--terminal')))); reply('close', { close: { handle: arg('--terminal') } }); }
+else if (a === 'worktree' && b === 'rm' && (() => { const f = ${JSON.stringify(join(temp, 'rm-count'))}; const n = fs.existsSync(f) ? Number(fs.readFileSync(f, 'utf8')) : 0; fs.writeFileSync(f, String(n + 1)); return n < ${rmFailures}; })()) {
+  console.error('<3>WSL (784354 - ) ERROR: UtilAcceptVsock:281: accept4 failed 110');
+  fail('runtime_error');
+  process.exitCode = 1;
+}
 else if (a === 'worktree' && b === 'rm') {
   // 照 \`orca worktree rm --help\`：一起刪掉能證明已合入的本機分支；照 WSL 實況把主 checkout 設成 bare（#20）。
   execFileSync('git', ['-C', ${JSON.stringify(repo)}, 'worktree', 'remove', '--force', selector.slice(5)]);
@@ -168,7 +174,7 @@ else fail('unknown');
   chmodSync(cli, 0o755);
   const close = (args = [key, '100', mergeSha]) => spawnSync('node', [script, ...args, '--repo', REPO], {
     cwd: repo, encoding: 'utf8', input: 'leftover-line\n', timeout: 60000,
-    env: { ...env, PATH: `${join(temp, 'bin')}:${env.PATH}`, ORCA_CLI_COMMAND: cli },
+    env: { ...env, PATH: `${join(temp, 'bin')}:${env.PATH}`, ORCA_CLI_COMMAND: cli, PILOT_CLOSE_ORCA_RETRY_MS: '1' },
   });
   const ghIssues = () => JSON.parse(readFileSync(ghState, 'utf8')).issues;
   const checkpoint = () => readFileSync(join(repo, `.scratch/pilot/batch-${key}.md`), 'utf8');
@@ -369,6 +375,25 @@ test('上一輪中斷在 Orca 設成 bare 之後：重跑先還原 bare，再接
   assert.equal(lines(result)[0], `UNBARE ${f.repo}`);
   assert.equal(git(f.repo, 'rev-parse', '--is-bare-repository'), 'false');
   assert.equal(lines(result).pop(), 'CLOSED 76');
+});
+
+// #432：WSL 上 Orca worktree rm 偶爾 vsock 逾時（accept4 failed 110，緊接著重跑回 runtime_error），手動再 rm 一次就成功。
+test('Orca worktree rm 第一次暫時失敗：隔一段時間重試一次就做完；連兩次失敗才 STOP worktree', t => {
+  const f = fixture(t, { pushed: true, rmFailures: 1 });
+  const result = f.close();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result).slice(4, 8), ['DONE 76 terminal', `UNBARE ${f.repo}`, 'DONE 76 worktree', 'SKIP 76 branch']);
+  assert.equal(lines(result).pop(), 'CLOSED 76');
+  assert.equal(f.calls().match(/worktree rm/g).length, 2);
+  assert.equal(existsSync(f.worktree), false);
+
+  const twice = fixture(t, { pushed: true, rmFailures: 2 });
+  const stopped = twice.close();
+  assert.equal(stopped.status, 4, stopped.stdout + stopped.stderr);
+  assert.equal(lines(stopped).pop(), 'STOP 76 worktree orca runtime_error');
+  assert.equal(twice.calls().match(/worktree rm/g).length, 2);
+  assert.equal(existsSync(twice.worktree), true);
+  assert.doesNotMatch(twice.checkpoint(), /^current: closed$/m);
 });
 
 test('checkpoint 沒有 done 成員：STOP，不把 current 寫成 closed', t => {

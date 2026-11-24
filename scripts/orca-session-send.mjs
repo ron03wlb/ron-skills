@@ -12,7 +12,8 @@
 // 先只打字、等 `draft` 出現 prompt，再只補 Enter、等 `draft` 清空；整段文字最多送一次，只有 Enter 會重送。
 // 送出前 composer 不是空的（例如上一次 STOP 留下的舊提醒）就 STOP draft-not-empty，不把舊草稿當成這一則送出；
 // 任何一次讀不到 `draft` 欄位（`orca terminal read --help`：may be absent）都無從確認，STOP draft-unavailable，不重送。
-// 尚未驗證：手上沒有忙碌中 session 的真實 `terminal read` 樣本，「忙碌時 draft 可靠」只是假設。
+// 忙碌中 session 的真實 `terminal read` 樣本：test/fixtures/orca/read-working.json（WSL、Orca 1.4.271 錄，#507；spinner 行與未送出的 `draft` 都在）；
+// macOS 那份尚未錄，macos/ 下是同形狀的副本。
 //
 // 用法：node scripts/orca-session-send.mjs --terminal <handle> --prompt <text> [--queue]
 // stdout 最後一行：SENT <handle>、QUEUED <handle>（--queue），或 STOP <原因>（tui-timeout <handle>、send <handle>、draft-not-empty <handle>、draft-unavailable <handle>（後兩者只在 --queue）、orca <錯誤碼>）。

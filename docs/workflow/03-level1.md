@@ -20,8 +20,8 @@ L1 的目標：在一個還沒有 adapter 的 repo 裡，把第一張 Issue 用 
 先在這台機器裝 skills（每台機器一次）：
 
 ```bash
-git clone https://github.com/ron03wlb/ron-skills ~/code/ron-skills   # private：先取得讀取權限
-git clone https://github.com/ron03wlb/skills ~/code/skills           # Matt skills 的 fork
+git clone https://github.com/ron03wlb/ron-skills ~/code/ron-skills   # 公開 repo，直接 clone
+git clone https://github.com/ron03wlb/skills ~/code/skills           # Matt Pocock skills 的 fork（上游 mattpocock/skills）
 git clone https://github.com/backnotprop/pstack ~/code/pstack
 ~/code/ron-skills/bin/sync-skills --check   # overlay 能套用、沒有 OVERLAY_FAILED
 ~/code/ron-skills/bin/sync-skills           # 連結到 ~/.claude/skills/

@@ -760,6 +760,21 @@ test('段落 gate 的 resolved 寫進別的欄位時印 GATE_MALFORMED', t => {
   ]);
 });
 
+// #453 第 2 項（#367 Spec review (c)）：openGates 讀 `- hold：` 只認 `#<n>`，手寫成 `- hold：320` 或 `- hold：#320（等 G28）`
+// 會被靜默忽略，Probe 又印回 STAGEABLE 320（#367 修掉的錯）。有 hold 欄卻解析不出號碼時印 GATE_MALFORMED 指出那一行。
+test('段落 gate 的 hold 欄解析不出號碼時印 GATE_MALFORMED', t => {
+  const { pilot, probe } = fixture(t);
+  const gate = (id, hold) => `## ${id} #320 等人決定\n- Issue：#320\n- question：選哪個？\n- parked：batch 320 的 Stage\n${hold}\n- opened：2026-11-18T11:00:00+08:00\n\n`;
+  writeFileSync(join(pilot, 'gates.md'), `# Gates\n\n${gate('G28', '- hold：320')}${gate('G29', '- hold：#320（等 G28）')}${gate('G30', '- hold：#320')}`);
+  assert.deepEqual(lines(probe()), [
+    'GATE G28 #320 等人決定',
+    'GATE_MALFORMED G28 - hold：320',
+    'GATE G29 #320 等人決定',
+    'GATE_MALFORMED G29 - hold：#320（等 G28）',
+    'GATE G30 #320 等人決定',
+  ]);
+});
+
 // review 第一、二輪：標記只認最後一個 `source` 欄之後的 `applied`／`declined`，請求內文提到這兩個字（連同 source）不算已處理。
 test('請求內文出現 applied 但沒有標記時仍是開著的', t => {
   const { pilot, probe } = fixture(t);
@@ -1868,7 +1883,8 @@ test('ready-for-human Issue 沒有對應的開放 gate 時印 HUMAN_NO_GATE <n> 
   const { pilot, probe } = fixture(t, { issues: [
     { ...issue(184, ISSUE_184, { labels: human }), title: 'taifex 來源' },
     { ...issue(133, 'Operator prerequisite：開跑前由 Operator 確認（保留期只能用一次）', { labels: human }), title: '保留期' },
-    { ...issue(190, '只有 resolved 的 gate，沒寫 prerequisite。', { labels: human }), title: '要人做的事' },
+    // G9 resolved 之後本文又改過（#417 第 1 項）：resolved 的 gate 不再算數，照印。
+    { ...issue(190, '只有 resolved 的 gate，沒寫 prerequisite。', { labels: human }), title: '要人做的事', lastEditedAt: '2026-11-02T00:00:00Z' },
     { ...issue(191, 'Operator prerequisite：無關，標的是 ready-for-agent'), title: 'agent 單' },
   ] });
   writeFileSync(join(pilot, 'gates.md'), G15);
@@ -1877,6 +1893,47 @@ test('ready-for-human Issue 沒有對應的開放 gate 時印 HUMAN_NO_GATE <n> 
     'HUMAN_NO_GATE 184 在 budgets.yaml 新增 taifex 來源…需 Operator 核准',
     'HUMAN_NO_GATE 190 要人做的事',
   ]);
+});
+
+// #417 第 1 項（G11／G12、G14／G15）：#331、#350 掛 ready-for-human，人已回覆、gate resolved、決定維持現狀，
+// 舊版 Probe 只認開著的 gate，每輪重印 HUMAN_NO_GATE，coordinator 三度開 gate 問同一組問題，或用 grep -v 濾掉。
+// resolved 時間不早於該 Issue 最近一次 label 變動與本文編輯的 gate 也算有 gate；之後 label 或本文再變動就重新印。
+test('ready-for-human Issue 的 gate 已 resolved、之後 label 與本文都沒變：不印 HUMAN_NO_GATE；resolve 後才變動的照印', t => {
+  const human = ['ready-for-human'];
+  const labeled = createdAt => ({ labelEvents: { nodes: [{ createdAt }] } });
+  const gates = `# Gates
+
+## G11 #331 worker 依難度選模型
+- Issue：#331
+- question：要不要做？
+- opened：2026-11-21T07:15:00+08:00
+- resolved 2026-11-21T07:30:00+08:00 維持 ready-for-human
+
+## G12 #350 其他專案 issue-queue refine 工具鏈通用化
+- Issue：#350
+- question：要不要做？
+- opened：2026-11-21T07:15:00+08:00
+- resolved 2026-11-21T07:30:00+08:00 維持 ready-for-human
+
+| id | Issue | question | options | default | parks | opened | status |
+|---|---|---|---|---|---|---|---|
+| G20 | #352 | 表格形式 | a｜b | a | #352 | 2026-11-21T07:00:00+08:00 | resolved 2026-11-21T07:30:00+08:00 選 a |
+`;
+  const { pilot, probe } = fixture(t, { issues: [
+    { ...issue(331, '要人決定', { labels: human }), title: 'worker 依難度選模型', lastEditedAt: '2026-11-20T10:00:00Z', ...labeled('2026-11-20T09:00:00Z') },
+    { ...issue(350, '要人決定', { labels: human }), title: 'other refine', ...labeled('2026-11-20T09:00:00Z') },
+    { ...issue(352, '表格 gate', { labels: human }), title: '表格 gate 的單' },
+  ] });
+  writeFileSync(join(pilot, 'gates.md'), gates);
+  assert.deepEqual(lines(probe()).filter(Boolean), []);
+  // 之後 #350 的 label 又變動（resolve 之後才重新掛回 ready-for-human）、#352 本文改過：重新印。
+  const { pilot: pilot2, probe: probe2 } = fixture(t, { issues: [
+    { ...issue(331, '要人決定', { labels: human }), title: 'worker 依難度選模型', lastEditedAt: '2026-11-20T10:00:00Z', ...labeled('2026-11-20T09:00:00Z') },
+    { ...issue(350, '要人決定', { labels: human }), title: 'other refine', ...labeled('2026-11-21T00:00:00Z') },
+    { ...issue(352, '表格 gate', { labels: human }), title: '表格 gate 的單', lastEditedAt: '2026-11-21T00:00:00Z' },
+  ] });
+  writeFileSync(join(pilot2, 'gates.md'), gates);
+  assert.deepEqual(lines(probe2()), ['HUMAN_NO_GATE 350 other refine', 'HUMAN_NO_GATE 352 表格 gate 的單']);
 });
 
 // #358（#324 第 5 項、#338 第 5 項）：ADAPTER_AHEAD 時 coordinator 照整合分支的 adapter 在主 checkout 跑腳本，

@@ -1,6 +1,6 @@
 # 09 Skills 索引
 
-依交付階段列出 skill，並標出它從哪一級開始用。**等級**欄：L1 是基本流程就會用到；L2、L3 是導入到該級才需要；「輔助」是隨時可用、但不是流程的必經入口。
+依交付階段列出 skill，並標出它從哪一級開始用。**等級**欄：L1 是基本流程就會用到；L2、L3 是導入到該級才需要；L4 是可選的 bot 調度層（見 [10](10-level4-bots.md)）；「輔助」是隨時可用、但不是流程的必經入口。
 
 使用者輸入的 skill（`/名稱`）有些設了 `disable-model-invocation`，只能由人輸入，agent 不會自己觸發；表中以「人輸入」標示。
 
@@ -66,6 +66,12 @@
 | `/retro` | 回顧一次 session，提出環境改善（檢查、導覽、規範） | L2（人輸入；adapter 有 Retro collect 條目時，pilot worker 寫 `DONE` 前與 coordinator 交接後由 skill 以 Skill tool 自動跑） | Matt（ron-skills overlay：開 Issue 前依候選提到的名稱查開著的 Issue；寫入前查並行修改；adapter 有 Retro collect 條目時改為收集模式，候選開成 `retro-candidates` Issue，條目宣告 `Collect command:` 時改照該指令走；最後把分頁切成待關閉） |
 | `/retro-collect` | 收集開著的 `retro-candidates` Issue，在一個 retro worktree 實作採用項，太大的另開 `retro` Issue，合入後關單；條目宣告名單的專案改用宣告的指令 | L2（人輸入，或 coordinator 依 adapter 的 Retro trigger 條目，在未收集的 retro 達 5 則或最舊滿 8 小時時以 `pilot-retro-due.mjs --start` 開分頁跑；adapter 要有 Retro collect 條目） | ron-skills |
 | `handoff` | 把對話壓成交接文件，讓新的 session 接手 | 輔助 | Matt |
+
+## bot 調度（L4，可選）
+
+| skill | 做什麼 | 等級 | 來源 |
+| --- | --- | --- | --- |
+| `session-handoff` | Orca bot 換新 chat 前，把對話中仍在進行的狀態落到 bot 的 `MEMORY.md` 與 items，並寫 `memory/session-handoff.md` 快照給新 chat 接續（見 [10 session 交接](10-level4-bots.md#session-交接)） | L4 | ron-skills |
 
 ## 怎麼看完整清單
 

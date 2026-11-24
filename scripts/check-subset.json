@@ -22,7 +22,7 @@
     {
       "match": ["docs/workflow/**"],
       "steps": ["links", "workflow-site"],
-      "tests": ["tests/workflow-*.test.mjs", "tests/setup-workflow-stations.test.mjs"],
+      "tests": ["tests/workflow-*.test.mjs"],
       "related": true
     },
     {

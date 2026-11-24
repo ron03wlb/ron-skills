@@ -1,5 +1,5 @@
 interface:
   display_name: "Senior Interview Loop"
-  short_description: "Practise one interview question, then file evidence to Heptabase and mastery to Growth"
+  short_description: "Practise one interview question, then file evidence and mastery to Growth"
 policy:
   allow_implicit_invocation: false

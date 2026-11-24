@@ -57,7 +57,7 @@ Default: the run's branch tip; acceptance is the full suite on that SHA.
 ## Evidence and closing
 
 Where evidence is posted, and the human's next actions.
-Default: a comment on each Issue; the human pushes and closes.
+Default: a comment on each Issue; the human pushes and closes. A pilot worker's evidence comment ends with the same `DONE <n> <candidate SHA>` line as its screen, so the pool can count the Issue as landed before it is staged (ron-skills #411).
 
 ## Gated tickets
 

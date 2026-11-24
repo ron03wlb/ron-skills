@@ -14,11 +14,15 @@ const TOKEN = 'test-token-SHOULD-NEVER-APPEAR-9f8e7d';
 async function fakeMiro(t, handler) {
   const calls = [];
   const server = createServer((req, res) => {
-    let raw = '';
-    req.on('data', c => { raw += c; });
+    const chunks = [];
+    req.on('data', c => { chunks.push(c); });
     req.on('end', () => {
       const url = new URL(req.url, 'http://x');
-      const call = { method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), auth: req.headers.authorization, body: raw ? JSON.parse(raw) : undefined };
+      const raw = Buffer.concat(chunks);
+      const type = req.headers['content-type'] || '';
+      const call = { method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), auth: req.headers.authorization, contentType: type };
+      if (type.startsWith('multipart/form-data')) call.parts = parseMultipart(raw, type);
+      else call.body = raw.length ? JSON.parse(raw.toString('utf8')) : undefined;
       calls.push(call);
       const r = handler(call, calls) || { status: 404, json: { message: 'not found' } };
       res.writeHead(r.status ?? 200, { 'content-type': 'application/json', ...r.headers });
@@ -28,6 +32,26 @@ async function fakeMiro(t, handler) {
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());
   return { calls, base: `http://127.0.0.1:${server.address().port}/v2` };
+}
+
+/** 照 RFC 7578 解析 multipart/form-data：回傳 { <name>: { filename, contentType, bytes } }。 */
+function parseMultipart(raw, type) {
+  const boundary = /boundary=(.+)$/.exec(type)[1];
+  const delim = Buffer.from(`--${boundary}`);
+  const parts = {};
+  let pos = raw.indexOf(delim);
+  for (;;) {
+    const start = pos + delim.length;
+    if (raw.subarray(start, start + 2).toString() === '--') break;
+    const next = raw.indexOf(delim, start);
+    const part = raw.subarray(start + 2, next - 2);
+    const sep = part.indexOf('\r\n\r\n');
+    const head = part.subarray(0, sep).toString('utf8');
+    const name = /name="([^"]*)"/.exec(head)[1];
+    parts[name] = { filename: /filename="([^"]*)"/.exec(head)?.[1], contentType: /Content-Type: (.+)/i.exec(head)?.[1].trim(), bytes: part.subarray(sep + 4) };
+    pos = next;
+  }
+  return parts;
 }
 
 function home(t) {
@@ -277,7 +301,10 @@ test('tags：list 翻頁、create、attach、detach', async t => {
 test('不認得的指令與選項：exit 2', async t => {
   assert.equal((await cli(t, ['boards', 'nuke'])).code, 2);
   assert.equal((await cli(t, ['items', 'list', 'b1', '--bogus'])).code, 2);
-  assert.equal((await cli(t, ['items', 'list', 'b1', '--type', 'image'])).code, 2);
+  assert.equal((await cli(t, ['items', 'list', 'b1', '--type', 'bogus'])).code, 2);
+  const img = await cli(t, ['items', 'create', 'b1', '--type', 'image']);
+  assert.equal(img.code, 2);
+  assert.match(img.stderr, /images create/);
 });
 
 test('tags create 沒帶 --color 時送預設 blue', async t => {
@@ -310,4 +337,143 @@ test('boards update 送 PATCH /boards/{id}；--dry-run 不送出、不需要 tok
   assert.equal(JSON.parse(dry.stdout).method, 'PATCH');
   assert.equal((await cli(t, ['boards', 'update', 'b1'], withToken(base))).code, 2);
   assert.equal(calls.length, 1);
+});
+
+// ---- images ----
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('fake-png-body\u0000ÿ')]);
+const JPG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('jpeg')]);
+
+function imageFile(t, name, bytes) {
+  const dir = home(t);
+  const file = join(dir, name);
+  writeFileSync(file, bytes);
+  return file;
+}
+
+test('images create 送 multipart：resource 是檔案原樣、data 是 JSON（position、geometry、parent、title），輸出帶深連結', async t => {
+  const { calls, base } = await fakeMiro(t, () => ({ status: 201, json: { id: 'img1', type: 'image' } }));
+  const file = imageFile(t, '筆記-two-sum.png', PNG);
+  const r = await cli(t, ['images', 'create', 'b1', '--file', file, '--parent', 'f1', '--x', '100', '--y=-50', '--width', '640', '--title', 'Two Sum 筆記'], withToken(base));
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(calls.length, 1);
+  const c = calls[0];
+  assert.deepEqual([c.method, c.path, c.auth], ['POST', '/v2/boards/b1/images', `Bearer ${TOKEN}`]);
+  assert.match(c.contentType, /^multipart\/form-data; boundary=/);
+  assert.deepEqual(Object.keys(c.parts).sort(), ['data', 'resource']);
+  assert.equal(c.parts.resource.filename, '筆記-two-sum.png');
+  assert.equal(c.parts.resource.contentType, 'image/png');
+  assert.ok(c.parts.resource.bytes.equals(PNG), 'resource 位元組被改動');
+  assert.equal(c.parts.data.contentType, 'application/json');
+  assert.equal(c.parts.data.filename, undefined);
+  assert.deepEqual(JSON.parse(c.parts.data.bytes.toString('utf8')), { title: 'Two Sum 筆記', position: { x: 100, y: -50 }, geometry: { width: 640 }, parent: { id: 'f1' } });
+  assert.equal(JSON.parse(r.stdout).deep_link, 'https://miro.com/app/board/b1/?moveToWidget=img1');
+  noLeak(r);
+});
+
+test('images create 沒有其他欄位時只送 resource', async t => {
+  const { calls, base } = await fakeMiro(t, () => ({ status: 201, json: { id: 'img2' } }));
+  const r = await cli(t, ['images', 'create', 'b1', '--file', imageFile(t, 'a.jpg', JPG)], withToken(base));
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(Object.keys(calls[0].parts), ['resource']);
+  assert.equal(calls[0].parts.resource.contentType, 'image/jpeg');
+});
+
+test('images update 以 PATCH multipart 換檔，同一個 item id、輸出帶深連結', async t => {
+  const { calls, base } = await fakeMiro(t, call => call.method === 'PATCH' ? { json: { id: 'img1', type: 'image', data: { title: 'v2' } } } : undefined);
+  const v2 = Buffer.concat([PNG, Buffer.from('-v2')]);
+  const r = await cli(t, ['images', 'update', 'b1', 'img1', '--file', imageFile(t, 'note.png', v2), '--title', 'v2'], withToken(base));
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(calls.map(c => [c.method, c.path]), [['PATCH', '/v2/boards/b1/images/img1']]);
+  assert.ok(calls[0].parts.resource.bytes.equals(v2));
+  assert.deepEqual(JSON.parse(calls[0].parts.data.bytes), { title: 'v2' });
+  assert.equal(JSON.parse(r.stdout).deep_link, 'https://miro.com/app/board/b1/?moveToWidget=img1');
+  noLeak(r);
+});
+
+test('images update 缺 --file 或 <item>：exit 2、不送出', async t => {
+  const { calls, base } = await fakeMiro(t, () => ({ json: {} }));
+  assert.equal((await cli(t, ['images', 'update', 'b1', 'img1', '--title', 'x'], withToken(base))).code, 2);
+  assert.equal((await cli(t, ['images', 'update', 'b1'], withToken(base))).code, 2);
+  assert.equal(calls.length, 0);
+});
+
+test('images 本機驗證：不存在、副檔名不允許、內容與副檔名不符、空檔、超過 6 MiB、寬高同時給，都擋下且不送出', async t => {
+  const { calls, base } = await fakeMiro(t, () => ({ status: 201, json: { id: 'x' } }));
+  const env = withToken(base);
+  const cases = [
+    [['--file', '/nonexistent/x.png'], 1, /找不到圖片檔/],
+    [['--file', imageFile(t, 'x.bmp', PNG)], 1, /\.bmp/],
+    [['--file', imageFile(t, 'x.pdf', Buffer.from('%PDF-1.4'))], 1, /\.pdf/],
+    [['--file', imageFile(t, 'fake.png', JPG)], 1, /image\/jpeg.*不符/],
+    [['--file', imageFile(t, 'text.png', Buffer.from('hello'))], 1, /不是 PNG/],
+    [['--file', imageFile(t, 'empty.png', Buffer.alloc(0))], 1, /空檔/],
+    [['--file', imageFile(t, 'big.png', Buffer.concat([PNG, Buffer.alloc(6 * 1024 * 1024)]))], 1, /6 MiB/],
+    [['--file', imageFile(t, 'ok.png', PNG), '--width', '10', '--height', '10'], 2, /擇一/],
+    [['--file', home(t)], 1, /不是檔案/],
+    [[], 2, /--file/],
+  ];
+  for (const [args, code, re] of cases) {
+    const r = await cli(t, ['images', 'create', 'b1', ...args], env);
+    assert.equal(r.code, code, `${args.join(' ')}: ${r.stderr}`);
+    assert.match(r.stderr, re);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test('images：剛好 6 MiB 可送；SVG 與 GIF 認得出來', async t => {
+  const { calls, base } = await fakeMiro(t, () => ({ status: 201, json: { id: 'x' } }));
+  const env = withToken(base);
+  const exact = Buffer.concat([PNG, Buffer.alloc(6 * 1024 * 1024 - PNG.length)]);
+  const svg = Buffer.from('﻿<?xml version="1.0"?>\n<!-- note -->\n<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+  for (const [name, bytes, type] of [['exact.png', exact, 'image/png'], ['map.svg', svg, 'image/svg+xml'], ['a.gif', Buffer.from('GIF89a....'), 'image/gif'], ['b.JPEG', JPG, 'image/jpeg']]) {
+    const r = await cli(t, ['images', 'create', 'b1', '--file', imageFile(t, name, bytes)], env);
+    assert.equal(r.code, 0, `${name}: ${r.stderr}`);
+    assert.equal(calls.at(-1).parts.resource.contentType, type);
+    assert.equal(calls.at(-1).parts.resource.bytes.length, bytes.length);
+  }
+});
+
+test('images --dry-run 印 method、URL、multipart 摘要，不送出、不需要 token、token 不外洩', async t => {
+  const { calls, base } = await fakeMiro(t, () => ({ json: {} }));
+  const file = imageFile(t, 'note.png', PNG);
+  for (const env of [{ MIRO_API_BASE: base }, { MIRO_API_BASE: base, MIRO_ACCESS_TOKEN: TOKEN }]) {
+    const r = await cli(t, ['images', 'update', 'b1', 'img1', '--file', file, '--height', '300', '--parent', 'f1', '--dry-run'], env);
+    assert.equal(r.code, 0, r.stderr);
+    const req = JSON.parse(r.stdout);
+    assert.equal(req.method, 'PATCH');
+    assert.equal(req.url, `${base}/boards/b1/images/img1`);
+    assert.equal(req.headers.Authorization, 'Bearer <redacted>');
+    assert.match(req.headers['Content-Type'], /^multipart\/form-data; boundary=/);
+    assert.deepEqual(req.multipart, [
+      { name: 'resource', filename: 'note.png', size: PNG.length, content_type: 'image/png' },
+      { name: 'data', content_type: 'application/json', json: { geometry: { height: 300 }, parent: { id: 'f1' } } },
+    ]);
+    noLeak(r);
+  }
+  const bad = await cli(t, ['images', 'create', 'b1', '--file', imageFile(t, 'x.txt', 'hi'), '--dry-run'], { MIRO_API_BASE: base });
+  assert.equal(bad.code, 1, '--dry-run 也要先做本機驗證');
+  assert.equal(calls.length, 0);
+});
+
+test('images get 與 items list --type image 讀得到圖片 item', async t => {
+  const { calls, base } = await fakeMiro(t, call => {
+    if (call.path === '/v2/boards/b1/images/img1') return { json: { id: 'img1', type: 'image' } };
+    if (call.path === '/v2/boards/b1/items') return { json: { data: [{ id: 'img1', type: 'image' }] } };
+  });
+  const g = await cli(t, ['images', 'get', 'b1', 'img1'], withToken(base));
+  assert.equal(g.code, 0, g.stderr);
+  assert.equal(JSON.parse(g.stdout).deep_link, 'https://miro.com/app/board/b1/?moveToWidget=img1');
+  const l = await cli(t, ['items', 'list', 'b1', '--type', 'image'], withToken(base));
+  assert.equal(l.code, 0, l.stderr);
+  assert.equal(JSON.parse(l.stdout).data[0].deep_link, 'https://miro.com/app/board/b1/?moveToWidget=img1');
+  assert.equal(calls[1].query.type, 'image');
+});
+
+test('images create 遇到 429 時重送同一份 multipart', async t => {
+  const { calls, base } = await fakeMiro(t, (_, all) => all.length < 2 ? { status: 429, headers: { 'retry-after': '0' } } : { status: 201, json: { id: 'img3' } });
+  const r = await cli(t, ['images', 'create', 'b1', '--file', imageFile(t, 'n.png', PNG), '--title', 't'], withToken(base));
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(calls.length, 2);
+  assert.ok(calls[1].parts.resource.bytes.equals(PNG));
+  assert.deepEqual(JSON.parse(calls[1].parts.data.bytes), { title: 't' });
 });
