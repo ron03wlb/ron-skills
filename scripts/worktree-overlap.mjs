@@ -24,6 +24,13 @@
 //   基準預設是 main：從 pilot/integration 開的 worktree，整合分支上還沒進 main 的改動也會算進去，只看各自的改動時帶 --main pilot/integration。
 //   沒有 main 這條分支的 repo（整合分支另有名稱）一律帶 --main <整合分支>。
 //   detached HEAD 的 worktree，<分支> 寫成 `detached@<HEAD 前 7 碼>`。和主分支沒有共同祖先、或還沒有 commit 的 worktree 略過。沒有命中時不輸出。
+//   還沒有 index 檔的 worktree（`git worktree add` 的 checkout 進行中、或 `--no-checkout`）也略過：工作樹還沒寫出的檔在 diff 裡全是刪除，
+//   會把給的每個檔都報成 OVERLAP_WT（spay2 retro 1124b：isolated runner 剛建的 detached@b683dee 被報 13 個沒改的檔）。
+//   OVERLAP_STALE_BASE <分支> <檔案>
+//   該 worktree 與 <主分支> 的 merge-base，committer 時間早於 <主分支> tip 的 committer 時間 30 天以上時，改印這行取代 OVERLAP_WT
+//   （--mine 時也不附 hunk／merge 欄位）。不 actionable：分叉點太舊，diff 是主分支這段時間的整批歷史，不是並行改動，不必等它或讀它的 diff
+//   （retro spay2 17581a1b#2：基底在 85 天前的 diagnose 分支被報 `OVERLAP_WT … hunks=near 26 merge=conflict`，協調者另讀 git log 才判定可忽略）。
+//   不另判「不含主分支的 root commit」：沒有共同祖先的 worktree 已在上面略過，有 merge-base 就一定含主分支某個 root。
 //   --mine 時 OVERLAP_WT 行尾（條目之後）再多一個欄位，說明兩邊改的是不是同一段（retro spay2 e9234021#2：每個 hit 都要另跑
 //   `git diff … | grep '^@@'` 比對 hunk 才敢落地）。前面的欄位不變，`grep '^OVERLAP_WT'` 與按空白切欄的既有解析照常可用：
 //     hunks=apart        兩邊的 hunk 在各自 merge-base 的行號上相距超過 N 行（預設 5，`--near <N>` 調整；git 只在 hunk 重疊或相接時衝突）：
@@ -66,7 +73,7 @@
 // exit：0 印完（不論有無命中）；2 用法錯誤；1 git 失敗；3 印了 OVERLAP_BASE_BEHIND。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
 import { mergeConflicts, snapshot } from './lib/merge-tree.mjs';
@@ -77,6 +84,9 @@ const USAGE = '用法：node scripts/worktree-overlap.mjs [--main <分支>] [--m
 const NEAR = 5;
 // investing 落後 263 個 commit 時改動檔數以千計；一般 worktree 的改動在幾十個以內，200 留足餘裕。
 const MAX_FILES = 200;
+// merge-base 比主分支 tip 早這麼多天就算基底過舊（OVERLAP_STALE_BASE）；以 tip 的時間算、不以現在時間算，本機主分支過期時不會整批誤判。
+const STALE_DAYS = 30;
+export const STALE = 'OVERLAP_STALE_BASE';
 export const BEHIND = 'OVERLAP_BASE_BEHIND';
 
 /** 清掉繼承的 GIT_DIR 等再跑 git（從 hook 呼叫時會讀到別的 repo，同 pilot-probe.mjs）。 */
@@ -298,16 +308,24 @@ export function worktreeOverlaps(cwd, files = [], { main = 'main', mine = false,
   }
   const out = files.length ? templateCopies(cwd, files) : [];
   if (since !== undefined) out.push(...landedSince(cwd, files, since, main));
+  let staleBefore;
+  const commitTime = (checkout, ref) => Number(git(checkout, 'log', '-1', '--format=%ct', ref).trim());
   for (const tree of others) {
     if (isSelf(tree)) continue;
     // 目錄已不在，或還沒有任何 commit 的 orphan worktree（HEAD 解析不到，merge-base 會 exit 128）都略過。
     if (!tree.path || !existsSync(tree.path) || spawnGit(tree.path, 'rev-parse', '--verify', '-q', 'HEAD').status !== 0) continue;
+    // 還沒有 index 檔：checkout 沒做完（或 --no-checkout），工作樹缺的檔在 diff 裡全是刪除（retro spay2 1124b）。
+    if (!existsSync(resolve(tree.path, git(tree.path, 'rev-parse', '--git-path', 'index').trim()))) continue;
     const base = spawnGit(tree.path, 'merge-base', 'HEAD', main);
     if (base.status === 1) continue;
     if (base.status !== 0) throw new Error(`git merge-base HEAD ${main} exit ${base.status}（${tree.path}）：${(base.stderr ?? '').trim()}`);
     const name = tree.branch ?? `detached@${tree.head.slice(0, 7)}`;
+    staleBefore ??= commitTime(cwd, `${main}^{commit}`) - STALE_DAYS * 86400;
+    // 基底過舊：只列檔名，不比 hunk、不試合併（retro spay2 17581a1b#2）。
+    const stale = commitTime(tree.path, base.stdout.trim()) < staleBefore;
     const conflicts = own && lazyConflicts(own.top, own.snapshot, () => snapshot(tree.path));
     for (const [path, { entries }] of changedUnits(tree.path, base.stdout.trim(), null, { paths: files, adjacent: false })) {
+      if (stale) { out.push(`${STALE} ${name} ${path}`); continue; }
       const fields = ['OVERLAP_WT', name, path, ...([...entries].map(entry => `**${entry}.**`))];
       if (own && isGenerated(path)) fields.push('generated');
       else if (own) {

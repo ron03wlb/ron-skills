@@ -475,3 +475,73 @@ test('--since：沒給檔案、和 --mine 併用、時間解析不了時是用�
   assert.equal(run(main, '--since', 'yesterday-ish', 'README.md').status, 2);
   assert.equal(run(main, '--since').status, 2);
 });
+
+/**
+ * retro spay2 17581a1b#2：`old/diag` 從 2026-01-01 的 commit 分出、改了 docs/x.md；main 之後（2026-03-15）前進，
+ * `issue/9-new` 從 main tip 分出、也改了 docs/x.md。old/diag 的 merge-base 早於 main tip 30 天以上。
+ */
+function staleFixture(t) {
+  const root = mkdtempSync(join(realTmpdir(), 'worktree-overlap-stale-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const main = join(root, 'main');
+  mkdirSync(join(main, 'docs'), { recursive: true });
+  const at = date => ({ env: { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+  const commit = (cwd, message, date) => {
+    const result = runIn(cwd, ['git', 'commit', '-q', '-am', message], at(date));
+    assert.equal(result.status, 0, result.stderr);
+  };
+  git(main, 'init', '-q', '-b', 'main');
+  git(main, 'config', 'user.name', 'Fixture');
+  git(main, 'config', 'user.email', 'fixture@example.invalid');
+  writeFileSync(join(main, 'docs/x.md'), '# x\n\n一\n\n二\n\n三\n');
+  writeFileSync(join(main, 'README.md'), '# app\n');
+  git(main, 'add', '.');
+  commit(main, 'base', '2026-01-01T00:00:00Z');
+  const old = join(root, 'old');
+  git(main, 'worktree', 'add', '-q', '-b', 'old/diag', old, 'main');
+  writeFileSync(join(old, 'docs/x.md'), '# x\n\n一改\n\n二\n\n三\n');
+  commit(old, 'old change', '2026-01-02T00:00:00Z');
+  writeFileSync(join(main, 'README.md'), '# app\n\n新\n');
+  commit(main, 'main moved', '2026-03-15T00:00:00Z');
+  const fresh = join(root, 'fresh');
+  git(main, 'worktree', 'add', '-q', '-b', 'issue/9-new', fresh, 'main');
+  writeFileSync(join(fresh, 'docs/x.md'), '# x\n\n一\n\n二\n\n三新\n');
+  commit(fresh, 'new change', '2026-03-16T00:00:00Z');
+  return { root, main, old, fresh };
+}
+
+test('merge-base 早於主分支 tip 30 天以上的 worktree 印 OVERLAP_STALE_BASE，近期分出的並行 worktree 照印 OVERLAP_WT', t => {
+  const { main } = staleFixture(t);
+  const result = run(main, 'docs/x.md');
+  assert.equal(result.status, 0, result.stderr);
+  // 依 worktree 清單順序（fresh 在 old 之前）。
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    'OVERLAP_WT issue/9-new docs/x.md',
+    'OVERLAP_STALE_BASE old/diag docs/x.md',
+  ]);
+});
+
+test('--mine：基底過舊的 worktree 印 OVERLAP_STALE_BASE、不附 hunk／merge 欄位；近期的照附', t => {
+  const { root, main } = staleFixture(t);
+  const mine = join(root, 'mine');
+  git(main, 'worktree', 'add', '-q', '-b', 'issue/10-mine', mine, 'main');
+  writeFileSync(join(mine, 'docs/x.md'), '# x\n\n一我\n\n二\n\n三\n');
+  const result = run(mine, '--mine');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    'OVERLAP_WT issue/9-new docs/x.md hunks=near 3 merge=clean',
+    'OVERLAP_STALE_BASE old/diag docs/x.md',
+  ]);
+});
+
+// retro spay2 1124b：isolated runner 剛 `git worktree add --detach` 的 source（checkout 還沒寫完）被報 13 個沒改的檔。
+test('還沒有 index 檔的 worktree（checkout 未完成、--no-checkout）略過，不把給的檔全報成 OVERLAP_WT', t => {
+  const { main } = fixture(t);
+  git(main, 'worktree', 'add', '-q', '--no-checkout', '--detach', join(main, '..', 'empty'), 'main');
+  const result = run(main, 'README.md', 'scripts/x.mjs');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    'OVERLAP_WT issue/1-a README.md',
+    'OVERLAP_WT issue/2-b scripts/x.mjs',
+  ]);
+});
