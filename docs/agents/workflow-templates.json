@@ -107,8 +107,8 @@
     },
     "scripts/heavy-slot.mjs": {
       "template": "skills/engineering/setup-workflow/templates/heavy-slot.mjs",
-      "commit": "2fc8c7699d24e52656a872cf44dc764bda84ecb6",
-      "sha256": "81dba9c4cbd960d74f0078376665cc4e4079d01c7979ba44be4c9551486bbdaf"
+      "commit": "2e13f85b67c63b8ee70b78248a3b916c3857de2a",
+      "sha256": "7da1bebc07ff05267836043410d9104a850386f0d43a72d2ef396366ed22cfae"
     },
     "scripts/hook-acceptance.mjs": {
       "template": "skills/engineering/setup-workflow/templates/hook-acceptance.mjs",
