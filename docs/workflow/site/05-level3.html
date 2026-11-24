@@ -69,7 +69,7 @@
 <h2 id="專案自訂的分級">專案自訂的分級</h2>
 <p>L1／L2 的分級入口一律是 <code>/triage</code>。專案的分級規則多到 <code>/triage</code> 裝不下時，可以做一個專案層 skill 取代它，並在 adapter 的 Readiness 段指向它。例子是 L3 實例的專案層 issue queue：先列出待補關聯、待釐清、可開工、阻塞中四區總覽，再逐張釐清，並在 ready 前檢查本文的固定區塊。這是專案擴充，不是 L3 的必要條件。ron-skills 另有使用者層的 <code>/issue-queue</code>（照 <code>issue-pool.mjs</code> 分桶、照 <code>/triage</code> 的規則細化，不取代 <code>/triage</code>）。專案層 skill 取名 <code>issue-queue</code> 是受支援的覆寫：使用者層 <code>/issue-queue</code> 的 step 0 偵測到 <code>.claude/skills/issue-queue/SKILL.md</code> 就整份轉交，adapter 也能以這個路徑直接引用它。</p>
 <h2 id="l3-實例的其他擴充">L3 實例的其他擴充</h2>
-<p>L3 實例另外加了 SQL Issue 與共用環境讀回、Docker 測試單一入口、整合分支 lock 與預約、回歸排隊、定期完整驗收、固定 SHA 的 push 腳本與發布導讀站等擴充，細節見 &lt;https://spay2-workflow-docs.pages.dev&gt;；它們都是在本流程之上因為專案需要而加的，不必照搬。</p>
+<p>L3 實例另外加了 SQL Issue 與共用環境讀回、Docker 測試單一入口、整合分支 lock 與預約、回歸排隊、定期完整驗收、固定 SHA 的 push 腳本與發布導讀站等擴充，細節見 <a href="https://spay2-workflow-docs.pages.dev" rel="noopener" target="_blank">https://spay2-workflow-docs.pages.dev</a>；它們都是在本流程之上因為專案需要而加的，不必照搬。</p>
 </article>
 <footer class="source">本頁由 <code>node scripts/build-workflow-site.mjs</code> 自 <code>docs/workflow/05-level3.md</code> 產生；請改 Markdown 重產，不要手改 HTML。</footer>
 </main>
