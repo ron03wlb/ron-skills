@@ -51,7 +51,7 @@
 //   分叉時先過 load 關卡（同 batch：超過門檻印 `STOP load <load> <門檻>`，stage worktree 與分支都不動），
 //   再 `switch -C pilot/stage-sync-main <tip>`、`merge --no-ff origin/<主分支>`，衝突照 Stage 的解法（`RESOLVED sync-main <解法> <檔案…>`），
 //   解不了 abort 後印 `STOP conflict sync-main <檔案…>`；在合併 SHA 跑 Regression（reg-sync-main.log），沒過印 `STOP regression sync-main <exit>`；
-//   通過且整合分支的 tip 沒變（變了 `STOP drift`）時，先對每個 `current: merged <sha>`（<sha> 在合併 SHA 裡）的
+//   通過且整合分支的 tip 沒變（變了 `STOP drift`）時，先對每個 `current: merged <sha>`（<sha> 在合併 SHA 裡，還沒推上 origin/<整合分支> 也不在 origin/<主分支>；已推的保留舊行，#523）的
 //   batch 追加 `regression: <sha> exit 0 sync-main <CHECK_PASS 行>`（印 `RECORDED <key>`；Probe 才認得新的 tip、印 RESUME_PUSH，pilot-pr-body.mjs
 //   認得 sync-main 標記、往前驗 staged SHA 那一行；寫不進去時 STOP checkpoint），再快轉整合分支、刪 stage 分支，
 //   最後印 `SYNCED <sha> <CHECK_PASS 行>`（Regression 沒印 CHECK_PASS 時只有 `SYNCED <sha>`）。
@@ -555,7 +555,7 @@ function syncMain(loadMax, main = mainCheckout(), getTree = () => stageWorktree(
   if (must(main, 'rev-parse', config.integration) !== tip) throw new Stop('drift');
   // 先寫 checkpoint 再快轉：寫到一半失敗時整合分支還沒動，重跑會重新合併、再寫一次（最後一行為準）；
   // 反過來的話重跑只看到「已包含」，補不回 regression 行，Probe 又印 NOT_IN_MAIN（#193 review）。
-  recordSync(main, sha, `${sha} exit 0 sync-main${pass ? ` ${pass}` : ''}`);
+  recordSync(main, sha, `${sha} exit 0 sync-main${pass ? ` ${pass}` : ''}`, upstream);
   must(tree, 'switch', '-q', config.integration);
   must(tree, 'merge', '--ff-only', '-q', SYNC_BRANCH);
   must(tree, 'branch', '-d', SYNC_BRANCH);
@@ -563,17 +563,23 @@ function syncMain(loadMax, main = mainCheckout(), getTree = () => stageWorktree(
 }
 
 /**
- * sync-main 通過後、快轉之前，每個 `current: merged <sha>`、而且 <sha> 在合併 SHA 裡的 batch 追加同一個 `<sync sha> exit 0 sync-main …` 行並印 `RECORDED <key>`：
+ * sync-main 通過後、快轉之前，每個 `current: merged <sha>`、<sha> 在合併 SHA 裡、而且還沒推上 `origin/<整合分支>` 也不在 `origin/<主分支>`（upstream）的 batch
+ * 追加同一個 `<sync sha> exit 0 sync-main …` 行並印 `RECORDED <key>`：
  * Probe 以最後一個 regression 行比對整合分支的 tip，沒有這行就把已驗過的 tip 印成 `NOT_IN_MAIN <key> tip …`；
  * `sync-main` 標記讓 pilot-pr-body.mjs 往前找 staged SHA 那一行來驗（#193）。
+ * 已推的 batch 保留舊 regression 行（#523 方案 C）：否則每次 sync 都讓停在 `merged` 的歷史 batch 在 Probe 印成 `RESUME_PUSH`（investing 一次約 200 行）。
  */
-function recordSync(main, sha, value) {
+function recordSync(main, sha, value, upstream) {
   const dir = join(main, '.scratch/pilot');
   const files = existsSync(dir) ? readdirSync(dir).filter(name => /^batch-.+\.md$/.test(name)).sort() : [];
+  const ancestor = (a, b) => gitIn(main, 'merge-base', '--is-ancestor', a, b).status === 0;
+  // 遠端整合分支不存在（從沒推過或已刪）時只比 upstream。
+  const remote = `refs/remotes/origin/${config.integration}`;
+  const pushedRefs = [upstream, ...(gitIn(main, 'rev-parse', '-q', '--verify', `${remote}^{commit}`).status === 0 ? [remote] : [])];
   for (const name of files) {
     const file = join(dir, name);
     const merged = readFileSync(file, 'utf8').match(/^current:[ \t]*merged ([0-9a-f]{7,40})\b/m)?.[1];
-    if (!merged || gitIn(main, 'merge-base', '--is-ancestor', merged, sha).status !== 0) continue;
+    if (!merged || !ancestor(merged, sha) || pushedRefs.some(ref => ancestor(merged, ref))) continue;
     // 寫入本身失敗（唯讀、磁碟滿）也是 STOP checkpoint，不是程式錯誤：檔頭與 pilot-after-merge.md 的 Push gate 都這樣承諾，整合分支這時還沒動。
     try {
       appendRegression(file, value);
