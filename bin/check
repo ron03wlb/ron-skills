@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
 # 本 repo 唯一的檢查入口：pre-commit、CI 與 issue-run 的 acceptance 都只呼叫它，所有檢查只寫在這裡。
-# 用法：bin/check [--upstream]
+# 用法：bin/check [--upstream] [--changed [<base>]]
 #   --upstream  先把 Matt 與 pstack 上游最新 main 淺 clone 到暫存目錄再檢查（與 CI 相同）；
 #               本機 ~/code/skills 是 fork，會落後上游，只跑本機版本時 overlay 漂移要等 CI 才看得到。
+#   --changed   只跑和 merge-base(<base>, HEAD) 之後變更路徑有關的步驟與測試（<base> 預設 origin/main，沒有時 main；CoS item 67）。
+#               挑法與對應表見 scripts/check-subset.mjs、scripts/check-subset.json，拿不準時印 `CHECK_SUBSET full <原因>` 跑完整套件。
+#               只有 pre-commit 用它；acceptance、pilot 的 Regression 與 CI 都跑完整套件。環境變數 CHECK_FULL=1 時忽略 --changed。
 # 環境變數 MATT_SKILLS、PSTACK_SKILLS 同 bin/sync-skills；--upstream 會覆寫它們。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # 呼叫者帶來的 GIT_DIR、GIT_INDEX_FILE 等會被測試的 git 繼承，fixture 就改到真正的 repo（#25）；不經 pre-commit 直接跑時（`git rebase --exec`）也要清（#301）。
 unset $(git rev-parse --local-env-vars)
+upstream= changed= base=
+while (($#)); do
+  case $1 in
+    --upstream) upstream=1 ;;
+    --changed) changed=1; if [[ $# -gt 1 && $2 != --* ]]; then base=$2; shift; fi ;;
+    *) echo "用法：bin/check [--upstream] [--changed [<base>]]" >&2; exit 2 ;;
+  esac
+  shift
+done
 # 同一棵工作樹只跑一份（#479：背景通知早到，worker 以為中斷又重跑兩次，三份 bin/check 同寫一個 log，全部作廢重跑）。
 # pid 記在這棵工作樹自己的 git 目錄；記下的行程還活著、而且是 bin/check 時印 `CHECK_BUSY <pid>`、exit 3，不開第二份。
 # 行程已結束（含被 kill、沒跑到 EXIT trap）或 pid 被別的程式重用時視為沒人持有，照常開跑。
@@ -44,7 +56,7 @@ check_fail() {
   echo "CHECK_FAIL ${step:-$1}${failed:+ $failed}"
 }
 trap 'check_fail "$BASH_COMMAND"' ERR
-if [[ ${1:-} == --upstream ]]; then
+if [[ -n $upstream ]]; then
   up=$tmp
   git clone -q --depth 1 https://github.com/mattpocock/skills.git "$up/matt"
   git clone -q --depth 1 https://github.com/backnotprop/pstack.git "$up/pstack"
@@ -57,18 +69,43 @@ fi
 printf '[user]\n\tuseConfigOnly = true\n' > "$tmp/gitconfig"
 isolated=(env GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1)
 
+# --changed：scripts/check-subset.mjs 挑出要跑的步驟群組（want <群組>）與測試檔；子集通過時最後一行是 CHECK_PASS_SUBSET，
+# 不記 stamp，也不會被 pilot-land.mjs 當成 Regression 通過（它只認 `CHECK_PASS `）。
+subset= subset_steps= subset_tests=
+if [[ -n $changed && -z ${CHECK_FULL:-} ]]; then
+  plan=$(node scripts/check-subset.mjs ${base:+--base "$base"} ${index_tree:+--tree "$index_tree"}) || plan="SUBSET_FULL plan-error"
+  if [[ $plan == SUBSET_FULL* ]]; then
+    echo "CHECK_SUBSET full ${plan#SUBSET_FULL }"
+  else
+    subset=1
+    subset_steps=$(sed -n 's/^SUBSET_STEPS *//p' <<<"$plan")
+    subset_tests=$(sed -n 's/^SUBSET_TESTS *//p' <<<"$plan")
+    echo "CHECK_SUBSET steps ${subset_steps// /,} tests $(wc -w <<<"$subset_tests" | tr -d ' ')"
+  fi
+fi
+want() { [[ -z $subset || " $subset_steps " == *" $1 "* ]]; }
+
 node scripts/check-node-version.mjs
 node scripts/check-conflict-markers.mjs
+if want sync-skills; then
 bin/sync-skills --check
+fi
+if want links; then
 node scripts/check-links.mjs
+fi
+if want settings; then
 # auto mode 放行的 tracker 寫入（#96）靠 permissions.allow；格式錯的規則 Claude Code 只略過不報錯。
 node scripts/check-claude-settings.mjs
 # coordinator 自己跑、會寫外部系統的腳本都要有放行規則，缺了就只能交給人跑（#131）；本 repo 讓 coordinator 自己 push，所以帶 --push（#244）。
 node scripts/check-coordinator-permissions.mjs --push
+fi
+if want workflow-site; then
 node scripts/build-workflow-site.mjs --check ${index_tree:+--tree=$index_tree}
 node scripts/check-workflow-strings.mjs
 node scripts/check-workflow-secrets.mjs
 node scripts/check-workflow-sync.mjs ${index_tree:+--tree=$index_tree}
+fi
+if want code-lint; then
 # 本 repo 與 setup-workflow 的 templates/ 都要在 macOS 與 Linux 上跑（#86）；從 repo 根掃，templates/ 也在範圍內。
 node scripts/check-portability.mjs
 # 會 spawn git 的正本測試要 import 隔離模組，否則在 git hook 裡跑時 fixture 會改到真正的 repo（#295：漏了 8 支，#291 才補上）。tests/ 不在範圍內：開頭已清掉 GIT_*（#301）。
@@ -78,32 +115,48 @@ node scripts/check-main-guard.mjs
 # 區域宣告遮蔽同名 import（spay2 retro ff00a288#3：focused 測試全綠，`node --check` 也不報）與 node:test 子行程沒有 t.after kill（spay2 #653：assertion 失敗時子行程讓測試卡到逾時），#348。
 node scripts/check-shadowed-imports.mjs scripts skills tests
 node scripts/check-test-child-kill.mjs scripts skills tests > /dev/null
+fi
+if want settings; then
 # 以真實 .claude/settings.json 的 matcher 驗每個 hook 的 exit code，案例在 scripts/hook-acceptance-cases.json（#348）。--project-dir 指向受檢的這棵樹，
 # 不用 session 的 $CLAUDE_PROJECT_DIR（coordinator 在 stage worktree 跑時它指向主 checkout）。通過時不印。
 hook_out=$(node scripts/hook-acceptance.mjs --project-dir "$PWD") || { echo "$hook_out"; false; }
+fi
+if want adapter-size; then
 # adapter 必讀核心（issue-run.md、pilot.md）各 14000 bytes、拆出檔 58000 bytes，預算表 scripts/adapter-size-budget.json（#344）；通過時只把餘裕不到 1 KB 的
 # `WARN <檔> 餘裕 <n> bytes` 印到 stderr（#470），失敗時印超過的檔與拆檔提示。
 size_out=$(node scripts/check-adapter-size.mjs) || { echo "$size_out"; false; }
 grep '^WARN' <<<"$size_out" >&2 || true
+fi
 # 只讀文件與清單的規則不到兩秒，在整條測試之前先跑：副本與 sha256（#267：第四次踩到）、pilot.md 大小、docs/agents 的裸 gh 寫入與 allow 規則清單（#274：改 adapter 文字等一分鐘才報，
 # 本機只跑 check-coordinator-permissions.mjs 看不到 allow 清單那條，開了 PR #280 才在 CI 失敗）。通過時不印（整組測試裡會再跑一次），失敗時印 node 的 failing tests 段。
 step=docs-rules
+if want docs-rules; then
 docs_rules=(tests/template-copies.test.mjs tests/pilot-split.test.mjs tests/gh-tracker.test.mjs tests/check-coordinator-permissions.test.mjs tests/pilot-probe-adapter-entries.test.mjs tests/pilot-push-gate-scripts.test.mjs tests/pilot-project-flags.test.mjs tests/pilot-store-usage.test.mjs)
 "${isolated[@]}" node --test --test-reporter=spec "${docs_rules[@]}" > "$tmp/docs-rules.log" 2>&1 || { sed -n '/failing tests:/,$p' "$tmp/docs-rules.log"; false; }
+fi
 step=tests
+test_files=(tests/*.test.mjs)
+templates=(skills/engineering/setup-workflow/templates/*.test.mjs)
+if [[ -n $subset ]]; then
+  test_files=($(tr ' ' '\n' <<<"$subset_tests" | grep '^tests/' || true))
+  templates=($(tr ' ' '\n' <<<"$subset_tests" | grep '^skills/engineering/setup-workflow/templates/' || true))
+fi
+: > "$tmp/tests.log"
 # 每組測試各印一行 `ℹ tests <n>`，只看尾段會漏掉前面幾組（retro a6：PR #63、#64 只記到第二組的 120），所以最後彙總成一行。
 # 帶 --test-force-exit 的組一律經 node-test-guarded 跑，補跑靜默遺失的測試（#483：高負載時這組少了 31 個測試仍印 CHECK_PASS、exit 0）。
-"${isolated[@]}" node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-reporter=spec --test-force-exit tests/*.test.mjs | tee "$tmp/tests.log"
+[[ ${#test_files[@]} -eq 0 ]] || "${isolated[@]}" node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-reporter=spec --test-force-exit "${test_files[@]}" | tee "$tmp/tests.log"
 # setup-workflow 的 script 正本與測試：先列出檔名（node --test 的輸出不帶檔名），再以正本的 node-test-guarded 跑，它會補跑靜默遺失的測試。
 step=template-tests
-templates=(skills/engineering/setup-workflow/templates/*.test.mjs)
-echo "TEMPLATE_TESTS ${#templates[@]}: ${templates[*]##*/}"
-"${isolated[@]}" node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-force-exit "${templates[@]}" | tee -a "$tmp/tests.log"
+echo "TEMPLATE_TESTS ${#templates[@]}: ${templates[@]+${templates[*]##*/}}"
+[[ ${#templates[@]} -eq 0 ]] || "${isolated[@]}" node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-force-exit "${templates[@]}" | tee -a "$tmp/tests.log"
 # 用到假 Orca 的測試再以 macOS 樣本跑一次（樣本見 templates/test/fake-orca.mjs 檔頭，#101）。
 step=fake-orca-macos
-orca_tests=($(grep -l orcaReplySource tests/*.test.mjs "${templates[@]}"))
-echo "FAKE_ORCA_PLATFORM=macos ${#orca_tests[@]}: ${orca_tests[*]##*/}"
-"${isolated[@]}" FAKE_ORCA_PLATFORM=macos node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-force-exit "${orca_tests[@]}" | tee -a "$tmp/tests.log"
-[[ -z $stamp_tree ]] || node scripts/check-stamp.mjs record "$stamp_tree" 2>/dev/null || true
+# 空陣列寫成 ${a[@]+"${a[@]}"}：macOS 的 bash 3.2 在 set -u 下展開空陣列會報 unbound variable（--changed 時兩組都可能是空的）。
+orca_tests=()
+[[ ${#test_files[@]} -eq 0 && ${#templates[@]} -eq 0 ]] || orca_tests=($(grep -l orcaReplySource ${test_files[@]+"${test_files[@]}"} ${templates[@]+"${templates[@]}"} || true))
+echo "FAKE_ORCA_PLATFORM=macos ${#orca_tests[@]}: ${orca_tests[@]+${orca_tests[*]##*/}}"
+[[ ${#orca_tests[@]} -eq 0 ]] || "${isolated[@]}" FAKE_ORCA_PLATFORM=macos node skills/engineering/setup-workflow/templates/node-test-guarded.mjs --test-force-exit "${orca_tests[@]}" | tee -a "$tmp/tests.log"
+[[ -n $subset || -z $stamp_tree ]] || node scripts/check-stamp.mjs record "$stamp_tree" 2>/dev/null || true
 # paste 要帶 `-`：macOS 的 BSD paste 沒有檔案參數時不讀 stdin，只印 usage，數字整段消失（#98）。
-echo "CHECK_PASS tests $(sed -n 's/^ℹ tests \([0-9]*\)$/\1/p' "$tmp/tests.log" | paste -sd+ -)"
+# --changed 挑不到任何測試時 tests.log 是空的，印 0。
+echo "CHECK_PASS${subset:+_SUBSET} tests $(sed -n 's/^ℹ tests \([0-9]*\)$/\1/p' "$tmp/tests.log" | paste -sd+ - | grep . || echo 0)"

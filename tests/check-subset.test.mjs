@@ -1,0 +1,192 @@
+// bin/check --changed 的挑選（scripts/check-subset.mjs、對應表 scripts/check-subset.json，CoS item 67）。
+// 拿不準一律退回完整套件；子集通過時印 CHECK_PASS_SUBSET，不記 stamp，pilot-land.mjs 不會把它當 Regression 通過。
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { dependencies, globRegExp, plan } from '../scripts/check-subset.mjs';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
+
+const root = new URL('..', import.meta.url).pathname;
+const TABLE = JSON.parse(readFileSync(join(root, 'scripts/check-subset.json'), 'utf8'));
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_') && !key.startsWith('NODE_TEST') && !['NODE_OPTIONS', 'CHECK_LOCK_PID', 'CHECK_FULL', 'CHECK_INDEX_TREE'].includes(key)));
+
+test('globRegExp：** 跨目錄、* 不跨', () => {
+  assert.ok(globRegExp('docs/workflow/**').test('docs/workflow/site/index.html'));
+  assert.ok(globRegExp('skills/**/*.md').test('skills/a/b/SKILL.md'));
+  assert.ok(globRegExp('skills/**/*.md').test('skills/SKILL.md'));
+  assert.ok(globRegExp('*.md').test('README.md'));
+  assert.ok(!globRegExp('*.md').test('docs/README.md'));
+  assert.ok(globRegExp('tests/sync-skills*.test.mjs').test('tests/sync-skills-windows.test.mjs'));
+  assert.ok(!globRegExp('scripts/check-subset.*').test('scripts/check-subsetx/a'));
+});
+
+test('dependencies：import、動態 import 與 new URL 的相對路徑', () => {
+  const text = "import { a } from './lib/a.mjs';\nconst b = await import('../b.mjs');\nconst c = new URL('./c.mjs', import.meta.url);\nimport 'node:fs';\n// 見 ./d.mjs\n";
+  assert.deepEqual(dependencies('scripts/x.mjs', text), ['scripts/lib/a.mjs', 'b.mjs', 'scripts/c.mjs']);
+});
+
+const TOY = {
+  steps: ['base', 'links', 'code'],
+  always: { steps: ['base'], tests: [] },
+  full: ['bin/**'],
+  rules: [
+    { match: ['docs/**'], steps: ['links'], tests: ['tests/docs-*.test.mjs'], related: true },
+    { match: ['scripts/**', 'tests/*.test.mjs', 'skills/**'], steps: ['code'], related: true },
+  ],
+};
+const TOY_FILES = {
+  'scripts/lib/util.mjs': 'export const x = 1;\n',
+  'scripts/a.mjs': "import { x } from './lib/util.mjs';\n",
+  'scripts/b.mjs': '// 和 util.mjs 的寫法相同\n',
+  'scripts/c.mjs': 'console.log(1);\n',
+  'tests/a.test.mjs': "import '../scripts/a.mjs';\n",
+  'tests/b.test.mjs': "import '../scripts/b.mjs';\n",
+  'tests/c.test.mjs': "spawnSync('node', ['scripts/c.mjs']);\n",
+  'tests/docs-links.test.mjs': '',
+  'tests/skill.test.mjs': "readFileSync(join(root, 'skills', 'one', 'SKILL.md'));\n",
+  'docs/x.md': '',
+  'skills/one/SKILL.md': '',
+  'skills/two/SKILL.md': '',
+};
+const toyPlan = changed => plan({ changed, files: Object.keys(TOY_FILES), read: file => TOY_FILES[file] ?? '', table: TOY });
+
+test('plan：符合 full 或沒有規則的路徑退回完整套件', () => {
+  assert.deepEqual(toyPlan(['docs/x.md', 'bin/check']), { full: 'full-path bin/check' });
+  assert.deepEqual(toyPlan(['docs/x.md', 'other/file']), { full: 'unmapped other/file' });
+  assert.deepEqual(plan({ changed: ['docs/x.md'], files: [], read: () => '', table: { ...TOY, rules: [{ match: ['docs/**'], steps: ['typo'] }] } }), { full: 'unknown-step typo' });
+});
+
+test('plan：只改文件只跑該規則的步驟與指定測試', () => {
+  assert.deepEqual(toyPlan(['docs/x.md']), { steps: ['base', 'links'], tests: ['tests/docs-links.test.mjs'] });
+  assert.deepEqual(toyPlan([]), { steps: ['base'], tests: [] });
+});
+
+test('plan：沿 import 反向找到依賴的測試，註解裡的檔名不擴散', () => {
+  assert.deepEqual(toyPlan(['scripts/lib/util.mjs']), { steps: ['base', 'code'], tests: ['tests/a.test.mjs'] });
+  // 測試以字串提及腳本路徑（spawn）也算。
+  assert.deepEqual(toyPlan(['scripts/c.mjs']).tests, ['tests/c.test.mjs']);
+  // 改的就是測試檔：它自己要跑。
+  assert.deepEqual(toyPlan(['tests/b.test.mjs']).tests, ['tests/b.test.mjs']);
+});
+
+test('plan：repo 裡不唯一的檔名要帶上層目錄才算提及', () => {
+  assert.deepEqual(toyPlan(['skills/one/SKILL.md']).tests, ['tests/skill.test.mjs']);
+  assert.deepEqual(toyPlan(['skills/two/SKILL.md']).tests, []);
+});
+
+const source = readFileSync(join(root, 'bin/check'), 'utf8');
+
+test('對應表與 bin/check 的步驟群組一致，每條規則的步驟都在清單裡', () => {
+  const used = [...new Set([...source.matchAll(/^if want ([\w-]+); then$/gm)].map(match => match[1]))].sort();
+  assert.deepEqual(used, TABLE.steps.filter(step => step !== 'base').sort());
+  for (const rule of TABLE.rules) for (const step of rule.steps ?? []) assert.ok(TABLE.steps.includes(step), `${rule.match} 的 ${step}`);
+  for (const step of TABLE.always.steps) assert.ok(TABLE.steps.includes(step), step);
+});
+
+test('pre-commit 跑子集；CHECK_PASS_SUBSET 不以 `CHECK_PASS ` 開頭（pilot-land.mjs 只認後者為 Regression 通過）', () => {
+  // 直接跑與經 heavy-slot 跑的兩種寫法都帶 --changed。
+  const hook = readFileSync(join(root, '.githooks/pre-commit'), 'utf8');
+  assert.match(hook, /^check=\(bin\/check --changed\)$/m);
+  assert.match(hook, /heavy-slot\.mjs run [^\n]*-- bin\/check --changed\)$/m);
+  assert.match(source, /^echo "CHECK_PASS\$\{subset:\+_SUBSET\} tests /m);
+  assert.match(readFileSync(join(root, 'scripts/pilot-land.mjs'), 'utf8'), /startsWith\('CHECK_PASS '\)/);
+});
+
+/**
+ * 暫存 repo 放真的 bin/check、check-subset.mjs 與對應表；其餘檢查腳本、bin/sync-skills 與 node-test-guarded 換成替身，
+ * 只把自己的名稱（guard 另帶參數）寫進 $STEP_LOG。main 有一個 commit，之後在 work 分支改檔。
+ */
+function fixture(t) {
+  const repo = mkdtempSync(join(realTmpdir(), 'check-subset-'));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  const write = (path, content, mode) => {
+    mkdirSync(dirname(join(repo, path)), { recursive: true });
+    writeFileSync(join(repo, path), content);
+    if (mode) chmodSync(join(repo, path), mode);
+  };
+  const git = (...args) => spawnSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.com', ...args], { cwd: repo, encoding: 'utf8', env });
+  for (const path of ['bin/check', 'scripts/check-subset.mjs', 'scripts/check-subset.json', 'scripts/check-stamp.mjs']) {
+    mkdirSync(dirname(join(repo, path)), { recursive: true });
+    copyFileSync(join(root, path), join(repo, path));
+  }
+  const stub = name => `import { appendFileSync } from 'node:fs';\nappendFileSync(process.env.STEP_LOG, ${JSON.stringify(name)} + '\\n');\n`;
+  for (const [, name] of source.matchAll(/node scripts\/([\w-]+\.mjs)/g)) if (!['check-subset.mjs', 'check-stamp.mjs'].includes(name)) write(`scripts/${name}`, stub(name));
+  write('bin/sync-skills', '#!/bin/sh\necho sync-skills >> "$STEP_LOG"\n', 0o755);
+  write('skills/engineering/setup-workflow/templates/node-test-guarded.mjs', "import { appendFileSync } from 'node:fs';\nconst files = process.argv.slice(2).filter(arg => !arg.startsWith('--'));\nappendFileSync(process.env.STEP_LOG, `guarded ${files.join(' ')}\\n`);\nconsole.log(`ℹ tests ${files.length}`);\n");
+  const pass = "import { test } from 'node:test';\ntest('ok', () => {});\n";
+  for (const path of source.match(/^docs_rules=\((.*)\)$/m)[1].split(' ')) write(path, pass);
+  write('scripts/lib/util.mjs', 'export const x = 1;\n');
+  write('scripts/a.mjs', "import { x } from './lib/util.mjs';\nconsole.log(x);\n");
+  write('tests/a.test.mjs', `${pass}import '../scripts/a.mjs';\n`);
+  write('tests/b.test.mjs', pass);
+  write('skills/engineering/setup-workflow/templates/t.test.mjs', pass);
+  write('docs/workflow/README.md', '# 首頁\n');
+  git('init', '-q', '-b', 'main');
+  git('add', '-A');
+  assert.equal(git('commit', '-q', '-m', 'base').status, 0);
+  git('checkout', '-q', '-b', 'work');
+  // log 放在 repo 外：repo 裡的新檔會被當成沒有規則的變更路徑，整條退回完整套件。
+  const logDir = mkdtempSync(join(realTmpdir(), 'check-subset-log-'));
+  t.after(() => rmSync(logDir, { recursive: true, force: true }));
+  const log = join(logDir, 'steps');
+  const run = (args, extra = {}) => {
+    writeFileSync(log, '');
+    const result = spawnSync('bin/check', args, { cwd: repo, encoding: 'utf8', env: { ...env, STEP_LOG: log, ...extra }, timeout: 60_000 });
+    return { ...result, steps: readFileSync(log, 'utf8').split('\n').filter(Boolean) };
+  };
+  return { repo, write, git, run };
+}
+
+test('bin/check --changed：只改文件時只跑連結與流程站守門，不跑任何測試組，最後一行 CHECK_PASS_SUBSET', t => {
+  const f = fixture(t);
+  f.write('docs/workflow/README.md', '# 首頁\n\n改了。\n');
+  const result = f.run(['--changed', 'main']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^CHECK_SUBSET steps base,links,workflow-site,docs-rules tests 0$/m);
+  assert.ok(result.steps.includes('check-links.mjs') && result.steps.includes('build-workflow-site.mjs'), result.steps.join(' '));
+  for (const skipped of ['sync-skills', 'check-portability.mjs', 'hook-acceptance.mjs', 'check-claude-settings.mjs']) assert.ok(!result.steps.includes(skipped), skipped);
+  assert.deepEqual(result.steps.filter(step => step.startsWith('guarded')), []);
+  assert.equal(result.stdout.trim().split('\n').at(-1), 'CHECK_PASS_SUBSET tests 0');
+});
+
+test('bin/check --changed：改 lib 只跑依賴它的測試；pre-commit 帶 CHECK_INDEX_TREE 時比對那棵樹', t => {
+  const f = fixture(t);
+  f.write('scripts/lib/util.mjs', 'export const x = 2;\n');
+  const result = f.run(['--changed', 'main']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(result.steps.filter(step => step.startsWith('guarded')), ['guarded tests/a.test.mjs']);
+  assert.match(result.stdout.trim().split('\n').at(-1), /^CHECK_PASS_SUBSET tests 1$/);
+  // 工作區有改動，但要 commit 的樹（還沒 add）沒有：子集是空的。
+  const tree = f.git('write-tree').stdout.trim();
+  const staged = f.run(['--changed', 'main'], { CHECK_INDEX_TREE: tree });
+  assert.match(staged.stdout, /^CHECK_SUBSET steps base,docs-rules tests 0$/m);
+});
+
+test('bin/check --changed：沒有規則的路徑、CHECK_FULL=1、沒有 --changed 都跑完整套件', t => {
+  const f = fixture(t);
+  f.write('somewhere/new.txt', 'x\n');
+  const unmapped = f.run(['--changed', 'main']);
+  assert.equal(unmapped.status, 0, unmapped.stdout + unmapped.stderr);
+  assert.match(unmapped.stdout, /^CHECK_SUBSET full unmapped somewhere\/new\.txt$/m);
+  const full = ['guarded tests/a.test.mjs tests/b.test.mjs tests/check-coordinator-permissions.test.mjs tests/gh-tracker.test.mjs tests/pilot-probe-adapter-entries.test.mjs tests/pilot-project-flags.test.mjs tests/pilot-push-gate-scripts.test.mjs tests/pilot-split.test.mjs tests/pilot-store-usage.test.mjs tests/template-copies.test.mjs', 'guarded skills/engineering/setup-workflow/templates/t.test.mjs'];
+  assert.deepEqual(unmapped.steps.filter(step => step.startsWith('guarded')), full);
+  assert.ok(unmapped.steps.includes('sync-skills') && unmapped.steps.includes('hook-acceptance.mjs'));
+  assert.match(unmapped.stdout.trim().split('\n').at(-1), /^CHECK_PASS tests /);
+  rmSync(join(f.repo, 'somewhere'), { recursive: true });
+  f.write('docs/workflow/README.md', '# 改\n');
+  const forced = f.run(['--changed', 'main'], { CHECK_FULL: '1' });
+  assert.doesNotMatch(forced.stdout, /CHECK_SUBSET/);
+  assert.deepEqual(forced.steps.filter(step => step.startsWith('guarded')), full);
+  const plain = f.run([]);
+  assert.deepEqual(plain.steps.filter(step => step.startsWith('guarded')), full);
+  assert.match(plain.stdout.trim().split('\n').at(-1), /^CHECK_PASS tests /);
+});
+
+test('bin/check --changed：base 不存在時退回完整套件', t => {
+  const f = fixture(t);
+  const result = f.run(['--changed', 'no-such-ref']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^CHECK_SUBSET full no-merge-base no-such-ref$/m);
+});

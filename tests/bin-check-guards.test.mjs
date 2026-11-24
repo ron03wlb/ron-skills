@@ -16,7 +16,9 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !ke
 test('bin/check 裡帶 --test-force-exit 的 node --test 都經 node-test-guarded 跑', () => {
   const bare = source.split('\n').filter(line => !line.trimStart().startsWith('#') && /\bnode --test\b/.test(line) && line.includes('--test-force-exit'));
   assert.deepEqual(bare, [], `這些行裸跑 node --test --test-force-exit，遺失的測試不會被發現：\n${bare.join('\n')}`);
-  assert.match(source, /node-test-guarded\.mjs [^\n]*tests\/\*\.test\.mjs/);
+  // tests/*.test.mjs 是 test_files 的預設（--changed 時換成挑出的子集，CoS item 67），整組經 guard 跑。
+  assert.match(source, /^test_files=\(tests\/\*\.test\.mjs\)$/m);
+  assert.match(source, /node-test-guarded\.mjs [^\n]*"\$\{test_files\[@\]\}"/);
 });
 
 // #483 的 fixture：一個測試檔的後段結果整段沒出現（子行程中途結束），bin/check 原本的裸跑寫法 exit 0、總數變少；經 guard 判失敗。
