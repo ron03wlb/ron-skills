@@ -3,7 +3,7 @@
 //   additions  每個衝突 hunk 的 base 是空的（兩邊只在既有檔案的同一處新增，沒有相同的非空行或同名條目）：依號碼兩段都留下；
 //   entries    每個衝突 hunk 裡兩邊改的是不同的 `- **<名稱>.**` 條目：各取改過的那一版（#45）；
 //   rows       衝突 hunk 三份的行都是 Markdown 表格列（`|` 開頭）、以第一格為鍵兩邊改的是不同列：各取各的版本、
-//              依原順序排好，新增的列都留下；同一列兩邊都改照樣 abort（#162）。
+//              依原順序排好，新增的列都留下；同一列兩邊都改：逐格、逐字（以 base 為準）改動不重疊也不相鄰才合併，否則 abort（#162）。
 //   adjacent   衝突 hunk 裡一邊只改了 base 的某幾行、另一邊只在 base 行之間插入新行（沒改任何 base 行），插入點不在
 //              改動的那幾行中間：兩邊都套用；純刪除、兩邊動到同一個 `- **<名稱>.**` 條目（含插入的新條目切開它）、
 //              兩邊都改了同一個 base 行、改動或插入碰到表格列（歸 rows）、最短 diff 的對齊不只一種而合出不同結果
@@ -213,10 +213,55 @@ const firstCell = line => line.match(/^\|((?:\\.|[^|\\])*)/)[1].trim();
 /** 表格列的欄數：沒跳脫的 `|` 數，收尾那個不算（GFM 可以省略）。欄數不同（一邊加了欄）時不逐列合併。 */
 const pipes = line => (line.replace(/(?<!\\)\|\s*$/, '').match(/\\.|\|/g) ?? []).filter(token => token === '|').length;
 
+/** 表格列切成格（第一個 `|` 之前與最後一個 `|` 之後的空白也各算一段，接回去才會一模一樣）。 */
+const cells = line => line.split(/(?<!\\)\|/);
+
+/** 一格切成「字 + 後面的空白」的清單，接起來等於原文。 */
+const words = text => text.match(/\S+\s*|\s+/g) ?? [];
+
+/**
+ * 同一列兩邊都改：欄數相同、第一格沒變時逐格合併，只有一邊改的格取那一邊；
+ * 兩邊都改的同一格以 base 為準逐字做三方合併（git merge-file），改動完全不重疊（也不相鄰）才合，不然 undefined。
+ * 有一邊刪掉那一列、欄數不同、第一格變了也不合。
+ */
+function mergeRow(base, ours, theirs) {
+  const [b, o, t] = [base, ours, theirs].map(cells);
+  if (o.length !== b.length || t.length !== b.length || o[1] !== b[1] || t[1] !== b[1]) return undefined;
+  const merged = [];
+  for (const [i, was] of b.entries()) {
+    const [mine, yours] = [o[i], t[i]];
+    if (mine === was || mine === yours) merged.push(yours);
+    else if (yours === was) merged.push(mine);
+    else {
+      const text = mergeWords(was, mine, yours);
+      if (text === undefined) return undefined;
+      merged.push(text);
+    }
+  }
+  return merged.join('|');
+}
+
+/** 一格的逐字三方合併：每個字一行丟給 git merge-file，乾淨合得起來才傳回文字。 */
+function mergeWords(base, ours, theirs) {
+  const dir = mkdtempSync(join(tmpdir(), 'pilot-land-'));
+  try {
+    const files = [ours, base, theirs].map((text, i) => {
+      const file = join(dir, String(i));
+      writeFileSync(file, words(text).map(word => `${JSON.stringify(word)}\n`).join(''));
+      return file;
+    });
+    const merged = run('git', ['merge-file', '-p', ...files]);
+    if (merged.status !== 0) return undefined;
+    return merged.stdout.split('\n').filter(Boolean).map(word => JSON.parse(word)).join('');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /**
  * rows：hunk 的 base、ours、theirs 每一行都是 Markdown 表格列（`|` 開頭）時，以第一格為鍵逐列合併（#162）。
  * 只有一邊改（或刪）的列取那一邊，兩邊改成一樣的照留；新增的列接在它在自己那一邊的前一個 base 列之後，同一處 ours 先。
- * 同一列兩邊改成不同內容、一邊刪一邊改、兩邊新增同一個鍵、某一份有重複的鍵、留下的 base 列順序變了、各列的欄數不同：解不了，傳回 undefined。
+ * 同一列兩邊改成不同內容（逐格逐字合不起來才算，見 mergeRow）、一邊刪一邊改、兩邊新增同一個鍵、某一份有重複的鍵、留下的 base 列順序變了、各列的欄數不同：解不了，傳回 undefined。
  */
 function resolveRows(base, ours, theirs) {
   const parse = text => (text === '' ? [] : text.replace(/\n$/, '').split('\n'));
@@ -246,8 +291,9 @@ function resolveRows(base, ours, theirs) {
     let line;
     if (mine === was) line = yours;
     else if (yours === was || yours === mine) line = mine;
-    else return undefined;
-    if (line !== undefined) out.push(line);
+    else line = mergeRow(was, mine, yours);
+    if (line === undefined) return undefined;
+    out.push(line);
     out.push(...(oAdded.get(key) ?? []), ...(tAdded.get(key) ?? []));
   }
   return out.length ? `${out.join('\n')}${base.endsWith('\n') ? '\n' : ''}` : '';
