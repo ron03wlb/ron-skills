@@ -4,9 +4,10 @@
 // token：MIRO_ACCESS_TOKEN > <home>/.config/miro/token（Windows 的 <home> 是 %USERPROFILE%）。token 不出現在任何輸出：--dry-run 的 Authorization 遮成 <redacted>，
 // 錯誤訊息與 API 回應印出前也把 token 字串換掉。
 // 測試用環境變數：MIRO_API_BASE（預設 https://api.miro.com/v2）、MIRO_MAX_RETRIES（429 重試上限，預設 5）、MIRO_BACKOFF_MS（沒有 Retry-After 時的退避起點，預設 1000）。
-import { readFileSync, realpathSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, extname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
@@ -15,7 +16,13 @@ export const TEXT_MAX = 6000;
 export const ALLOWED_TAGS = new Set(['p', 'a', 'strong', 'b', 'em', 'i', 'u', 's', 'span', 'ol', 'ul', 'li', 'br']);
 const ITEM_TYPES = ['card', 'sticky_note', 'text', 'shape', 'frame', 'connector'];
 const PLURAL = { card: 'cards', sticky_note: 'sticky_notes', text: 'texts', shape: 'shapes', frame: 'frames', connector: 'connectors' };
+// items list 的 --type 可多查 image（https://developers.miro.com/reference/get-items-1 的 type enum 含 image）；建立與更新圖片走 images 指令。
+const LIST_TYPES = [...ITEM_TYPES, 'image'];
 const PAGE_SIZE = 50;
+// 上傳圖片：上限見 https://developers.miro.com/reference/create-image-item-using-local-file 的 resource 說明「Maximum file size is 6 MB」（未說明 MB 是 10^6 還是 2^20，這裡取 6 MiB）。
+// 官方 API 文件沒有列可上傳的格式（未確認）；這裡只收 PNG、JPG、SVG、GIF，副檔名與檔頭內容都要對得上。
+export const IMAGE_MAX_BYTES = 6 * 1024 * 1024;
+export const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml' };
 // tag 的 fillColor 只收這些值（https://developers.miro.com/reference/create-tag）；不帶時 Miro 回 400，所以 CLI 預設 blue。
 export const TAG_COLORS = ['red', 'light_green', 'cyan', 'yellow', 'magenta', 'green', 'blue', 'gray', 'violet', 'dark_green', 'dark_blue', 'black'];
 export const TAG_DEFAULT_COLOR = 'blue';
@@ -29,17 +36,21 @@ const USAGE = `用法：miro.mjs <指令> [選項]
   boards get <board>
   boards create --name <名稱> [--description <說明>] [--team <team_id>] --confirm
   boards update <board> [--name <名稱>] [--description <說明>]
-  items list <board> [--type card|sticky_note|text|shape|frame|connector] [--parent <frame>] [--limit N]
+  items list <board> [--type card|sticky_note|text|shape|frame|connector|image] [--parent <frame>] [--limit N]
   items get <board> <item>
   items create <board> --type <類型> [欄位]
   items update <board> <item> [--type <類型>] [欄位]
   items delete <board> <item> --confirm
+  images create <board> --file <PNG|JPG|SVG|GIF> [--parent <frame>] [--x N --y N] [--width N | --height N] [--title <文字>] [--alt-text <文字>]
+  images update <board> <item> --file <新檔> [同 create 的欄位]（PATCH 換掉同一個 item 的圖，item id 與深連結不變）
+  images get <board> <item>
   tags list <board> [--item <item>]
   tags create <board> --title <名稱> [--color <色名>]（預設 ${TAG_DEFAULT_COLOR}）
   tags attach|detach <board> <item> <tag>
 欄位：--content --title --description --shape --fill-color --x --y --width --height --parent <frame>
       --start <item> --end <item>（connector）--caption <文字>（connector）--data <JSON> --style <JSON>
 tag 色名：${TAG_COLORS.join(' ')}
+圖片：最大 6 MiB；--width 與 --height 只能擇一（Miro 依原圖比例算另一邊）
 共用：--dry-run（只印 request，不送出、不需要 token）`;
 
 /** 本機驗證文字欄位：長度少於 TEXT_MAX、只用允許的 HTML 標籤。回傳錯誤訊息陣列。 */
@@ -140,6 +151,69 @@ export function buildItemBody(type, o) {
   return body;
 }
 
+/** 讀圖片並在本機驗證：存在、是檔案、副檔名在 IMAGE_TYPES、檔頭內容與副檔名一致、不超過 IMAGE_MAX_BYTES。回傳 { filename, contentType, bytes }。 */
+export function loadImage(file) {
+  let st;
+  try { st = statSync(file); } catch { throw new CliError(`找不到圖片檔 ${file}，未送出`); }
+  if (!st.isFile()) throw new CliError(`${file} 不是檔案，未送出`);
+  const ext = extname(file).toLowerCase();
+  const contentType = IMAGE_TYPES[ext];
+  if (!contentType) throw new CliError(`${file} 的副檔名 ${ext || '（沒有）'} 不在允許的格式（${Object.keys(IMAGE_TYPES).join(' ')}），未送出`);
+  if (st.size === 0) throw new CliError(`${file} 是空檔，未送出`);
+  if (st.size > IMAGE_MAX_BYTES) throw new CliError(`${file} 有 ${st.size} bytes，超過 Miro 上限 6 MiB（${IMAGE_MAX_BYTES} bytes），未送出`);
+  const bytes = readFileSync(file);
+  const sniffed = sniffImage(bytes);
+  if (sniffed !== contentType) throw new CliError(`${file} 的內容${sniffed ? `是 ${sniffed}` : '不是 PNG、JPG、GIF 或 SVG'}，和副檔名 ${ext}（${contentType}）不符，未送出`);
+  return { filename: basename(file), contentType, bytes };
+}
+
+/** 從檔頭判斷圖片格式；認不出來回傳 null。 */
+export function sniffImage(bytes) {
+  const b = bytes.subarray(0, 8);
+  if (b.length >= 8 && b.equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  const head6 = b.subarray(0, 6).toString('latin1');
+  if (head6 === 'GIF87a' || head6 === 'GIF89a') return 'image/gif';
+  // SVG 是文字：去掉 BOM、XML 宣告、註解、DOCTYPE 之後第一個元素要是 <svg。
+  const text = bytes.subarray(0, 4096).toString('utf8').replace(/^\uFEFF/, '');
+  const rest = text.replace(/^(\s*(<\?xml[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[^>]*>))*\s*/i, '');
+  if (/^<svg[\s>]/i.test(rest)) return 'image/svg+xml';
+  return null;
+}
+
+/** 組 images create／update 的 data JSON（Miro 的 UploadFileFromDevice.data）：title、altText、position、geometry（寬或高擇一）、parent，再合併 --data。 */
+export function buildImageData(o) {
+  const data = {};
+  if (o.title !== undefined) data.title = o.title;
+  if (o['alt-text'] !== undefined) data.altText = o['alt-text'];
+  const x = num('x', o.x), y = num('y', o.y);
+  if (x !== undefined || y !== undefined) data.position = { ...(x !== undefined && { x }), ...(y !== undefined && { y }) };
+  const width = num('width', o.width), height = num('height', o.height);
+  if (width !== undefined && height !== undefined) throw new CliError('圖片的 --width 與 --height 只能擇一（Miro 依原圖比例算另一邊）', 2);
+  if (width !== undefined) data.geometry = { width };
+  if (height !== undefined) data.geometry = { height };
+  if (o.parent) data.parent = { id: o.parent };
+  Object.assign(data, json('data', o.data));
+  return data;
+}
+
+/** 手動組 multipart/form-data：resource（檔案）＋ data（application/json，沒有欄位時省略）。 */
+export function buildMultipart(image, data, boundary = `----miro-cli-${randomBytes(12).toString('hex')}`) {
+  const q = s => s.replace(/["\\\r\n]/g, '_');
+  const chunks = [Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="resource"; filename="${q(image.filename)}"\r\nContent-Type: ${image.contentType}\r\n\r\n`), image.bytes, Buffer.from('\r\n')];
+  const hasData = Object.keys(data).length > 0;
+  if (hasData) chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="data"\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(data)}\r\n`));
+  chunks.push(Buffer.from(`--${boundary}--\r\n`));
+  return {
+    contentType: `multipart/form-data; boundary=${boundary}`,
+    body: Buffer.concat(chunks),
+    summary: [
+      { name: 'resource', filename: image.filename, size: image.bytes.length, content_type: image.contentType },
+      ...(hasData ? [{ name: 'data', content_type: 'application/json', json: data }] : []),
+    ],
+  };
+}
+
 const redact = (text, token) => (token ? String(text).split(token).join('<redacted>') : String(text));
 
 export class Miro {
@@ -160,20 +234,23 @@ export class Miro {
   }
 
   /** 送出一個 request；--dry-run 時只印出並回傳 null。429 照 Retry-After（沒有時指數退避）重試，最多 maxRetries 次。 */
-  async request(method, path, { query, body } = {}) {
+  async request(method, path, { query, body, multipart } = {}) {
     const url = this.url(path, query);
+    const contentType = multipart ? multipart.contentType : body !== undefined ? 'application/json' : undefined;
     if (this.dryRun) {
-      const req = { dry_run: true, method, url, headers: { Authorization: 'Bearer <redacted>', ...(body !== undefined && { 'Content-Type': 'application/json' }) } };
+      const req = { dry_run: true, method, url, headers: { Authorization: 'Bearer <redacted>', ...(contentType && { 'Content-Type': contentType }) } };
       if (body !== undefined) req.body = body;
+      if (multipart) req.multipart = multipart.summary;
       this.out(JSON.stringify(req, null, 2) + '\n');
       return null;
     }
     const headers = { Authorization: `Bearer ${this.token}`, Accept: 'application/json' };
-    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    if (contentType) headers['Content-Type'] = contentType;
+    const payload = multipart ? multipart.body : body === undefined ? undefined : JSON.stringify(body);
     for (let attempt = 0; ; attempt++) {
       let res;
       try {
-        res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+        res = await fetch(url, { method, headers, body: payload });
       } catch (err) {
         throw new CliError(redact(`${method} ${url} 連線失敗：${err.cause?.message || err.message}`, this.token));
       }
@@ -230,11 +307,13 @@ const OPTIONS = {
   x: { type: 'string' }, y: { type: 'string' }, width: { type: 'string' }, height: { type: 'string' },
   start: { type: 'string' }, end: { type: 'string' }, caption: { type: 'string' },
   data: { type: 'string' }, style: { type: 'string' },
+  file: { type: 'string' }, 'alt-text': { type: 'string' },
 };
 
-function checkType(type, required) {
+function checkType(type, required, allowed = ITEM_TYPES) {
   if (type === undefined && !required) return;
-  if (!ITEM_TYPES.includes(type)) throw new CliError(`--type 要是 ${ITEM_TYPES.join('|')}，收到 ${type ?? '（沒給）'}`, 2);
+  const hint = type === 'image' ? '（圖片用 images create／images update）' : '';
+  if (!allowed.includes(type)) throw new CliError(`--type 要是 ${allowed.join('|')}，收到 ${type ?? '（沒給）'}${hint}`, 2);
 }
 
 function checkBody(body) {
@@ -277,7 +356,7 @@ export async function run(argv, { env = process.env, out = s => process.stdout.w
     }
     case 'items list': {
       const board = need(rest[0], '<board>');
-      checkType(o.type, false);
+      checkType(o.type, false, LIST_TYPES);
       const client = api();
       let data;
       if (o.type === 'connector') {
@@ -319,6 +398,21 @@ export async function run(argv, { env = process.env, out = s => process.stdout.w
       if (!o.confirm && !o['dry-run']) throw new CliError(`items delete 要加 --confirm 才會刪除 ${item}，未送出`, 2);
       const res = await api().request('DELETE', `/boards/${enc(board)}/items/${enc(item)}`);
       return print(res && { deleted: true, board_id: board, item_id: item });
+    }
+    case 'images create':
+    case 'images update': {
+      const board = need(rest[0], '<board>');
+      const item = action === 'update' ? need(rest[1], '<item>') : undefined;
+      const image = loadImage(need(o.file, '--file <圖片路徑>'));
+      const data = buildImageData(o);
+      checkBody(data);
+      const multipart = buildMultipart(image, data);
+      const path = item ? `/boards/${enc(board)}/images/${enc(item)}` : `/boards/${enc(board)}/images`;
+      return print(withLink(board, await api().request(item ? 'PATCH' : 'POST', path, { multipart })));
+    }
+    case 'images get': {
+      const board = need(rest[0], '<board>'), item = need(rest[1], '<item>');
+      return print(withLink(board, await api().request('GET', `/boards/${enc(board)}/images/${enc(item)}`)));
     }
     case 'tags list': {
       const board = need(rest[0], '<board>');
