@@ -1,6 +1,6 @@
 # Practice Attempt Note template
 
-Obsidian Markdown with frontmatter; the file path and field values come from the adapter. The H1 is the note title, in the adapter's title format; a paused note adds 「（暫停）」 to it and sets `status: paused`. Keep the note **scannable**: about 60 lines, one line per bullet, the attempt as key points rather than verbatim, and Formal Notes linked rather than restated. Omit a section only where marked optional; omit `miroUrl` until a Miro item exists.
+Obsidian Markdown with frontmatter; the file path and field values come from the adapter. The H1 is the note title, in the adapter's title format; a paused note adds 「（暫停）」 to it and sets `status: paused`. Keep the note **scannable**: about 60 lines, one line per bullet, the attempt as key points rather than verbatim, and Formal Notes linked rather than restated. Omit a section only where marked optional.
 
 ```md
 ---
@@ -10,7 +10,6 @@ date: <YYYY-MM-DD>
 tid: <T 題, empty when unbanked>
 category: <adapter category>
 status: <closed / paused>
-miroUrl: <Miro item deep link>
 ---
 
 # 練習｜<T 題 or question name>｜<YYYY-MM-DD>
