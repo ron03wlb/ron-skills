@@ -6,3 +6,4 @@ productivity/session-handoff
 productivity/daily-summary
 productivity/explain
 overlay/retro
+productivity/miro
