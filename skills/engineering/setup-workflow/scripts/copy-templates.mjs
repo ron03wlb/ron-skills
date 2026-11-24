@@ -24,6 +24,9 @@
 // 最後一行：
 //   PLANNED <n>（--dry-run）、COPIED <n>、CONFIRM_OVERWRITE <路徑...>（exit 3：既有檔內容不同且與清單記錄不一致，人確認後加 --yes 重跑；不是明列的範本時路徑緊接來源，例如 `scripts/b.mjs（a、c 的相依）`）、
 //   VERIFIED <n>（--verify 全部一致；有 MISMATCH／MISSING／NO_ORIGIN／EXCEPTION_LISTED 或沒有清單時 exit 1；--all 複製後也印，不一致時 exit 1）。
+// 來源 checkout 有 upstream 且落後（`git rev-list --count HEAD..@{u}` > 0，只看上次 fetch）時，複製前 stderr 印
+//   `SOURCE_BEHIND <n> <upstream> → git -C <來源> merge --ff-only <upstream>`（actionable：照箭頭快轉後重跑）、exit 1、不寫任何檔；
+//   與 spay2 check-template-copies.mjs --against-source 的同名行一致（#568）。沒有 upstream、--dry-run、--verify 不查。
 // --verify 另查每個登記的 .mjs／.sh 副本（fixtures/ 下的不算）前三行有沒有來源行（ORIGIN），沒有印 `NO_ORIGIN <副本路徑>`：
 //   正本檔頭都帶它，讓 consumer 不必查清單就知道檔案是副本（investing#529）；ron-skills 的 tests/template-copies.test.mjs 檢查每支正本都有。參數或旗標錯誤、正本不存在或有未提交改動時 exit 2。
 // `正本不存在：templates/<檔>` 是相依時接 `（templates/<引用檔>:<行>）`（retro spay2 ff00a288#1(b)：只寫缺的檔名，要自己 grep 是誰引用的）；
@@ -119,6 +122,20 @@ if (!names.length) fail(flags.has('--all') ? `${MANIFEST} 的 copies 沒有程�
 
 const git = (...rest) => spawnSync('git', ['-C', TEMPLATES, ...rest], { encoding: 'utf8' });
 const sourceRoot = git('rev-parse', '--show-toplevel').stdout.trim();
+
+// 來源 checkout 落後 upstream（只看上次 fetch）時不複製：舊版範本會進下游，下游的 --against-source 也比對舊版（#568，spay2 retro 0b324fb8#2）。
+// --dry-run 不寫檔，不擋。剝掉 GIT_*：在 git hook 內呼叫時它們會把指令導向別的 repo。
+if (!flags.has('--dry-run')) {
+  const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+  const sourceGit = (...rest) => spawnSync('git', ['-C', sourceRoot, ...rest], { encoding: 'utf8', env: cleanEnv });
+  const upstream = sourceGit('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}');
+  const behind = upstream.status === 0 ? Number(sourceGit('rev-list', '--count', 'HEAD..@{u}').stdout.trim()) : 0;
+  if (behind > 0) {
+    const ref = upstream.stdout.trim();
+    console.error(`SOURCE_BEHIND ${behind} ${ref} → git -C ${sourceRoot} merge --ff-only ${ref}`);
+    process.exit(1);
+  }
+}
 
 const isDir = path => existsSync(join(TEMPLATES, path)) && statSync(join(TEMPLATES, path)).isDirectory();
 /** 目標是 ron-skills 本身（含其他 worktree）：本 repo 只追蹤清單已列的副本（retro spay2 ff00a288#4）。 */

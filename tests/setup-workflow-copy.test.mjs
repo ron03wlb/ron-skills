@@ -590,3 +590,26 @@ test('清單的 localExceptions 不是字串陣列時 exit 2、不寫任何檔',
   assert.match(result.stderr, /localExceptions/);
   assert.equal(existsSync(join(target, 'scripts')), false);
 });
+
+test('#568：來源 checkout 落後 upstream 時 stderr 印 SOURCE_BEHIND、exit 1、不寫任何檔；快轉後照常複製；--dry-run 不擋', t => {
+  const { source, target, copier } = fixture(t);
+  const upstream = join(source, '..', 'upstream');
+  git(join(source, '..'), 'clone', '-q', source, upstream);
+  write(upstream, { 'skills/engineering/setup-workflow/templates/b.mjs': 'export const b = 2;\n' });
+  git(upstream, 'commit', '-qam', 'b 2');
+  git(source, 'remote', 'add', 'origin', upstream);
+  git(source, 'fetch', '-q', 'origin');
+  git(source, 'branch', '-q', '-u', 'origin/main');
+
+  const behind = run(copier, target, 'a');
+  assert.equal(behind.status, 1, behind.stderr);
+  assert.equal(behind.stderr.trim(), `SOURCE_BEHIND 1 origin/main → git -C ${source} merge --ff-only origin/main`);
+  assert.equal(existsSync(join(target, 'scripts')), false);
+  assert.equal(existsSync(join(target, MANIFEST)), false);
+  assert.equal(run(copier, target, '--dry-run', 'a').status, 0, '--dry-run 不寫檔，不擋');
+
+  git(source, 'merge', '-q', '--ff-only', 'origin/main');
+  const caughtUp = run(copier, target, 'a');
+  assert.equal(caughtUp.status, 0, caughtUp.stderr);
+  assert.equal(readFileSync(join(target, 'scripts/b.mjs'), 'utf8'), 'export const b = 2;\n');
+});
