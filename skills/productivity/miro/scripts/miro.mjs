@@ -16,6 +16,9 @@ export const ALLOWED_TAGS = new Set(['p', 'a', 'strong', 'b', 'em', 'i', 'u', 's
 const ITEM_TYPES = ['card', 'sticky_note', 'text', 'shape', 'frame', 'connector'];
 const PLURAL = { card: 'cards', sticky_note: 'sticky_notes', text: 'texts', shape: 'shapes', frame: 'frames', connector: 'connectors' };
 const PAGE_SIZE = 50;
+// tag 的 fillColor 只收這些值（https://developers.miro.com/reference/create-tag）；不帶時 Miro 回 400，所以 CLI 預設 blue。
+export const TAG_COLORS = ['red', 'light_green', 'cyan', 'yellow', 'magenta', 'green', 'blue', 'gray', 'violet', 'dark_green', 'dark_blue', 'black'];
+export const TAG_DEFAULT_COLOR = 'blue';
 
 class CliError extends Error {
   constructor(message, code = 1) { super(message); this.code = code; }
@@ -25,16 +28,18 @@ const USAGE = `用法：miro.mjs <指令> [選項]
   boards list [--limit N]
   boards get <board>
   boards create --name <名稱> [--description <說明>] [--team <team_id>] --confirm
+  boards update <board> [--name <名稱>] [--description <說明>]
   items list <board> [--type card|sticky_note|text|shape|frame|connector] [--parent <frame>] [--limit N]
   items get <board> <item>
   items create <board> --type <類型> [欄位]
   items update <board> <item> [--type <類型>] [欄位]
   items delete <board> <item> --confirm
   tags list <board> [--item <item>]
-  tags create <board> --title <名稱> [--color <fillColor>]
+  tags create <board> --title <名稱> [--color <色名>]（預設 ${TAG_DEFAULT_COLOR}）
   tags attach|detach <board> <item> <tag>
 欄位：--content --title --description --shape --fill-color --x --y --width --height --parent <frame>
       --start <item> --end <item>（connector）--caption <文字>（connector）--data <JSON> --style <JSON>
+tag 色名：${TAG_COLORS.join(' ')}
 共用：--dry-run（只印 request，不送出、不需要 token）`;
 
 /** 本機驗證文字欄位：長度少於 TEXT_MAX、只用允許的 HTML 標籤。回傳錯誤訊息陣列。 */
@@ -264,6 +269,12 @@ export async function run(argv, { env = process.env, out = s => process.stdout.w
       const body = { name: o.name, ...(o.description && { description: o.description }), ...(o.team && { teamId: o.team }) };
       return print(await api().request('POST', '/boards', { body }));
     }
+    case 'boards update': {
+      const id = need(rest[0], '<board>');
+      if (o.name === undefined && o.description === undefined) throw new CliError('boards update 要帶 --name 或 --description', 2);
+      const body = { ...(o.name !== undefined && { name: o.name }), ...(o.description !== undefined && { description: o.description }) };
+      return print(await api().request('PATCH', `/boards/${enc(id)}`, { body }));
+    }
     case 'items list': {
       const board = need(rest[0], '<board>');
       checkType(o.type, false);
@@ -320,7 +331,9 @@ export async function run(argv, { env = process.env, out = s => process.stdout.w
     }
     case 'tags create': {
       const board = need(rest[0], '<board>');
-      const body = { title: need(o.title, '--title'), ...(o.color && { fillColor: o.color }) };
+      const color = o.color ?? TAG_DEFAULT_COLOR;
+      if (!TAG_COLORS.includes(color)) throw new CliError(`tag 色名 ${color} 不在 Miro 允許的清單，未送出；可用：${TAG_COLORS.join(' ')}`, 2);
+      const body = { title: need(o.title, '--title'), fillColor: color };
       if (body.title.length > 120) throw new CliError('tag title 最多 120 字元，未送出');
       return print(await api().request('POST', `/boards/${enc(board)}/tags`, { body }));
     }

@@ -279,3 +279,35 @@ test('不認得的指令與選項：exit 2', async t => {
   assert.equal((await cli(t, ['items', 'list', 'b1', '--bogus'])).code, 2);
   assert.equal((await cli(t, ['items', 'list', 'b1', '--type', 'image'])).code, 2);
 });
+
+test('tags create 沒帶 --color 時送預設 blue', async t => {
+  const { calls, base } = await fakeMiro(t, call => ({ status: 201, json: { id: 't9', ...call.body } }));
+  const r = await cli(t, ['tags', 'create', 'b1', '--title', '待練'], withToken(base));
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(calls[0].body, { title: '待練', fillColor: 'blue' });
+});
+
+test('tags create 合法色名照送；不合法色名本機擋下、列出可用值、不送出', async t => {
+  const { calls, base } = await fakeMiro(t, call => ({ status: 201, json: { id: 't9', ...call.body } }));
+  const ok = await cli(t, ['tags', 'create', 'b1', '--title', 'x', '--color', 'dark_blue'], withToken(base));
+  assert.equal(ok.code, 0, ok.stderr);
+  assert.equal(calls[0].body.fillColor, 'dark_blue');
+  const bad = await cli(t, ['tags', 'create', 'b1', '--title', 'x', '--color', 'orange'], withToken(base));
+  assert.equal(bad.code, 2);
+  assert.match(bad.stderr, /orange/);
+  assert.match(bad.stderr, /light_green/);
+  assert.equal(calls.length, 1);
+});
+
+test('boards update 送 PATCH /boards/{id}；--dry-run 不送出、不需要 token；沒有欄位時 exit 2', async t => {
+  const { calls, base } = await fakeMiro(t, call => ({ json: { id: 'b1', ...call.body } }));
+  const r = await cli(t, ['boards', 'update', 'b1', '--name', '演算法', '--description', '練習地圖'], withToken(base));
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(calls.map(c => [c.method, c.path, c.body]), [['PATCH', '/v2/boards/b1', { name: '演算法', description: '練習地圖' }]]);
+  const dry = await cli(t, ['boards', 'update', 'b1', '--name', '演算法', '--dry-run'], { MIRO_API_BASE: base });
+  assert.equal(dry.code, 0, dry.stderr);
+  assert.deepEqual(JSON.parse(dry.stdout).body, { name: '演算法' });
+  assert.equal(JSON.parse(dry.stdout).method, 'PATCH');
+  assert.equal((await cli(t, ['boards', 'update', 'b1'], withToken(base))).code, 2);
+  assert.equal(calls.length, 1);
+});

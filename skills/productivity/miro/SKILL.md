@@ -24,13 +24,14 @@ When neither exists the CLI exits 1 and names both. Do not ask the user to paste
 boards list [--limit N]
 boards get <board>
 boards create --name <name> [--description <text>] [--team <team_id>] --confirm
+boards update <board> [--name <name>] [--description <text>]
 items list <board> [--type card|sticky_note|text|shape|frame|connector] [--parent <frame>] [--limit N]
 items get <board> <item>
 items create <board> --type <type> [fields]
 items update <board> <item> [--type <type>] [fields]
 items delete <board> <item> --confirm
 tags list <board> [--item <item>]
-tags create <board> --title <name> [--color <fillColor>]
+tags create <board> --title <name> [--color <colour>]
 tags attach <board> <item> <tag>
 tags detach <board> <item> <tag>
 ```
@@ -41,6 +42,8 @@ Fields: `--content`, `--title`, `--description`, `--shape`, `--fill-color`, `--x
 - `items update` without `--type` only moves (`--x`/`--y`) or re-parents (`--parent`); any other field needs `--type`.
 - Lists follow pagination to the end; `--limit N` stops after N items.
 - Every item in the output carries `deep_link`: `https://miro.com/app/board/<board_id>/?moveToWidget=<item_id>`. Give that link to the user.
+- Tag colours: only `red light_green cyan yellow magenta green blue gray violet dark_green dark_blue black` (Miro rejects anything else, `orange` included, with HTTP 400). Without `--color` the CLI sends `blue`; any other name is refused locally with exit 2 and the list.
+- `boards update` renames the board or changes its description (PATCH); it never creates one.
 - Tags show on cards and sticky notes (up to 8 each); the board shows API tag changes only after a refresh.
 
 ## Guards
