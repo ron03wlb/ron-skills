@@ -237,8 +237,8 @@
     },
     "scripts/pilot-land.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-land.mjs",
-      "commit": "bfb0cfd8cae96d0edc7564f3623a9cc52fca14d7",
-      "sha256": "2e03bcb03e27608f058bb38e789d53359ff8c0a5e72b7bc7474380a9965e44a3"
+      "commit": "307969a47d2a9605e84b537d16726e79092f35a8",
+      "sha256": "62293a5fccd2ad6f7f1426f90a17f688c3f61a0ed7cc72d486b68f1146d8ef29"
     },
     "scripts/pilot-pr-body.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-pr-body.mjs",
