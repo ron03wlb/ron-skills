@@ -9,7 +9,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for reads
 - **Create an issue**: `node scripts/gh-tracker.mjs create --title "..." --body-file <file>`.
 - **Several writes at once** (a spec split into children with parents and blockers, a regrouping that comments, closes and relabels): one JSON file of steps for `node scripts/gh-tracker.mjs batch <file.json>`, not a one-off script and not a shell loop of single calls (#401). Each step is `create` (with an optional `code` and `parent`, `blockedBy`), `comment`, `close`, or `edit`; a reference is `"#<n>"` or the `code` of an earlier `create` in the same file. The whole file is checked before the first write (a field outside the allowlist exits 2 and calls no `gh`), the steps run in order, each prints one line (`CREATED <code> <n>`, `SUB_ISSUE add …`, `BLOCKED_BY add …`, `COMMENTED`, `CLOSED`, `EDITED`), and the last line is `BATCH_DONE <steps>`. Progress and the created numbers go to `<file.json>.state.json` beside it: after a failure, fix the cause and rerun the same command, which does only the remaining steps. The field list per step is in the script's header. Write the file and its body files under `.scratch/` (bodies are posted publicly).
 - **Read an issue**: `gh issue view <number> --json number,title,body,labels,comments`.
-- **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
+- **List issues**: `gh issue list --state open --limit 1000 --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
 - **Make an issue a sub-issue of a parent**: create the child, then `node scripts/gh-tracker.mjs sub-issue add <parent> <child>` (`remove` to unlink; it looks up the child's database id itself). On success it prints one line, `SUB_ISSUE add <parent> <child>`, not the API response. Without sub-issues, put `Part of #<parent>` at the top of the child body.
 - **Comment on an issue**: `node scripts/gh-tracker.mjs comment <number> --body-file <file>` (or `--body "..."`)
 - **Apply / remove labels**: `node scripts/gh-tracker.mjs edit <number> --add-label "..."` / `--remove-label "..."`
@@ -66,7 +66,7 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 - **辨識**：有 sub-issue（`sub_issues_summary.total > 0`）的 issue 就是母單，掛 `parent` label、不掛任何 triage label（[triage-labels.md](triage-labels.md#parent-label)）。
 - **上游行為**：`/to-spec` 給 spec issue 掛 `ready-for-agent`；`/to-tickets` 把子單掛成該 spec 的 sub-issue、各掛 `ready-for-agent`，不動母單。所以 spec 一拆成子單，母單和子單都帶 `ready-for-agent`。本 repo 不改這兩個 skill，改由 pilot 的 Pool 規則排除母單、Reconcile 整理母單的 label 與重開（[pilot.md](pilot.md) 的 **Pool**、**Probe**），Close 在子單全部結束後關掉母單（**Close**）。
 - **檢視**：
-  - 可開工：`gh issue list --search 'is:open label:ready-for-agent -is:blocked'`
+  - 可開工：`gh issue list --search 'is:open label:ready-for-agent -is:blocked' --limit 1000`
   - 母單：`gh issue list --search 'is:open label:parent'`
   - 某一組：`gh issue list --state all --search 'parent-issue:ron03wlb/ron-skills#<n>'`
   - 某一組的子單狀態、label、開著的 blocked-by：`node scripts/issue-pool.mjs children <n>`（一次 GraphQL，每張子單一行，用法見腳本開頭）。本 repo 不帶 `--ask-prefix`：pilot 的提問留言沒有共同開頭，所以不標 `ask`，要知道哪張在等回答仍得讀留言；統一提問格式時再另開單宣告前綴（#251 決定 A）。

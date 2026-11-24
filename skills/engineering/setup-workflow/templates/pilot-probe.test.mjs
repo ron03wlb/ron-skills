@@ -2357,3 +2357,38 @@ test('watch 的記錄早於成員的 started 或最後一次 resumed、號碼不
   for (const n of [1, 2, 3]) assert.ok(out.includes(`WORKER ${n} STUCK exited`), out.join('\n'));
   assert.ok(out.includes(`WORKER 4 DONE ${OTHER}`), out.join('\n'));
 });
+
+// CoS item 89：#552 把 Retro trigger 寫在 issue-pilot Project hooks 步驟的後半，adapter「Project tick hooks：沒有」的 coordinator 照字面整步跳過，
+// retro-candidates 積到 20 張、最舊 74 小時沒觸發。Probe 每輪印 pilot-retro-due 的那一行，不靠 coordinator 記得去跑。
+test('adapter 有 Retro trigger 條目時印 RETRO_ 行（重用 tracker 查詢，不再跑 gh issue list）；沒有條目不印（CoS item 89）', t => {
+  const created = hours => new Date(Date.now() - hours * 3_600_000).toISOString();
+  const retro = (number, hours, body = '1. x') => ({ number, body, createdAt: created(hours), labels: { nodes: [{ name: 'retro-candidates' }] }, blockedBy: { nodes: [] }, parent: null });
+  const { probe, repo, ghLog } = fixture(t, { issues: [retro(1, 75), retro(2, 1), retro(3, 1, 'From: retro-collect\n1. y'), { ...retro(4, 99), labels: { nodes: [{ name: 'ready-for-agent' }] } }] });
+  const retroLine = result => result.stdout.split('\n').filter(line => line.startsWith('RETRO_'));
+  assert.deepEqual(retroLine(probe()), [], '沒有 adapter：不印');
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  writeFileSync(join(repo, 'docs/agents/issue-run.md'), '# adapter\n\n## Pilot\n\n見 [coordinator.md](coordinator.md)。\n');
+  // 實況：Project tick hooks 是「沒有」，Retro trigger 條目在 Pilot 段連到的檔裡。
+  writeFileSync(join(repo, 'docs/agents/coordinator.md'), '- **Project tick hooks.** 預設：沒有。\n\n- **Retro trigger.** `Retro trigger: count=5 age=8h`。\n');
+  const due = probe();
+  assert.equal(due.status, 0, due.stderr);
+  assert.deepEqual(retroLine(due), [`RETRO_DUE 2 oldest=75.0h → node scripts/pilot-retro-due.mjs ${repo} --start`]);
+  const order = due.stdout.trim().split('\n');
+  assert.ok(order.indexOf(retroLine(due)[0]) < order.findIndex(line => line.startsWith('HANDOFF_COUNT ')), '在 HANDOFF_COUNT 之前');
+  assert.doesNotMatch(readFileSync(ghLog, 'utf8'), /"issue","list"/, '用 probe 已抓的 Issue');
+  const collectIn = probe({ args: ['--retro-collect-in', '/elsewhere'] });
+  assert.deepEqual(retroLine(collectIn), [`RETRO_DUE 2 oldest=75.0h → node scripts/pilot-retro-due.mjs ${repo} --collect-in /elsewhere --start`]);
+  writeFileSync(join(repo, '.scratch/pilot/batch-523.md'), '# batch 523\ncurrent: staged abc1234\n');
+  assert.deepEqual(retroLine(probe()), ['RETRO_WAIT staged 523 2 oldest=75.0h']);
+});
+
+test('tracker 查詢失敗時 Retro trigger 由 pilot-retro-due 自己查（gh 也失敗時 RETRO_FAILED，不中斷其他行）', t => {
+  const { probe, repo } = fixture(t, { issues: null });
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  writeFileSync(join(repo, 'docs/agents/issue-run.md'), '# adapter\n\n## Pilot\n\n- **Retro trigger.** 預設門檻。\n');
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^POOL_FAILED /m);
+  assert.match(result.stdout, /^RETRO_FAILED gh exit 1/m);
+  assert.match(result.stdout, /^HANDOFF_COUNT /m);
+});

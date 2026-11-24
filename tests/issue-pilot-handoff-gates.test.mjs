@@ -11,7 +11,7 @@ const section = heading => {
   const end = skill.indexOf('\n## ', start + 1);
   return skill.slice(start, end < 0 ? undefined : end);
 };
-const step7 = skill.split('\n').find(line => line.startsWith('7. **Report and sleep.**'));
+const step7 = skill.split('\n').find(line => line.startsWith('8. **Report and sleep.**'));
 
 test('第 7 步：有可做的事時不發阻塞提問，交接也不例外', () => {
   assert.ok(step7, '缺少第 7 步');
