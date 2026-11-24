@@ -2,7 +2,7 @@
 import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { FAST, orcaReplySource } from './test/fake-orca.mjs';
@@ -445,6 +445,30 @@ test('staged、沒有 regression 行、land 還活著：印 REGRESSING，land �
   ], out.join('\n'));
 });
 
+// #563（investing coordinator 2f87d255）：670 回歸期間（STAGED 之後、MERGED 之前）probe 印 RESTAGE 670 regression-failed none，
+// 標記的 pid 沒認出 land。reg-<key>.log 還在寫（10 分鐘內有寫入）、這個 staged SHA 還沒有 regression 行時也印 REGRESSING；log 舊了或已有 regression 行照舊。
+test('staged、沒有 regression 行、標記判斷不出 land，但 reg-<key>.log 還在寫：印 REGRESSING；log 舊了照舊 RESTAGE none', t => {
+  const { batch, probe, pilot } = fixture(t);
+  const staged = 'd4a2f71' + '0'.repeat(33);
+  const onto = '4c080c6' + '0'.repeat(33);
+  const append = (key, rows) => writeFileSync(join(pilot, `batch-${key}.md`), readFileSync(join(pilot, `batch-${key}.md`), 'utf8') + rows.map(row => `${row}\n`).join(''));
+  const old = new Date(Date.now() - 3600_000);
+  for (const key of ['81', '82', '83', '84']) batch(key, `staged ${staged} onto ${onto}`, [{ n: Number(key), state: 'done', candidate: 'abc1234' }]);
+  // 81：沒有標記、log 正在寫。82：log 一小時沒動。83：log 正在寫，但這個 SHA 已有失敗的 regression 行。84：沒有 log。
+  writeFileSync(join(pilot, 'reg-81.log'), '.... [ 89%]\n');
+  writeFileSync(join(pilot, 'reg-82.log'), '.... [ 89%]\n');
+  utimesSync(join(pilot, 'reg-82.log'), old, old);
+  writeFileSync(join(pilot, 'reg-83.log'), 'FAILED\n');
+  append('83', [`regression: ${staged} exit 1`]);
+  const out = lines(probe());
+  assert.deepEqual(out.filter(line => /^(RESTAGE|REGRESSING) /.test(line)), [
+    `REGRESSING 81 ${staged}`,
+    'RESTAGE 82 regression-failed none',
+    'RESTAGE 83 regression-failed 1',
+    'RESTAGE 84 regression-failed none',
+  ], out.join('\n'));
+});
+
 // 舊格式 `pushed` 的 batch 在 checkpoint 只剩 `regression: <sha>` 指出合入的內容（Integrate 是 ff-only，staged SHA 就是 pilot/integration 的 tip）；
 // `pushed <sha>`（#37）帶著同一個 SHA，還沒進 origin/main（PR 還開著）時印 NOT_IN_MAIN，coordinator 重跑 Push gate 接著合併。
 // 判斷的是 fetch 之後的 origin/main：另一個 clone 推上去、本機還沒 fetch 的合入也要算 IN_MAIN。
@@ -622,7 +646,7 @@ test('main 暫停旗標有效時 NOT_IN_MAIN／RESUME_PUSH 收成一行 MAIN_PAU
 
   flag('2999-12-01');
   let out = lines(probe());
-  assert.deepEqual(pushLines(out), ['IN_MAIN 14', 'MAIN_PAUSED 等 #246 過渡期 until 2999-12-01 pending 11 12 13'], out.join('\n'));
+  assert.deepEqual(pushLines(out), ['IN_MAIN 14', 'MAIN_PAUSED 等 #246 過渡期 until 2999-12-01 pending 3 batches'], out.join('\n'));
 
   // 過期：恢復各行。
   flag('2000-01-01');
@@ -640,7 +664,7 @@ test('main 暫停旗標有效時 NOT_IN_MAIN／RESUME_PUSH 收成一行 MAIN_PAU
   batch('16', `merged ${staged}`, [{ n: 16, state: 'done', candidate: 'abc1234' }]);
   batch('17', 'pushed', [{ n: 17, state: 'done', candidate: 'abc1234' }]);
   assert.deepEqual(pushLines(lines(probe())), ['IN_MAIN 14', 'NOT_IN_MAIN 15 regression-failed 1', 'NOT_IN_MAIN 16 no-regression', 'NOT_IN_MAIN 17 no-sha',
-    'MAIN_PAUSED 等 #246 過渡期 until 2999-12-01 pending 11 12 13']);
+    'MAIN_PAUSED 等 #246 過渡期 until 2999-12-01 pending 3 batches']);
   for (const key of ['15', '16', '17']) rmSync(join(pilot, `batch-${key}.md`));
 
   // 有開著的 all-push gate 時印 PUSH_PARKED。
@@ -1886,11 +1910,10 @@ test('ADAPTER_AHEAD 時 adapter 指名、主 checkout 缺檔或內容不同的 s
   git('switch', '-q', 'main');
   let result = probe();
   assert.equal(result.status, 0, result.stderr);
+  // #563：依去處合成一行，不是每個腳本一行。
   assert.deepEqual(lines(result), [
     aheadLine(repo, 'docs/agents/pilot-rules.md', 'Watch'),
-    'SCRIPT_AHEAD scripts/blocked-by-sync.mjs sync-main',
-    'SCRIPT_AHEAD scripts/campaign-due.py sync-main',
-    'SCRIPT_AHEAD scripts/pilot-watch.mjs sync-main',
+    'SCRIPT_AHEAD sync-main scripts/blocked-by-sync.mjs scripts/campaign-due.py scripts/pilot-watch.mjs',
   ]);
 
   // main 自己改過（整合分支那份比較舊）的腳本不印。
@@ -1900,8 +1923,7 @@ test('ADAPTER_AHEAD 時 adapter 指名、主 checkout 缺檔或內容不同的 s
   result = probe();
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(lines(result).filter(line => line.startsWith('SCRIPT_AHEAD')), [
-    `SCRIPT_AHEAD scripts/blocked-by-sync.mjs run-in ${stage}`,
-    `SCRIPT_AHEAD scripts/pilot-watch.mjs run-in ${stage}`,
+    `SCRIPT_AHEAD run-in ${stage} scripts/blocked-by-sync.mjs scripts/pilot-watch.mjs`,
   ]);
 });
 
@@ -2018,6 +2040,9 @@ test('done 成員的 Issue 本文最後編輯晚於列的 started 時印 SCOPE_C
   batch('321-322-323', 'dispatched 2026-11-18T20:01:15+08:00', [321, 322, 323].map(n => ({ n, started, state: 'done', candidate: SHA })));
   batch('325-326', 'dispatched 2026-11-18T20:01:15+08:00', [{ n: 325, started }, { n: 326, started }]);
   batch('327', 'closed', [{ n: 327, started, state: 'done', candidate: SHA }]);
+  // #563：已合入、等 main 的 batch 不再印。
+  batch('328', `merged ${SHA}`, [{ n: 327, started, state: 'done', candidate: SHA }]);
+  batch('329', `pushed ${SHA}`, [{ n: 327, started, state: 'done', candidate: SHA }]);
   const result = probe();
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(lines(result).filter(line => line.startsWith('SCOPE_CHANGED ')), [

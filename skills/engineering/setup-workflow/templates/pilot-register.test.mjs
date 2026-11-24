@@ -1,4 +1,5 @@
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
+import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -199,4 +200,38 @@ test('name 相同、session 檔不存在、沒有 name 或不是 JSON：不印 N
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stdout, /NAME_CHECK/, String(content));
   }
+});
+
+// #467（investing retro 1121g、1123d）：Entry 先讀主 checkout 上過期的 adapter，之後 probe 才印 ADAPTER_AHEAD，只好再讀一次新版。
+// 登記時就比對 adapter ref：比主分支新的 adapter 檔寫到 .scratch/pilot/adapter/<檔名>，每檔印 ADAPTER_FILE <存檔路徑> <repo 內路徑>。
+test('adapter ref 比主分支新：寫出 adapter ref 那份並印 ADAPTER_FILE；沒落後、不是 git repo 時不印', t => {
+  const dir = checkout(t);
+  const git = (...args) => {
+    const result = spawnSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const write = (path, text) => { mkdirSync(join(dir, path, '..'), { recursive: true }); writeFileSync(join(dir, path), text); };
+  git('init', '-q', '-b', 'main');
+  write('.gitignore', '.scratch/\n');
+  write('docs/agents/issue-run.md', '# Adapter\n\n## Pilot\n\n見 [pilot.md](pilot.md)。\n');
+  write('docs/agents/pilot.md', '# Pilot\n\n- **Probe.** 舊版。\n');
+  git('add', '.');
+  git('commit', '-qm', 'base');
+  // 沒落後：只印登記的行。
+  let result = run(dir, ARGS);
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /ADAPTER_/);
+  git('switch', '-q', '-c', 'pilot/integration');
+  write('docs/agents/pilot.md', '# Pilot\n\n- **Probe.** 新版。\n');
+  git('commit', '-qam', 'adapter');
+  git('switch', '-q', 'main');
+  result = run(dir, ARGS);
+  assert.equal(result.status, 0, result.stderr);
+  const saved = join(dir, '.scratch/pilot/adapter/pilot.md');
+  assert.deepEqual(result.stdout.split('\n').filter(line => line.startsWith('ADAPTER_')), [`ADAPTER_FILE ${saved} docs/agents/pilot.md`]);
+  assert.equal(readFileSync(saved, 'utf8'), '# Pilot\n\n- **Probe.** 新版。\n');
+  // 主分支用 --main 指定：主分支就是整合分支時沒有落後。
+  result = run(dir, [...ARGS, '--main', 'pilot/integration']);
+  assert.doesNotMatch(result.stdout, /ADAPTER_/);
 });
