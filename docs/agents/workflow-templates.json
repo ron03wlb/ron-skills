@@ -127,7 +127,7 @@
     },
     "scripts/lib/changed-units.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/changed-units.mjs",
-      "commit": "2fc8c7699d24e52656a872cf44dc764bda84ecb6",
+      "commit": "bfb0cfd8cae96d0edc7564f3623a9cc52fca14d7",
       "sha256": "505ec25d14203e3849279f8454fd4d25c5da8c56a5c056816fd9f8e6f0fd47d8"
     },
     "scripts/lib/claude-projects.mjs": {
@@ -142,7 +142,7 @@
     },
     "scripts/lib/merge-tree.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/merge-tree.mjs",
-      "commit": "2fc8c7699d24e52656a872cf44dc764bda84ecb6",
+      "commit": "bfb0cfd8cae96d0edc7564f3623a9cc52fca14d7",
       "sha256": "78f3401d6ed2cc3a7ed8f7049374dd15dfec4f264b0235f3df4a13f3dbed367b"
     },
     "scripts/lib/pilot-store.mjs": {
@@ -297,8 +297,8 @@
     },
     "scripts/worktree-overlap.mjs": {
       "template": "skills/engineering/setup-workflow/templates/worktree-overlap.mjs",
-      "commit": "ca7adba1675c46fbfb602100f4a17076f46e04c1",
-      "sha256": "c1ed4072694531a8274509edce4b28a3e488eb343bdaae0e5a0a5721a12e51bd"
+      "commit": "bfb0cfd8cae96d0edc7564f3623a9cc52fca14d7",
+      "sha256": "65a260d16768251f2134a1d003730f60c5fa88266660dba95451b53a1a715378"
     }
   },
   "source": "ron03wlb/ron-skills"
