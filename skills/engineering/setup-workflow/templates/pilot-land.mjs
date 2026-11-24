@@ -41,7 +41,9 @@
 //   Integrate   整合分支的 tip 要還是 stage 時記下的那個（不數 parent：ron-skills batch-40-51 用 `$SHA^1` 誤判兩個成員的 batch）；
 //               `switch <整合分支>`、`merge --ff-only`、`branch -d` stage 分支，`current:` 寫成 `merged <sha>`。
 // 重跑：`current:` 是 `staged <sha> onto <tip>`、tip 沒變、stage 分支還在那個 SHA、成員組合與各分支都沒變、最後一個 regression 行是它的 exit 0 時，
-//   不重新 stage、不重跑 Regression，直接從 hold 檢查繼續；其他情況一律從 Stage 重來。已經 `merged` 時只再印一次 MERGED（之前照樣印 POSTLAND_PENDING，#502）。
+//   不重新 stage、不重跑 Regression，直接從 hold 檢查繼續；其他情況一律從 Stage 重來。已經 `merged <sha>` 時只再印一次 MERGED（之前照樣印 POSTLAND_PENDING，#502），
+//   但有 done 成員的 candidate 不是 <sha> 的祖先（成員修好衝突後重報 DONE 的新候選，<sha> 不含它）時從 Stage 重來：疊到現在的整合分支 tip、
+//   跑自己的 Regression（舊的 regression 行不算），印新的 STAGED、MERGED（#500：#504 重報 DONE 4d28b541 後只回舊的 MERGED be82eb7，要手改 checkpoint）。
 // checkpoint 寫回之後再讀一次，沒寫進去就 STOP checkpoint，不會靜默失敗（ron-skills #74）。
 // 請求分支（沒有 Issue 的 `retro/<x>`）：`req-<n> --branch retro/<x>`（<n> 是 requests.md 的行號）在 batch-req-<n>.md 不存在時開出它，
 //   唯一的成員列 Issue 欄是 `-`、state `done`、candidate 是分支 tip；已存在時成員要是同一個分支，否則 STOP checkpoint。之後與一般 batch 相同。
@@ -161,7 +163,7 @@ function readCheckpoint(file) {
   const members = text.split('\n').filter(line => line.trim().startsWith('|'))
     .map(line => line.trim().split('|').slice(1, -1).map(cell => cell.trim()))
     .filter(([n]) => /^(\d+|-)$/.test(n))
-    .map(([n, branch, worktree, , , , state]) => ({ n: n === '-' ? branch : Number(n), branch, worktree, state }))
+    .map(([n, branch, worktree, , , , state, candidate]) => ({ n: n === '-' ? branch : Number(n), branch, worktree, state, candidate }))
     .sort((a, b) => order(a) - order(b));
   const regression = [...text.matchAll(/^regression:[ \t]*(.*)$/gm)].pop()?.[1].trim();
   return { current, members, regression };
@@ -449,8 +451,12 @@ async function land(key, loadMax) {
   const first = readCheckpoint(file);
   const branch = `pilot/stage-${key}`;
   const merged = first.current.match(/^merged ([0-9a-f]{40})\b/)?.[1];
-  if (merged && gitIn(main, 'merge-base', '--is-ancestor', merged, config.integration).status === 0) return merged;
-  if (!/^(dispatched|staged)\b/.test(first.current)) throw new Stop(`checkpoint current: ${first.current}`);
+  // #500：merged 之後有 done 成員重報 DONE 的新候選（不在 merged 裡）就重新 stage；candidate 不是 SHA 或讀不到時照舊。
+  const within = sha => gitIn(main, 'merge-base', '--is-ancestor', sha, merged).status === 0;
+  const restage = merged && first.members.some(m => m.state === 'done' && /^[0-9a-f]{7,40}$/.test(m.candidate ?? '')
+    && gitIn(main, 'cat-file', '-e', `${m.candidate}^{commit}`).status === 0 && !within(m.candidate));
+  if (merged && !restage && gitIn(main, 'merge-base', '--is-ancestor', merged, config.integration).status === 0) return merged;
+  if (!restage && !/^(dispatched|staged)\b/.test(first.current)) throw new Stop(`checkpoint current: ${first.current}`);
   await readRunning(file, key);
   // readRunning 可能剛把 running 列寫回 done／stop：之後一律看重讀的這一份。
   const checkpoint = readCheckpoint(file);

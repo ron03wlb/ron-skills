@@ -4,6 +4,10 @@
 // 用法：node copy-templates.mjs <repo> [--dry-run] [--no-tests] [--yes] <template>...（template 為 templates/ 下的檔名，可省略 .mjs；
 //       .sh 正本保留執行權限，並帶上它以 "$(dirname "$0")/<檔名>" 呼叫的同目錄腳本；<名稱>.test.mjs 是它的測試）
 //       node copy-templates.mjs <repo> --verify
+//       node copy-templates.mjs <repo> --all [--dry-run] [--no-tests] [--yes] [--staged]：整批刷新（#549，investing #616 的同步每一步都靠臨時拼湊）：
+//       名稱取自清單 `copies` 裡的程式副本（.mjs／.sh，測試與 fixtures 由明列正本照常帶入），扣掉 `localExceptions` 與 --exclude，不能再明列名稱；
+//       複製完接著跑 --verify（--dry-run 不跑）。`copies` 仍列著被排除的檔時先印 `UNLIST <副本路徑>`，並把它從清單的 `copies` 拿掉（--dry-run 只印）。
+//       --verify 遇到同樣的重疊印 `EXCEPTION_LISTED <副本路徑>`（不再印 MISMATCH／NO_ORIGIN，exit 1）；actionable：跑 `--all`，或手動把它從 `copies` 移除。
 //       --exclude <路徑>（可重複；templates/ 下的檔或目錄，可帶 scripts/ 前綴）：目標 repo 有自己版本的檔，不複製、不記清單、不追它的相依，
 //       既有檔與清單項目不動（spay2 的 scripts/test/fake-orca.mjs 與 scripts/test/fixtures/orca/），每個被排除的檔印一行 `EXCLUDE <副本路徑>`。
 //       目標 repo 固定的本地例外寫在清單的 `localExceptions`（路徑字串陣列，格式同 --exclude），每次複製自動排除，不必記得帶 --exclude
@@ -19,7 +23,7 @@
 //   `ALSO_TESTED tests/<名稱>.test.mjs`：目標 repo 另有測副本的測試（不是 SAME 才印）；改範本時它和正本旁的測試都要跑（#454：只跑正本旁的那份，bin/check 才紅）。
 // 最後一行：
 //   PLANNED <n>（--dry-run）、COPIED <n>、CONFIRM_OVERWRITE <路徑...>（exit 3：既有檔內容不同且與清單記錄不一致，人確認後加 --yes 重跑；不是明列的範本時路徑緊接來源，例如 `scripts/b.mjs（a、c 的相依）`）、
-//   VERIFIED <n>（--verify 全部一致；有 MISMATCH／MISSING／NO_ORIGIN 或沒有清單時 exit 1）。
+//   VERIFIED <n>（--verify 全部一致；有 MISMATCH／MISSING／NO_ORIGIN／EXCEPTION_LISTED 或沒有清單時 exit 1；--all 複製後也印，不一致時 exit 1）。
 // --verify 另查每個登記的 .mjs／.sh 副本（fixtures/ 下的不算）前三行有沒有來源行（ORIGIN），沒有印 `NO_ORIGIN <副本路徑>`：
 //   正本檔頭都帶它，讓 consumer 不必查清單就知道檔案是副本（investing#529）；ron-skills 的 tests/template-copies.test.mjs 檢查每支正本都有。參數或旗標錯誤、正本不存在或有未提交改動時 exit 2。
 // `正本不存在：templates/<檔>` 是相依時接 `（templates/<引用檔>:<行>）`（retro spay2 ff00a288#1(b)：只寫缺的檔名，要自己 grep 是誰引用的）；
@@ -62,9 +66,11 @@ const exclusions = new Map();
 const excluded = file => [...exclusions.keys()].find(path => file === path || file.startsWith(`${path}/`));
 const flags = new Set(args.filter(arg => arg.startsWith('--')));
 const [repoArg, ...names] = args.filter(arg => !arg.startsWith('--'));
-const unknown = [...flags].filter(flag => !['--dry-run', '--no-tests', '--yes', '--verify', '--staged', '--register'].includes(flag));
+const unknown = [...flags].filter(flag => !['--dry-run', '--no-tests', '--yes', '--verify', '--staged', '--all', '--register'].includes(flag));
 if (unknown.length) fail(`不認得的旗標：${unknown.join(' ')}`);
-if (!repoArg) fail('用法：copy-templates.mjs <repo> [--dry-run] [--no-tests] [--yes] [--staged] [--register] [--exclude <路徑>]... <template>... | <repo> --verify');
+if (!repoArg) fail('用法：copy-templates.mjs <repo> [--dry-run] [--no-tests] [--yes] [--staged] [--register] [--exclude <路徑>]... <template>... | <repo> --all [--dry-run] [--no-tests] [--yes] [--staged] [--exclude <路徑>]... | <repo> --verify');
+if (flags.has('--all') && (names.length || flags.has('--verify'))) fail('--all 的名稱取自清單，不能再明列正本或加 --verify');
+if (flags.has('--all') && flags.has('--register')) fail('--register 只登記明列的新範本，不能和 --all 一起用');
 const repo = resolve(repoArg);
 
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -75,20 +81,41 @@ if (!Array.isArray(localExceptions) || localExceptions.some(path => typeof path 
 for (const path of localExceptions) exclusions.set(templatePath(path), `${MANIFEST} 的 localExceptions`);
 for (const path of excludes) exclusions.set(templatePath(path), '--exclude');
 
-if (flags.has('--verify')) {
-  if (!existsSync(manifestPath)) { console.log(`MISSING ${MANIFEST}`); process.exit(1); }
+/** 清單 copies 的副本路徑 → templates/ 下的檔名。 */
+const fromCopy = path => path.replace(/^scripts\//, '');
+/** 清單 copies 裡被 localExceptions／--exclude 排除的副本（#549：留在 copies 會讓 --verify 印 NO_ORIGIN）。 */
+const listedExceptions = () => Object.keys(manifest.copies ?? {}).filter(path => excluded(fromCopy(path)));
+
+/** 逐筆核對清單與副本，印 MISSING／MISMATCH／NO_ORIGIN／EXCEPTION_LISTED，全部一致時印 VERIFIED；回傳不一致的筆數。 */
+function verify() {
   let bad = 0;
+  const overlap = new Set(listedExceptions());
   for (const [path, entry] of Object.entries(manifest.copies)) {
+    if (overlap.has(path)) { console.log(`EXCEPTION_LISTED ${path}`); bad++; continue; }
     const file = join(repo, path);
     if (!existsSync(file)) { console.log(`MISSING ${path}`); bad++; continue; }
     if (sha256(file) !== entry.sha256) { console.log(`MISMATCH ${path}`); bad++; }
     if (needsOrigin(path) && !hasOrigin(readFileSync(file, 'utf8'))) { console.log(`NO_ORIGIN ${path}`); bad++; }
   }
-  if (bad) process.exit(1);
-  console.log(`VERIFIED ${Object.keys(manifest.copies).length}`);
-  process.exit(0);
+  if (overlap.size) console.error(`copy-templates: ${MANIFEST} 的 copies 仍列著 localExceptions／--exclude 排除的檔；跑 --all 會移除，或手動從 copies 拿掉`);
+  if (!bad) console.log(`VERIFIED ${Object.keys(manifest.copies).length}`);
+  return bad;
 }
-if (!names.length) fail('沒有指定正本');
+
+if (flags.has('--verify')) {
+  if (!existsSync(manifestPath)) { console.log(`MISSING ${MANIFEST}`); process.exit(1); }
+  process.exit(verify() ? 1 : 0);
+}
+if (flags.has('--all')) {
+  if (!existsSync(manifestPath)) fail(`--all 要有 ${MANIFEST}`);
+  const unlist = listedExceptions();
+  for (const path of unlist) {
+    console.log(`UNLIST ${path}`);
+    if (!flags.has('--dry-run')) delete manifest.copies[path];
+  }
+  names.push(...Object.keys(manifest.copies).map(fromCopy).filter(file => /\.(mjs|sh)$/.test(file) && !file.endsWith('.test.mjs') && !/(^|\/)fixtures\//.test(file) && !excluded(file)));
+}
+if (!names.length) fail(flags.has('--all') ? `${MANIFEST} 的 copies 沒有程式副本` : '沒有指定正本');
 
 const git = (...rest) => spawnSync('git', ['-C', TEMPLATES, ...rest], { encoding: 'utf8' });
 const sourceRoot = git('rev-parse', '--show-toplevel').stdout.trim();
@@ -240,3 +267,4 @@ manifest.copies = Object.fromEntries(Object.entries(manifest.copies).sort(([a], 
 mkdirSync(dirname(manifestPath), { recursive: true });
 writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 console.log(`COPIED ${plan.length + mirrors.length}`);
+if (flags.has('--all') && verify()) process.exit(1);

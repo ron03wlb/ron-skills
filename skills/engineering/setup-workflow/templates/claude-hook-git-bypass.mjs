@@ -144,8 +144,11 @@ function closingParen(text, start) {
 /**
  * 直譯器程式碼接成一行再比對：BYPASS 的 -n／--no-verify 只看 shell 的同一行（#339），直譯器裡的換行不分隔指令，
  * argv 串列與字串裡的多行訊息都會跨行（`subprocess.run([⏎'git', 'commit',⏎'-n'])`、`os.system('''git commit -m 'a⏎b' -n''')`，#339 PR review）。
+ * 接成一行後，只有字串開頭（引號後）或 shell 分隔符（`;`、`&`、`|`、`$(` 後）的 git 才是指令，其餘改成 `git_` 不比對：
+ * 函式名 `git(root, "show", …)`、字串裡敘述 hook 訊息的「以 git commit -n 繞過」不是指令，接成一行後卻會和別處的 commit、-n 湊成繞過（#564）。
  */
-const codeView = code => code.replace(/\n/g, ' ');
+const codeView = code => code.replace(/\n/g, ' ')
+  .replace(/\bgit\b/g, (word, at, text) => (/(?:['"`]|[;&|]\s*|\$\()$/.test(text.slice(Math.max(0, at - 8), at)) ? word : 'git_'));
 
 /** 一段引號內容在比對用文字裡的樣子：會被執行的展開比對；git 的參數（單一個字、core.hooksPath 設定）去引號；其他文字換成 `""`。 */
 function quotedView({ literal, subs }, segment, rest, codeIsData, inlineSubs) {

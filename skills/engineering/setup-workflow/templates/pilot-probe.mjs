@@ -44,8 +44,9 @@
 //            ` ｜ ` 之後是把那份存進 scratch 檔的指令，跑完用 Read 讀存檔，不讀整份 diff，也不把 `git show` 直接印到輸出：35 KB、67 KB 會被存檔後再進 context 一次）
 //            ｜ADAPTER_AHEAD_SEEN <檔案>（#544：上面指令存的 `.scratch/pilot/adapter/<檔名>` 已在、內容等於 adapter ref 那份，coordinator 已讀過，不必再讀；
 //            已存副本與 adapter ref 那份不同時照印 ADAPTER_AHEAD，名稱欄改成相對已存副本變動的條目，規則同上）
-//   腳本（#358）：SCRIPT_AHEAD <scripts/路徑> run-in <stage worktree>｜SCRIPT_AHEAD <scripts/路徑> sync-main（有 ADAPTER_AHEAD 的那一輪，整合分支那份 adapter 的
-//            Pilot 段與它連到的檔指名的 `scripts/*`（含 `.py`、`.sh`），主 checkout 工作樹缺檔或內容與整合分支不同，而且整合分支那份不比主分支舊；依路徑。
+//   腳本（#358）：SCRIPT_AHEAD run-in <stage worktree> <scripts/路徑>...｜SCRIPT_AHEAD sync-main <scripts/路徑>...（有 ADAPTER_AHEAD 的那一輪，整合分支那份 adapter 的
+//            Pilot 段與它連到的檔指名的 `scripts/*`（含 `.py`、`.sh`），主 checkout 工作樹缺檔或內容與整合分支不同，而且整合分支那份不比主分支舊；依去處各一行、路徑依名稱排序
+//            （#563：investing main 暫停期間每輪 44 行 SCRIPT_AHEAD）。
 //            run-in 是分支為整合分支或 pilot/stage-* 的 worktree，在主 checkout 以 `<stage worktree>/scripts/…` 跑；那個 worktree 不存在或也沒有這個檔時是 sync-main）｜
 //            HOOK_BEHIND <scripts/路徑>（主分支落後整合分支時，主分支 `.claude/settings.json` 的 hook 指令引用、整合分支內容不同而且不比主分支舊的檔；
 //            依指令順序，每個檔一次：hook 跑的是主 checkout 的舊版）
@@ -93,13 +94,15 @@
 //          不是 done 的成員裡有 batch key 那張時（pilot-batch move 會 STOP same-batch，#357）改印 MOVE <key> <done 的成員…>；
 //          開著的 batch 裡 stop 的成員（這一輪剛讀到 STOP 的也算）的 Issue 有 blocked_by、而且每張都已關閉時印 UNBLOCKED <key> <n>
 //          （#357；gh 失敗或成員的 Issue 已關閉時不印）；
-//          開著的 batch 裡 done 的成員（這一輪剛讀到 DONE 的也算）的 Issue 本文最後編輯（lastEditedAt）晚於列的 started 時印 SCOPE_CHANGED <key> <n> <edited at>
+//          開著、還沒合入（current 不是 merged／pushed，#563：已合入等 main 的舊批次每輪各印一行）的 batch 裡 done 的成員（這一輪剛讀到 DONE 的也算）的
+//          Issue 本文最後編輯（lastEditedAt）晚於列的 started 時印 SCOPE_CHANGED <key> <n> <edited at>
 //          （#359：worker 交付的可能是開工前的範圍，Stage 前讀改了什麼；時間照 tracker 原樣，依成員列順序，在 UNBLOCKED 之後；gh 失敗、started 解析不了時不印）；
 //          沒有 done 印 PARKED <key> <n…>（#163：只剩 stop 的 batch 照跑 pilot-land 只得到 STOP member）；
 //          current 是 `staged <sha>` 的 batch，最後一行 regression 不是這個 staged SHA 的 exit 0 時印 RESTAGE <key> regression-failed <code 或 none>
 //          （#191：Regression 沒過、batch 停在 staged，probe 卻什麼都不印；none 是沒有 regression 行、SHA 是先前那次 stage 的，或 SHA 後面沒緊接 exit <code>）；
 //          其中這個 staged SHA 還沒有 regression 行、checkpoint 的 `regressing: <sha> pid <pid>` 是同一個 SHA、那個 pid 還是 pilot-land（ps 的命令列）時
-//          改印 REGRESSING <key> <staged sha>（#361：land 還在跑 Regression，coordinator 等它，不重 stage）；
+//          改印 REGRESSING <key> <staged sha>（#361：land 還在跑 Regression，coordinator 等它，不重 stage）；標記的 pid 判斷不出來，但這個 staged SHA 還沒有
+//          regression 行、`reg-<key>.log` 在 REG_LOG_ACTIVE_MS（10 分鐘）內還有寫入時也印 REGRESSING（#563：investing 670、637、672 回歸中印 RESTAGE … none）；
 //          沒關的 batch 裡 `parked after #<m>` 的成員，在 #m 以 done 留在 `closed` 的 batch 之後印 UNPARK <n>（state 是 `parked after #<m> fresh` 時印 UNPARK_FRESH <n>，#482）；
 //          current 是 merged／pushed 的 batch 在 git fetch 後比 origin/<主分支>，印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
 //          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA，且那一行是 exit 0），
@@ -109,7 +112,7 @@
 //          PUSH_PARKED <gate id> <batch 數> batches（多個這種 gate 取第一個：表格列先於 `## G<n>` 段落，各照檔案順序；IN_MAIN、FETCH_FAILED 照印；#136）；
 //          沒有這種 gate、而 main 暫停旗標有效（`.scratch/pilot/main-paused`，`pilot-hold.mjs set-main <reason> --until <YYYY-MM-DD>` 寫，until 當天仍有效；
 //          判斷是 issue-pool 的 mainPause，過期、讀不懂或沒有時照印各行）時，RESUME_PUSH、NOT_IN_MAIN <key>、NOT_IN_MAIN <key> tip … 合成一行
-//          MAIN_PAUSED <reason> until <date> pending <key>...（依 batch 順序；no-sha、no-regression、regression-failed 照印；#379）
+//          MAIN_PAUSED <reason> until <date> pending <n> batches（只印數量，#563：約 200 個 key 擠在一行；no-sha、no-regression、regression-failed 照印；#379）
 //   重疊：OVERLAP <n> <m|integration> <檔案數> files [**<條目>.**…]（開著的 batch 裡 running、done 的成員分支已 commit 的內容，相對於與整合分支的 merge-base：
 //          兩個成員改到同一個檔，或整合分支自成員的 merge-base 以來也改了它改的檔；`.md` 檔的改動都在 `- **<名稱>.**` 條目裡時細到條目，
 //          相接的行與同一處的插入也算，git 合併時會衝突；同一對只印一行，後面列重疊的條目名稱，#176：條目不帶檔名、不同檔的同名條目只列一次，
@@ -128,7 +131,7 @@
 //   全機上限：CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP、OVER_CAP <合計> <上限>（帶 --capacity 時，見上）
 // exit：0 印完；2 用法錯誤；3 `--apply` 的 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，該 batch 沒寫、其他行照印，#345）；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS、PARENT_APPLY_FAILED 等）。
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
@@ -348,8 +351,8 @@ function stageWorktree(checkout, integration) {
 /**
  * `ADAPTER_AHEAD` 那一輪（`adapterLines` 是 adapterAhead 印的行，空時不比），coordinator 照整合分支的 adapter 跑主 checkout 的腳本（#358，#324 第 5 項、#338 第 5 項）：
  * 整合分支那份 adapter 的 Pilot 段與它連到的檔指名的 `scripts/*`（含 `.py`、`.sh`），整合分支有這個檔、主 checkout 工作樹缺檔或內容不同、
- * 而且整合分支那份不比主分支舊（integrationNewer）時，依路徑印 `SCRIPT_AHEAD <path> run-in <stage worktree>`；stage worktree 不存在或也沒有這個檔時
- * 印 `SCRIPT_AHEAD <path> sync-main`（先跑 pilot-land.mjs sync-main 建好、跟上 stage worktree）。缺檔會 MODULE_NOT_FOUND，舊版會靜默做錯（`pilot-watch.mjs`）。
+ * 而且整合分支那份不比主分支舊（integrationNewer）時，合成 `SCRIPT_AHEAD run-in <stage worktree> <path>...`；stage worktree 不存在或也沒有這個檔的合成
+ * `SCRIPT_AHEAD sync-main <path>...`（先跑 pilot-land.mjs sync-main 建好、跟上 stage worktree；#563：依路徑各一行時每輪 44 行）。缺檔會 MODULE_NOT_FOUND，舊版會靜默做錯（`pilot-watch.mjs`）。
  */
 export function scriptsAhead(checkout, adapterLines, { integration = 'pilot/integration', main = 'main' } = {}) {
   if (!adapterLines.length) return [];
@@ -365,7 +368,10 @@ export function scriptsAhead(checkout, adapterLines, { integration = 'pilot/inte
   });
   if (!stale.length) return [];
   const stage = stageWorktree(checkout, integration);
-  return stale.map(path => `SCRIPT_AHEAD ${path} ${stage && existsSync(join(stage, path)) ? `run-in ${stage}` : 'sync-main'}`);
+  // 依去處各合成一行（#563）：run-in 在前、sync-main 在後，路徑照上面排序。
+  const runIn = stale.filter(path => stage && existsSync(join(stage, path)));
+  const sync = stale.filter(path => !runIn.includes(path));
+  return [...(runIn.length ? [`SCRIPT_AHEAD run-in ${stage} ${runIn.join(' ')}`] : []), ...(sync.length ? [`SCRIPT_AHEAD sync-main ${sync.join(' ')}`] : [])];
 }
 
 /**
@@ -921,6 +927,18 @@ export function scopeChangedLines(key, active, results, issues) {
     .map(({ n, edited }) => `SCOPE_CHANGED ${key} ${n} ${edited}`);
 }
 
+/** reg-<key>.log 在這段時間內有寫入，視為 Regression 還在跑（#563）。 */
+export const REG_LOG_ACTIVE_MS = 10 * 60_000;
+
+/** `<pilot>/reg-<key>.log` 在 REG_LOG_ACTIVE_MS 內有寫入（pilot-land 的 Regression 邊跑邊寫）；沒有這個檔時 false。 */
+export function regLogActive(pilot, key, now = Date.now()) {
+  try {
+    return now - statSync(join(pilot, `reg-${key}.log`)).mtimeMs < REG_LOG_ACTIVE_MS;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * staged batch 的 Regression 判斷（#191）：最後一行 regression 是這個 staged SHA 的 exit 0 才算過（pilot-land 接著做 Integrate，或 hold 擋著），
  * 其他情況（exit 不是 0、沒寫 exit、SHA 是先前那次 stage 的、沒有 regression 行）印 RESTAGE，coordinator 讀 reg-<key>.log 後重跑 pilot-land。
@@ -1244,9 +1262,13 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
       out.push(...stage);
       if (stage.includes(`STAGEABLE ${key}`)) out.push(...conflictLines(checkout, key, active, { integration, main }));
     }
-    if (!/^closed\b/.test(current)) out.push(...unblockedLines(key, active, results, tracker.issues), ...scopeChangedLines(key, active, results, tracker.issues));
-    // 只有 staged 而且留了標記的 batch 才查行程（ps），其他 batch 不多花一次 spawn。
-    const liveLandSha = /^staged\b/.test(current) && regressing && landAlive(regressing.pid) ? regressing.sha : undefined;
+    if (!/^closed\b/.test(current)) out.push(...unblockedLines(key, active, results, tracker.issues));
+    // 已合入（merged／pushed）的 batch 不再 Stage，範圍改了也不印（#563）。
+    if (!/^(closed|merged|pushed)\b/.test(current)) out.push(...scopeChangedLines(key, active, results, tracker.issues));
+    // 只有 staged 而且留了標記的 batch 才查行程（ps），其他 batch 不多花一次 spawn；判斷不出來時看 reg-<key>.log 是否還在寫（#563）。
+    const liveLandSha = /^staged\b/.test(current)
+      ? (regressing && landAlive(regressing.pid) ? regressing.sha : regLogActive(pilot, key) ? current.split(' ')[1] : undefined)
+      : undefined;
     out.push(...restageLines(key, current, regression, regressionExit, liveLandSha));
     if (/^(merged|pushed)\b/.test(current)) landing.push({ key, sha, regression, regressionExit, merged: /^merged\b/.test(current) });
   }
@@ -1272,7 +1294,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
           if (apply && merged) out.push(...applyPushed(join(pilot, `batch-${key}.md`), key));
         } else unpushed(key, merged ? mergedNotInMain(checkout, integration, key, regression, regressionExit) : `NOT_IN_MAIN ${key}`);
       }
-      if (pending.length) out.push(parking ? `PUSH_PARKED ${parking.id} ${pending.length} batches` : `MAIN_PAUSED ${pause.reason} until ${pause.until} pending ${pending.join(' ')}`);
+      if (pending.length) out.push(parking ? `PUSH_PARKED ${parking.id} ${pending.length} batches` : `MAIN_PAUSED ${pause.reason} until ${pause.until} pending ${pending.length} batches`);
     }
   }
   out.push(...behindMain(checkout, { integration, main }));

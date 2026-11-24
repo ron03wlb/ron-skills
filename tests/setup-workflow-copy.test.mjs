@@ -545,6 +545,43 @@ test('清單的 localExceptions：目標 repo 自己的檔不帶 --exclude 也�
   assert.match(named.stderr, /localExceptions/);
 });
 
+// #549（investing retro 1123c，session b53c436f）：整批刷新要手拼名稱清單，localExceptions 留在 copies 時 --verify 只印 NO_ORIGIN。
+test('--all：名稱取自清單 copies、扣掉 localExceptions，複製後接著 verify；重疊的項目印 UNLIST 並從 copies 拿掉', t => {
+  const { source, target, copier } = fixture(t);
+  withOrigin(source);
+  assert.equal(run(copier, target, '--yes', 'a', 'other').status, 0);
+  const manifest = JSON.parse(readFileSync(join(target, MANIFEST), 'utf8'));
+  // 本地改寫 helper 並列入 localExceptions，copies 卻沒拿掉（investing #616 的情形）。
+  write(target, { 'scripts/test/helper.mjs': '// 本地版\n', [MANIFEST]: `${JSON.stringify({ ...manifest, localExceptions: ['scripts/test/helper.mjs'] }, null, 2)}\n` });
+  const verify = run(copier, target, '--verify');
+  assert.equal(verify.status, 1);
+  assert.deepEqual(verify.stdout.trim().split('\n'), ['EXCEPTION_LISTED scripts/test/helper.mjs']);
+  assert.match(verify.stderr, /--all/);
+  const dry = run(copier, target, '--all', '--dry-run');
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.match(dry.stdout, /^UNLIST scripts\/test\/helper\.mjs$/m);
+  assert.ok(JSON.parse(readFileSync(join(target, MANIFEST), 'utf8')).copies['scripts/test/helper.mjs'], '--dry-run 不改清單');
+  const result = run(copier, target, '--all');
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trim().split('\n');
+  assert.deepEqual(lines.filter(line => !line.startsWith('SAME ')), ['UNLIST scripts/test/helper.mjs', 'EXCLUDE scripts/test/helper.mjs', 'COPIED 5', 'VERIFIED 6']);
+  assert.deepEqual(lines.filter(line => line.startsWith('SAME ')).map(line => line.slice(5)),
+    ['scripts/a.mjs', 'scripts/a.test.mjs', 'scripts/b.mjs', 'scripts/lib/pre.mjs', 'scripts/other.mjs']);
+  // 只由被排除的 helper 帶入的 fixture 不再刷新，清單項目與檔案留著，verify 照驗。
+  assert.equal(readFileSync(join(target, 'scripts/test/helper.mjs'), 'utf8'), '// 本地版\n');
+  assert.equal(JSON.parse(readFileSync(join(target, MANIFEST), 'utf8')).copies['scripts/test/helper.mjs'], undefined);
+  assert.equal(run(copier, target, '--verify').stdout.trim(), 'VERIFIED 6');
+});
+
+test('--all 不能再明列正本；沒有清單時 exit 2', t => {
+  const { target, copier } = fixture(t);
+  assert.equal(run(copier, target, '--all').status, 2);
+  assert.equal(run(copier, target, '--yes', 'a').status, 0);
+  const named = run(copier, target, '--all', 'a');
+  assert.equal(named.status, 2);
+  assert.match(named.stderr, /--all/);
+});
+
 test('清單的 localExceptions 不是字串陣列時 exit 2、不寫任何檔', t => {
   const { target, copier } = fixture(t);
   write(target, { [MANIFEST]: `${JSON.stringify({ localExceptions: 'scripts/test/helper.mjs', copies: {} })}\n` });

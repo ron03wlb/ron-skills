@@ -148,7 +148,7 @@ const BUCKET_CASES = [
 // blocked 行在號碼與標題之間多了狀態與 blocker（#352），第四欄就是這一段。
 for (const [bucket, why, fixture, detail = ''] of BUCKET_CASES) {
   test(`${why}的 Issue 歸到 ${bucket}`, () => {
-    const result = fakeGh({ issues: [fixture] }).run();
+    const result = fakeGh({ issues: [fixture] }).run('--stale');
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, `${bucket} #7 ${detail}標題 7\n`);
   });
@@ -166,8 +166,23 @@ test('跨 repo 的 blocker 關閉後，Issue 回到 ready', () => {
 test('認領時限可以用 --stale-hours 覆寫，過期只歸到 stale、不釋放', () => {
   const { run, calls } = fakeGh({ issues: [issue(7, { labels: ['bug', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(3) })] });
   assert.equal(run().stdout, 'claimed #7 標題 7\n');
-  assert.equal(run('--stale-hours', '2').stdout, 'stale #7 標題 7\n');
+  assert.equal(run('--stale-hours', '2', '--stale').stdout, 'stale #7 標題 7\n');
   assert.ok(calls().every(([cmd, sub]) => cmd === 'api' && sub === 'graphql'), '列出時只讀，不改 Issue');
+});
+
+// #550（investing retro 1123c，session fd1b2c29）：每輪 Pool 約 190 行 stale 蓋過 4 行 needs-triage；預設收成一行計數，--stale 才逐行列。
+test('stale 桶預設收成一行 STALE <數量>，帶 --stale 才逐行列（#550）', () => {
+  const stale = Array.from({ length: 30 }, (_, i) => issue(100 + i, { labels: ['bug', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(30), commentAt: hoursAgo(25) }));
+  const triage = [issue(7, { labels: ['bug', 'needs-triage'] }), issue(8, { labels: ['enhancement', 'needs-triage'] })];
+  const { run } = fakeGh({ issues: [...stale, ...triage] });
+  let result = run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'STALE 30\nneeds-triage #7 標題 7\nneeds-triage #8 標題 8\n');
+  result = run('--stale');
+  assert.equal(result.stdout.split('\n').filter(line => line.startsWith('stale #')).length, 30);
+  assert.doesNotMatch(result.stdout, /^STALE /m);
+  // 沒有 stale 的單時不印計數行。
+  assert.equal(fakeGh({ issues: triage }).run().stdout, 'needs-triage #7 標題 7\nneeds-triage #8 標題 8\n');
 });
 
 test('已認領的 retro-candidates 超過 --stale-hours 仍歸 retro-candidates（#270）', () => {
@@ -369,7 +384,7 @@ const landedFixture = () => {
 };
 
 test('--integration：已指派、最近認領之後有 DONE 結果行，或分支已合入整合分支的歸 landed，排在 stale、claimed 之前', () => {
-  const result = landedFixture().run('--integration', 'pilot/integration');
+  const result = landedFixture().run('--integration', 'pilot/integration', '--stale');
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'landed #229 標題 229\nlanded #231 標題 231\nstale #233 標題 233\nclaimed #230 標題 230\nclaimed #232 標題 232\n');
 });
@@ -380,14 +395,14 @@ test('--integration 且 main 暫停旗標有效：landed 桶收成 LANDED_COUNT 
   mkdirSync(join(f.repo, '.scratch/pilot'), { recursive: true });
   const flag = text => writeFileSync(join(f.repo, '.scratch/pilot/main-paused'), text);
   flag(`${JSON.stringify({ since: '2026-11-21T10:00:00+08:00', reason: '過渡期', until: '2999-12-01', session: 's' })}\n`);
-  let result = f.run('--integration', 'pilot/integration');
+  let result = f.run('--integration', 'pilot/integration', '--stale');
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'LANDED_COUNT 2 pilot/integration\nstale #233 標題 233\nclaimed #230 標題 230\nclaimed #232 標題 232\n');
   // 沒帶 --integration 時沒有 landed 桶，旗標不影響。
-  assert.equal(f.run().stdout, 'stale #229 標題 229\nstale #233 標題 233\nclaimed #230 標題 230\nclaimed #231 標題 231\nclaimed #232 標題 232\n');
+  assert.equal(f.run('--stale').stdout, 'stale #229 標題 229\nstale #233 標題 233\nclaimed #230 標題 230\nclaimed #231 標題 231\nclaimed #232 標題 232\n');
   for (const text of [`${JSON.stringify({ reason: '過渡期', until: '2000-01-01' })}\n`, 'not json\n']) {
     flag(text);
-    result = f.run('--integration', 'pilot/integration');
+    result = f.run('--integration', 'pilot/integration', '--stale');
     assert.equal(result.stdout, 'landed #229 標題 229\nlanded #231 標題 231\nstale #233 標題 233\nclaimed #230 標題 230\nclaimed #232 標題 232\n', text);
   }
 });
@@ -395,7 +410,7 @@ test('--integration 且 main 暫停旗標有效：landed 桶收成 LANDED_COUNT 
 test('沒帶 --integration 時不判斷落地：沒有 landed 桶、blocked 行不標 landed，其餘逐行同以前', () => {
   const f = fakeGh({ issues: [...LANDED_ISSUES, issue(247, { labels: ['enhancement', 'needs-triage'], blockedBy: [151] })] });
   integrationBranch(f.repo, { subjects: ['加報價來源 (#151)'], merged: ['issue/231-landed'] });
-  const result = f.run();
+  const result = f.run('--stale');
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'stale #229 標題 229\nstale #233 標題 233\nclaimed #230 標題 230\nclaimed #231 標題 231\nclaimed #232 標題 232\n'
     + 'blocked #247 needs-triage by #151 標題 247\n');
@@ -895,7 +910,7 @@ for (const [bucket, options, detail = ''] of [
 ]) {
   test(`GitLab：${bucket} 桶`, () => {
     const { run } = fakeGlab({ items: [workItem(7, options)] });
-    const result = run();
+    const result = run('--stale');
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, `${bucket} #7 ${detail}標題 7\n`);
   });
@@ -918,7 +933,7 @@ test('GitLab：有父項目的 ready 行附 parent #<p>，沒有的不變', () =
 test('GitLab：系統紀錄裡只有指派算認領後的動靜，改 label 這類紀錄不算', () => {
   const { run } = fakeGlab({ items: [workItem(7, { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'],
     activity: [['assigned to @ron', hoursAgo(30)], ['added ~"ready-for-agent" label', hoursAgo(1)]] })] });
-  assert.equal(run().stdout, 'stale #7 標題 7\n');
+  assert.equal(run('--stale').stdout, 'stale #7 標題 7\n');
 });
 
 test('GitLab：ready 依 blocks 連結排序（關鍵路徑），列表以 glab api graphql 查 checkout 推得的專案', () => {

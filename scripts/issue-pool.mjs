@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 把開著的 Issue 逐張分桶，pilot 的 Pool 從 ready 桶依序挑；tracker 支援 GitHub（gh）與 GitLab（glab，含自架），本機 Markdown tracker 不支援。
-// 用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] [--skip-labels <label>,...] [--integration <分支>]
+// 用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--stale] [--categories <label>,...] [--skip-labels <label>,...] [--integration <分支>]
 //       node scripts/issue-pool.mjs --pickable-blocked [--repo <專案>] [--integration <分支>]
 //       node scripts/issue-pool.mjs claim <n> [--repo <專案>] [--session <id>] [--take-stale] [--integration <分支>]
 //       node scripts/issue-pool.mjs children <母單> [--repo <專案>] [--ask-prefix <前綴>]...
@@ -26,7 +26,8 @@
 // stdout：每張一行 `<桶> #<n> <標題>`；blocked 桶在號碼與標題之間多寫狀態與開著的 blocker：`blocked #<n> <triage 狀態 label|unlabeled> by #<m>,<owner>/<repo>#<k> <標題>`，
 // 帶 --integration 時已落地在整合分支的本 repo blocker 後面接 ` (landed <分支>)`（#352）。帶 --integration 而且主 checkout 的 main 暫停旗標有效時
 // （`.scratch/pilot/main-paused`，`pilot-hold.mjs set-main` 寫、until 當天仍有效，判斷是 export 的 mainPause，Probe 的 MAIN_PAUSED 共用，#379），
-// landed 桶不逐張印，在它的位置收成一行 `LANDED_COUNT <數量> <整合分支>`；旗標過期、讀不懂或沒有時照逐行印；Probe 的 BLOCKER_OPEN_SCOPE 用同一份 blocker 資料（export 的 blockerOpenScope，#359），這支 CLI 不印。之後 ready 桶本文有 `… prerequisite：<內容>` 一行、內容不是「無」的，
+// landed 桶不逐張印，在它的位置收成一行 `LANDED_COUNT <數量> <整合分支>`；旗標過期、讀不懂或沒有時照逐行印。stale 桶預設也不逐張印，在它的位置收成一行 `STALE <數量>`，
+// 帶 `--stale` 才逐行印（/issue-queue 要逐張列認領者時帶；investing retro 1123c：每輪 Pool 約 190 行 stale 蓋過 4 行 needs-triage，#550）；Probe 的 BLOCKER_OPEN_SCOPE 用同一份 blocker 資料（export 的 blockerOpenScope，#359），這支 CLI 不印。之後 ready 桶本文有 `… prerequisite：<內容>` 一行、內容不是「無」的，
 // 依 ready 的順序各印一行 `PREREQ <n> <內容>`（先查環境或開 gate 再派）；最後對開著、有 triage 狀態 label（TRIAGE_STATES）卻沒有分類 label 的單印一行
 // `NO_CATEGORY <n> <n>...`（號碼升冪，沒有時不印），母單（有 sub-issue 或 `parent` label）、`retro-candidates` 與 `--skip-labels` 的 label 不算。分類 label 預設是 DEFAULT_CATEGORIES（triage 的 `bug`、`enhancement`），
 // adapter 用的 label 不同時以 `--categories` 覆寫（逗號分隔）。exit 0。gh 或 glab 失敗時 stderr 印原因、exit 1；用法錯誤或本機 Markdown tracker 時 exit 2。
@@ -63,7 +64,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { codeHost, projectInDoc, trackerKind } from './lib/hosts.mjs';
 
-const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] [--skip-labels <label>,...] [--integration <分支>] [--pickable-blocked] | claim <n> [--repo <專案>] [--session <id>] [--take-stale] [--integration <分支>] | children <母單> [--repo <專案>] [--ask-prefix <前綴>]... | open-work <n> [--repo <專案>]';
+const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--stale] [--categories <label>,...] [--skip-labels <label>,...] [--integration <分支>] [--pickable-blocked] | claim <n> [--repo <專案>] [--session <id>] [--take-stale] [--integration <分支>] | children <母單> [--repo <專案>] [--ask-prefix <前綴>]... | open-work <n> [--repo <專案>]';
 /** pool() 與 children 共用的 label、blocked-by 欄位片段。 */
 const LABEL_FIELDS = 'labels(first:50){nodes{name}}';
 const BLOCKED_BY_FIELDS = 'blockedBy(first:50){nodes{number state repository{nameWithOwner}}}';
@@ -388,13 +389,18 @@ export function mainPause(checkout, today = localDate()) {
 
 /** stdout 的全部行（格式見檔頭）：分桶行、PREREQ、NO_CATEGORY。landed、integration 只在帶 --integration 時給；
  * paused（main 暫停旗標有效，#379）時 landed 桶收成一行 `LANDED_COUNT <數量> <整合分支>`，放在 landed 桶的位置。 */
-export function poolLines(issues, { repo, categories = DEFAULT_CATEGORIES, landed, integration, paused = false, ...options }) {
+export function poolLines(issues, { repo, categories = DEFAULT_CATEGORIES, landed, integration, paused = false, listStale = false, ...options }) {
   const rows = pool(issues, { repo, landed, ...options });
   const detail = (issue, bucket) => bucket === 'blocked' ? `${blockedDetail(issue, { repo, landed, integration })} ` : bucket === 'ready' ? parentDetail(issue, repo) : '';
-  const landedCount = paused && landed ? rows.filter(({ bucket }) => bucket === 'landed').length : 0;
+  const count = bucket => rows.filter(row => row.bucket === bucket).length;
+  // 收成一行的桶：main 暫停時的 landed（#379）、沒帶 --stale 時的 stale（#550）；桶的第一張的位置印計數行。
+  const folded = {
+    ...(paused && landed ? { landed: `LANDED_COUNT ${count('landed')} ${integration}` } : {}),
+    ...(listStale ? {} : { stale: `STALE ${count('stale')}` }),
+  };
   const lines = rows.flatMap(({ issue, bucket }, i) => {
-    if (!landedCount || bucket !== 'landed') return [`${bucket} #${issue.number} ${detail(issue, bucket)}${issue.title}`];
-    return rows[i - 1]?.bucket === 'landed' ? [] : [`LANDED_COUNT ${landedCount} ${integration}`];
+    if (!folded[bucket]) return [`${bucket} #${issue.number} ${detail(issue, bucket)}${issue.title}`];
+    return rows[i - 1]?.bucket === bucket ? [] : [folded[bucket]];
   });
   for (const { issue } of rows.filter(({ bucket }) => bucket === 'ready')) {
     const prerequisite = prerequisiteOf(issue.body);
@@ -561,7 +567,7 @@ function openWork(n, tracker) {
 }
 
 function main(argv) {
-  let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, skipLabels = [], session = defaultSession(), takeStale = false, integration, pickable = false;
+  let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, skipLabels = [], session = defaultSession(), takeStale = false, integration, pickable = false, listStale = false;
   const askPrefixes = [];
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
@@ -571,6 +577,7 @@ function main(argv) {
     else if (argv[i] === '--skip-labels' && argv[i + 1]) skipLabels = argv[++i].split(',').filter(Boolean);
     else if (argv[i] === '--session' && argv[i + 1]) session = argv[++i];
     else if (argv[i] === '--take-stale') takeStale = true;
+    else if (argv[i] === '--stale') listStale = true;
     else if (argv[i] === '--pickable-blocked') pickable = true;
     else if (argv[i] === '--integration' && argv[i + 1]) integration = argv[++i];
     else if (argv[i] === '--ask-prefix' && argv[i + 1]) askPrefixes.push(argv[++i]);
@@ -594,7 +601,7 @@ function main(argv) {
     }
     const checkout = landed && mainCheckout();
     const paused = Boolean(checkout && mainPause(checkout));
-    for (const line of poolLines(issues, { repo, staleHours, categories, skipLabels, landed, integration, paused })) console.log(line);
+    for (const line of poolLines(issues, { repo, staleHours, categories, skipLabels, landed, integration, paused, listStale })) console.log(line);
     return 0;
   } catch (error) {
     if (!(error instanceof CliError) && !(error instanceof UsageError)) throw error;
