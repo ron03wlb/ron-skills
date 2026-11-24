@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { FAST, orcaReplySource } from './test/fake-orca.mjs';
+import { FAST, ORCA_SAMPLES, orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const script = new URL('./orca-session-send.mjs', import.meta.url).pathname;
@@ -15,8 +15,8 @@ const script = new URL('./orca-session-send.mjs', import.meta.url).pathname;
 // 送出 Enter 後連同送出的文字一起出現在畫面上。
 // `stuck` 次送出的文字進了輸入框卻沒提交：畫面最後一行是輸入框裡的 prompt，draft 也還是它。
 // `working` 模擬一直在跑的 worker：每次 read 的畫面都帶 `esc to interrupt`（要搭配夠大的 `busy`）。
-// `startsAt` 模擬已收下 prompt、開始工作的 worker（畫面文字照抄 #323 第 3 項 11-15 留言的 `terminal read --screen`，fixtures/orca/ 沒有工作中的 read 樣本）：第 `startsAt` 次 read 起畫面只剩工作中的輸出與 spinner，
-// spinner 沒有 `esc to interrupt`，prompt 那一行已被長回應擠出畫面，draft 是空的。
+// `startsAt` 模擬已收下 prompt、開始工作的 worker：第 `startsAt` 次 read 起回工作中 session 的真實樣本 fixtures/orca/read-working.json（#507），
+// 畫面有 spinner、沒有 `esc to interrupt`，也沒有這次送出的 prompt（像已被長回應擠出畫面），draft 是使用者另打、還沒送出的草稿。
 // 寫出假 Orca CLI（`body(temp, log)` 回傳腳本本體，接在記錄呼叫之後），回傳呼叫紀錄、執行腳本與列出送出指令的函式。
 function fakeOrca(t, body) {
   const temp = mkdtempSync(join(realTmpdir(), 'orca-session-send-'));
@@ -41,7 +41,7 @@ const sentFile = ${JSON.stringify(log)} + '.sent'; const sent = () => fs.existsS
 const spinner = ${working} ? ['✻ Working… (esc to interrupt)'] : [];
 if (${stale}) { fail('terminal_handle_stale'); process.exit(1); }
 const reads = (fs.readFileSync(${JSON.stringify(log)}, 'utf8').match(/terminal read/g) || []).length;
-if (b === 'read' && ${startsAt} && reads >= ${startsAt}) reply('read', { terminal: { tail: ['⏺ 正在讀 #22 相關程式與 fixture…', '', '✳ Fiddle-faddling… (1m 32s · ↓ 1.2k tokens)'], draft: '' } });
+if (b === 'read' && ${startsAt} && reads >= ${startsAt}) reply('read-working');
 else if (b === 'wait') reply('wait', { wait: { satisfied: (fs.readFileSync(${JSON.stringify(log)}, 'utf8').match(/terminal wait/g) || []).length > ${busy} } });
 else if (b === 'send') { fs.appendFileSync(sentFile, arg('--text') + '\\n'); reply('send', { send: { accepted: ${!sendRejected} } }); }
 else if (b === 'read' && sent().length && sent().length <= ${stuck}) reply('read', { terminal: { tail: [...spinner, '● 先前的報告', '> ' + sent()[0]], draft: sent()[0] } });
@@ -190,8 +190,13 @@ test('確認逾時、重送前 worker 才開始工作：重送前再讀一次畫
 
 test('SPINNER：工作中的 spinner 算，已結束的一輪、閒置輸入列與一般輸出不算', async () => {
   const { SPINNER } = await import(script);
-  for (const line of ['✳ Fiddle-faddling… (1m 32s · ↓ 1.2k tokens)', '✻ Working… (esc to interrupt)', '  ✶ Thinking… (12s · esc to interrupt)']) assert.match(line, SPINNER);
-  for (const line of ['✻ Cogitated for 46s', '❯', '⏺ 正在讀 #22 相關程式與 fixture…', '● 先前的報告', '* 清單項目… (見下)', '⏺ 讀取中… (見下)']) assert.doesNotMatch(line, SPINNER);
+  // 工作中 session 的真實畫面（fixtures/orca/read-working.json）：spinner 是輸入列上框線前的那一行，其餘各行（含帶經過時間的工具行）都不算。
+  const { tail } = ORCA_SAMPLES['read-working'].terminal;
+  const spinnerAt = tail.findIndex(line => line.startsWith('─')) - 1;
+  assert.ok(spinnerAt > 0, '樣本要有輸入列框線');
+  assert.match(tail[spinnerAt], SPINNER);
+  for (const line of tail.filter((_, i) => i !== spinnerAt)) assert.doesNotMatch(line, SPINNER);
+  for (const line of ['✻ Cogitated for 46s', '* 清單項目… (見下)', '⏺ 讀取中… (見下)']) assert.doesNotMatch(line, SPINNER);
 });
 
 test('已結束那一輪的 spinner（`✻ Cogitated for 46s`）不算工作中：仍重送，三次都被吞 STOP send', t => {
