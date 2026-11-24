@@ -2,7 +2,7 @@ diff --git a/SKILL.md b/SKILL.md
 index 83183e0..2732adf 100644
 --- a/SKILL.md
 +++ b/SKILL.md
-@@ -59,6 +59,18 @@ Each smell reads *what it is* → *how to fix*; match it against the diff:
+@@ -59,6 +59,20 @@ Each smell reads *what it is* → *how to fix*; match it against the diff:
  
  Issue both sub-agent calls together, in the foreground, and aggregate the reports they return.
  
@@ -17,6 +17,8 @@ index 83183e0..2732adf 100644
 +**Test results.** Add to both briefs the test commands the caller ran and their exit codes, and: "Review the diff only; rerun no test — the caller already ran these. With no test results given, you may run one single test file." (spay2 retro 00588b5c#1: a Spec sub-agent reran three test files the worker had already passed, hit the 110–120 s tool limit twice in 390 s, and reported no result.)
 +
 +**Evidence reruns.** Add to the Spec brief: "Changes to an evidence JSON's `sourceVersion`, counts, or `inputs` made by `rerun-evidence.mjs --apply` are expected; do not report them as scope creep." (spay2 retro cdff9918#3: a Spec sub-agent flagged a rerun's count update 1014→1016 as scope creep.)
++
++**Adapter entries.** When the repo has `scripts/adapter-line.mjs`, add to both briefs: "In `docs/agents/**`, a bare `[Entry]` not followed by `(` or `:` is an adapter entry name that `node scripts/adapter-line.mjs '<Entry>'` resolves; the repo's checks cover it, so do not report it as a broken link." Without `scripts/adapter-line.mjs`, leave this sentence out. (spay2 retro 9580d1e4#1: a Spec sub-agent reported `[Drift check]` in `docs/agents/issue-run-reference.md` as a P2 broken reference link; it is an adapter entry that `adapter-line.mjs "Drift check"` resolves.)
 +
  **Standards sub-agent prompt** should include:
  
