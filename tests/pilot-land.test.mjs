@@ -1137,6 +1137,37 @@ test('sync-main：通過時在每個 merged batch 追加 regression 行，Probe 
 });
 
 // #193 留言：retro 分支直接落地進 main 之後，整合分支只是落後、可以快轉；coordinator 每次都手動 merge --ff-only origin/main。
+// #523（方案 C）：investing 的 sync-main 對每個停在 `merged` 的歷史 batch 都追加 sync 行，之後每次 Probe 多約 140～200 行 RESUME_PUSH。
+// 只對還沒推上 origin/<整合分支>（也不在 origin/<主分支>）的 merged batch 追加；已推的保留舊 regression 行，Probe 照舊印 NOT_IN_MAIN <key> tip …。
+test('sync-main：已推上 origin/<整合分支> 或已在 origin/main 的 merged batch 不追加 regression 行、不印 RECORDED；還沒推的照常追加', t => {
+  const f = syncMainFixture(t, {
+    integration: tree => {
+      write(tree, { 'a.txt': 'a\n' });
+      git(tree, 'add', '-A');
+      git(tree, 'commit', '-qm', 'pushed');
+      git(tree, 'push', '-q', 'origin', 'HEAD:pilot/integration');
+      write(tree, { 'c.txt': 'c\n' });
+    },
+    upstream: tree => write(tree, { 'b.txt': 'b\n' }),
+  });
+  const tip = f.tip();
+  const pushed = git(f.repo, 'rev-parse', `${tip}^`);
+  const base = git(f.repo, 'rev-parse', 'main');
+  const batch = sha => `# batch\ncurrent: merged ${sha}\n\nregression: ${sha} exit 0 CHECK_PASS tests 1+1+1\n`;
+  write(f.repo, { '.scratch/pilot/batch-5.md': batch(pushed), '.scratch/pilot/batch-6.md': batch(tip), '.scratch/pilot/batch-3.md': batch(base) });
+  // batch 5 在 origin/pilot/integration、batch 3 在 origin/main：都算已推；batch 6 只在本機整合分支。
+  const result = f.sync();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const sha = f.tip();
+  assert.notEqual(sha, tip);
+  assert.ok(result.lines.includes('RECORDED 6'), result.stdout);
+  assert.ok(!result.lines.includes('RECORDED 5'), result.stdout);
+  assert.ok(!result.lines.includes('RECORDED 3'), result.stdout);
+  assert.equal(f.batch('5'), batch(pushed));
+  assert.equal(f.batch('3'), batch(base));
+  assert.match(f.batch('6'), new RegExp(`\\nregression: ${sha} exit 0 sync-main CHECK_PASS tests 3\\+4\\+5\\n$`));
+});
+
 test('sync-main：整合分支是 origin/main 的祖先時直接快轉，印 SYNCED <sha> ff，不建 merge commit、不跑 Regression', t => {
   const f = syncMainFixture(t, { upstream: tree => write(tree, { 'b.txt': 'b\n' }) });
   const result = f.sync();
