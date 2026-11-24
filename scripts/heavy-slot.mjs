@@ -9,14 +9,19 @@
 //   行程已不在的，任何讀到它的行程（status、其他排隊者）都略過並清掉）。
 // 排隊（CoS item 67，2026-11-24：搶鎖時 repo 的等待者越多越容易搶到，spay2 的 push-gate 連續逾時）：等待者不再各自輪詢搶鎖，
 //   每 $HEAVY_CHECK_POLL 秒讀一次全部 wait 檔與持有者，依下面的規則算出「現在輪到誰」，只有輪到自己時才去試 flock（試不到就下一輪再算）。
-//   規則：依（有效優先級、since、pid）排成一列；空出的 slot 由列首往後依序分配，但有其他 repo 在等時，單一 repo（label 冒號前；沒有冒號的 label，例如手動跑的 `dbg`，整個 label 就是 repo、優先級 normal）
-//   最多占 max(1, N-1) 個 slot（持有加上這輪分到的；N=2 就是各 1 個），到上限的等待者這輪跳過、讓給後面別的 repo；沒有別的 repo 在等就照常用滿。
+//   規則（CoS item 126，owner：spay 的專案優先）：先看 repo 優先序，同一個 repo 內才看用途優先級。
+//     repo 是 label 冒號前的字串（沒有冒號的 label，例如手動跑的 `dbg`，整個 label 就是 repo、用途優先級 normal）。
+//     repo 優先序：$HEAVY_CHECK_REPO_PRIORITY（逗號分隔，測試用）＞ ~/.config/orca-heavy-check/repo-priority（一行一個 repo，越前面越優先；
+//     空行與 # 開頭的行略過）＞ 預設 spay2、ron-skills；沒列出的 repo 都排在最後、彼此同級。
+//     只有排在最前面的那一級 repo 有人在等時，就只有那一級的等待者能拿新空出的 slot（例如 spay2 在等時，ron-skills 和其他 repo 一個都不拿）；
+//     已經在跑的不搶占。同一級裡依（有效用途優先級、since、pid）排成一列，空出的 slot 由列首往後分配；那一級沒人在等才輪到下一級。
 //   拿鎖仍是 flock，持有狀態全在核心，排隊狀態只有 wait 檔（死掉的 pid 會被清掉），沒有要手動清的東西。
-//   優先級（從 label 冒號後的「用途」判斷；`--priority <high|normal|low>` 覆寫）：
+//   用途優先級（從 label 冒號後的「用途」判斷；`--priority <high|normal|low>` 覆寫，只影響同一個 repo 內的順序）：
 //     high    推送前最後一關：用途是 push、push-gate、pre-push、land、land-checks，或以 `push-`、`land-` 開頭
 //     normal  其他一切，包括 check、check-contracts、regression 與不認得的用途
 //     low     pre-commit，或以 `pre-commit-` 開頭
-//   防餓死：每等滿 $HEAVY_CHECK_AGE_S 秒（預設 900，0 不升級）有效優先級升一級（low→normal→high），不會比 high 更高。
+//   防餓死：每等滿 $HEAVY_CHECK_AGE_S 秒（預設 900，0 不升級）用途優先級升一級（low→normal→high），不會比 high 更高；
+//     只在沒有更前面的 repo 在等時生效（有 spay2 在等時，ron-skills 的等待者不升級，也不會排到 spay2 前面）。
 //   還沒換成這版的副本（舊版等待者）照舊每秒搶鎖、不看排隊；它的 wait 檔照樣算進列裡（優先級由 label 推）。
 // 巢狀：在 slot 裡跑的命令帶環境變數 HEAVY_SLOT_HELD；裡面再呼叫 run（例如 bin/check 的測試跑 pre-commit）時直接執行，不再拿第二個 slot（避免 N 個持有者互等）。
 //
@@ -33,7 +38,7 @@
 // slot 數（全機一個設定）：$HEAVY_CHECK_SLOTS（測試用）＞ ~/.config/orca-heavy-check/slots（內容是一個正整數）＞ 2。adapter 不宣告 slot 數，只宣告哪些檢查經 slot 跑。
 // 鎖檔目錄：$HEAVY_CHECK_DIR，預設 ~/.local/state/orca-heavy-check。不用 /tmp、~/.cache（會被清理：持有中的鎖檔被刪，下一個行程建新的同名檔
 //   就 flock 得到，兩支同時在 slot 裡），也不用 $XDG_RUNTIME_DIR（git hook、cron、Orca 分頁不一定都有它，有的有、有的沒有就分成兩組 slot）。
-// 其他環境變數：HEAVY_CHECK_TIMEOUT、HEAVY_CHECK_WAIT_INTERVAL、HEAVY_CHECK_AGE_S（防餓死升級的間隔秒數）、HEAVY_CHECK_POLL（排隊重算的間隔秒數，預設 1）。
+// 其他環境變數：HEAVY_CHECK_TIMEOUT、HEAVY_CHECK_WAIT_INTERVAL、HEAVY_CHECK_REPO_PRIORITY（repo 優先序，逗號分隔）、HEAVY_CHECK_AGE_S（防餓死升級的間隔秒數）、HEAVY_CHECK_POLL（排隊重算的間隔秒數，預設 1）。
 // 量測 log：每次 run 拿到 slot 並結束、或等到逾時，在鎖檔目錄的 log.jsonl 追加一行
 //   `{ label, repo（label 冒號前）, pid, wait_ms, run_ms, exit, load1（拿到 slot 時的 1 分鐘 load；逾時時是放棄時的）, started_at（開始排隊，ISO）, timed_out,
 //   priority（基本優先級）, effective_priority（拿到 slot 或逾時那一刻的有效優先級） }`；priority 兩欄是這版才加的，舊紀錄沒有，stats 不用它們。
@@ -47,7 +52,8 @@
 //   SLOT_NESTED <label> held=<外層>                                          已在 slot 裡（HEAVY_SLOT_HELD），直接執行
 //   SLOT_UNAVAILABLE <label> <原因>                                          沒有 perl 或鎖檔目錄建不了，不限流、直接執行
 // stdout（status）：`SLOTS <忙>/<N> dir=<目錄>`，每個持有者 `HOLDER slot-<i> <label> pid=<pid> held=<秒數>s cwd=<目錄>`，
-//   每個排隊者依排隊順序 `WAITER <label> pid=<pid> waited=<秒數>s cwd=<目錄> rank=<名次> priority=<有效優先級> base=<基本優先級>`。
+//   每個排隊者依排隊順序 `WAITER <label> pid=<pid> waited=<秒數>s cwd=<目錄> rank=<名次> priority=<有效優先級> base=<基本優先級> repo_rank=<repo 名次>`
+//   （repo_rank 從 1 起算，沒列在 repo 優先序裡的 repo 是清單長度 + 1）。
 // stdout（stats）：每個 label 一行（依 label 排序）`STATS <label> n=<件數> timeouts=<逾時件數> wait_p50=<ms> wait_p90=<ms> run_p50=<ms> run_p90=<ms>`
 //   （run 只算拿到 slot 的件數，沒有時印 `-`）；沒有任何符合的紀錄時印 `STATS none`。
 // 不提供 acquire／release：wrapper 已涵蓋兩個 repo 的入口；而且 Claude 的每次 Bash 呼叫是新的行程，
@@ -211,31 +217,38 @@ export function effectivePriority(priority, since, now = Date.now(), age = ageMs
   return PRIORITIES[Math.max(0, base - steps)];
 }
 
-const repoOf = label => String(label ?? '').split(':')[0];
+/** label 的 repo：冒號前的字串；沒有冒號時整個 label。 */
+export const repoOf = label => String(label ?? '').split(':')[0];
+
+/** repo 優先序設定檔。 */
+export const repoPriorityFile = (env = process.env) => join(home(env), '.config/orca-heavy-check/repo-priority');
+
+/** repo 優先序（越前面越優先）：$HEAVY_CHECK_REPO_PRIORITY（逗號分隔）＞ 設定檔（一行一個，空行與 # 開頭略過）＞ spay2、ron-skills。 */
+export function repoPriority(env = process.env) {
+  let text = env.HEAVY_CHECK_REPO_PRIORITY?.split(',').join('\n');
+  if (text === undefined) {
+    try { text = readFileSync(repoPriorityFile(env), 'utf8'); } catch { return ['spay2', 'ron-skills']; }
+  }
+  return text.split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#'));
+}
+
+/** repo 的名次（0 起算）；沒列出的是清單長度，彼此同級。 */
+export const repoRank = (repo, order) => (order.includes(repo) ? order.indexOf(repo) : order.length);
 
 /**
- * 排隊結果：{ order: [依（有效優先級、since、pid）排好的等待者，各帶 effective], granted: Set(這輪可以去試鎖的 pid) }。
- * 空出的 slot（slots - holders.length）由列首往後分配；有其他 repo 在等時，單一 repo 的持有加分到的最多 max(1, slots-1) 個，到上限的跳過。
+ * 排隊結果：{ order: [排好的等待者，各帶 effective（有效用途優先級）與 repoRank], granted: Set(這輪可以去試鎖的 pid) }。
+ * 依（repo 名次、有效用途優先級、since、pid）排序；只有最前面那一級 repo 的等待者能分到空出的 slot（slots - holders.length），
+ * 由列首往後分配。防餓死升級只給最前面那一級，後面的 repo 用基本優先級。
  */
-export function queuePlan({ holders, waiters, slots, now = Date.now(), age = ageMs() }) {
-  const order = waiters
-    .map(w => ({ ...w, effective: effectivePriority(w.priority, w.since, now, age) }))
-    .sort((a, b) => PRIORITIES.indexOf(a.effective) - PRIORITIES.indexOf(b.effective)
+export function queuePlan({ holders, waiters, slots, now = Date.now(), age = ageMs(), repos = repoPriority() }) {
+  const ranked = waiters.map(w => ({ ...w, repoRank: repoRank(repoOf(w.label), repos) }));
+  const top = Math.min(...ranked.map(w => w.repoRank));
+  const order = ranked
+    .map(w => ({ ...w, effective: w.repoRank === top ? effectivePriority(w.priority, w.since, now, age) : w.priority }))
+    .sort((a, b) => a.repoRank - b.repoRank || PRIORITIES.indexOf(a.effective) - PRIORITIES.indexOf(b.effective)
       || (Date.parse(a.since) || 0) - (Date.parse(b.since) || 0) || a.pid - b.pid);
-  const cap = Math.max(1, slots - 1);
-  const held = new Map();
-  for (const h of holders) held.set(repoOf(h.label), (held.get(repoOf(h.label)) ?? 0) + 1);
-  const repos = new Set(order.map(w => repoOf(w.label)));
-  let free = slots - holders.length;
-  const granted = new Set();
-  for (const w of order) {
-    if (free <= 0) break;
-    const repo = repoOf(w.label);
-    if (repos.size > 1 && (held.get(repo) ?? 0) >= cap) continue;
-    granted.add(w.pid);
-    held.set(repo, (held.get(repo) ?? 0) + 1);
-    free--;
-  }
+  const free = Math.max(0, slots - holders.length);
+  const granted = new Set(order.filter(w => w.repoRank === top).slice(0, free).map(w => w.pid));
   return { order, granted };
 }
 
@@ -326,6 +339,7 @@ async function run({ label, timeoutSec, intervalSec, argv, priority: override })
   const started = Date.now();
   const priority = override ?? labelPriority(label);
   const age = ageMs();
+  const repos = repoPriority();
   const record = { label, repo: label.split(':')[0], pid: process.pid, started_at: new Date(started).toISOString() };
   const info = { label, pid: process.pid, cwd: process.cwd(), since: new Date(started).toISOString() };
   const waitFile = join(dir, `wait-${process.pid}.json`);
@@ -347,7 +361,7 @@ async function run({ label, timeoutSec, intervalSec, argv, priority: override })
     let state;
     try { state = readSlots({ dir, slots }); } catch { return true; } // 讀不到排隊狀態（例如 probe 失敗）：退回直接試鎖
     if (!state.waiters.some(w => w.pid === process.pid)) state.waiters.push({ ...info, priority });
-    const { order, granted } = queuePlan({ ...state, slots, age });
+    const { order, granted } = queuePlan({ ...state, slots, age, repos });
     const rank = order.findIndex(w => w.pid === process.pid);
     latest = { holders: state.holders, rank: rank + 1, total: order.length, effective: order[rank].effective };
     return granted.has(process.pid);
@@ -428,8 +442,8 @@ function status() {
   const age = since => (since ? `${seconds(now - Date.parse(since))}s` : '?');
   console.log(`SLOTS ${holders.length}/${slots} dir=${dir}`);
   for (const h of holders) console.log(`HOLDER slot-${h.slot} ${h.label} pid=${h.pid ?? '?'} held=${age(h.since)} cwd=${h.cwd ?? '?'}`);
-  const { order } = queuePlan({ holders, waiters, slots, now });
-  order.forEach((w, i) => console.log(`WAITER ${w.label} pid=${w.pid} waited=${age(w.since)} cwd=${w.cwd ?? '?'} rank=${i + 1} priority=${w.effective} base=${w.priority}`));
+  const { order } = queuePlan({ holders, waiters, slots, now, repos: repoPriority() });
+  order.forEach((w, i) => console.log(`WAITER ${w.label} pid=${w.pid} waited=${age(w.since)} cwd=${w.cwd ?? '?'} rank=${i + 1} priority=${w.effective} base=${w.priority} repo_rank=${w.repoRank + 1}`));
   return 0;
 }
 

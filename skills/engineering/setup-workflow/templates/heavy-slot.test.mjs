@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { realTmpdir } from './test/real-tmpdir.mjs';
-import { ageMs, effectivePriority, holdersField, labelPriority, parseArgs, percentile, queuePlan, slotCommand, slotCount, slotDir, slotTimeoutLine, statsLines, SLOT_TIMEOUT_EXIT } from './heavy-slot.mjs';
+import { ageMs, effectivePriority, holdersField, labelPriority, parseArgs, percentile, queuePlan, repoOf, repoPriority, repoPriorityFile, slotCommand, slotCount, slotDir, slotTimeoutLine, statsLines, SLOT_TIMEOUT_EXIT } from './heavy-slot.mjs';
 
 const script = new URL('./heavy-slot.mjs', import.meta.url).pathname;
 
@@ -17,6 +17,8 @@ function fixture(t, slots = 2, extraEnv = {}) {
   const env = { ...process.env, HEAVY_CHECK_DIR: join(dir, 'locks'), HEAVY_CHECK_SLOTS: String(slots), HEAVY_CHECK_POLL: '0.05', ...extraEnv };
   delete env.HEAVY_SLOT_HELD;
   delete env.HEAVY_CHECK_AGE_S;
+  // repo 優先序固定成預設值：不讀機器上真實的 ~/.config/orca-heavy-check/repo-priority。
+  env.HEAVY_CHECK_REPO_PRIORITY = 'spay2,ron-skills';
   Object.assign(env, extraEnv);
   const children = [];
   t.after(() => children.forEach(child => child.kill('SIGKILL')));
@@ -213,8 +215,8 @@ test('排隊：同優先級照先來後到（FIFO），status 依排隊順序列
   const third = await enqueue('t:third');
   const waiters = status().stdout.split('\n').filter(line => line.startsWith('WAITER'));
   assert.deepEqual(waiters.map(line => line.split(' ')[1]), ['t:first', 't:second', 't:third']);
-  assert.match(waiters[0], / cwd=\S+ rank=1 priority=normal base=normal$/);
-  assert.match(waiters[2], / rank=3 priority=normal base=normal$/);
+  assert.match(waiters[0], / cwd=\S+ rank=1 priority=normal base=normal repo_rank=3$/);
+  assert.match(waiters[2], / rank=3 priority=normal base=normal repo_rank=3$/);
   assert.match(await until2(() => third.stderr(), /^SLOT_WAIT t:third \d+s holders=t:hold@\d+:\d+s rank=3\/3 priority=normal$/m), /rank=3\/3/);
   hold.release();
   const results = await Promise.all([first.done, second.done, third.done, hold.done]);
@@ -228,56 +230,61 @@ async function until2(get, pattern) {
   assert.fail(`等不到 ${pattern}：${get()}`);
 }
 
-test('優先級：後到的 push-gate 排在先到的 pre-commit 前面；--priority 可覆寫', async t => {
+test('同一個 repo 內看用途：後到的 push-gate 排在先到的 pre-commit 前面；--priority 可覆寫', async t => {
   const { status, holdUntil, enqueue, order } = fixture(t, 1);
   const hold = await holdUntil('t:hold');
   const commit = await enqueue('r:pre-commit');
   const forced = await enqueue('r:pre-commit-forced', ['--priority', 'normal']);
-  const push = await enqueue('s:push-gate');
+  const push = await enqueue('r:push-gate');
   const waiters = status().stdout.split('\n').filter(line => line.startsWith('WAITER'));
-  assert.deepEqual(waiters.map(line => line.split(' ')[1]), ['s:push-gate', 'r:pre-commit-forced', 'r:pre-commit']);
-  assert.match(waiters[2], / rank=3 priority=low base=low$/);
+  assert.deepEqual(waiters.map(line => line.split(' ')[1]), ['r:push-gate', 'r:pre-commit-forced', 'r:pre-commit']);
+  assert.match(waiters[2], / rank=3 priority=low base=low repo_rank=3$/);
   hold.release();
   await Promise.all([commit.done, forced.done, push.done, hold.done]);
-  assert.deepEqual(order(), ['s:push-gate', 'r:pre-commit-forced', 'r:pre-commit']);
+  assert.deepEqual(order(), ['r:push-gate', 'r:pre-commit-forced', 'r:pre-commit']);
 });
 
-test('跨 repo 公平：別的 repo 在等時，單一 repo 最多占 N-1 個 slot；沒有別的 repo 在等就用滿', async t => {
+test('repo 優先序：spay2 在等時，較早排隊的 ron-skills（即使是 push-gate）也拿不到；spay2 沒在等就照常', async t => {
   const { dir, start, status, holdUntil, enqueue, order, until } = fixture(t, 2);
-  // a 先拿滿兩個 slot（沒有別的 repo 在等，照常用滿）。
-  const a1 = await holdUntil('a:one');
-  const a2 = await holdUntil('a:two');
-  const aNext = await enqueue('a:next');
-  // b 後到，拿到 slot 後記下名字、拿著直到 release-b。
-  const gate = join(dir, 'release-b');
-  const bHold = start('b:hold', `echo b:hold >> ${dir}/order; while [ ! -e ${gate} ] && [ -d ${dir} ]; do sleep 0.05; done`);
-  await until(() => new RegExp(`^WAITER b:hold pid=${bHold.child.pid} .* rank=2 `, 'm').test(status().stdout), 'b:hold 排在 a:next 後面');
-  // 放掉一個：a 還占 1 = N-1、b 在等，所以先到的 a:next 讓給 b:hold。
+  const a1 = await holdUntil('ron-skills:one');
+  const a2 = await holdUntil('ron-skills:two');
+  const early = await enqueue('ron-skills:push-gate');
+  // spay2 後到，拿到 slot 後記下名字、拿著直到 release-spay。
+  const gate = join(dir, 'release-spay');
+  const spay = start('spay2:pre-commit', `echo spay2:pre-commit >> ${dir}/order; while [ ! -e ${gate} ] && [ -d ${dir} ]; do sleep 0.05; done`);
+  await until(() => new RegExp(`^WAITER spay2:pre-commit pid=${spay.child.pid} .* rank=1 priority=low base=low repo_rank=1$`, 'm').test(status().stdout), 'spay2 排在第一');
+  assert.match(status().stdout, /^WAITER ron-skills:push-gate .* rank=2 priority=high base=high repo_rank=2$/m);
   a1.release();
-  await until(() => order().includes('b:hold'), 'b:hold 拿到 slot');
-  await sleep(300);
-  assert.deepEqual(order(), ['b:hold'], 'a:next 還在等（slot 被 a:two 與 b:hold 占著）');
-  // 再放掉 a:two：只剩 a 在等，照常拿。
+  await until(() => order().includes('spay2:pre-commit'), 'spay2 拿到空出的 slot');
+  assert.deepEqual(order(), ['spay2:pre-commit']);
+  // spay2 已不在等：ron-skills 照常拿下一個空出的 slot（已經在跑的 spay2 不受影響）。
   a2.release();
-  await until(() => order().includes('a:next'), 'a:next 拿到 slot');
+  await until(() => order().includes('ron-skills:push-gate'), 'ron-skills:push-gate 在 spay2 沒人等之後拿到 slot');
   spawnSync('touch', [gate]);
-  assert.deepEqual((await Promise.all([a1.done, a2.done, aNext.done, bHold.done])).map(r => r.code), [0, 0, 0, 0]);
-  assert.deepEqual(order(), ['b:hold', 'a:next']);
+  assert.deepEqual((await Promise.all([a1.done, a2.done, early.done, spay.done])).map(r => r.code), [0, 0, 0, 0]);
+  assert.deepEqual(order(), ['spay2:pre-commit', 'ron-skills:push-gate']);
 });
 
-test('跨 repo 公平：b 在等時 a 不能拿到第二個 slot（N=2 時各 1 個）', async t => {
-  const { holdUntil, enqueue, order, until } = fixture(t, 2);
-  const a1 = await holdUntil('a:one');
-  const b1 = await holdUntil('b:one');
-  // 兩個 slot 都滿：a:two 先到、b:two 後到。放掉 b:one 時 a 已占 1，b:two 在等，所以 b:two 先拿。
-  const aTwo = await enqueue('a:two');
-  const bTwo = await enqueue('b:two');
-  b1.release();
-  await until(() => order().length >= 1, '有人拿到空出的 slot');
-  assert.equal(order()[0], 'b:two');
-  a1.release();
-  await Promise.all([a1.done, b1.done, aTwo.done, bTwo.done]);
-  assert.deepEqual(order(), ['b:two', 'a:two']);
+test('repo 優先序可設定：HEAVY_CHECK_REPO_PRIORITY 把 ron-skills 排到 spay2 前面', async t => {
+  const { holdUntil, enqueue, order, status } = fixture(t, 1, { HEAVY_CHECK_REPO_PRIORITY: 'ron-skills,spay2' });
+  const hold = await holdUntil('t:hold');
+  const spay = await enqueue('spay2:push-gate');
+  const ron = await enqueue('ron-skills:pre-commit');
+  const waiters = status().stdout.split('\n').filter(line => line.startsWith('WAITER'));
+  assert.deepEqual(waiters.map(line => line.split(' ')[1]), ['ron-skills:pre-commit', 'spay2:push-gate']);
+  hold.release();
+  await Promise.all([hold.done, spay.done, ron.done]);
+  assert.deepEqual(order(), ['ron-skills:pre-commit', 'spay2:push-gate']);
+});
+
+test('repoPriority：環境變數 > ~/.config/orca-heavy-check/repo-priority（一行一個、略過空行與 #）> spay2、ron-skills', t => {
+  const home = mkdtempSync(join(realTmpdir(), 'heavy-slot-home-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  assert.deepEqual(repoPriority({ HOME: home }), ['spay2', 'ron-skills'], '沒有設定檔');
+  mkdirSync(join(home, '.config/orca-heavy-check'), { recursive: true });
+  writeFileSync(repoPriorityFile({ HOME: home }), '# 越前面越優先\ninvesting\n\n spay2 \n');
+  assert.deepEqual(repoPriority({ HOME: home }), ['investing', 'spay2']);
+  assert.deepEqual(repoPriority({ HOME: home, HEAVY_CHECK_REPO_PRIORITY: 'a,b' }), ['a', 'b'], '環境變數優先');
 });
 
 test('防餓死：pre-commit 等超過 HEAVY_CHECK_AGE_S 就升級，排到後到的 check 前面', async t => {
@@ -285,7 +292,7 @@ test('防餓死：pre-commit 等超過 HEAVY_CHECK_AGE_S 就升級，排到後�
   const hold = await holdUntil('t:hold');
   const commit = await enqueue('r:pre-commit');
   // 負載高時 status 一次要上百毫秒，可能直接看到第二次升級（high），兩者都算升級了。
-  await until(() => / rank=1 priority=(normal|high) base=low$/m.test(status().stdout), 'pre-commit 升級');
+  await until(() => / rank=1 priority=(normal|high) base=low repo_rank=3$/m.test(status().stdout), 'pre-commit 升級');
   const check = await enqueue('s:check');
   const waiters = status().stdout.split('\n').filter(line => line.startsWith('WAITER'));
   assert.deepEqual(waiters.map(line => line.split(' ')[1]), ['r:pre-commit', 's:check'], '升級後排在後到的 check 前面');
@@ -344,33 +351,45 @@ test('labelPriority、effectivePriority、queuePlan：對照表、升級與分�
   assert.equal(ageMs({ HEAVY_CHECK_AGE_S: '60' }), 60_000);
   const w = (pid, label, priority, sec) => ({ pid, label, priority, since: new Date(Date.parse(since) + sec * 1000).toISOString() });
   const now = at(1);
-  // 2 個 slot 都空：依序分給前兩名。
-  let plan = queuePlan({ holders: [], waiters: [w(3, 'a:x', 'normal', 2), w(1, 'a:y', 'normal', 1), w(2, 'a:pre-commit', 'low', 0)], slots: 2, now });
+  const repos = ['spay2', 'ron-skills'];
+  // 2 個 slot 都空、只有一個 repo 在等：同 repo 內依用途與先後，用滿。
+  let plan = queuePlan({ holders: [], waiters: [w(3, 'a:x', 'normal', 2), w(1, 'a:y', 'normal', 1), w(2, 'a:pre-commit', 'low', 0)], slots: 2, now, repos });
   assert.deepEqual(plan.order.map(x => x.pid), [1, 3, 2]);
-  assert.deepEqual([...plan.granted], [1, 3], '只有 a 在等：用滿');
-  // a 已占 1 個、b 在等：a 的等待者到上限跳過，b 拿到。
-  plan = queuePlan({ holders: [{ label: 'a:hold', pid: 9 }], waiters: [w(1, 'a:y', 'high', 0), w(2, 'b:z', 'low', 5)], slots: 2, now });
+  assert.deepEqual([...plan.granted], [1, 3]);
+  // spay2 在等：先到的 ron-skills（push-gate）與其他 repo 都不拿，空著的第二個 slot 也不給（spay2 只有一個在等）。
+  plan = queuePlan({ holders: [], waiters: [w(1, 'ron-skills:push-gate', 'high', 0), w(2, 'spay2:pre-commit', 'low', 50), w(3, 'x:check', 'normal', 0)], slots: 2, now, repos });
+  assert.deepEqual(plan.order.map(x => x.pid), [2, 1, 3]);
+  assert.deepEqual(plan.order.map(x => x.repoRank), [0, 1, 2]);
   assert.deepEqual([...plan.granted], [2]);
-  // 1 個 slot：上限是 1，不會因為公平規則讓 slot 空著。
-  plan = queuePlan({ holders: [], waiters: [w(1, 'a:y', 'normal', 0), w(2, 'b:z', 'normal', 5)], slots: 1, now });
+  // spay2 沒在等：ron-skills 優先於其他 repo。
+  plan = queuePlan({ holders: [{ label: 'spay2:check', pid: 9 }], waiters: [w(3, 'x:push-gate', 'high', 0), w(1, 'ron-skills:pre-commit', 'low', 30)], slots: 2, now, repos });
   assert.deepEqual([...plan.granted], [1]);
-  // 都滿：沒人拿到。
-  plan = queuePlan({ holders: [{ label: 'a:h', pid: 8 }, { label: 'b:h', pid: 9 }], waiters: [w(1, 'a:y', 'high', 0)], slots: 2, now });
+  // 都滿：沒人拿到（不搶占）。
+  plan = queuePlan({ holders: [{ label: 'ron-skills:h', pid: 8 }, { label: 'ron-skills:h', pid: 9 }], waiters: [w(1, 'spay2:push-gate', 'high', 0)], slots: 2, now, repos });
   assert.deepEqual([...plan.granted], []);
+  // 防餓死只給最前面那一級：spay2 在等時，等了很久的 ron-skills pre-commit 不升級；spay2 不在時才升。
+  const late = at(60);
+  plan = queuePlan({ holders: [], waiters: [w(1, 'ron-skills:pre-commit', 'low', 0), w(2, 'spay2:pre-commit', 'low', 3500)], slots: 1, now: late, age: 900_000, repos });
+  assert.equal(plan.order.find(x => x.pid === 1).effective, 'low');
+  assert.deepEqual([...plan.granted], [2]);
+  plan = queuePlan({ holders: [], waiters: [w(1, 'ron-skills:pre-commit', 'low', 0)], slots: 1, now: late, age: 900_000, repos });
+  assert.equal(plan.order[0].effective, 'high');
   assert.match(parseArgs(['run', '--label', 'x:y', '--priority', 'urgent', '--', 'true']).error, /--priority/);
   assert.equal(parseArgs(['run', '--label', 'x:y', '--priority', 'low', '--', 'true']).priority, 'low');
 });
 
-test('沒有冒號或用途不認得的 label（例如手動跑的 dbg）：優先級 normal，整個 label 當 repo，算進跨 repo 公平', async t => {
+test('沒有冒號或用途不認得的 label（例如手動跑的 dbg）：優先級 normal，整個 label 當 repo，在 repo 優先序裡排最後', async t => {
   assert.equal(labelPriority('dbg'), 'normal');
   assert.equal(labelPriority('spay2:weird-use'), 'normal');
   const since = '2026-11-24T00:00:00Z';
   const now = Date.parse(since) + 60_000;
-  // ron-skills 已占 1、dbg 在等：dbg 是另一個 repo，先到的 ron-skills 等待者讓給它。
-  const plan = queuePlan({ holders: [{ label: 'ron-skills:check', pid: 9 }], waiters: [
-    { pid: 1, label: 'ron-skills:check', priority: 'normal', since },
-    { pid: 2, label: 'dbg', priority: labelPriority('dbg'), since: '2026-11-24T00:00:10Z' },
-  ], slots: 2, now });
+  assert.equal(repoOf('dbg'), 'dbg');
+  // dbg 是沒列在優先序裡的 repo：ron-skills 在等時排在後面、拿不到；只剩它在等時照常拿。
+  const dbgWaiter = { pid: 2, label: 'dbg', priority: labelPriority('dbg'), since };
+  let plan = queuePlan({ holders: [], waiters: [dbgWaiter, { pid: 1, label: 'ron-skills:pre-commit', priority: 'low', since: '2026-11-24T00:00:10Z' }], slots: 1, now, repos: ['spay2', 'ron-skills'] });
+  assert.deepEqual(plan.order.map(w => w.pid), [1, 2]);
+  assert.deepEqual([...plan.granted], [1]);
+  plan = queuePlan({ holders: [], waiters: [dbgWaiter], slots: 1, now, repos: ['spay2', 'ron-skills'] });
   assert.deepEqual([...plan.granted], [2]);
   // 實際跑：dbg 排進隊伍、status 顯示 normal，持有者放掉後照順序拿到。
   const { status, holdUntil, enqueue, order } = fixture(t, 1);
@@ -378,7 +397,7 @@ test('沒有冒號或用途不認得的 label（例如手動跑的 dbg）：優�
   const dbg = await enqueue('dbg');
   const check = await enqueue('x:check');
   const waiters = status().stdout.split('\n').filter(line => line.startsWith('WAITER'));
-  assert.match(waiters[0], /^WAITER dbg pid=\d+ .* rank=1 priority=normal base=normal$/);
+  assert.match(waiters[0], /^WAITER dbg pid=\d+ .* rank=1 priority=normal base=normal repo_rank=3$/);
   hold.release();
   await Promise.all([hold.done, dbg.done, check.done]);
   assert.deepEqual(order(), ['dbg', 'x:check']);
