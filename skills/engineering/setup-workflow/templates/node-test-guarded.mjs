@@ -8,7 +8,11 @@
 // force-exit 是測試 guardrail 的規範，不拿掉，改成比對後單獨重跑遺失的檔：
 //   子行程端由 lib/node-test-count-preload.mjs 記每檔實際跑完的測試名稱，以及開始數、error 事件數與 exit code；父行程的 `ℹ tests <n>` 等於總數、
 //   且 spec 輸出逐檔名稱都對得上即通過（中途結束的檔在輸出只算 1 個，總數可能恰好相等，#517），否則以 spec 輸出的測試名稱逐檔比對，找出有測試沒出現在輸出的檔。
-//   沒有 node.test tracing channel 的 Node（22）記不到名稱：所有記錄都沒收到事件時放行，只回傳 node --test 的 exit code。
+//   名稱比對只看有紀錄的測試，從沒開始的測試兩邊一起少就看不到（spay2 #1099：同一 commit 三輪 `ℹ tests` 4444／4472／4496 都綠），所以先逐檔核對
+//   「應執行的檔」都收齊（missingFiles）：有紀錄、收到事件、<root> 跑完（preload 的 finished）、開始數等於結束數、至少一個測試，且父行程 exit 0 時子行程也 exit 0。
+//   缺的檔每檔印 `MISSING_RESULTS <path> <原因>` 到 stderr，單獨重跑，重跑也要收齊才算 PASS（印 `NODE_TEST_RERUN <path> PASS|FAIL`），否則 exit 1。
+//   唯一的例外是 Node 沒有 node.test tracing channel（22）：所有紀錄都沒有事件，且探測確認 channel 不存在時，記不到名稱與是否跑完，
+//   只能逐檔核對有紀錄、exit 0，印 `NODE_TEST_UNTRACED`。channel 存在時沒有事件的檔一律算缺（測試檔在第一個測試前就結束、或根本沒有測試）。
 // 用法：node scripts/node-test-guarded.mjs <node --test 的選項（--name=value 形式）…> <測試檔…>
 //   node --test 失敗時，依子行程紀錄（failed、code）找出失敗的檔（沒有紀錄的檔也算），各單獨重跑一次（高負載下才失敗的測試，retro spay2 92fa93fe#3）：
 //   全過時每檔印 `NODE_TEST_FLAKE_SUSPECT <path>` 到 stderr、不算失敗；cwd 有 scripts/followups.mjs 時另寫一行 followups [tooling]，每個呼叫端都記到（followups 264：
@@ -54,10 +58,40 @@ export function parseRan(text) {
   return ran;
 }
 
-/** preload 的 JSON lines 有記錄、但沒有一筆收到 node.test 事件（Node 22 沒有這個 channel）。 */
+/** preload 的 JSON lines 有記錄、但沒有一筆收到 node.test 事件（Node 22 沒有這個 channel，或每個檔都在第一個測試前結束）。 */
 export function untraced(text) {
   const records = text.split('\n').filter(Boolean).map(line => JSON.parse(line));
   return records.length > 0 && !records.some(record => record.traced);
+}
+
+let channelProbe;
+/** 這個 Node 有沒有 node.test tracing channel：實際起一個測試行程看會不會收到事件（只在所有紀錄都沒有事件時才需要，結果快取）。 */
+export function hasTestChannel() {
+  channelProbe ??= spawnSync(process.execPath, ['--input-type=module', '-e', "import { tracingChannel } from 'node:diagnostics_channel';\nlet seen = false;\n"
+    + "tracingChannel('node.test').subscribe({ start() {}, asyncStart() {}, asyncEnd() {}, error() {}, end() { seen = true; } });\n"
+    + "process.on('exit', () => process.stderr.write(String(seen)));\nconst { test } = await import('node:test');\ntest('probe', () => {});\n"],
+  { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } }).stderr.trim().endsWith('true');
+  return channelProbe;
+}
+
+/**
+ * 應執行的檔逐檔核對子行程紀錄是否收齊 → [{ file, reason }]。parentCode 是 node --test 的 exit code：父行程 exit 0 而子行程非 0，代表結果沒送完就結束。
+ * traced 為 false（Node 沒有 channel）時只看有沒有紀錄與 exit code。
+ */
+export function missingFiles(text, files, { parentCode = 0, traced = true } = {}) {
+  const records = text.split('\n').filter(Boolean).map(line => JSON.parse(line));
+  return files.flatMap(file => {
+    const own = records.filter(record => record.file === file);
+    const reason = !own.length ? 'no-record'
+      : parentCode === 0 && own.some(({ code }) => code !== 0) ? `exit=${own.find(({ code }) => code !== 0).code}`
+      : !traced ? null
+      : own.some(record => !record.traced) ? 'no-events'
+      : own.some(record => record.finished !== true || record.started !== record.names.length)
+        ? `not-finished started=${own.reduce((sum, record) => sum + record.started, 0)} ended=${own.reduce((sum, record) => sum + record.names.length, 0)}`
+      : own.every(record => !record.names.length) ? 'no-tests'
+      : null;
+    return reason ? [{ file, reason }] : [];
+  });
 }
 
 /**
@@ -106,7 +140,8 @@ export function lostFiles(ran, output) {
 }
 
 /**
- * 跑一次 node --test → { code, lost, mismatch, passed, failed, timedOut }；passed(file) 是該檔子行程紀錄是否全過，failed 是失敗要重跑的檔。
+ * 跑一次 node --test → { code, lost, missing, mismatch, passed, failed, timedOut }；passed(file) 是該檔子行程紀錄是否全過，failed 是失敗要重跑的檔，
+ * missing 是沒收齊的檔（missingFiles）。
  * 有 timeoutMs 時逾時收掉整個行程群組（沒有 force-exit 時掛著的測試子行程不會自己結束），判定為失敗。
  */
 async function runOnce(options, files, { timeoutMs } = {}) {
@@ -126,27 +161,33 @@ async function runOnce(options, files, { timeoutMs } = {}) {
     const status = await new Promise(done => child.on('close', (exit, signal) => done(exit ?? (signal ? 1 : 0))));
     clearTimeout(timer);
     const code = timedOut && status === 0 ? 1 : status;
-    if (timedOut) return { code, lost: [], passed: () => false, failed: [], timedOut };
+    if (timedOut) return { code, lost: [], missing: [], passed: () => false, failed: [], timedOut };
     const wanted = files.map(file => resolve(file));
     const readText = () => existsSync(ranFile) ? readFileSync(ranFile, 'utf8') : '';
     let text = readText();
     let ran = parseRan(text);
     const total = () => [...ran.values()].reduce((sum, names) => sum + names.length, 0);
-    // 總數相等還不夠：中途 process.exit(0) 的檔被父行程算成 1 個測試，跑完數恰好相等時會放過（#517），所以逐檔名稱也要對得上。
-    if (code === 0 && ran.size >= wanted.length && total() === reportedTotal(output) && !lostFiles(ran, output).length) return { code, lost: [], passed: () => false, failed: [] };
+    // 總數相等還不夠：中途 process.exit(0) 的檔被父行程算成 1 個測試，跑完數恰好相等時會放過（#517），所以逐檔名稱也要對得上；
+    // 名稱都對得上也不夠：在測試之間結束的檔，紀錄與輸出一起少（#1099），所以每個檔都要收齊。
+    if (code === 0 && !missingFiles(text, wanted).length && total() === reportedTotal(output) && !lostFiles(ran, output).length) {
+      return { code, lost: [], missing: [], passed: () => false, failed: [] };
+    }
     // 父行程先結束：還在跑的子行程結束時才寫記錄，等它們寫完再比對。沒有 force-exit 時父行程會等子行程，沒有記錄就是不會有了。
     const orphans = options.includes('--test-force-exit');
-    for (const until = Date.now() + ORPHAN_WAIT_MS; orphans && wanted.some(file => !ran.has(file)) && !untraced(text) && Date.now() < until;) {
+    for (const until = Date.now() + ORPHAN_WAIT_MS; orphans && wanted.some(file => !ran.has(file)) && Date.now() < until;) {
       await sleep(500);
       text = readText();
       ran = parseRan(text);
     }
-    if (untraced(text)) return { code, lost: [], passed: () => false, failed: [] };
+    // 例外只有一種：Node 沒有 node.test channel，記不到名稱與是否跑完，只能逐檔核對有紀錄與 exit code。沒有事件但 channel 存在就是沒收齊，照常判定。
+    const traced = !untraced(text) || hasTestChannel();
+    if (!traced) console.error(`NODE_TEST_UNTRACED ${process.version} 沒有 node.test tracing channel：只逐檔核對子行程紀錄與 exit code，無法比對測試名稱與是否跑完`);
     const failed = code === 0 ? [] : failedFiles(text, wanted);
-    const lost = lostFiles(ran, output).filter(({ file }) => !failed.includes(file));
-    for (const file of wanted.filter(file => !ran.has(file) && !failed.includes(file))) lost.push({ file, ran: '?', missing: '?' });
-    return { code, lost, failed, output, passed: file => recordedPass(text, file),
-      mismatch: code === 0 && !lost.length && total() !== reportedTotal(output) ? `ran=${total()} reported=${reportedTotal(output)}` : null };
+    const missing = missingFiles(text, wanted, { parentCode: code, traced }).filter(({ file }) => !failed.includes(file));
+    const skip = file => failed.includes(file) || missing.some(entry => entry.file === file);
+    const lost = lostFiles(ran, output).filter(({ file }) => !skip(file));
+    return { code, lost, missing, failed, output, passed: file => recordedPass(text, file),
+      mismatch: traced && code === 0 && !lost.length && !missing.length && total() !== reportedTotal(output) ? `ran=${total()} reported=${reportedTotal(output)}` : null };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -191,7 +232,7 @@ export function saveFlakeOutput(path, output, dir = flakeOutputDir(), now = Date
 async function rerun(options, path) {
   const solo = await runOnce(soloOptions(options), [path], { timeoutMs: RERUN_TIMEOUT_MS });
   if (solo.timedOut) console.error(`NODE_TEST_RERUN_TIMEOUT ${path} ${RERUN_TIMEOUT_MS}`);
-  return solo.code === 0 && !solo.mismatch && solo.lost.every(({ file }) => solo.passed(file));
+  return solo.code === 0 && !solo.mismatch && !solo.missing.length && solo.lost.every(({ file }) => solo.passed(file));
 }
 
 export async function main(args) {
@@ -219,6 +260,13 @@ export async function main(args) {
       console.error(`NODE_TEST_RERUN ${path} FAIL`);
       status = first.code;
     }
+  }
+  for (const { file, reason } of first.missing) {
+    const path = relative(process.cwd(), file);
+    console.error(`MISSING_RESULTS ${path} ${reason}`);
+    const pass = await rerun(options, path);
+    console.error(`NODE_TEST_RERUN ${path} ${pass ? 'PASS' : 'FAIL'}`);
+    if (!pass) status ||= 1;
   }
   for (const { file, ran, missing } of first.lost) {
     const path = relative(process.cwd(), file);

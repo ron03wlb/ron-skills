@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { failedFiles, lostFiles, parseRan, recordedPass, reportedTotal, saveFlakeOutput, soloOptions, untraced } from './node-test-guarded.mjs';
+import { failedFiles, hasTestChannel, lostFiles, missingFiles, parseRan, recordedPass, reportedTotal, saveFlakeOutput, soloOptions, untraced } from './node-test-guarded.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./node-test-guarded.mjs', import.meta.url));
@@ -28,7 +28,7 @@ const PROBE = "import { tracingChannel } from 'node:diagnostics_channel';\nlet s
 const NO_CHANNEL = spawnSync(process.execPath, ['--input-type=module', '-e', PROBE], { encoding: 'utf8' }).stderr.trim() !== 'true'
   && `${process.version} 沒有 node.test tracing channel`;
 
-const PASS = "import { test, describe, it } from 'node:test';\ndescribe('g', () => { it('x', () => {}); it('y', () => {}); });\ntest('o', async t => { await t.test('sub', () => {}); });\ntest.skip('s', () => {});\n";
+const PASS = "import { test, describe, it } from 'node:test';\ndescribe('g', () => { it('x', () => {}); it('y', () => {}); it.todo('later'); });\ntest('o', async t => { await t.test('sub', () => {}); });\ntest.skip('s', () => {});\ntest('r', { skip: 'why' }, () => {});\ntest('w', { todo: 'soon' }, () => {});\n";
 
 test('parseRan／reportedTotal／lostFiles：以 spec 輸出的名稱逐檔比對；同名分屬多檔時兩檔都算', () => {
   const ran = parseRan('{"file":"/a.test.mjs","names":["x","y"]}\n{"file":"/b.test.mjs","names":["z","w","y"]}\n{"file":"/a.test.mjs","names":["v"]}\n');
@@ -50,8 +50,8 @@ test('全部回報：exit 0，輸出照舊是 spec（含 suite、子測試、ski
   const run = fixture(t, { 'a.test.mjs': PASS, 'b.test.mjs': "import { test } from 'node:test';\ntest('b', () => {});\n" });
   const result = run('a.test.mjs', 'b.test.mjs');
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /^ℹ tests 6$/m);
-  assert.doesNotMatch(result.stderr, /NODE_TEST_LOST/);
+  assert.match(result.stdout, /^ℹ tests 9$/m);
+  assert.doesNotMatch(result.stderr, /NODE_TEST_LOST|MISSING_RESULTS/);
 });
 
 test('子行程記下跑完的測試名稱：不必等候逾時，exit 0、不印 NODE_TEST_LOST', t => {
@@ -223,11 +223,11 @@ test('單獨重跑沒有 force-exit 收尾、測試檔留下掛著的 handle：�
   assert.ok(Date.now() - started < 60000);
 });
 
-test('子行程紀錄不完整、回報遺失且 exit 0：印 NODE_TEST_LOST，單獨重跑通過即 exit 0', { skip: NO_CHANNEL }, t => {
+test('子行程紀錄不完整、回報遺失且 exit 0：印 MISSING_RESULTS，單獨重跑通過即 exit 0', { skip: NO_CHANNEL }, t => {
   const run = fixture(t, { 'lossy.test.mjs': LOSSY, 'ok.test.mjs': "import { test } from 'node:test';\ntest('ok', () => {});\n", MUTE: '', CUT: '', FLAKY_ONCE: '' });
   const result = run('lossy.test.mjs', 'ok.test.mjs');
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /^NODE_TEST_LOST lossy\.test\.mjs ran=2 missing=[12]\nNODE_TEST_RERUN lossy\.test\.mjs PASS$/m);
+  assert.match(result.stderr, /^MISSING_RESULTS lossy\.test\.mjs not-finished started=3 ended=2\nNODE_TEST_RERUN lossy\.test\.mjs PASS$/m);
   assert.doesNotMatch(result.stderr, /ok\.test\.mjs/);
 });
 
@@ -260,7 +260,7 @@ test('回報遺失且子行程紀錄有失敗：不判 PASS，單獨重跑仍以
   const run = fixture(t, { 'lossy.test.mjs': failing, MUTE: '' });
   const result = run('lossy.test.mjs');
   assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(result.stderr, /^NODE_TEST_LOST lossy\.test\.mjs ran=6 missing=[1-6]\nNODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
+  assert.match(result.stderr, /^MISSING_RESULTS lossy\.test\.mjs exit=1\nNODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
   assert.doesNotMatch(result.stderr, /NODE_TEST_RECORDED/);
 });
 
@@ -278,20 +278,20 @@ test('回報遺失且子行程紀錄不完整（有測試沒有結束紀錄）�
   const run = fixture(t, { 'lossy.test.mjs': LOSSY, MUTE: '', CUT: '' });
   const result = run('lossy.test.mjs');
   assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(result.stderr, /^NODE_TEST_LOST lossy\.test\.mjs ran=2 missing=[12]\nNODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
+  assert.match(result.stderr, /^MISSING_RESULTS lossy\.test\.mjs not-finished started=3 ended=2\nNODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
   assert.doesNotMatch(result.stderr, /NODE_TEST_RECORDED/);
 });
 
 // #517：中途 process.exit(0) 的檔被父行程算成 1 個測試；cut 前只有一個測試時，子行程紀錄數（a、ok）恰好等於回報總數 2，
 // 總數相等的捷徑原本放行、exit 0。
-test('中途結束的檔：紀錄數恰好等於回報總數也印 NODE_TEST_LOST，單獨重跑仍不完整即 exit 1', { skip: NO_CHANNEL }, t => {
+test('中途結束的檔：紀錄數恰好等於回報總數也印 MISSING_RESULTS，單獨重跑仍不完整即 exit 1', { skip: NO_CHANNEL }, t => {
   const run = fixture(t, {
     'lossy.test.mjs': "import { test } from 'node:test';\ntest('a', () => {});\ntest('cut', () => { process.exit(0); });\nfor (const n of [1, 2, 3]) test(`t${n}`, () => {});\n",
     'ok.test.mjs': "import { test } from 'node:test';\ntest('ok', () => {});\n",
   });
   const result = run('--test-reporter=spec', 'lossy.test.mjs', 'ok.test.mjs');
   assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(result.stderr, /^NODE_TEST_LOST lossy\.test\.mjs ran=1 missing=1\nNODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
+  assert.match(result.stderr, /^MISSING_RESULTS lossy\.test\.mjs not-finished started=2 ended=1\nNODE_TEST_RERUN lossy\.test\.mjs FAIL$/m);
   assert.doesNotMatch(result.stderr, /ok\.test\.mjs/);
 });
 
@@ -302,4 +302,77 @@ test('測試內再起的 node --test（fixture）不計入、不誤報', t => {
   const result = run('nested.test.mjs');
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /^ℹ tests 1$/m);
+});
+
+test('missingFiles：逐檔核對收齊；沒紀錄、沒事件、<root> 沒跑完、開始數不等於結束數、沒有測試、父行程 exit 0 而子行程非 0 都算缺', () => {
+  const rec = (file, fields) => `${JSON.stringify({ file, names: ['x'], traced: true, started: 1, failed: 0, finished: true, code: 0, ...fields })}\n`;
+  const text = rec('/ok', {}) + rec('/events', { traced: false, names: [], started: 0, finished: false }) + rec('/cut', { finished: false })
+    + rec('/started', { started: 2 }) + rec('/empty', { names: [], started: 0 }) + rec('/exit', { code: 7 }) + rec('/old', { finished: undefined })
+    + rec('/twice', {}) + rec('/twice', { finished: false });
+  const files = ['/ok', '/none', '/events', '/cut', '/started', '/empty', '/exit', '/old', '/twice'];
+  assert.deepEqual(missingFiles(text, files), [
+    { file: '/none', reason: 'no-record' }, { file: '/events', reason: 'no-events' }, { file: '/cut', reason: 'not-finished started=1 ended=1' },
+    { file: '/started', reason: 'not-finished started=2 ended=1' }, { file: '/empty', reason: 'no-tests' }, { file: '/exit', reason: 'exit=7' },
+    { file: '/old', reason: 'not-finished started=1 ended=1' }, { file: '/twice', reason: 'not-finished started=2 ended=2' },
+  ]);
+  assert.deepEqual(missingFiles(rec('/exit', { code: 1 }), ['/exit'], { parentCode: 1 }), [], '父行程失敗時子行程非 0 交給 failedFiles');
+  // 沒有 channel（Node 22）時只核對有紀錄與 exit code
+  const bare = rec('/a', { traced: false, names: [], started: 0, finished: false });
+  assert.deepEqual(missingFiles(bare + rec('/b', { traced: false, code: 1 }), ['/a', '/b', '/c'], { traced: false }),
+    [{ file: '/b', reason: 'exit=1' }, { file: '/c', reason: 'no-record' }]);
+});
+
+test('hasTestChannel：與實際探測一致', () => {
+  assert.equal(hasTestChannel(), !NO_CHANNEL);
+});
+
+// spay2 #1099：同一 commit 三輪 `ℹ tests` 4444／4472／4496 都綠。測試檔在測試之間結束時，子行程紀錄與父行程輸出一起少、名稱都對得上，
+// 總數與逐檔名稱比對（#517）都看不到；要靠逐檔核對 <root> 跑完。以下三種都要 exit 1 並印缺的檔名。
+const MISSING_CASES = {
+  // 整個檔的結果遺失：第一個測試前就結束，父行程只把檔名算成一個通過的測試
+  'gone.test.mjs': ["import { test } from 'node:test';\nprocess.exit(0);\ntest('g1', () => {});\ntest('g2', () => {});\n", 'no-events'],
+  // 只收到一半：第二個測試後結束，後面的測試從沒開始，紀錄與輸出都只有前兩個
+  'half.test.mjs': ["import { test } from 'node:test';\ntest('h1', () => {});\ntest('h2', () => { setImmediate(() => process.exit(0)); });\n"
+    + 'for (const n of [3, 4, 5]) test(`h${n}`, async () => { await new Promise(done => setTimeout(done, 50)); });\n', 'not-finished started=3 ended=2'],
+  // force-exit 截斷：父行程不再收結果（吞掉輸出），子行程再跑一個測試後在收齊前結束
+  'trunc.test.mjs': ["import { test } from 'node:test';\ntest('c1', () => {});\ntest('c2', () => { process.stdout.write = () => true; });\n"
+    + "test('c3', () => { setImmediate(() => process.exit(0)); });\nfor (const n of [4, 5, 6]) test(`c${n}`, async () => { await new Promise(done => setTimeout(done, 50)); });\n", 'not-finished started=4 ended=3'],
+};
+
+for (const [name, [source, reason]] of Object.entries(MISSING_CASES)) {
+  test(`沒收齊的檔（${name}）：印 MISSING_RESULTS 與原因，單獨重跑仍沒收齊即 exit 1；收齊的檔不列（#1099）`, { skip: NO_CHANNEL }, t => {
+    const run = fixture(t, { [name]: source, 'ok.test.mjs': OK });
+    const result = run(name, 'ok.test.mjs');
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, new RegExp(`^MISSING_RESULTS ${name.replace('.', '\\.')} ${reason}\\nNODE_TEST_RERUN ${name.replace('.', '\\.')} FAIL$`, 'm'));
+    assert.doesNotMatch(result.stderr, /ok\.test\.mjs/);
+  });
+}
+
+test('half 的情境在改前的捷徑會放行：總數相等、逐檔名稱也對得上（#1099 的缺口）', { skip: NO_CHANNEL }, t => {
+  const run = fixture(t, { 'half.test.mjs': MISSING_CASES['half.test.mjs'][0], 'ok.test.mjs': OK });
+  const result = run('--test-reporter=spec', 'half.test.mjs', 'ok.test.mjs');
+  const shown = result.stdout.slice(0, result.stdout.indexOf('ℹ tests'));
+  assert.match(shown, /✔ h2 /);
+  assert.doesNotMatch(shown, /h3/, '後面的測試從沒開始');
+  assert.match(result.stdout, /^ℹ tests 3$/m, '第一輪：紀錄 h1、h2、ok 與回報總數一起少');
+  assert.equal(result.status, 1);
+});
+
+test('第一次沒收齊、單獨重跑收齊：印 MISSING_RESULTS 與 NODE_TEST_RERUN PASS，exit 0', { skip: NO_CHANNEL }, t => {
+  const once = "import { test } from 'node:test';\nimport { existsSync, rmSync } from 'node:fs';\ntest('h1', () => {});\n"
+    + "test('h2', () => { if (existsSync('CUT_ONCE')) { rmSync('CUT_ONCE'); setImmediate(() => process.exit(0)); } });\n"
+    + 'for (const n of [3, 4]) test(`h${n}`, async () => { await new Promise(done => setTimeout(done, 50)); });\n';
+  const run = fixture(t, { 'half.test.mjs': once, 'ok.test.mjs': OK, CUT_ONCE: '' });
+  const result = run('half.test.mjs', 'ok.test.mjs');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stderr, /^MISSING_RESULTS half\.test\.mjs not-finished started=3 ended=2\nNODE_TEST_RERUN half\.test\.mjs PASS$/m);
+});
+
+test('子行程失敗時，另一個沒收齊的檔也要列出，不被失敗的檔蓋過', { skip: NO_CHANNEL }, t => {
+  const run = fixture(t, { 'broken.test.mjs': BROKEN, 'half.test.mjs': MISSING_CASES['half.test.mjs'][0] });
+  const result = run('broken.test.mjs', 'half.test.mjs');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /^NODE_TEST_RERUN broken\.test\.mjs FAIL$/m);
+  assert.match(result.stderr, /^MISSING_RESULTS half\.test\.mjs not-finished /m);
 });
