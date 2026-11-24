@@ -77,6 +77,8 @@ The reviewer lacks the discussion, so check each finding against it and the file
 - **Needs the human's decision**: collect it. Ask all of them in one round, in `grilling`'s round format: numbered, each with your recommended answer, worded so "yes" accepts it. Edit the spec with their answers.
 - **Noise**: a category the repo's Not defects covers, or a claim the reading set refutes. Reject it with a one-line reason.
 
+**Test-only spec.** When the spec forbids production changes (for example "不改 src/main"), open the production code behind each sub-case yourself: where it reads a clock, a random source, or other system state directly at the point the sub-case depends on, no test-only change can control it, so edit the spec to exclude that sub-case by name, or ask the human to lift the restriction (spay2 #1118: `ongoing()` read `System.nanoTime()` before signing, so only the lookup half was feasible).
+
 Done when every finding is marked fixed, asked and answered, or rejected with its reason.
 
 ## 5. Hand over
