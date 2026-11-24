@@ -13,6 +13,8 @@
 // 本機分支一律 `branch -d`，沒合進主分支就讓 git 拒絕（ron-skills batch-40-51 手寫的 `-D` 會刪掉沒合入的分支）；設了 upstream 的分支 `-d` 只比 upstream，先自己比主分支。
 // Orca 一律用 `path:` 選擇器：Orca 開的 worktree 用 `branch:` 找不到（selector_not_found，#49）。
 // Orca rm 會順便刪掉它能證明已合入的本機分支，這時 branch 步驟就 SKIP。
+// Orca rm 失敗而 worktree 還在時，隔 PILOT_CLOSE_ORCA_RETRY_MS（預設 5000）毫秒重試一次，再失敗才 STOP：WSL 上 Orca bridge 偶爾 vsock 逾時
+// （`accept4 failed 110`，緊接著重跑回 runtime_error），隔幾秒手動 rm 就成功（#432）。
 // 所有子行程的 stdin 都接 /dev/null（Orca CLI 會吃掉 stdin）；stderr 照常顯示，只濾掉 WSL 上 Orca 每次都印的 crashpad 錯誤行（#73）。
 // tracker 專案的留言與關單：旁邊有 gh-tracker.mjs（setup-workflow 正本）就經它寫（.claude/settings.json 的 tracker 寫入只放行它，ron-skills #96），
 // 沒有時直接 `gh issue comment|close <n> --repo <repo>`。跨 repo 的對應單留言照 pilot-counterpart（旁邊的副本）印的 COMMAND 行，依對應單的 host 用 gh 或 glab；
@@ -43,6 +45,7 @@ const config = { host: 'github.com', repo: '', main: 'main', protectPaths: [] };
 /** gh 的 --repo 值：github.com 只寫 <owner>/<repo>，其他主機加在前面。 */
 const ghRepo = () => (config.host === 'github.com' ? config.repo : `${config.host}/${config.repo}`);
 const here = dirname(fileURLToPath(import.meta.url));
+const ORCA_RETRY_MS = Number(process.env.PILOT_CLOSE_ORCA_RETRY_MS || 5000);
 
 /** 步驟失敗：印成 `STOP <n> <step> <原因>`；沒帶 step 的錯誤由呼叫端補上正在做的那一步。 */
 class Stop extends Error {
@@ -191,7 +194,16 @@ function* cleanUp({ cli, main }, { n, branch, handle }, at) {
   if (!tree) yield 'SKIP';
   else {
     let failed;
-    try { orca(cli, 'worktree', 'worktree', 'rm', '--worktree', `path:${tree}`); } catch (error) { failed = error; }
+    const rm = () => {
+      failed = undefined;
+      try { orca(cli, 'worktree', 'worktree', 'rm', '--worktree', `path:${tree}`); } catch (error) { failed = error; }
+    };
+    rm();
+    // Orca 暫時失敗（#432）：worktree 還在就等一下再 rm 一次。
+    if (failed && worktreeOf(main, branch)) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ORCA_RETRY_MS);
+      rm();
+    }
     // rm 失敗也可能已把主 checkout 設成 bare，或其實已經移除（Orca 曾在建好 worktree 時回 ok:false）；以 git worktree list 為準。
     const unbare = run(join(here, 'pilot-unbare.sh'), [main, `close ${n === '-' ? branch : `#${n}`}`]);
     if (unbare.stdout) process.stdout.write(unbare.stdout);

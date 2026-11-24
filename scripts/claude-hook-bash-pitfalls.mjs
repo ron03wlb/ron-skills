@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
-// Claude Code Bash PreToolUse hook：擋下三種 agent 反覆踩、錯誤訊息又不指向原因的 Bash 寫法（#444、#428、#479）。
+// Claude Code Bash PreToolUse hook：擋下四種 agent 反覆踩、錯誤訊息又不指向原因的 Bash 寫法（#444、#428、#479、#571）。
 // 1. heredoc 分隔字沒加引號（#444）：`cat > f.md <<EOF` 的內文 bash 與 zsh 都照命令替換處理，內文裡 Markdown 的 `` `git cherry-pick 84554ca` ``
 //    會被當命令執行，輸出換進檔案、命令本身也真的跑了（retro-418.md 的內文被吃掉三段）。分隔字有任何引號（`'EOF'`、`"EOF"`、`\EOF`、`E"OF"`）內文就不展開。
 //    命中：`<<WORD`／`<<-WORD`（不是 `<<<` here-string，不在引號、註解或 `$(( … ))` 裡）的分隔字沒引號，且內文含沒跳脫的反引號或 `$(`。
@@ -10,6 +10,10 @@
 // 3. `bin/check` 接管線（`bin/check 2>&1 | tail -3`，#479）：exit code 是管線最後一個指令的，`tail` 一律 0；背景跑時輸出又可能是空的，
 //    結果行與 exit 都拿不到，只好整條重跑（約 20 分鐘）。命中：簡單指令（去掉 `VAR=…` 與 env／time／nice／timeout <n>／bash／sh 前綴後）
 //    是 `bin/check`（或 `…/bin/check`）且後面接 `|`／`|&`，整串指令沒有 `pipefail` 也沒有 `PIPESTATUS`。`||` 不算管線。
+// 4. grep 文件後把每行截短（`grep -rn "a\|b" docs/agents GLOSSARY.md | cut -c1-160`，#571）：docs/agents 的條目是單行長條目，
+//    命中的詞常在截斷處之後，印出來的那行看不到它，agent 誤判沒有殘留。命中：同一條管線裡 grep（egrep／fgrep／rg）的搜尋目標
+//    有文件類路徑（`docs`、`…/docs/…`、`*.md`、`GLOSSARY`，或 `--include=*.md`），後面接 `cut -c`／`cut -b`、`head -c` 或 awk 的 `substr(`。
+//    `cut -d… -f…`（欄位切）、`head -n`、grep 程式碼目錄都不擋。
 // 命中時 exit 2，stderr 用繁體中文說明原因與改法；輸入不合法或不是 Bash 時 exit 0 不輸出。
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -170,6 +174,53 @@ export function checkPiped(command) {
   }).map(words => words.join(' '));
 }
 
+const GREPS = new Set(['grep', 'egrep', 'fgrep', 'rg']);
+/** grep／rg 帶值、值另成一個字的選項（`-e PAT`、`-A 3`、`--include '*.md'`）。 */
+const GREP_VALUED = new Set(['-e', '-f', '-m', '-A', '-B', '-C', '-g', '-t', '-T', '--regexp', '--file', '--max-count',
+  '--after-context', '--before-context', '--context', '--include', '--exclude', '--exclude-dir', '--glob', '--type']);
+const DOC_PATH = /(?:^|\/)docs(?:\/|$)|\.md$|(?:^|\/)GLOSSARY/;
+
+/** grep 的搜尋目標（或 `--include` glob）有文件類路徑。 */
+function grepsDocs(args) {
+  let pattern = false;
+  for (let i = 1; i < args.length; i++) {
+    const w = args[i];
+    if (w === '--') return args.slice(i + (pattern ? 1 : 2)).some(a => DOC_PATH.test(a));
+    if (/^--(?:include|glob)=/.test(w)) { if (/\.md\b/.test(w)) return true; continue; }
+    if (w === '--include' || w === '--glob' || w === '-g') { if (/\.md\b/.test(args[i + 1] ?? '')) return true; i++; continue; }
+    if (GREP_VALUED.has(w)) { if (w === '-e' || w === '-f' || w === '--regexp' || w === '--file') pattern = true; i++; continue; }
+    if (/^-[ef]./.test(w) || /^--(?:regexp|file)=/.test(w)) { pattern = true; continue; }
+    if (w.startsWith('-') && w !== '-') continue;
+    if (!pattern) { pattern = true; continue; }
+    if (DOC_PATH.test(w)) return true;
+  }
+  return false;
+}
+
+/** 把每行截短的指令：`cut -c`／`cut -b`、`head -c`、awk 程式裡有 `substr(`。 */
+function truncates(args) {
+  if (args[0] === 'cut') return args.some(w => /^-[cb]/.test(w) || /^--(?:characters|bytes)\b/.test(w));
+  if (args[0] === 'head') return args.some(w => /^-c/.test(w) || /^--bytes\b/.test(w));
+  if (/^[gm]?awk$/.test(args[0] ?? '')) return args.slice(1).some(w => /\bsubstr\s*\(/.test(w));
+  return false;
+}
+
+/** 同一條管線裡 grep 文件、後面又把每行截短（回傳 grep 那個簡單指令，字以空白相接）。 */
+export function truncatedDocGrep(command) {
+  const { simple } = scan(command);
+  const hits = [];
+  for (let start = 0; start < simple.length;) {
+    let end = start;
+    while (simple[end].piped && end + 1 < simple.length) end++;
+    const pipeline = simple.slice(start, end + 1).map(words => words.slice(commandIndex(words)));
+    pipeline.forEach((args, k) => {
+      if (GREPS.has(args[0]) && grepsDocs(args) && pipeline.slice(k + 1).some(truncates)) hits.push(args.join(' '));
+    });
+    start = end + 1;
+  }
+  return hits;
+}
+
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
   let input;
@@ -180,7 +231,8 @@ if (isMain) {
   const heredocs = unquotedHeredocs(command);
   const views = ghViewCommentsWithoutJson(command);
   const piped = checkPiped(command);
-  if (!heredocs.length && !views.length && !piped.length) process.exit(0);
+  const truncated = truncatedDocGrep(command);
+  if (!heredocs.length && !views.length && !piped.length && !truncated.length) process.exit(0);
   const lines = [];
   if (heredocs.length) lines.push(
     `heredoc 的分隔字沒加引號（${heredocs.map(d => `<<${d.tag}`).join('、')}），內文又含反引號或 $(：bash 會把內文裡 Markdown 的行內碼當命令替換執行，`,
@@ -194,6 +246,10 @@ if (isMain) {
   if (piped.length) lines.push(
     `\`${piped[0]}\` 接了管線：exit code 是管線最後一個指令的（tail 一律 0），背景跑時輸出還可能是空的，結果行與 exit 都拿不到（#479）。`,
     '改成 `bin/check > <log> 2>&1; echo exit=$?; tail -1 <log>`，只讀 log 的最後一行；真要接管線先 `set -o pipefail`。',
+  );
+  if (truncated.length) lines.push(
+    `\`${truncated[0]}\` 的結果接了截斷（cut -c／head -c／substr）：文件的條目是單行長條目，命中的詞可能剛好在截斷處之後被切掉，看起來像沒有殘留（#571）。`,
+    "改用 `node scripts/doc-excerpt.mjs '<regex>' <檔案>...`（目錄改列檔案，如 docs/agents/*.md），它以命中處為中心截取前後文。",
   );
   console.error(lines.join('\n'));
   process.exit(2);

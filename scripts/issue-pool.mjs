@@ -22,6 +22,7 @@
 // needs-info、needs-triage、ready（`ready-for-agent`）、unlabeled。所以 ready 桶就是池子。過期的認領只歸到 stale，不自動釋放。
 // 輸出順序：ready 桶先印，依 `retro` label 的先（retro 判定太複雜、交給 worker 的單）、`priority` label 的先、直接或間接 block 最多開著的單的先（關鍵路徑）、號碼小的先；
 // 其餘依上面的桶順序、桶內號碼小的先。
+// （抄寫下面 stdout 行格式的文件：`skills/engineering/issue-queue/SKILL.md` step 1、`docs/agents/pilot.md` 的 **Pool.**；改格式時一起改，#440。）
 // stdout：每張一行 `<桶> #<n> <標題>`；blocked 桶在號碼與標題之間多寫狀態與開著的 blocker：`blocked #<n> <triage 狀態 label|unlabeled> by #<m>,<owner>/<repo>#<k> <標題>`，
 // 帶 --integration 時已落地在整合分支的本 repo blocker 後面接 ` (landed <分支>)`（#352）。帶 --integration 而且主 checkout 的 main 暫停旗標有效時
 // （`.scratch/pilot/main-paused`，`pilot-hold.mjs set-main` 寫、until 當天仍有效，判斷是 export 的 mainPause，Probe 的 MAIN_PAUSED 共用，#379），
@@ -43,6 +44,7 @@
 // - 寫入後重讀：這次讀到之後新增的認領留言裡，最早一則不是自己就是別台搶先了，收回自己的留言（指派到這裡一定是同一個帳號，不動）。
 // - 擋下的認領者是這台機器上已交接出去的前任 coordinator（主 checkout 的 `.scratch/pilot/sessions.md` 有它的 handoff 行），
 //   而這個 session 是現任 coordinator（有 start 行、沒交接出去）時，改以前任的 session 認領，成功印 `CLAIMED <n> takeover <session>`（#135）。
+//   前任暫停、沒有 handoff 行時也算：它有帶 pid 的 start 行、該 pid 已不存在（`kill -0` 失敗）、也沒交接出去，同樣 takeover（#573：前任暫停後 transcript 一小時內都算活著，claim 一直 STOP）。
 // - 擋下的認領者是這台機器上的 session、它的 transcript（`$CLAUDE_CONFIG_DIR` 或 `~/.claude` 底下 `projects/*/<session>.jsonl`）超過 1 小時沒有寫入：
 //   STOP 之前先印 `STALE_CLAIM <n> <機器>／<session> <最後寫入的 ISO 時間>`；帶 `--take-stale` 時改以這個 session 認領，成功印 `CLAIMED <n> stale <session>`。
 //   transcript 沒寫入不代表 session 結束（可能在等人回覆），所以只有不等人的流程（/retro-collect）才帶 --take-stale（#212：#201 的認領者認領一分鐘後被中斷）。
@@ -435,7 +437,10 @@ function mainCheckout() {
   return result.status === 0 ? result.stdout.split('\n')[0].replace(/^worktree /, '') : undefined;
 }
 
-/** 擋下認領的是本機已交接出去的前任 coordinator、而 claim 的 session 是現任 coordinator（有 start 行、沒交接出去）時，傳回前任的 session；
+/** pid 的行程還在時為真（`kill -0`；EPERM 表示行程在、只是不屬於這個使用者）。 */
+const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+
+/** 擋下認領的是本機已交接出去、或已暫停（start 行的 pid 已不存在）的前任 coordinator，而 claim 的 session 是現任 coordinator（有 start 行、沒交接出去）時，傳回前任的 session；
  * 都照主 checkout 的 sessions.md（PILOT-STORE.md 的格式）判斷，讀不到時是 undefined。 */
 function takeoverSession(claimer, session) {
   const [host, previous] = claimer.split('／');
@@ -445,7 +450,10 @@ function takeoverSession(claimer, session) {
   try { lines = readFileSync(join(main, '.scratch/pilot/sessions.md'), 'utf8').split('\n'); } catch { return undefined; }
   const retired = id => lines.some(line => line.includes(`   handoff from-session ${id} `));
   const started = id => lines.some(line => line.includes(`   session ${id}   `) || (line.endsWith('  coordinator start') && line.includes(`  ${id}  `)));
-  return retired(previous) && started(session) && !retired(session) ? previous : undefined;
+  // 暫停沒交接的前任：只認帶 pid 的 start 行（舊格式沒有 pid，無從判斷）；pid 以前任自己那行為準，`coordinator` 檔此時記的是現任的 pid。
+  const pid = lines.findLast(line => line.includes(`   session ${previous}   `))?.match(/   pid (\d+)\b/)?.[1];
+  const suspended = pid !== undefined && !alive(Number(pid));
+  return (retired(previous) || suspended) && previous !== session && started(session) && !retired(session) ? previous : undefined;
 }
 
 /** 本機認領者的 transcript 最後寫入時間（ms）；認領者在別台、或找不到它的 transcript 時是 undefined。 */

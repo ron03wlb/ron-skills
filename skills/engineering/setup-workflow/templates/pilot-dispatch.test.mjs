@@ -33,6 +33,7 @@ const git = (cwd, ...args) => {
 // `guard` 是 Bare guard（pilot-unbare.sh）的內容：有給時把 dispatch 與它的相依複製到暫存的 scripts/，guard 放在旁邊。
 // 每次呼叫都把 stdin 讀光並記下讀到幾個位元組：Orca CLI 會吃掉 stdin，`while read` 迴圈因此只派到第一個成員。
 // `waitHangs` 為真時 `terminal wait` 永遠不回。
+// 假 CLI 原始碼在 template literal 裡：反斜線寫兩次、不寫反引號，產生的 JS 才和看到的一樣（#429：註解裡的反引號讓測試檔載入就 SyntaxError，單層 `\n` 成了字串裡的真換行）。
 // `claims[<n>]` 是那張 Issue 原有的留言（排在 comments.json 之前）；沒給時是一則這個 session（SESSION）的認領留言。
 // `tracker` 為真時也把 dispatch 與相依複製到暫存的 scripts/，旁邊放 gh-tracker.mjs 與指向 acme/app 的 docs/agents/issue-run.md；
 // 假 gh 的 `issue edit <n> --remove-assignee=@me` 從 assignees.json 拿掉 me（每張 Issue 起始都指派給 me），`editFails` 列的 Issue 改成失敗。
@@ -1046,11 +1047,72 @@ test('--fresh 不帶 --note：草稿的「怎麼整併」已經補過時 STOP dr
 
 test('--fresh 不帶 --note 又帶派工才用的旗標時 exit 2，不寫草稿', t => {
   const fx = drafted(t);
-  for (const extra of [['--allow-overlap'], ['--capacity'], ['--no-capacity'], ['--stuck-after', '30m']]) {
+  for (const extra of [['--again'], ['--capacity'], ['--no-capacity'], ['--stuck-after', '30m']]) {
     const result = fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch', ...extra]);
     assert.equal(result.status, 2, `${extra.join(' ')}：${result.stdout}${result.stderr}`);
   }
   assert.equal(existsSync(join(fx.repo, '.scratch/pilot/fresh-46.md')), false);
+});
+
+// #425：草稿模式不做 overlap 檢查，coordinator 補完「怎麼整併」帶 --note 重跑才撞上
+// `STOP 355 overlap 358 …`（retro f117e65e；dbff541c 的 #394、06039f36 的 #368 同樣各白寫一份整併範圍）。
+test('--fresh 不帶 --note：與 done（未合入）成員改同一個條目時 STOP overlap、不寫草稿；--allow-overlap 照寫草稿', t => {
+  const fx = overlapped(t, 'done');
+  const path = join(fx.repo, '.scratch/pilot/fresh-46.md');
+  const result = fx.dispatch(['46', '--fresh', '46:pilot-dispatch'], { ORCA_CLI_COMMAND: '' });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['STOP 46 overlap 23 docs/pilot.md:Probe row=kept']);
+  assert.equal(existsSync(path), false);
+  assert.equal(fx.checkpoint('46'), fx.before.batch);
+  const allowed = fx.dispatch(['46', '--fresh', '46:pilot-dispatch', '--allow-overlap'], { ORCA_CLI_COMMAND: '' });
+  assert.equal(allowed.status, 0, allowed.stdout + allowed.stderr);
+  assert.deepEqual(lines(allowed), [`NOTE_DRAFT ${path}`]);
+});
+
+// #572：fresh-502 照文件手寫的第 1 步 `git diff <base> <prior> -- . ':!docs/agents/workflow-templates.json' … | git apply -3` 把 prior 對
+// scripts/pilot-probe.mjs 等範本副本的改動也套上，worker 之後在正本多改一處，copy-templates 就印 CONFIRM_OVERWRITE、exit 3，只好加 --yes 重跑（session 587db2b3）。
+// 起點：副本清單登記 scripts/tool.mjs（正本 templates/tool.mjs），prior 改了正本、副本、清單、流程站與一般檔。
+test('--fresh 不帶 --note：草稿附沿用 prior 的 patch 指令，排除 prior 改過的戳記檔、流程站與副本清單登記的副本', t => {
+  const fx = fixture(t);
+  const manifest = 'docs/agents/workflow-templates.json';
+  const files = {
+    '.gitignore': '.scratch/\n',
+    'scripts/restamp.mjs': `export const STAMP_FILES = ['scripts/workflow-doc-sync.json', '${manifest}'];\n`,
+    'scripts/build-workflow-site.mjs': '// fixture\n',
+    'scripts/workflow-doc-sync.json': '{}\n',
+    [manifest]: `${JSON.stringify({ copies: { 'scripts/tool.mjs': { template: 'templates/tool.mjs' }, 'scripts/other.mjs': { template: 'templates/other.mjs' } } })}\n`,
+    'templates/tool.mjs': 'export const v = 1;\n',
+    'scripts/tool.mjs': 'export const v = 1;\n',
+    'scripts/other.mjs': 'export const o = 1;\n',
+    'docs/workflow/site/index.html': '<p>1</p>\n',
+    'plain.txt': 'base\n',
+  };
+  for (const [path, body] of Object.entries(files)) {
+    mkdirSync(join(fx.repo, path, '..'), { recursive: true });
+    writeFileSync(join(fx.repo, path), body);
+  }
+  git(fx.repo, 'add', '.');
+  git(fx.repo, 'commit', '-qm', 'base');
+  git(fx.repo, 'branch', '-f', 'pilot/integration', 'main');
+  const base = git(fx.repo, 'rev-parse', 'main');
+  assert.equal(fx.dispatch(['46', '46:pilot-dispatch']).status, 0);
+  const tree = join(fx.root, 'issue-46');
+  for (const path of ['templates/tool.mjs', 'scripts/tool.mjs', manifest, 'scripts/workflow-doc-sync.json', 'docs/workflow/site/index.html', 'plain.txt']) {
+    writeFileSync(join(tree, path), `${readFileSync(join(tree, path), 'utf8')}// 46\n`);
+  }
+  git(tree, 'commit', '-qam', 'worker 46');
+  const prior = git(tree, 'rev-parse', 'HEAD');
+  const result = fx.dispatch(['46', '--fresh', '46:pilot-dispatch'], { ORCA_CLI_COMMAND: '' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const draft = readFileSync(join(fx.repo, '.scratch/pilot/fresh-46.md'), 'utf8');
+  const patch = `git diff ${base} ${prior} -- . ':!${manifest}' ':!docs/workflow/site' ':!scripts/tool.mjs' ':!scripts/workflow-doc-sync.json' | git apply -3`;
+  assert.ok(draft.includes(`\`${patch}\``), draft);
+  // 沒改的副本（scripts/other.mjs）不列；正本照套。
+  assert.doesNotMatch(draft, /:!scripts\/other\.mjs|:!templates\//);
+  assert.match(draft, /## 怎麼整併\n+$/);
+  const applied = spawnSync('sh', ['-c', patch.replace('git diff ', 'git diff --name-only ').replace(' | git apply -3', '')], { cwd: fx.repo, encoding: 'utf8', env });
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.deepEqual(applied.stdout.trim().split('\n'), ['plain.txt', 'templates/tool.mjs']);
 });
 
 test('--fresh 不帶 --note：checkpoint 用別的寫法記 review-only、沒有結果行時，抄最後一個 review-only 段到下一個標題', t => {

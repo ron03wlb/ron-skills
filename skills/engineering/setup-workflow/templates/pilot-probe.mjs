@@ -63,8 +63,9 @@
 //   裸對應單（#304）：COUNTERPART_BARE <n> <owner>/<repo>#<m>（主分支的 adapter 有 `Counterpart projects:` 行時，ready 桶與開著的 batch 成員裡
 //               本文以 github.com 寫法（裸 ref 或 github.com 網址）寫了宣告專案的對應單：那個專案不在 github.com，Close 會 STOP counterpart；
 //               判斷同 pilot-counterpart.mjs 的 --adapter，依號碼、同一張單照本文順序；沒有宣告、gh 失敗時不印）
-//   等人的單（#327）：HUMAN_NO_GATE <n> <摘要>（`ready-for-human` 的單（pool() 的 human 桶）在 gates.md 沒有 Issue 欄是 #n 的開著的 gate：
-//               coordinator 開 gate 問人；摘要是本文 `… prerequisite：` 那行冒號之後的文字，沒有這行時是標題；依號碼，gh 失敗時不印）｜
+//   等人的單（#327）：HUMAN_NO_GATE <n> <摘要>（`ready-for-human` 的單（pool() 的 human 桶）在 gates.md 沒有 Issue 欄是 #n 的開著的 gate，
+//               也沒有 resolved 時間不早於該單最近一次 label 變動（labeled／unlabeled 事件）、本文編輯與開單時間的已 resolved gate（#417：人回覆後維持
+//               ready-for-human 的單不再每輪重印；resolve 之後 label 或本文又變動就重新印）：coordinator 開 gate 問人；摘要是本文 `… prerequisite：` 那行冒號之後的文字，沒有這行時是標題；依號碼，gh 失敗時不印）｜
 //               HUMAN_LANDED <n> <sha>（#358：同一個桶裡，整合分支已有它的落地 commit（issue-pool 的 landedOn）的單；依號碼，在 HUMAN_NO_GATE 之後；
 //               沒有整合分支或 gh 失敗時不印）
 //   blocker 範圍（#359）：BLOCKER_OPEN_SCOPE <n> #<m> <label>（blocked 桶的 #n，本 repo 開著的 blocker #m 已落地在整合分支（landedOn）、掛 ready-for-agent、
@@ -132,7 +133,7 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
 import { mergeConflicts } from './lib/merge-tree.mjs';
-import { CheckpointLocked, gateLines, heldIssues, resolvedGateLines, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
+import { CheckpointLocked, gateLines, heldIssues, resolvedGateLines, resolvedGates, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
 import { SPINNER, orca } from './orca-session-send.mjs';
 import { envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 import { POOL_FIELDS, blockerOpenScope, landedOn, mainPause, pool, prerequisiteOf } from './issue-pool.mjs';
@@ -140,7 +141,7 @@ import { counterparts, declaredProjects } from './pilot-counterpart.mjs';
 import { MEMORY_AUDIT_FILE, declaredDays, memoryAuditLine } from './memory-audit.mjs';
 
 // 池子摘要要的欄位取 issue-pool 的 POOL_FIELDS（#240）；同名的 blockedBy 在 GraphQL 裡合併成一份選取。
-const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt lastEditedAt blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
+const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt lastEditedAt labelEvents: timelineItems(last:1,itemTypes:[LABELED_EVENT,UNLABELED_EVENT]){nodes{... on LabeledEvent{createdAt} ... on UnlabeledEvent{createdAt}}} blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
 // 每次都印的行：池子摘要（POOL_READY｜POOL_TRIAGE｜POOL_EMPTY｜POOL_FAILED，#240）與 HANDOFF_COUNT（#368）。
 // 只看自己那幾行的測試比對整份 stdout 前用它去掉，probe 再加常駐行時改這一處即可（#556）。
 export const ALWAYS_LINES = /^(POOL_|HANDOFF_COUNT )/;
@@ -567,13 +568,20 @@ export function counterpartLines(issues, repo, batched = new Set(), projects = n
     .flatMap(issue => counterparts(issue.body, projects).filter(({ bare }) => bare).map(({ ref }) => `COUNTERPART_BARE ${issue.number} ${ref}`));
 }
 
+/** Issue 最近一次變動的時間（毫秒）：開單、本文編輯（lastEditedAt）與最近一次 labeled／unlabeled 事件（查詢的 labelEvents 別名）取最晚；留言不算。 */
+const lastChanged = issue => Math.max(0, ...[issue.createdAt, issue.lastEditedAt, ...(issue.labelEvents?.nodes ?? []).map(({ createdAt }) => createdAt)]
+  .map(time => Date.parse(time ?? '')).filter(Number.isFinite));
+
 /**
  * 等人的單沒人問（#327 第 2 項）：pool() 的 human 桶（`ready-for-human`）裡，`gates`（openGates 的結果）沒有一個開著的 gate 的 Issue 欄是 `#<n>` 的，
  * 依號碼印 `HUMAN_NO_GATE <n> <摘要>`；摘要取本文第一行 `… prerequisite：` 冒號之後的文字（issue-pool 的 prerequisiteOf，與 PREREQ 共用），沒有這行就取標題。
+ * `resolved`（resolvedGates 的結果）裡 Issue 欄有 `#<n>`、resolved 時間不早於該單最近一次變動（lastChanged）的 gate 也算問過（#417 第 1 項：
+ * 人回覆後決定維持 ready-for-human，舊版每輪重印，coordinator 三度開 gate 問同一組問題）；resolve 之後 label 或本文又變動就重新印。
  */
-export function humanNoGateLines(issues, repo, gates = []) {
+export function humanNoGateLines(issues, repo, gates = [], resolved = []) {
   const gated = new Set(gates.flatMap(({ issue }) => refs(String(issue))));
-  return pool(issues, { repo }).filter(({ bucket, issue }) => bucket === 'human' && !gated.has(issue.number))
+  const answered = issue => resolved.some(gate => refs(String(gate.issue)).includes(issue.number) && Date.parse(gate.resolved) >= lastChanged(issue));
+  return pool(issues, { repo }).filter(({ bucket, issue }) => bucket === 'human' && !gated.has(issue.number) && !answered(issue))
     .map(({ issue }) => issue).sort((a, b) => a.number - b.number)
     .map(issue => `HUMAN_NO_GATE ${issue.number} ${prerequisiteOf(issue.body) ?? issue.title ?? ''}`.trimEnd());
 }
@@ -610,9 +618,9 @@ function integrationLanded(checkout, integration) {
 
 /**
  * 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE、COUNTERPART_BARE、HUMAN_NO_GATE、HUMAN_LANDED、PARENT_* 與池子摘要行（同一次查詢），以及 PARENT_* 對應的 tracker 寫入（不在這裡寫）；
- * `gates` 是 gates.md 開著的 gate（openGates），`landed` 是整合分支的 landedOn（沒有時不印 HUMAN_LANDED）。gh 失敗時只有 DEPS_PROSE_FAILED 與 POOL_FAILED 兩行，不中斷其他檢查。
+ * `gates` 是 gates.md 開著的 gate（openGates），`resolved` 是已 resolved 的 gate（resolvedGates，HUMAN_NO_GATE 用），`landed` 是整合分支的 landedOn（沒有時不印 HUMAN_LANDED）。gh 失敗時只有 DEPS_PROSE_FAILED 與 POOL_FAILED 兩行，不中斷其他檢查。
  */
-export function trackerLines(checkout, batched = new Set(), projects = new Set(), gates = [], landed, skipLabels = []) {
+export function trackerLines(checkout, batched = new Set(), projects = new Set(), gates = [], landed, skipLabels = [], resolved = []) {
   try {
     const repo = gh(checkout, 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim();
     const [owner, name] = repo.split('/');
@@ -623,7 +631,7 @@ export function trackerLines(checkout, batched = new Set(), projects = new Set()
       ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
     }
     const { lines, fixes } = parentFixes(issues, repo);
-    return { lines: [...depsProse(issues, repo, skipLabels), ...counterpartLines(issues, repo, batched, projects, skipLabels), ...humanNoGateLines(issues, repo, gates), ...humanLandedLines(issues, repo, landed), ...blockerOpenScopeLines(issues, repo, landed, skipLabels), ...lines, poolLine(issues, repo, batched, skipLabels)], fixes, issues };
+    return { lines: [...depsProse(issues, repo, skipLabels), ...counterpartLines(issues, repo, batched, projects, skipLabels), ...humanNoGateLines(issues, repo, gates, resolved), ...humanLandedLines(issues, repo, landed), ...blockerOpenScopeLines(issues, repo, landed, skipLabels), ...lines, poolLine(issues, repo, batched, skipLabels)], fixes, issues };
   } catch (error) {
     return { lines: [`DEPS_PROSE_FAILED ${error.message}`, `POOL_FAILED ${error.message}`], fixes: [], issues: [] };
   }
@@ -1207,7 +1215,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   const projects = declaredProjects(show(checkout, `refs/heads/${main}`, ADAPTER));
   const gates = openGates(readStore(pilot, 'gates.md'));
   const held = heldIssues(gates);
-  const tracker = trackerLines(checkout, batched, projects, gates, integrationLanded(checkout, integration), skipLabels);
+  const tracker = trackerLines(checkout, batched, projects, gates, integrationLanded(checkout, integration), skipLabels, resolvedGates(readStore(pilot, 'gates.md')));
   const source = adapterRef(checkout, `refs/heads/${main}`, integration);
   const ahead = adapterAhead(checkout, { integration, main, source });
   const out = [...checkoutState(checkout, main), ...(source.fetchError ? [`FETCH_FAILED adapter-ref ${source.fetchError}`] : []), ...ahead, ...scriptsAhead(checkout, ahead, { integration, main }), ...hookBehind(checkout, { integration, main }), ...openRows(pilot), ...tracker.lines];

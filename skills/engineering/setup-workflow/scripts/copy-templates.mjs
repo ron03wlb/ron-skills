@@ -8,7 +8,10 @@
 //       既有檔與清單項目不動（spay2 的 scripts/test/fake-orca.mjs 與 scripts/test/fixtures/orca/），每個被排除的檔印一行 `EXCLUDE <副本路徑>`。
 //       目標 repo 固定的本地例外寫在清單的 `localExceptions`（路徑字串陣列，格式同 --exclude），每次複製自動排除，不必記得帶 --exclude
 //       （retro spay2 1bb1d94c#1(a)：忘了帶就連 --yes 一起蓋掉 fake-orca）；不是字串陣列時 exit 2。
-//       --staged：正本已 `git add`、還沒 commit 時用（本 repo 的副本要和正本同一個 commit，bin/check 才過）：工作樹與 index 不同才擋，清單的 commit 記現在的 HEAD。
+//       --staged：正本已 `git add`、還沒 commit 時用（本 repo 的副本要和正本同一個 commit，bin/check 才過）：工作樹與 index 不同才擋，
+//       COPY／UPDATE／DIFF 的副本在清單記現在的 HEAD；SAME 且清單 sha256 一致的項目整筆不動（#436：連帶的相依副本只改 commit，清單多出無關 diff、和同批 worker 衝突）。
+//       --register：只在目標是 ron-skills 本身時可用（其他目標 exit 2），把明列但清單沒有的範本登記進清單（template、commit、sha256 由腳本算）再照常複製，
+//       每個登記的檔先印一行 `REGISTER <副本路徑>`；只登記明列的檔，它帶入的未登記相依照樣 SKIP_UNLISTED，要一起登記就也明列（#420）。
 // 輸出每檔一行 `COPY|SAME|UPDATE|DIFF <副本路徑>`（UPDATE、DIFF 後接 unified diff，--staged 的 UPDATE 不接：diff 已在 git diff --cached；
 //   UPDATE 是 sha256 與清單記錄一致、沒手改過的舊副本，直接覆寫），其下視情況多一行：
 //   `MODE <副本路徑> <舊>→<新>`：既有副本的權限位元（八進位，例如 755→644）和正本不同，複製時改成正本的（#526：
@@ -22,8 +25,11 @@
 // `正本不存在：templates/<檔>` 是相依時接 `（templates/<引用檔>:<行>）`（retro spay2 ff00a288#1(b)：只寫缺的檔名，要自己 grep 是誰引用的）；
 //   actionable：改掉該行的引用，或在範本加 `// copy-templates: requires` 宣告真正的相依。
 // 目標 repo 就是 ron-skills 本身（目標裡有 skills/engineering/setup-workflow/scripts/copy-templates.mjs）時，只處理清單已列的副本，
-//   其餘每檔印 `SKIP_UNLISTED <templates/ 下的檔名>`、不複製也不記清單（不可動手，資訊；retro spay2 ff00a288#4：recopy 為 ron-skills
-//   沒追蹤的範本建了 scripts/claude-hook-git-bypass.mjs 與清單項，要手動 rm 還原）。
+//   其餘每檔印 `SKIP_UNLISTED <templates/ 下的檔名>（新範本：明列它並加 --register 登記）`、不複製也不記清單（retro spay2 ff00a288#4：recopy 為 ron-skills
+//   沒追蹤的範本建了 scripts/claude-hook-git-bypass.mjs 與清單項，要手動 rm 還原）。是這次新增的範本就加 --register 重跑（#420）；不是就不用動手。
+//   ron-skills 本身另同步 tests/helpers/ 下的正本鏡像（MIRRORS：test/fake-orca.mjs、test/real-tmpdir.mjs、test/fixtures/orca/**；不記清單，
+//   tests/fake-orca.test.mjs 守一致）：每次都比對，不同的印 `COPY|UPDATE <鏡像路徑>` 並覆寫（鏡像不手改，沒有 DIFF；--staged 照樣不接 diff），
+//   SAME 不印，算進 PLANNED／COPIED（#429：鏡像要手動 cp，real-tmpdir.mjs 已靜默分歧）。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
@@ -56,9 +62,9 @@ const exclusions = new Map();
 const excluded = file => [...exclusions.keys()].find(path => file === path || file.startsWith(`${path}/`));
 const flags = new Set(args.filter(arg => arg.startsWith('--')));
 const [repoArg, ...names] = args.filter(arg => !arg.startsWith('--'));
-const unknown = [...flags].filter(flag => !['--dry-run', '--no-tests', '--yes', '--verify', '--staged'].includes(flag));
+const unknown = [...flags].filter(flag => !['--dry-run', '--no-tests', '--yes', '--verify', '--staged', '--register'].includes(flag));
 if (unknown.length) fail(`不認得的旗標：${unknown.join(' ')}`);
-if (!repoArg) fail('用法：copy-templates.mjs <repo> [--dry-run] [--no-tests] [--yes] [--staged] [--exclude <路徑>]... <template>... | <repo> --verify');
+if (!repoArg) fail('用法：copy-templates.mjs <repo> [--dry-run] [--no-tests] [--yes] [--staged] [--register] [--exclude <路徑>]... <template>... | <repo> --verify');
 const repo = resolve(repoArg);
 
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -90,6 +96,9 @@ const sourceRoot = git('rev-parse', '--show-toplevel').stdout.trim();
 const isDir = path => existsSync(join(TEMPLATES, path)) && statSync(join(TEMPLATES, path)).isDirectory();
 /** 目標是 ron-skills 本身（含其他 worktree）：本 repo 只追蹤清單已列的副本（retro spay2 ff00a288#4）。 */
 const selfTarget = existsSync(join(repo, relative(sourceRoot, fileURLToPath(import.meta.url))));
+if (flags.has('--register') && !selfTarget) fail('--register 只在目標是 ron-skills 本身時可用（其他 repo 一律照帶入的範本記清單）');
+/** ron-skills 本身 tests/helpers/ 下的正本鏡像：templates/ 下的檔或目錄 → 鏡像路徑（#429）。 */
+const MIRRORS = [['test/fake-orca.mjs', 'tests/helpers/fake-orca.mjs'], ['test/real-tmpdir.mjs', 'tests/helpers/real-tmpdir.mjs'], ['test/fixtures/orca', 'tests/helpers/fixtures/orca']];
 /** text 中 index 所在的行號（1 起）。 */
 const lineAt = (text, index) => text.slice(0, index).split('\n').length;
 /**
@@ -160,25 +169,42 @@ for (const name of names) {
 }
 const origin = file => (named.has(file) ? '' : `（${[...broughtBy.get(file)].map(root => root.replace(/\.mjs$/, '')).join('、')} 的相依）`);
 
-const unlisted = selfTarget ? [...broughtBy.keys()].filter(file => !manifest.copies[join('scripts', file)]).sort() : [];
-const plan = [...broughtBy.keys()].filter(file => !unlisted.includes(file)).sort().map(file => {
-  const template = relative(sourceRoot, join(TEMPLATES, file));
-  const status = git('status', '--porcelain', '--', join(TEMPLATES, file)).stdout;
+const listed = file => Boolean(manifest.copies[join('scripts', file)]);
+const registered = flags.has('--register') ? [...named].filter(file => !listed(file)).sort() : [];
+const unlisted = selfTarget ? [...broughtBy.keys()].filter(file => !listed(file) && !registered.includes(file)).sort() : [];
+/** 正本有沒提交（--staged：沒暫存）的改動就 exit 2。 */
+const checkClean = template => {
+  const status = git('status', '--porcelain', '--', join(sourceRoot, template)).stdout;
   // --dry-run 不寫清單，正本改動中也能預覽；pre-commit 的測試才不會和改正本的 commit 互卡。
   if (flags.has('--staged')) {
     if (status.startsWith('??') || (status && status[1] !== ' ')) fail(`正本有未暫存改動：${template}（--staged 以 index 的內容為準，先 git add）`);
   } else if (!flags.has('--dry-run') && status.trim()) fail(`正本有未提交改動：${template}（先 commit，記錄的 commit 才對得上內容；副本要同一個 commit 時先 git add 再加 --staged）`);
+};
+const plan = [...broughtBy.keys()].filter(file => !unlisted.includes(file)).sort().map(file => {
+  const template = relative(sourceRoot, join(TEMPLATES, file));
+  checkClean(template);
   const dest = join('scripts', file);
   const target = join(repo, dest);
   const current = existsSync(target) && sha256(target);
   const state = !current ? 'COPY' : current === sha256(join(TEMPLATES, file)) ? 'SAME' : current === manifest.copies[dest]?.sha256 ? 'UPDATE' : 'DIFF';
   return { file, template, dest, target, state };
 });
+/** 鏡像只列內容不同的檔（SAME 不印、不寫）；正本改動照樣要先提交或暫存。 */
+const mirrors = !selfTarget ? [] : MIRRORS.filter(([from]) => existsSync(join(TEMPLATES, from))).flatMap(([from, to]) => (isDir(from)
+  ? readdirSync(join(TEMPLATES, from), { recursive: true }).map(String).filter(name => !isDir(join(from, name))).sort().map(name => [join(from, name), join(to, name)])
+  : [[from, to]])).flatMap(([file, dest]) => {
+  const target = join(repo, dest);
+  const current = existsSync(target) && sha256(target);
+  if (current === sha256(join(TEMPLATES, file))) return [];
+  checkClean(relative(sourceRoot, join(TEMPLATES, file)));
+  return [{ file, dest, target, state: current ? 'UPDATE' : 'COPY' }];
+});
 
 /** 權限位元的八進位字串（例如 755）。 */
 const modeOf = path => (statSync(path).mode & 0o777).toString(8);
 for (const file of [...skipped].sort()) console.log(`EXCLUDE ${join('scripts', file)}`);
-for (const file of unlisted) console.log(`SKIP_UNLISTED ${file}`);
+for (const file of unlisted) console.log(`SKIP_UNLISTED ${file}（新範本：明列它並加 --register 登記）`);
+for (const file of registered) console.log(`REGISTER ${join('scripts', file)}`);
 const diffs = [];
 for (const { file, dest, target, state } of plan) {
   console.log(`${state} ${dest}`);
@@ -191,17 +217,26 @@ for (const { file, dest, target, state } of plan) {
     process.stdout.write(spawnSync('git', ['diff', '--no-index', '--', target, join(TEMPLATES, file)], { encoding: 'utf8' }).stdout);
   }
 }
-if (flags.has('--dry-run')) { console.log(`PLANNED ${plan.length}`); process.exit(0); }
+for (const { file, dest, target, state } of mirrors) {
+  console.log(`${state} ${dest}`);
+  if (state === 'UPDATE' && !flags.has('--staged')) process.stdout.write(spawnSync('git', ['diff', '--no-index', '--', target, join(TEMPLATES, file)], { encoding: 'utf8' }).stdout);
+}
+if (flags.has('--dry-run')) { console.log(`PLANNED ${plan.length + mirrors.length}`); process.exit(0); }
 if (diffs.length && !flags.has('--yes')) { console.log(`CONFIRM_OVERWRITE ${diffs.join(' ')}`); process.exit(3); }
 
-for (const { file, template, dest, target } of plan) {
+for (const { file, target } of [...plan, ...mirrors]) {
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, readFileSync(join(TEMPLATES, file)));
   chmodSync(target, statSync(join(TEMPLATES, file)).mode & 0o777);
+}
+for (const { file, template, dest, target, state } of plan) {
+  const entry = manifest.copies[dest];
+  // #436：--staged 的 HEAD 只記給這次真的改到內容的副本；SAME 且清單沒過時的項目原樣保留。
+  if (flags.has('--staged') && state === 'SAME' && entry?.template === template && entry.sha256 === sha256(target)) continue;
   const commit = (flags.has('--staged') ? git('rev-parse', 'HEAD') : git('log', '-1', '--format=%H', '--', join(TEMPLATES, file))).stdout.trim();
   manifest.copies[dest] = { template, commit, sha256: sha256(target) };
 }
 manifest.copies = Object.fromEntries(Object.entries(manifest.copies).sort(([a], [b]) => a.localeCompare(b)));
 mkdirSync(dirname(manifestPath), { recursive: true });
 writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-console.log(`COPIED ${plan.length}`);
+console.log(`COPIED ${plan.length + mirrors.length}`);

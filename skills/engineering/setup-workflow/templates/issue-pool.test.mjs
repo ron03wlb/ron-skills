@@ -578,8 +578,32 @@ test('claim：從 worktree 跑時讀主 checkout 的 sessions.md', () => {
   assert.equal(result.stdout, 'CLAIMED 7 takeover old-coord\n');
 });
 
+// #573：前任 c84ffc81 暫停（沒有 handoff 行、pid 已不在），transcript 才剛寫過；舊版一小時內都 STOP claimed，新版 takeover。
+const DEAD_PID = (() => { const child = spawnSync(process.execPath, ['-e', '']); return child.pid; })();
+const SUSPENDED = `2026-10-31T09:00:00+08:00   session old-coord   pid ${DEAD_PID}   ron-skills-15\n2026-10-31T10:00:05+08:00   session sess-1   pid ${process.pid}   ron-skills-16\n`;
+test('claim：前任 coordinator 暫停（沒有 handoff 行、start 行的 pid 已不存在、transcript 很新）時 takeover', () => {
+  const theirs = `認領：${HOST}／old-coord`;
+  const { run, calls } = fakeGh({ sessions: SUSPENDED, transcripts: { 'old-coord': [0.1, INTERRUPTED] }, views: [
+    view({ assignees: ['ron'], comments: [['ron', theirs]] }),
+    view({ assignees: ['ron'], comments: [['ron', theirs], ['ron', theirs]] }),
+  ] });
+  const result = run('claim', '7', '--session', 'sess-1', '--take-stale');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'CLAIMED 7 takeover old-coord\n');
+  assert.equal(writes(calls()).length, 2);
+});
+
+test('claim：前任 pid 還活著（沒交接、transcript 很新）時照舊停下', () => {
+  const theirs = `認領：${HOST}／old-coord`;
+  const { run, calls } = fakeGh({ sessions: SUSPENDED.replace(`pid ${DEAD_PID}`, `pid ${process.pid}`), transcripts: { 'old-coord': [0.1, INTERRUPTED] }, views: [view({ assignees: ['ron'], comments: [['ron', theirs]] })] });
+  const result = run('claim', '7', '--session', 'sess-1', '--take-stale');
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, `STOP 7 claimed ${theirs.slice(3)}\n`);
+  assert.deepEqual(writes(calls()), []);
+});
+
 const STOP_CASES = [
-  ['認領者還在任（只有 start 行、沒交接出去）', `${HOST}／live-coord`, '2026-10-31T09:00:00+08:00   session live-coord   pid 4242   ron-skills-15\n2026-10-31T09:00:05+08:00   session sess-1   pid 4343   ron-skills-16\n'],
+  ['認領者還在任（只有 start 行、沒交接出去、pid 還活著）', `${HOST}／live-coord`, `2026-10-31T09:00:00+08:00   session live-coord   pid ${process.pid}   ron-skills-15\n2026-10-31T09:00:05+08:00   session sess-1   pid 4343   ron-skills-16\n`],
   ['claim 的不是現任 coordinator（例如 --pool 或手動 /issue-run）', `${HOST}／old-coord`, SESSIONS.replace(/.*session sess-1 .*\n/, '')],
   ['claim 的 coordinator 自己也已交接出去', `${HOST}／old-coord`, `${SESSIONS}2026-10-31T11:00:00+08:00   handoff from-session sess-1 → terminal term_2   reason 合入 2 批\n`],
   ['認領者只撞到 sessions.md 其他欄位的字（session 名稱、terminal handle）', `${HOST}／term_1`, SESSIONS],
