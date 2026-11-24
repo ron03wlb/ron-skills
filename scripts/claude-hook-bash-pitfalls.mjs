@@ -249,7 +249,7 @@ if (isMain) {
   );
   if (truncated.length) lines.push(
     `\`${truncated[0]}\` 的結果接了截斷（cut -c／head -c／substr）：文件的條目是單行長條目，命中的詞可能剛好在截斷處之後被切掉，看起來像沒有殘留（#571）。`,
-    "改用 `node scripts/doc-excerpt.mjs '<regex>' <檔案>...`（目錄改列檔案，如 docs/agents/*.md），它以命中處為中心截取前後文。",
+    "改用 `node scripts/doc-excerpt.mjs '<regex>' <檔案或目錄>...`，它以命中處為中心截取前後文。",
   );
   console.error(lines.join('\n'));
   process.exit(2);

@@ -67,8 +67,8 @@
     },
     "scripts/claude-hook-bash-pitfalls.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-bash-pitfalls.mjs",
-      "commit": "bfb0cfd8cae96d0edc7564f3623a9cc52fca14d7",
-      "sha256": "482f03ebd74b1851a1198a75c1088e55d15b31cd4fb4458e08e661b4e379ee13"
+      "commit": "e2e360aed863ef22c7537f90035945ddad101d44",
+      "sha256": "517e3665d1cd6f7734cb78de933893a882484a15180694d7d74614b078ea8ab8"
     },
     "scripts/claude-hook-language.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-language.mjs",

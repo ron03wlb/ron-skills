@@ -19,7 +19,3 @@
 - `WARN main-not-synced <原因>` 接 `WARN skills-not-updated <merge sha>`（進度行）：PR 已合入，但主 checkout 沒跟上，也沒跑 `bin/sync-skills`，已安裝的 skill 還是舊版。原因是 `快轉會刪掉被保護的路徑 <檔…>` 或提到 `Protected paths:` 時不要自己快轉：那些檔在 adapter 的 `Protected paths:` 宣告裡（[ADAPTER.md](../../skills/engineering/issue-run/ADAPTER.md) 的 Delivery 段），把檔案和這行交給人（#303）；其他原因時，主 checkout 清乾淨後自己 `git merge --ff-only origin/main` 再跑 `bin/sync-skills`（#297）；本機 `main` 有別的 session 還沒 push 的 commit、和 `origin/main` 分岔時，快轉一定失敗：不要 reset、rebase 主 checkout，回報那幾個 commit（`git log --oneline origin/main..main`），由提交它們的 session rebase 後落地（#306）。
 - `STOP worktree-rm`：PR 已經合入，只剩收尾沒做完；照常留言、關單，再回報人處理 worktree。
 - 其他 `STOP <原因>`（如 `ci-failed`、`merge`）或 exit 1：停下回報人，不硬合。
-
-## Worker result
-
-- **Worker result.** pilot 底下的 worker（`/issue-run <n> --worker <checkpoint>`）畫面最後一行是結果行 `DONE <n> <完整 candidate SHA>` 或 `STOP <n> <原因>`（格式與各種原因在 `skills/engineering/issue-pilot/PILOT-STORE.md`；coordinator 由 **Watch.**／Probe 從分頁尾段讀它）。證據留言的最後一行也寫同一個 `DONE` 結果行：`issue-pool.mjs --integration` 以「最近一則認領留言之後有 `DONE <n> <sha>` 行」把單歸 `landed`，只寫在畫面上時，單要等 stage 合入整合分支才離開 `claimed`（#411）。rulings 檔是 worker checkpoint `.scratch/issue-run-<n>/state.md` 的 `## Rulings` 段；本 repo 沒有 confirm gate，`confirm` ruling 照 issue-run SKILL 的 Decisions 以 `STOP <n> decision <摘要>` 結束；範圍外的改動與觀察寫進 `DONE` 報告內文與證據留言的「觀察」段（#440）。

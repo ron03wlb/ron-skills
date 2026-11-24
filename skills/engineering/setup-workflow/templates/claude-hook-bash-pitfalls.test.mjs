@@ -104,7 +104,7 @@ test('grep 文件後接 cut -c／head -c／awk substr：exit 2，改用 doc-exce
   const result = bash(ISSUE_571);
   assert.equal(result.status, 2);
   assert.match(result.stderr, /#571/);
-  assert.match(result.stderr, /node scripts\/doc-excerpt\.mjs '<regex>' <檔案>\.\.\./);
+  assert.match(result.stderr, /node scripts\/doc-excerpt\.mjs '<regex>' <檔案或目錄>\.\.\./);
   assert.deepEqual(truncatedDocGrep(ISSUE_571), ['grep -rn local-checks\\|ci-not-started docs/agents GLOSSARY.md docs/adr']);
   for (const command of [
     "grep -n foo docs/agents/issue-run.md | cut -c 1-200",
