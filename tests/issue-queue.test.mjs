@@ -49,8 +49,8 @@ test('stale 桶列出認領者與最後一次留言，由人決定，agent 不�
   assert.match(stale, /never (re)?claim/i);
 });
 
-// R1-Q7、R2-Q4：細化照 /triage 的規則、不改 Matt 的 /triage；人確認後才改 ready-for-agent／ready-for-human；pilot 的自動細化不變。
-test('逐張細化照 /triage 規則，人確認後才改 ready 狀態，pilot 自動細化不變', () => {
+// R1-Q7、R2-Q4：細化照 /triage 的規則、不改 Matt 的 /triage；ready 狀態要人確認（2026-11-24 起清單內的 ready-for-agent 例外，見下）；pilot 的自動細化不變。
+test('逐張細化照 /triage 規則，需要人時等確認才改 ready 狀態，pilot 自動細化不變', () => {
   const refine = paragraph('**Refine.**');
   assert.ok(refine, '沒有 Refine 步驟');
   assert.match(refine, /`triage`/);
@@ -106,6 +106,24 @@ test('細化直接讀 triage 檔、含 wontfix，N 以 grep 計數，跨輪範�
   assert.match(paragraph('**Parent hints.**'), /range across rounds cannot be expanded/);
   const adapter = readFileSync(new URL('../skills/engineering/issue-run/ADAPTER.md', import.meta.url), 'utf8');
   assert.match(adapter, /^## Issue queue\n\n.*`Parent hints: off`/m);
+});
+
+// owner 2026-11-24（CoS item 91）：驗收每項都能客觀檢查、不涉取捨的單，bot 直接標 ready-for-agent 並留言寫依據（A2 事後通知）；
+// 其餘（含 ready-for-human）照舊等人確認；判斷清單寫在 Refine 步驟裡，拿不準就交給人；報告列出直接標 ready 的單號。
+test('可客觀檢查、不涉取捨的單直接標 ready-for-agent 並留依據，其餘等人確認，清單在 Refine 步驟', () => {
+  const refine = paragraph('**Refine.**');
+  assert.match(refine, /\*\*Direct `ready-for-agent`\.\*\*/);
+  assert.match(refine, /grounds/);
+  assert.match(refine, /A2/);
+  assert.match(refine, /`## 驗收`/);
+  assert.match(refine, /command with its expected output/);
+  assert.match(refine, /應該, 適當/);
+  assert.match(refine, /business rule, scope trade-off, or product decision/);
+  assert.match(refine, /data retention or deletion policy/);
+  assert.match(refine, /unsure .* goes to the human/);
+  assert.match(refine, /\*\*Human confirmation\.\*\* Every other recommendation \(`ready-for-human`/);
+  assert.match(paragraph('**Report.**'), /marked `ready-for-agent` directly, listed by Issue number/);
+  assert.match(readme, /直接標 `ready-for-agent`/);
 });
 
 test('README 有 issue-queue 一段', () => {

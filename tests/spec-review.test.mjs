@@ -52,3 +52,10 @@ test('spec-review 排除無人值守流程，且註明 EGM 出處與授權', () 
     assert.doesNotMatch(readFileSync(join(root, rel), 'utf8'), /spec-review/, `${rel} 不該呼叫 spec-review`);
   }
 });
+
+// spay2 retro 1124c 5cc58424#2：只改測試的規格，正式碼直接讀時鐘／隨機數的子案例做不到，要明示排除。
+test('spec-review 對只改測試的規格逐條核對子案例可行性', () => {
+  const step4 = skill.split('## 4. Resolve every finding')[1]?.split('\n## 5.')[0] ?? '';
+  assert.match(step4, /\*\*Test-only spec\.\*\*.*clock, a random source.*exclude that sub-case/);
+  assert.ok(step4.indexOf('**Test-only spec.**') < step4.indexOf('Done when'), '可行性核對要排在 Done when 之前');
+});

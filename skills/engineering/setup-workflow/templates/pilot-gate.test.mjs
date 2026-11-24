@@ -145,6 +145,14 @@ test('list：印與 probe 相同的 GATE、GATE_MALFORMED 行；沒有 gates.md 
   assert.equal(run(checkout(t, null), 'list').stdout, '');
 });
 
+// #453 第 2 項：手寫的 hold 欄解析不出號碼時 list 也印 GATE_MALFORMED（與 probe 同一份 gateLines）。
+test('list：hold 欄解析不出號碼（`- hold：320`）時印 GATE_MALFORMED', t => {
+  const dir = checkout(t, `${GATES}\n## G4 #320 等人決定\n- Issue：#320\n- hold：320\n- opened：2026-11-18T11:00:00+08:00\n`);
+  const result = run(dir, 'list');
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes('GATE G4 #320 等人決定\nGATE_MALFORMED G4 - hold：320\n'), result.stdout);
+});
+
 test('用法錯誤 exit 2、不建檔：缺欄位、欄位含換行、--how 含 |、id 不是 G<n>、多餘參數', t => {
   const dir = checkout(t, null);
   for (const args of [

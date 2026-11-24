@@ -1,0 +1,78 @@
+{
+  "terminal": {
+    "handle": "term_sample",
+    "status": "running",
+    "tail": [
+      " ▐▛███▛█   Claude Code v2.1.331",
+      "▝▜██████▀  Opus 5.5 with medium effort · Claude Ultra",
+      " ▝▝   ▝▝   ~/workspace/sample",
+      "❯ 讀完這個 repo 的 scripts/ 目錄並列出每支腳本的用途，慢慢做，不要改任何檔案",
+      "● 先列出 scripts/ 目錄的內容。",
+      "● Listing files in scripts directory with line counts · 8s",
+      "  ⎿  $ find scripts -type f | sort && echo --- && find scripts -type f | xargs wc -l | sort -n | tail -5",
+      "✶ Effecting… (19s · ↓ 209 tokens)",
+      "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "❯",
+      "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "  ⏵⏵ auto mode on (shift+tab to cycle)"
+    ],
+    "truncated": false,
+    "limited": false,
+    "oldestCursor": "0",
+    "nextCursor": "2",
+    "latestCursor": "2",
+    "returnedLineCount": 12,
+    "tailRows": [
+      {
+        "wrapped": false,
+        "trailingSpaces": 0
+      },
+      {
+        "wrapped": false,
+        "trailingSpaces": 0
+      },
+      {
+        "wrapped": false,
+        "trailingSpaces": 0
+      },
+      {
+        "wrapped": false,
+        "trailingSpaces": 77
+      },
+      {
+        "wrapped": false,
+        "trailingSpaces": 0
+      },
+      {
+        "wrapped": false,
+        "trailingSpaces": 0
+      },
+      {
+        "wrapped": false,
+        "trailingSpaces": 0
+      },
+      {
+        "wrapped": false,
+        "trailingSpaces": 0
+      },
+      {
+        "wrapped": false,
+        "trailingSpaces": 0
+      },
+      {
+        "wrapped": false,
+        "trailingSpaces": 0
+      },
+      {
+        "wrapped": false,
+        "trailingSpaces": 0
+      },
+      {
+        "wrapped": false,
+        "trailingSpaces": 0
+      }
+    ],
+    "source": "screen",
+    "draft": "這是一段還沒送出的草稿"
+  }
+}

@@ -1,5 +1,9 @@
 // #166：pilot.md 每任 coordinator 都整份讀（63544 bytes），多數條目只在少數分支用到。
 // pilot.md 只留每輪都用的條目，其餘拆到 adapter Pilot 段連到的其他檔；移出的條目在 pilot.md 留一行 pointer，寫明什麼情況要讀。
+// 搬條目前先看別的測試綁在 pilot.md 本身的斷言（#434）：pilot-adapter-stage.test.mjs 要 **Close.** 與 **Handoff.** 在 pilot.md 相鄰，
+// auto-retro.test.mjs 與 triage-brief.test.mjs 驗 Retro trigger、Triage brief 的 pointer 寫法；結果行（`MERGED <key> <sha>`、`STOP …`）原本也要在 pilot.md，
+// #344 起改成 pilot 各檔任一份有即可。另外 grep `見 <條目>`、`照 <條目>`：別的條目以名稱引用被搬走的句子時（#433：Defaults 的「worker 指令見 Dispatch」），
+// 把句子或指令留在 pointer 行，或改引用處。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, statSync } from 'node:fs';
@@ -14,9 +18,10 @@ const entries = text => [...text.matchAll(/^- \*\*(.+?)\.\*\*/gm)].map(m => m[1]
 // #344：pilot.md 是必讀核心，上限改由 scripts/adapter-size-budget.json 訂（check-adapter-size.mjs 檢查）；拆出去的每份都要列在預算表，adapter-line.mjs 才查得到。
 const budget = JSON.parse(readFileSync(new URL('../scripts/adapter-size-budget.json', import.meta.url), 'utf8'));
 test('pilot.md 在必讀核心預算內（14000 bytes 以下），Pilot 段連到的每份都列在預算表', () => {
-  assert.ok(budget[PILOT] <= 14000, `${PILOT} 的預算 ${budget[PILOT]}`);
+  assert.ok(budget[PILOT] <= 14000, `${PILOT} 的預算 ${budget[PILOT]}/14000 bytes，超 ${budget[PILOT] - 14000}`);
   const size = statSync(new URL(`../${PILOT}`, import.meta.url)).size;
-  assert.ok(size <= budget[PILOT], `${PILOT} ${size} bytes`);
+  // #420：失敗訊息帶大小與上限，一次就知道要刪多少（worker 曾為了不知道超多少試縮 6 次）。
+  assert.ok(size <= budget[PILOT], `${PILOT} ${size}/${budget[PILOT]} bytes，超 ${size - budget[PILOT]}`);
   for (const path of files) assert.ok(budget[path], `adapter-size-budget.json 沒列 ${path}`);
 });
 

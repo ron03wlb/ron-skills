@@ -18,7 +18,7 @@ A `local` side needs no CLI, and a `local` code host has no remote delivery (no 
 | Action | GitHub | GitLab | Notes |
 | --- | --- | --- | --- |
 | Read an Issue with comments | `gh issue view <n> --json number,title,body,labels,comments` | `glab issue view <n> --comments` | `gh issue view --comments` without `--json` prints nothing outside a tty |
-| List ready Issues | `gh issue list --state open --label ready-for-agent --json number,title,labels` | `glab issue list --label ready-for-agent -O json` | `glab issue list` takes `-O` for JSON; `-F` there is `--output-format` (details, ids, urls) |
+| List ready Issues | `gh issue list --state open --label ready-for-agent --limit 1000 --json number,title,labels` | `glab issue list --label ready-for-agent --per-page 100 -O json` | `gh` returns 30 Issues without `--limit` (a retro collection of 42 claimed 30); `glab` returns 30 per page without `--per-page` (100 at most). `glab issue list` takes `-O` for JSON; `-F` there is `--output-format` (details, ids, urls) |
 | Create an Issue | `gh issue create --title <title> --body-file <file>` | `glab issue create --title <title> --description-file <file> --yes` | |
 | Comment on an Issue | `gh issue comment <n> --body-file <file>` | `glab issue note <n> -m "$(cat <file>)"` | `glab issue note` has no `--body-file` or `-F`; only `-m`/`--message` |
 | Change labels | `gh issue edit <n> --add-label <add> --remove-label <remove>` | `glab issue update <n> --label <add> --unlabel <remove>` | |
@@ -45,7 +45,7 @@ The assignee flags were added for #108 the same way (`gh issue edit --help` loca
 | Command | Flags confirmed |
 | --- | --- |
 | `gh issue view --help` | `-c, --comments`, `--json fields`, `-R, --repo` |
-| `gh issue list --help` | `-s, --state {open\|closed\|all}`, `-l, --label`, `--json fields` |
+| `gh issue list --help` | `-s, --state {open\|closed\|all}`, `-l, --label`, `-L, --limit int` (default 30), `--json fields` |
 | `gh issue create --help` | `-t, --title`, `-F, --body-file`, `-l, --label` |
 | `gh issue comment --help` | `-F, --body-file`, `-R, --repo [HOST/]OWNER/REPO` |
 | `gh issue edit --help` | `--add-label`, `--remove-label`, `-F, --body-file`, `--add-assignee` (`@me` assigns yourself) |
@@ -59,7 +59,7 @@ The assignee flags were added for #108 the same way (`gh issue edit --help` loca
 | `gh auth status --help` | `-h, --hostname` |
 | `gh auth login --help` | `-h, --hostname` |
 | `glab issue view --help` | `-c, --comments`, `-F, --output text\|json`, `-R, --repo` |
-| `glab issue list --help` | `-l, --label`, `-O, --output text\|json`, `-F, --output-format details\|ids\|urls` |
+| `glab issue list --help` | `-l, --label`, `-P, --per-page int`, `-O, --output text\|json`, `-F, --output-format details\|ids\|urls` |
 | `glab issue create --help` | `-t, --title`, `--description-file`, `-y, --yes` |
 | `glab issue note --help` | `-m, --message` only (plus `--attach`, `--internal`); no `--body-file`; inherits `-R, --repo` (`OWNER/REPO`, `GROUP/NAMESPACE/REPO`, or the full URL or Git URL; rechecked for #79, which passes the project URL so a self-hosted http host such as `http://192.168.200.202/spay/spay2` resolves) |
 | `glab issue update --help` | `-l, --label`, `-u, --unlabel`, `-a, --assignee` (`+` adds, `!`/`-` removes, otherwise replaces) |

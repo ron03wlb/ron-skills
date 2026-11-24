@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // 把開著的 Issue 逐張分桶，pilot 的 Pool 從 ready 桶依序挑；tracker 支援 GitHub（gh）與 GitLab（glab，含自架），本機 Markdown tracker 不支援。
-// 用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] [--skip-labels <label>,...] [--integration <分支>]
+// 用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--stale] [--categories <label>,...] [--skip-labels <label>,...] [--integration <分支>]
 //       node scripts/issue-pool.mjs --pickable-blocked [--repo <專案>] [--integration <分支>]
 //       node scripts/issue-pool.mjs claim <n> [--repo <專案>] [--session <id>] [--take-stale] [--integration <分支>]
 //       node scripts/issue-pool.mjs children <母單> [--repo <專案>] [--ask-prefix <前綴>]...
@@ -22,10 +22,12 @@
 // needs-info、needs-triage、ready（`ready-for-agent`）、unlabeled。所以 ready 桶就是池子。過期的認領只歸到 stale，不自動釋放。
 // 輸出順序：ready 桶先印，依 `retro` label 的先（retro 判定太複雜、交給 worker 的單）、`priority` label 的先、直接或間接 block 最多開著的單的先（關鍵路徑）、號碼小的先；
 // 其餘依上面的桶順序、桶內號碼小的先。
+// （抄寫下面 stdout 行格式的文件：`skills/engineering/issue-queue/SKILL.md` step 1、`docs/agents/pilot.md` 的 **Pool.**；改格式時一起改，#440。）
 // stdout：每張一行 `<桶> #<n> <標題>`；blocked 桶在號碼與標題之間多寫狀態與開著的 blocker：`blocked #<n> <triage 狀態 label|unlabeled> by #<m>,<owner>/<repo>#<k> <標題>`，
 // 帶 --integration 時已落地在整合分支的本 repo blocker 後面接 ` (landed <分支>)`（#352）。帶 --integration 而且主 checkout 的 main 暫停旗標有效時
 // （`.scratch/pilot/main-paused`，`pilot-hold.mjs set-main` 寫、until 當天仍有效，判斷是 export 的 mainPause，Probe 的 MAIN_PAUSED 共用，#379），
-// landed 桶不逐張印，在它的位置收成一行 `LANDED_COUNT <數量> <整合分支>`；旗標過期、讀不懂或沒有時照逐行印；Probe 的 BLOCKER_OPEN_SCOPE 用同一份 blocker 資料（export 的 blockerOpenScope，#359），這支 CLI 不印。之後 ready 桶本文有 `… prerequisite：<內容>` 一行、內容不是「無」的，
+// landed 桶不逐張印，在它的位置收成一行 `LANDED_COUNT <數量> <整合分支>`；旗標過期、讀不懂或沒有時照逐行印。stale 桶預設也不逐張印，在它的位置收成一行 `STALE <數量>`，
+// 帶 `--stale` 才逐行印（/issue-queue 要逐張列認領者時帶；investing retro 1123c：每輪 Pool 約 190 行 stale 蓋過 4 行 needs-triage，#550）；Probe 的 BLOCKER_OPEN_SCOPE 用同一份 blocker 資料（export 的 blockerOpenScope，#359），這支 CLI 不印。之後 ready 桶本文有 `… prerequisite：<內容>` 一行、內容不是「無」的，
 // 依 ready 的順序各印一行 `PREREQ <n> <內容>`（先查環境或開 gate 再派）；最後對開著、有 triage 狀態 label（TRIAGE_STATES）卻沒有分類 label 的單印一行
 // `NO_CATEGORY <n> <n>...`（號碼升冪，沒有時不印），母單（有 sub-issue 或 `parent` label）、`retro-candidates` 與 `--skip-labels` 的 label 不算。分類 label 預設是 DEFAULT_CATEGORIES（triage 的 `bug`、`enhancement`），
 // adapter 用的 label 不同時以 `--categories` 覆寫（逗號分隔）。exit 0。gh 或 glab 失敗時 stderr 印原因、exit 1；用法錯誤或本機 Markdown tracker 時 exit 2。
@@ -43,6 +45,7 @@
 // - 寫入後重讀：這次讀到之後新增的認領留言裡，最早一則不是自己就是別台搶先了，收回自己的留言（指派到這裡一定是同一個帳號，不動）。
 // - 擋下的認領者是這台機器上已交接出去的前任 coordinator（主 checkout 的 `.scratch/pilot/sessions.md` 有它的 handoff 行），
 //   而這個 session 是現任 coordinator（有 start 行、沒交接出去）時，改以前任的 session 認領，成功印 `CLAIMED <n> takeover <session>`（#135）。
+//   前任暫停、沒有 handoff 行時也算：它有帶 pid 的 start 行、該 pid 已不存在（`kill -0` 失敗）、也沒交接出去，同樣 takeover（#573：前任暫停後 transcript 一小時內都算活著，claim 一直 STOP）。
 // - 擋下的認領者是這台機器上的 session、它的 transcript（`$CLAUDE_CONFIG_DIR` 或 `~/.claude` 底下 `projects/*/<session>.jsonl`）超過 1 小時沒有寫入：
 //   STOP 之前先印 `STALE_CLAIM <n> <機器>／<session> <最後寫入的 ISO 時間>`；帶 `--take-stale` 時改以這個 session 認領，成功印 `CLAIMED <n> stale <session>`。
 //   transcript 沒寫入不代表 session 結束（可能在等人回覆），所以只有不等人的流程（/retro-collect）才帶 --take-stale（#212：#201 的認領者認領一分鐘後被中斷）。
@@ -61,7 +64,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { codeHost, projectInDoc, trackerKind } from './lib/hosts.mjs';
 
-const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--categories <label>,...] [--skip-labels <label>,...] [--integration <分支>] [--pickable-blocked] | claim <n> [--repo <專案>] [--session <id>] [--take-stale] [--integration <分支>] | children <母單> [--repo <專案>] [--ask-prefix <前綴>]... | open-work <n> [--repo <專案>]';
+const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--stale] [--categories <label>,...] [--skip-labels <label>,...] [--integration <分支>] [--pickable-blocked] | claim <n> [--repo <專案>] [--session <id>] [--take-stale] [--integration <分支>] | children <母單> [--repo <專案>] [--ask-prefix <前綴>]... | open-work <n> [--repo <專案>]';
 /** pool() 與 children 共用的 label、blocked-by 欄位片段。 */
 const LABEL_FIELDS = 'labels(first:50){nodes{name}}';
 const BLOCKED_BY_FIELDS = 'blockedBy(first:50){nodes{number state repository{nameWithOwner}}}';
@@ -386,13 +389,18 @@ export function mainPause(checkout, today = localDate()) {
 
 /** stdout 的全部行（格式見檔頭）：分桶行、PREREQ、NO_CATEGORY。landed、integration 只在帶 --integration 時給；
  * paused（main 暫停旗標有效，#379）時 landed 桶收成一行 `LANDED_COUNT <數量> <整合分支>`，放在 landed 桶的位置。 */
-export function poolLines(issues, { repo, categories = DEFAULT_CATEGORIES, landed, integration, paused = false, ...options }) {
+export function poolLines(issues, { repo, categories = DEFAULT_CATEGORIES, landed, integration, paused = false, listStale = false, ...options }) {
   const rows = pool(issues, { repo, landed, ...options });
   const detail = (issue, bucket) => bucket === 'blocked' ? `${blockedDetail(issue, { repo, landed, integration })} ` : bucket === 'ready' ? parentDetail(issue, repo) : '';
-  const landedCount = paused && landed ? rows.filter(({ bucket }) => bucket === 'landed').length : 0;
+  const count = bucket => rows.filter(row => row.bucket === bucket).length;
+  // 收成一行的桶：main 暫停時的 landed（#379）、沒帶 --stale 時的 stale（#550）；桶的第一張的位置印計數行。
+  const folded = {
+    ...(paused && landed ? { landed: `LANDED_COUNT ${count('landed')} ${integration}` } : {}),
+    ...(listStale ? {} : { stale: `STALE ${count('stale')}` }),
+  };
   const lines = rows.flatMap(({ issue, bucket }, i) => {
-    if (!landedCount || bucket !== 'landed') return [`${bucket} #${issue.number} ${detail(issue, bucket)}${issue.title}`];
-    return rows[i - 1]?.bucket === 'landed' ? [] : [`LANDED_COUNT ${landedCount} ${integration}`];
+    if (!folded[bucket]) return [`${bucket} #${issue.number} ${detail(issue, bucket)}${issue.title}`];
+    return rows[i - 1]?.bucket === bucket ? [] : [folded[bucket]];
   });
   for (const { issue } of rows.filter(({ bucket }) => bucket === 'ready')) {
     const prerequisite = prerequisiteOf(issue.body);
@@ -435,7 +443,10 @@ function mainCheckout() {
   return result.status === 0 ? result.stdout.split('\n')[0].replace(/^worktree /, '') : undefined;
 }
 
-/** 擋下認領的是本機已交接出去的前任 coordinator、而 claim 的 session 是現任 coordinator（有 start 行、沒交接出去）時，傳回前任的 session；
+/** pid 的行程還在時為真（`kill -0`；EPERM 表示行程在、只是不屬於這個使用者）。 */
+const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+
+/** 擋下認領的是本機已交接出去、或已暫停（start 行的 pid 已不存在）的前任 coordinator，而 claim 的 session 是現任 coordinator（有 start 行、沒交接出去）時，傳回前任的 session；
  * 都照主 checkout 的 sessions.md（PILOT-STORE.md 的格式）判斷，讀不到時是 undefined。 */
 function takeoverSession(claimer, session) {
   const [host, previous] = claimer.split('／');
@@ -445,7 +456,10 @@ function takeoverSession(claimer, session) {
   try { lines = readFileSync(join(main, '.scratch/pilot/sessions.md'), 'utf8').split('\n'); } catch { return undefined; }
   const retired = id => lines.some(line => line.includes(`   handoff from-session ${id} `));
   const started = id => lines.some(line => line.includes(`   session ${id}   `) || (line.endsWith('  coordinator start') && line.includes(`  ${id}  `)));
-  return retired(previous) && started(session) && !retired(session) ? previous : undefined;
+  // 暫停沒交接的前任：只認帶 pid 的 start 行（舊格式沒有 pid，無從判斷）；pid 以前任自己那行為準，`coordinator` 檔此時記的是現任的 pid。
+  const pid = lines.findLast(line => line.includes(`   session ${previous}   `))?.match(/   pid (\d+)\b/)?.[1];
+  const suspended = pid !== undefined && !alive(Number(pid));
+  return (retired(previous) || suspended) && previous !== session && started(session) && !retired(session) ? previous : undefined;
 }
 
 /** 本機認領者的 transcript 最後寫入時間（ms）；認領者在別台、或找不到它的 transcript 時是 undefined。 */
@@ -553,7 +567,7 @@ function openWork(n, tracker) {
 }
 
 function main(argv) {
-  let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, skipLabels = [], session = defaultSession(), takeStale = false, integration, pickable = false;
+  let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, skipLabels = [], session = defaultSession(), takeStale = false, integration, pickable = false, listStale = false;
   const askPrefixes = [];
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
@@ -563,6 +577,7 @@ function main(argv) {
     else if (argv[i] === '--skip-labels' && argv[i + 1]) skipLabels = argv[++i].split(',').filter(Boolean);
     else if (argv[i] === '--session' && argv[i + 1]) session = argv[++i];
     else if (argv[i] === '--take-stale') takeStale = true;
+    else if (argv[i] === '--stale') listStale = true;
     else if (argv[i] === '--pickable-blocked') pickable = true;
     else if (argv[i] === '--integration' && argv[i + 1]) integration = argv[++i];
     else if (argv[i] === '--ask-prefix' && argv[i + 1]) askPrefixes.push(argv[++i]);
@@ -586,7 +601,7 @@ function main(argv) {
     }
     const checkout = landed && mainCheckout();
     const paused = Boolean(checkout && mainPause(checkout));
-    for (const line of poolLines(issues, { repo, staleHours, categories, skipLabels, landed, integration, paused })) console.log(line);
+    for (const line of poolLines(issues, { repo, staleHours, categories, skipLabels, landed, integration, paused, listStale })) console.log(line);
     return 0;
   } catch (error) {
     if (!(error instanceof CliError) && !(error instanceof UsageError)) throw error;

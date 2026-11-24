@@ -4,7 +4,7 @@
 // 每個 running 成員的 terminal 與 tracker 上的母單，各印一行狀態，不必再手動拼 `orca terminal read` 的 JSON（手拼時漏過 exited 卻沒有結果行的 worker）。
 // 存檔格式照 issue-pilot 的 PILOT-STORE.md；專案不同的值由參數傳入。
 //
-// 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>] [--worker-state <路徑>]
+// 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>] [--worker-state <路徑>] [--retro-collect-in <checkout>]
 //   --integration 整合分支，預設 pilot/integration；--main 主分支，預設 main。讀 running 成員要 ORCA_CLI_COMMAND，沒有時其他檢查照跑。
 //   --skip-labels：adapter 宣告的「不進分級的 label」（逗號分隔，同 issue-pool.mjs 的 --skip-labels，#326）：掛著的單與 retro-candidates 一樣，
 //            不進 POOL_READY／POOL_TRIAGE／COUNTERPART_BARE 的 ready 桶，也不算 DEPS_PROSE「最後做」的新單。沒帶時只有內建的 retro-candidates、parent。
@@ -25,6 +25,7 @@
 //   --handoff-after <n>（#368）：交接門檻，本 coordinator session 合入幾批就交接（adapter 的 Defaults 帶入），預設 2；不是正整數時是用法錯誤（exit 2）。
 //   --worker-state <路徑>（#466）：worker checkpoint 的路徑，`<worktree>`、`<n>` 換成成員列的 worktree 與號碼，預設 `<worktree>/.scratch/issue-run-<n>/state.md`；
 //            terminal 已結束卻沒有結果行時讀它，見下面的 WORKER … from-state。
+//   --retro-collect-in <checkout>（CoS item 89）：Retro trigger 的 --collect-in（`/retro-collect` 在別的 checkout 跑時才帶），預設主 checkout。
 //   --tail <handle> [--lines <n>]（取代主 checkout 引數，只做這件事）：印那個 worker 分頁畫面的最後 n 行（預設 40），給 Watch 用，不必手拼 JSON 或依賴 jq（#295）；
 //            沒有 ORCA_CLI_COMMAND 或讀不到時 stderr 說明、exit 1。
 //   --apply、--status 都不改其他輸出行，stdout 與不帶旗標時相同（APPLY_MISS、PARENT_APPLY_FAILED 除外）。
@@ -44,8 +45,9 @@
 //            ` ｜ ` 之後是把那份存進 scratch 檔的指令，跑完用 Read 讀存檔，不讀整份 diff，也不把 `git show` 直接印到輸出：35 KB、67 KB 會被存檔後再進 context 一次）
 //            ｜ADAPTER_AHEAD_SEEN <檔案>（#544：上面指令存的 `.scratch/pilot/adapter/<檔名>` 已在、內容等於 adapter ref 那份，coordinator 已讀過，不必再讀；
 //            已存副本與 adapter ref 那份不同時照印 ADAPTER_AHEAD，名稱欄改成相對已存副本變動的條目，規則同上）
-//   腳本（#358）：SCRIPT_AHEAD <scripts/路徑> run-in <stage worktree>｜SCRIPT_AHEAD <scripts/路徑> sync-main（有 ADAPTER_AHEAD 的那一輪，整合分支那份 adapter 的
-//            Pilot 段與它連到的檔指名的 `scripts/*`（含 `.py`、`.sh`），主 checkout 工作樹缺檔或內容與整合分支不同，而且整合分支那份不比主分支舊；依路徑。
+//   腳本（#358）：SCRIPT_AHEAD run-in <stage worktree> <scripts/路徑>...｜SCRIPT_AHEAD sync-main <scripts/路徑>...（有 ADAPTER_AHEAD 的那一輪，整合分支那份 adapter 的
+//            Pilot 段與它連到的檔指名的 `scripts/*`（含 `.py`、`.sh`），主 checkout 工作樹缺檔或內容與整合分支不同，而且整合分支那份不比主分支舊；依去處各一行、路徑依名稱排序
+//            （#563：investing main 暫停期間每輪 44 行 SCRIPT_AHEAD）。
 //            run-in 是分支為整合分支或 pilot/stage-* 的 worktree，在主 checkout 以 `<stage worktree>/scripts/…` 跑；那個 worktree 不存在或也沒有這個檔時是 sync-main）｜
 //            HOOK_BEHIND <scripts/路徑>（主分支落後整合分支時，主分支 `.claude/settings.json` 的 hook 指令引用、整合分支內容不同而且不比主分支舊的檔；
 //            依指令順序，每個檔一次：hook 跑的是主 checkout 的舊版）
@@ -63,8 +65,9 @@
 //   裸對應單（#304）：COUNTERPART_BARE <n> <owner>/<repo>#<m>（主分支的 adapter 有 `Counterpart projects:` 行時，ready 桶與開著的 batch 成員裡
 //               本文以 github.com 寫法（裸 ref 或 github.com 網址）寫了宣告專案的對應單：那個專案不在 github.com，Close 會 STOP counterpart；
 //               判斷同 pilot-counterpart.mjs 的 --adapter，依號碼、同一張單照本文順序；沒有宣告、gh 失敗時不印）
-//   等人的單（#327）：HUMAN_NO_GATE <n> <摘要>（`ready-for-human` 的單（pool() 的 human 桶）在 gates.md 沒有 Issue 欄是 #n 的開著的 gate：
-//               coordinator 開 gate 問人；摘要是本文 `… prerequisite：` 那行冒號之後的文字，沒有這行時是標題；依號碼，gh 失敗時不印）｜
+//   等人的單（#327）：HUMAN_NO_GATE <n> <摘要>（`ready-for-human` 的單（pool() 的 human 桶）在 gates.md 沒有 Issue 欄是 #n 的開著的 gate，
+//               也沒有 resolved 時間不早於該單最近一次 label 變動（labeled／unlabeled 事件）、本文編輯與開單時間的已 resolved gate（#417：人回覆後維持
+//               ready-for-human 的單不再每輪重印；resolve 之後 label 或本文又變動就重新印）：coordinator 開 gate 問人；摘要是本文 `… prerequisite：` 那行冒號之後的文字，沒有這行時是標題；依號碼，gh 失敗時不印）｜
 //               HUMAN_LANDED <n> <sha>（#358：同一個桶裡，整合分支已有它的落地 commit（issue-pool 的 landedOn）的單；依號碼，在 HUMAN_NO_GATE 之後；
 //               沒有整合分支或 gh 失敗時不印）
 //   blocker 範圍（#359）：BLOCKER_OPEN_SCOPE <n> #<m> <label>（blocked 桶的 #n，本 repo 開著的 blocker #m 已落地在整合分支（landedOn）、掛 ready-for-agent、
@@ -92,13 +95,15 @@
 //          不是 done 的成員裡有 batch key 那張時（pilot-batch move 會 STOP same-batch，#357）改印 MOVE <key> <done 的成員…>；
 //          開著的 batch 裡 stop 的成員（這一輪剛讀到 STOP 的也算）的 Issue 有 blocked_by、而且每張都已關閉時印 UNBLOCKED <key> <n>
 //          （#357；gh 失敗或成員的 Issue 已關閉時不印）；
-//          開著的 batch 裡 done 的成員（這一輪剛讀到 DONE 的也算）的 Issue 本文最後編輯（lastEditedAt）晚於列的 started 時印 SCOPE_CHANGED <key> <n> <edited at>
+//          開著、還沒合入（current 不是 merged／pushed，#563：已合入等 main 的舊批次每輪各印一行）的 batch 裡 done 的成員（這一輪剛讀到 DONE 的也算）的
+//          Issue 本文最後編輯（lastEditedAt）晚於列的 started 時印 SCOPE_CHANGED <key> <n> <edited at>
 //          （#359：worker 交付的可能是開工前的範圍，Stage 前讀改了什麼；時間照 tracker 原樣，依成員列順序，在 UNBLOCKED 之後；gh 失敗、started 解析不了時不印）；
 //          沒有 done 印 PARKED <key> <n…>（#163：只剩 stop 的 batch 照跑 pilot-land 只得到 STOP member）；
 //          current 是 `staged <sha>` 的 batch，最後一行 regression 不是這個 staged SHA 的 exit 0 時印 RESTAGE <key> regression-failed <code 或 none>
 //          （#191：Regression 沒過、batch 停在 staged，probe 卻什麼都不印；none 是沒有 regression 行、SHA 是先前那次 stage 的，或 SHA 後面沒緊接 exit <code>）；
 //          其中這個 staged SHA 還沒有 regression 行、checkpoint 的 `regressing: <sha> pid <pid>` 是同一個 SHA、那個 pid 還是 pilot-land（ps 的命令列）時
-//          改印 REGRESSING <key> <staged sha>（#361：land 還在跑 Regression，coordinator 等它，不重 stage）；
+//          改印 REGRESSING <key> <staged sha>（#361：land 還在跑 Regression，coordinator 等它，不重 stage）；標記的 pid 判斷不出來，但這個 staged SHA 還沒有
+//          regression 行、`reg-<key>.log` 在 REG_LOG_ACTIVE_MS（10 分鐘）內還有寫入時也印 REGRESSING（#563：investing 670、637、672 回歸中印 RESTAGE … none）；
 //          沒關的 batch 裡 `parked after #<m>` 的成員，在 #m 以 done 留在 `closed` 的 batch 之後印 UNPARK <n>（state 是 `parked after #<m> fresh` 時印 UNPARK_FRESH <n>，#482）；
 //          current 是 merged／pushed 的 batch 在 git fetch 後比 origin/<主分支>，印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
 //          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA，且那一行是 exit 0），
@@ -108,7 +113,7 @@
 //          PUSH_PARKED <gate id> <batch 數> batches（多個這種 gate 取第一個：表格列先於 `## G<n>` 段落，各照檔案順序；IN_MAIN、FETCH_FAILED 照印；#136）；
 //          沒有這種 gate、而 main 暫停旗標有效（`.scratch/pilot/main-paused`，`pilot-hold.mjs set-main <reason> --until <YYYY-MM-DD>` 寫，until 當天仍有效；
 //          判斷是 issue-pool 的 mainPause，過期、讀不懂或沒有時照印各行）時，RESUME_PUSH、NOT_IN_MAIN <key>、NOT_IN_MAIN <key> tip … 合成一行
-//          MAIN_PAUSED <reason> until <date> pending <key>...（依 batch 順序；no-sha、no-regression、regression-failed 照印；#379）
+//          MAIN_PAUSED <reason> until <date> pending <n> batches（只印數量，#563：約 200 個 key 擠在一行；no-sha、no-regression、regression-failed 照印；#379）
 //   重疊：OVERLAP <n> <m|integration> <檔案數> files [**<條目>.**…]（開著的 batch 裡 running、done 的成員分支已 commit 的內容，相對於與整合分支的 merge-base：
 //          兩個成員改到同一個檔，或整合分支自成員的 merge-base 以來也改了它改的檔；`.md` 檔的改動都在 `- **<名稱>.**` 條目裡時細到條目，
 //          相接的行與同一處的插入也算，git 合併時會衝突；同一對只印一行，後面列重疊的條目名稱，#176：條目不帶檔名、不同檔的同名條目只列一次，
@@ -121,18 +126,23 @@
 //   Memory audit（#347）：MEMORY_AUDIT_DUE <天數|?>d last=<YYYY-MM-DD|none> → node scripts/memory-audit.mjs --run（主分支的 adapter 或它 Pilot 段連到的檔
 //          宣告 `Memory audit days: <n>`，而 .scratch/pilot/memory-audit.md 最後一筆距今 n 天以上或沒有紀錄；判斷是同目錄 memory-audit.mjs 的 memoryAuditLine；
 //          沒宣告時不印；在 BEHIND_MAIN 之後）
+//   Retro trigger（CoS item 89）：RETRO_IDLE｜RETRO_DUE … → <--start 指令>｜RETRO_WAIT｜RETRO_RUNNING｜RETRO_FAILED …（主 checkout 工作樹的 adapter 有
+//          `- **Retro trigger.**` 條目、同目錄有 pilot-retro-due.mjs 時，每次印它不帶 --start 的那一行，格式與判斷同那一支；沒有條目或沒有那支時不印。
+//          未收集數取這一輪 tracker 查詢已抓的 Issue（不再多跑一次 gh；那次查詢失敗、GitLab 或 Declared roster 時由 pilot-retro-due 自己查）。
+//          #552 把 Retro trigger 寫在 issue-pilot 的 Project hooks 步驟後半，adapter 沒有 Project tick hooks 的 coordinator 連同它整步跳過，
+//          retro-candidates 積到 20 張、最舊 74 小時都沒觸發；印在 Probe 裡，coordinator 每輪都看得到；在 MEMORY_AUDIT_DUE 之後、HANDOFF_COUNT 之前）
 //   交接（#368，每次都印一行）：HANDOFF_COUNT <n>/<門檻>（本 coordinator session 派工、已合入的 batch 數：`coordinator` 檔的 pid 在 sessions.md 最後一筆
 //          start 行的時間是 session 開始（早於 coordinator 檔的 since 時取 since）；batch 成員列最早的 started 不早於它，current 是 merged／pushed，或 closed 而有 done 成員（`closed moved` 不算）；
 //          沒有 coordinator 檔、sessions.md 或這個 pid 的 start 行時是 0，前任派的 batch 不算），n 達門檻時下一行印 HANDOFF_DUE；在 MEMORY_AUDIT_DUE 之後
 //   全機上限：CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP、OVER_CAP <合計> <上限>（帶 --capacity 時，見上）
 // exit：0 印完；2 用法錯誤；3 `--apply` 的 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，該 batch 沒寫、其他行照印，#345）；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS、PARENT_APPLY_FAILED 等）。
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
 import { mergeConflicts } from './lib/merge-tree.mjs';
-import { CheckpointLocked, gateLines, heldIssues, resolvedGateLines, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
+import { CheckpointLocked, gateLines, heldIssues, resolvedGateLines, resolvedGates, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
 import { SPINNER, orca } from './orca-session-send.mjs';
 import { envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 import { POOL_FIELDS, blockerOpenScope, landedOn, mainPause, pool, prerequisiteOf } from './issue-pool.mjs';
@@ -140,12 +150,12 @@ import { counterparts, declaredProjects } from './pilot-counterpart.mjs';
 import { MEMORY_AUDIT_FILE, declaredDays, memoryAuditLine } from './memory-audit.mjs';
 
 // 池子摘要要的欄位取 issue-pool 的 POOL_FIELDS（#240）；同名的 blockedBy 在 GraphQL 裡合併成一份選取。
-const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt lastEditedAt blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
+const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt lastEditedAt labelEvents: timelineItems(last:1,itemTypes:[LABELED_EVENT,UNLABELED_EVENT]){nodes{... on LabeledEvent{createdAt} ... on UnlabeledEvent{createdAt}}} blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
 // 每次都印的行：池子摘要（POOL_READY｜POOL_TRIAGE｜POOL_EMPTY｜POOL_FAILED，#240）與 HANDOFF_COUNT（#368）。
 // 只看自己那幾行的測試比對整份 stdout 前用它去掉，probe 再加常駐行時改這一處即可（#556）。
 export const ALWAYS_LINES = /^(POOL_|HANDOFF_COUNT )/;
 
-const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>] [--worker-state <路徑>]｜node scripts/pilot-probe.mjs --tail <handle> [--lines <n>]';
+const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>] [--worker-state <路徑>] [--retro-collect-in <checkout>]｜node scripts/pilot-probe.mjs --tail <handle> [--lines <n>]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const TRACKER = join(dirname(fileURLToPath(import.meta.url)), 'gh-tracker.mjs');
 
@@ -347,8 +357,8 @@ function stageWorktree(checkout, integration) {
 /**
  * `ADAPTER_AHEAD` 那一輪（`adapterLines` 是 adapterAhead 印的行，空時不比），coordinator 照整合分支的 adapter 跑主 checkout 的腳本（#358，#324 第 5 項、#338 第 5 項）：
  * 整合分支那份 adapter 的 Pilot 段與它連到的檔指名的 `scripts/*`（含 `.py`、`.sh`），整合分支有這個檔、主 checkout 工作樹缺檔或內容不同、
- * 而且整合分支那份不比主分支舊（integrationNewer）時，依路徑印 `SCRIPT_AHEAD <path> run-in <stage worktree>`；stage worktree 不存在或也沒有這個檔時
- * 印 `SCRIPT_AHEAD <path> sync-main`（先跑 pilot-land.mjs sync-main 建好、跟上 stage worktree）。缺檔會 MODULE_NOT_FOUND，舊版會靜默做錯（`pilot-watch.mjs`）。
+ * 而且整合分支那份不比主分支舊（integrationNewer）時，合成 `SCRIPT_AHEAD run-in <stage worktree> <path>...`；stage worktree 不存在或也沒有這個檔的合成
+ * `SCRIPT_AHEAD sync-main <path>...`（先跑 pilot-land.mjs sync-main 建好、跟上 stage worktree；#563：依路徑各一行時每輪 44 行）。缺檔會 MODULE_NOT_FOUND，舊版會靜默做錯（`pilot-watch.mjs`）。
  */
 export function scriptsAhead(checkout, adapterLines, { integration = 'pilot/integration', main = 'main' } = {}) {
   if (!adapterLines.length) return [];
@@ -364,7 +374,10 @@ export function scriptsAhead(checkout, adapterLines, { integration = 'pilot/inte
   });
   if (!stale.length) return [];
   const stage = stageWorktree(checkout, integration);
-  return stale.map(path => `SCRIPT_AHEAD ${path} ${stage && existsSync(join(stage, path)) ? `run-in ${stage}` : 'sync-main'}`);
+  // 依去處各合成一行（#563）：run-in 在前、sync-main 在後，路徑照上面排序。
+  const runIn = stale.filter(path => stage && existsSync(join(stage, path)));
+  const sync = stale.filter(path => !runIn.includes(path));
+  return [...(runIn.length ? [`SCRIPT_AHEAD run-in ${stage} ${runIn.join(' ')}`] : []), ...(sync.length ? [`SCRIPT_AHEAD sync-main ${sync.join(' ')}`] : [])];
 }
 
 /**
@@ -567,13 +580,20 @@ export function counterpartLines(issues, repo, batched = new Set(), projects = n
     .flatMap(issue => counterparts(issue.body, projects).filter(({ bare }) => bare).map(({ ref }) => `COUNTERPART_BARE ${issue.number} ${ref}`));
 }
 
+/** Issue 最近一次變動的時間（毫秒）：開單、本文編輯（lastEditedAt）與最近一次 labeled／unlabeled 事件（查詢的 labelEvents 別名）取最晚；留言不算。 */
+const lastChanged = issue => Math.max(0, ...[issue.createdAt, issue.lastEditedAt, ...(issue.labelEvents?.nodes ?? []).map(({ createdAt }) => createdAt)]
+  .map(time => Date.parse(time ?? '')).filter(Number.isFinite));
+
 /**
  * 等人的單沒人問（#327 第 2 項）：pool() 的 human 桶（`ready-for-human`）裡，`gates`（openGates 的結果）沒有一個開著的 gate 的 Issue 欄是 `#<n>` 的，
  * 依號碼印 `HUMAN_NO_GATE <n> <摘要>`；摘要取本文第一行 `… prerequisite：` 冒號之後的文字（issue-pool 的 prerequisiteOf，與 PREREQ 共用），沒有這行就取標題。
+ * `resolved`（resolvedGates 的結果）裡 Issue 欄有 `#<n>`、resolved 時間不早於該單最近一次變動（lastChanged）的 gate 也算問過（#417 第 1 項：
+ * 人回覆後決定維持 ready-for-human，舊版每輪重印，coordinator 三度開 gate 問同一組問題）；resolve 之後 label 或本文又變動就重新印。
  */
-export function humanNoGateLines(issues, repo, gates = []) {
+export function humanNoGateLines(issues, repo, gates = [], resolved = []) {
   const gated = new Set(gates.flatMap(({ issue }) => refs(String(issue))));
-  return pool(issues, { repo }).filter(({ bucket, issue }) => bucket === 'human' && !gated.has(issue.number))
+  const answered = issue => resolved.some(gate => refs(String(gate.issue)).includes(issue.number) && Date.parse(gate.resolved) >= lastChanged(issue));
+  return pool(issues, { repo }).filter(({ bucket, issue }) => bucket === 'human' && !gated.has(issue.number) && !answered(issue))
     .map(({ issue }) => issue).sort((a, b) => a.number - b.number)
     .map(issue => `HUMAN_NO_GATE ${issue.number} ${prerequisiteOf(issue.body) ?? issue.title ?? ''}`.trimEnd());
 }
@@ -610,9 +630,9 @@ function integrationLanded(checkout, integration) {
 
 /**
  * 主 checkout 所在 repo 開著的 Issue 的 DEPS_PROSE、COUNTERPART_BARE、HUMAN_NO_GATE、HUMAN_LANDED、PARENT_* 與池子摘要行（同一次查詢），以及 PARENT_* 對應的 tracker 寫入（不在這裡寫）；
- * `gates` 是 gates.md 開著的 gate（openGates），`landed` 是整合分支的 landedOn（沒有時不印 HUMAN_LANDED）。gh 失敗時只有 DEPS_PROSE_FAILED 與 POOL_FAILED 兩行，不中斷其他檢查。
+ * `gates` 是 gates.md 開著的 gate（openGates），`resolved` 是已 resolved 的 gate（resolvedGates，HUMAN_NO_GATE 用），`landed` 是整合分支的 landedOn（沒有時不印 HUMAN_LANDED）。gh 失敗時只有 DEPS_PROSE_FAILED 與 POOL_FAILED 兩行，不中斷其他檢查。
  */
-export function trackerLines(checkout, batched = new Set(), projects = new Set(), gates = [], landed, skipLabels = []) {
+export function trackerLines(checkout, batched = new Set(), projects = new Set(), gates = [], landed, skipLabels = [], resolved = []) {
   try {
     const repo = gh(checkout, 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner').trim();
     const [owner, name] = repo.split('/');
@@ -623,7 +643,7 @@ export function trackerLines(checkout, batched = new Set(), projects = new Set()
       ({ hasNextPage: more, endCursor: cursor } = page.pageInfo);
     }
     const { lines, fixes } = parentFixes(issues, repo);
-    return { lines: [...depsProse(issues, repo, skipLabels), ...counterpartLines(issues, repo, batched, projects, skipLabels), ...humanNoGateLines(issues, repo, gates), ...humanLandedLines(issues, repo, landed), ...blockerOpenScopeLines(issues, repo, landed, skipLabels), ...lines, poolLine(issues, repo, batched, skipLabels)], fixes, issues };
+    return { lines: [...depsProse(issues, repo, skipLabels), ...counterpartLines(issues, repo, batched, projects, skipLabels), ...humanNoGateLines(issues, repo, gates, resolved), ...humanLandedLines(issues, repo, landed), ...blockerOpenScopeLines(issues, repo, landed, skipLabels), ...lines, poolLine(issues, repo, batched, skipLabels)], fixes, issues };
   } catch (error) {
     return { lines: [`DEPS_PROSE_FAILED ${error.message}`, `POOL_FAILED ${error.message}`], fixes: [], issues: [] };
   }
@@ -913,6 +933,18 @@ export function scopeChangedLines(key, active, results, issues) {
     .map(({ n, edited }) => `SCOPE_CHANGED ${key} ${n} ${edited}`);
 }
 
+/** reg-<key>.log 在這段時間內有寫入，視為 Regression 還在跑（#563）。 */
+export const REG_LOG_ACTIVE_MS = 10 * 60_000;
+
+/** `<pilot>/reg-<key>.log` 在 REG_LOG_ACTIVE_MS 內有寫入（pilot-land 的 Regression 邊跑邊寫）；沒有這個檔時 false。 */
+export function regLogActive(pilot, key, now = Date.now()) {
+  try {
+    return now - statSync(join(pilot, `reg-${key}.log`)).mtimeMs < REG_LOG_ACTIVE_MS;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * staged batch 的 Regression 判斷（#191）：最後一行 regression 是這個 staged SHA 的 exit 0 才算過（pilot-land 接著做 Integrate，或 hold 擋著），
  * 其他情況（exit 不是 0、沒寫 exit、SHA 是先前那次 stage 的、沒有 regression 行）印 RESTAGE，coordinator 讀 reg-<key>.log 後重跑 pilot-land。
@@ -1198,7 +1230,19 @@ export async function workerTail(ctx, handle, lines = 40) {
   return (terminal?.tail ?? []).slice(-lines);
 }
 
-export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false, capacity, skipLabels = [], handoffAfter = 2 } = {}) {
+/** Retro trigger 那一行（同目錄的 pilot-retro-due.mjs 的 evaluate，不帶 --start）；沒有那支或 adapter 沒有條目時 []。 */
+export async function retroLines(ctx, checkout, { collectIn, issues } = {}) {
+  const script = join(dirname(fileURLToPath(import.meta.url)), 'pilot-retro-due.mjs');
+  if (!existsSync(script)) return [];
+  const { evaluate } = await import(pathToFileURL(script).href);
+  const at = process.env.RETRO_DUE_NOW ? Date.parse(process.env.RETRO_DUE_NOW) : Date.now();
+  const startCommand = `node scripts/pilot-retro-due.mjs ${checkout}${collectIn ? ` --collect-in ${collectIn}` : ''} --start`;
+  // 沒有 Retro trigger 條目時 evaluate 只回那一行（沒有 result、不是 failed），Probe 不印。
+  const { line, result, failed } = await evaluate({ checkout, collectIn: collectIn ?? checkout, cli: ctx.cli, now: at, startCommand, issues });
+  return result || failed ? [line] : [];
+}
+
+export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false, capacity, skipLabels = [], handoffAfter = 2, retroCollectIn } = {}) {
   const pilot = join(checkout, '.scratch/pilot');
   // 開著的 batch checkpoint 的成員：Pool 不再挑它們，池子摘要也略過。
   const batched = new Set(batchFiles(pilot).map(file => parseBatch(readFileSync(join(pilot, file), 'utf8')))
@@ -1207,7 +1251,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   const projects = declaredProjects(show(checkout, `refs/heads/${main}`, ADAPTER));
   const gates = openGates(readStore(pilot, 'gates.md'));
   const held = heldIssues(gates);
-  const tracker = trackerLines(checkout, batched, projects, gates, integrationLanded(checkout, integration), skipLabels);
+  const tracker = trackerLines(checkout, batched, projects, gates, integrationLanded(checkout, integration), skipLabels, resolvedGates(readStore(pilot, 'gates.md')));
   const source = adapterRef(checkout, `refs/heads/${main}`, integration);
   const ahead = adapterAhead(checkout, { integration, main, source });
   const out = [...checkoutState(checkout, main), ...(source.fetchError ? [`FETCH_FAILED adapter-ref ${source.fetchError}`] : []), ...ahead, ...scriptsAhead(checkout, ahead, { integration, main }), ...hookBehind(checkout, { integration, main }), ...openRows(pilot), ...tracker.lines];
@@ -1236,9 +1280,13 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
       out.push(...stage);
       if (stage.includes(`STAGEABLE ${key}`)) out.push(...conflictLines(checkout, key, active, { integration, main }));
     }
-    if (!/^closed\b/.test(current)) out.push(...unblockedLines(key, active, results, tracker.issues), ...scopeChangedLines(key, active, results, tracker.issues));
-    // 只有 staged 而且留了標記的 batch 才查行程（ps），其他 batch 不多花一次 spawn。
-    const liveLandSha = /^staged\b/.test(current) && regressing && landAlive(regressing.pid) ? regressing.sha : undefined;
+    if (!/^closed\b/.test(current)) out.push(...unblockedLines(key, active, results, tracker.issues));
+    // 已合入（merged／pushed）的 batch 不再 Stage，範圍改了也不印（#563）。
+    if (!/^(closed|merged|pushed)\b/.test(current)) out.push(...scopeChangedLines(key, active, results, tracker.issues));
+    // 只有 staged 而且留了標記的 batch 才查行程（ps），其他 batch 不多花一次 spawn；判斷不出來時看 reg-<key>.log 是否還在寫（#563）。
+    const liveLandSha = /^staged\b/.test(current)
+      ? (regressing && landAlive(regressing.pid) ? regressing.sha : regLogActive(pilot, key) ? current.split(' ')[1] : undefined)
+      : undefined;
     out.push(...restageLines(key, current, regression, regressionExit, liveLandSha));
     if (/^(merged|pushed)\b/.test(current)) landing.push({ key, sha, regression, regressionExit, merged: /^merged\b/.test(current) });
   }
@@ -1264,7 +1312,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
           if (apply && merged) out.push(...applyPushed(join(pilot, `batch-${key}.md`), key));
         } else unpushed(key, merged ? mergedNotInMain(checkout, integration, key, regression, regressionExit) : `NOT_IN_MAIN ${key}`);
       }
-      if (pending.length) out.push(parking ? `PUSH_PARKED ${parking.id} ${pending.length} batches` : `MAIN_PAUSED ${pause.reason} until ${pause.until} pending ${pending.join(' ')}`);
+      if (pending.length) out.push(parking ? `PUSH_PARKED ${parking.id} ${pending.length} batches` : `MAIN_PAUSED ${pause.reason} until ${pause.until} pending ${pending.length} batches`);
     }
   }
   out.push(...behindMain(checkout, { integration, main }));
@@ -1274,6 +1322,9 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   const record = join(checkout, MEMORY_AUDIT_FILE);
   const memoryAudit = memoryAuditLine(existsSync(record) ? readFileSync(record, 'utf8') : null, days);
   if (memoryAudit) out.push(memoryAudit);
+  // tracker 查詢失敗（POOL_FAILED）時不給 issues，pilot-retro-due 自己查一次。
+  const trackerOk = !tracker.lines.some(line => line.startsWith('POOL_FAILED '));
+  out.push(...await retroLines(ctx, checkout, { collectIn: retroCollectIn, issues: trackerOk ? tracker.issues : undefined }));
   out.push(...handoffLines(batches, sessionStart(readStore(pilot, 'coordinator'), readStore(pilot, 'sessions.md')), handoffAfter));
   if (capacity) {
     out.push(...envMissingLines());
@@ -1319,7 +1370,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       options[flag] = true;
       continue;
     }
-    const name = new Map(Object.entries({ '--integration': 'integration', '--main': 'main', '--capacity': 'capacity', '--skip-labels': 'skipLabels', '--handoff-after': 'handoffAfter', '--worker-state': 'workerState' })).get(args[i]);
+    const name = new Map(Object.entries({ '--integration': 'integration', '--main': 'main', '--capacity': 'capacity', '--skip-labels': 'skipLabels', '--handoff-after': 'handoffAfter', '--worker-state': 'workerState', '--retro-collect-in': 'retroCollectIn' })).get(args[i]);
     const value = args[++i];
     if (!name || !value || value.startsWith('--') || name in options) bad = true;
     else options[name] = value;

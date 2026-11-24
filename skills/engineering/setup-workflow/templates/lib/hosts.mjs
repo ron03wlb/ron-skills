@@ -62,7 +62,7 @@ export const CI_FILES = { github: '.github/workflows/', gitlab: '.gitlab-ci.yml'
 // 每列的旗標都以 --help 核對過，紀錄在 HOSTS.md；改這裡就要同步改 HOSTS.md 那一列（測試會比對）。
 export const COMMANDS = {
   readIssue: { label: 'Read an Issue with comments', github: 'gh issue view <n> --json number,title,body,labels,comments', gitlab: 'glab issue view <n> --comments' },
-  listIssues: { label: 'List ready Issues', github: 'gh issue list --state open --label ready-for-agent --json number,title,labels', gitlab: 'glab issue list --label ready-for-agent -O json' },
+  listIssues: { label: 'List ready Issues', github: 'gh issue list --state open --label ready-for-agent --limit 1000 --json number,title,labels', gitlab: 'glab issue list --label ready-for-agent --per-page 100 -O json' },
   createIssue: { label: 'Create an Issue', github: 'gh issue create --title <title> --body-file <file>', gitlab: 'glab issue create --title <title> --description-file <file> --yes' },
   commentIssue: { label: 'Comment on an Issue', github: 'gh issue comment <n> --body-file <file>', gitlab: 'glab issue note <n> -m "$(cat <file>)"' },
   editLabels: { label: 'Change labels', github: 'gh issue edit <n> --add-label <add> --remove-label <remove>', gitlab: 'glab issue update <n> --label <add> --unlabel <remove>' },

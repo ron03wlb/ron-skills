@@ -11,6 +11,8 @@
 // macos/ 那份是同形狀的副本、路徑改成 POSIX，還沒在 macOS 重錄（#394）。
 // chat-rename.json、agent-list.json、bot-chats.json 是 `chat rename`、`agent list`、`bot chats` 的 result（macOS Orca 1.4.271 錄，#335，只留一列並去識別化）；
 // 頂層 fixtures/orca/ 那份是同形狀的副本，Orca 聊天只在 macOS 錄過。
+// read-working.json 是工作中 Claude Code session 的 `terminal read` result（WSL Orca 1.4.271 錄，#507：畫面有 spinner 行、`draft` 是未送出的草稿）；
+// macos/ 那份是同形狀的副本，還沒在 macOS 重錄。
 // 用法：在假 CLI 的原始碼裡放 `${orcaReplySource()}`，之後 `reply('wait', { wait: { satisfied } })` 印出 `{ ok: true, result }`。
 // patch 只能覆寫樣本已有的欄位；寫了樣本沒有的欄位會丟錯，替身因此無法自創真實 Orca 沒有的形狀。陣列整個取代，每個元素以樣本第一個元素為底。
 // 物件 patch 逐鍵合併：樣本有、patch 沒寫的兄弟鍵照樣留下（陣列元素也一樣，以樣本第一個元素為底）。例如 list-visual 的

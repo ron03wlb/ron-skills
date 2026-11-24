@@ -5,33 +5,55 @@
 // 實作：每個 slot 一個鎖檔 `<dir>/slot-<i>.lock`，以 perl 的 flock(2) 拿排他鎖（macOS 沒有 flock(1)，perl 兩邊都有）。
 // 鎖由一支 perl 子行程持有，它的 stdin 接本行程：本行程結束（含被 SIGKILL）時 stdin 關閉，perl 讀到 EOF 就結束，核心隨即釋放 flock；
 // perl 自己被殺也一樣由核心釋放。所以行程死掉不會留下佔住的 slot，不必清鎖檔。
-// 持有者把 `{ label, pid, cwd, since }` 寫進自己的鎖檔，排隊者寫 `<dir>/wait-<pid>.json`（拿到 slot 或結束時刪掉；行程已不在的由 status 略過並清掉）。
+// 持有者把 `{ label, pid, cwd, since }` 寫進自己的鎖檔，排隊者寫 `<dir>/wait-<pid>.json`（`{ label, pid, cwd, since, priority }`；拿到 slot 或結束時刪掉；
+//   行程已不在的，任何讀到它的行程（status、其他排隊者）都略過並清掉）。
+// 排隊（CoS item 67，2026-11-24：搶鎖時 repo 的等待者越多越容易搶到，spay2 的 push-gate 連續逾時）：等待者不再各自輪詢搶鎖，
+//   每 $HEAVY_CHECK_POLL 秒讀一次全部 wait 檔與持有者，依下面的規則算出「現在輪到誰」，只有輪到自己時才去試 flock（試不到就下一輪再算）。
+//   規則（CoS item 126，owner：spay 的專案優先）：先看 repo 優先序，同一個 repo 內才看用途優先級。
+//     repo 是 label 冒號前的字串（沒有冒號的 label，例如手動跑的 `dbg`，整個 label 就是 repo、用途優先級 normal）。
+//     repo 優先序：$HEAVY_CHECK_REPO_PRIORITY（逗號分隔，測試用）＞ ~/.config/orca-heavy-check/repo-priority（一行一個 repo，越前面越優先；
+//     空行與 # 開頭的行略過）＞ 預設 spay2、ron-skills；沒列出的 repo 都排在最後、彼此同級。
+//     只有排在最前面的那一級 repo 有人在等時，就只有那一級的等待者能拿新空出的 slot（例如 spay2 在等時，ron-skills 和其他 repo 一個都不拿）；
+//     已經在跑的不搶占。同一級裡依（有效用途優先級、since、pid）排成一列，空出的 slot 由列首往後分配；那一級沒人在等才輪到下一級。
+//   拿鎖仍是 flock，持有狀態全在核心，排隊狀態只有 wait 檔（死掉的 pid 會被清掉），沒有要手動清的東西。
+//   用途優先級（從 label 冒號後的「用途」判斷；`--priority <high|normal|low>` 覆寫，只影響同一個 repo 內的順序）：
+//     high    推送前最後一關：用途是 push、push-gate、pre-push、land、land-checks，或以 `push-`、`land-` 開頭
+//     normal  其他一切，包括 check、check-contracts、regression 與不認得的用途
+//     low     pre-commit，或以 `pre-commit-` 開頭
+//   防餓死：每等滿 $HEAVY_CHECK_AGE_S 秒（預設 900，0 不升級）用途優先級升一級（low→normal→high），不會比 high 更高；
+//     只在沒有更前面的 repo 在等時生效（有 spay2 在等時，ron-skills 的等待者不升級，也不會排到 spay2 前面）。
+//   還沒換成這版的副本（舊版等待者）照舊每秒搶鎖、不看排隊；它的 wait 檔照樣算進列裡（優先級由 label 推）。
 // 巢狀：在 slot 裡跑的命令帶環境變數 HEAVY_SLOT_HELD；裡面再呼叫 run（例如 bin/check 的測試跑 pre-commit）時直接執行，不再拿第二個 slot（避免 N 個持有者互等）。
 //
-// 用法：node scripts/heavy-slot.mjs run --label <repo>:<用途> [--timeout <秒>] [--interval <秒>] -- <command> [<arg>...]
+// 用法：node scripts/heavy-slot.mjs run --label <repo>:<用途> [--priority <high|normal|low>] [--timeout <秒>] [--interval <秒>] -- <command> [<arg>...]
 //       node scripts/heavy-slot.mjs status
 //       node scripts/heavy-slot.mjs stats [--since <ISO 時間>] [--label <glob>]
 //   run     拿到 slot 才執行 <command>（不經 shell；要 shell 時寫 `-- sh -c '<指令>'`），結束就釋放，exit code 照傳（被信號殺掉時 128+信號值）。
 //           等待中收到 SIGINT／SIGTERM 就放棄排隊並以 128+信號值結束；執行中收到的信號轉給 <command>。
 //   --label <repo>:<用途>（必填，[A-Za-z0-9_.:@/-]）：status 與 SLOT_WAIT 顯示的名字，例如 `ron-skills:pre-commit`、`spay2:check-contracts`。
+//   --priority 選填，覆寫由用途判斷的優先級（見上面的對照表）。
 //   --timeout 等待上限秒數（預設 $HEAVY_CHECK_TIMEOUT，再來 1800；0 是不設上限）；--interval SLOT_WAIT 的間隔秒數（預設 $HEAVY_CHECK_WAIT_INTERVAL，再來 30）。
 //   status  列出每個 slot 的持有者與排隊者。
 //   stats   讀量測 log，依 label 印件數與 wait_ms、run_ms 的中位數、P90（nearest-rank）；--since 只算 started_at 在它之後的，--label 是 glob（`*`、`?`）。
 // slot 數（全機一個設定）：$HEAVY_CHECK_SLOTS（測試用）＞ ~/.config/orca-heavy-check/slots（內容是一個正整數）＞ 2。adapter 不宣告 slot 數，只宣告哪些檢查經 slot 跑。
 // 鎖檔目錄：$HEAVY_CHECK_DIR，預設 ~/.local/state/orca-heavy-check。不用 /tmp、~/.cache（會被清理：持有中的鎖檔被刪，下一個行程建新的同名檔
 //   就 flock 得到，兩支同時在 slot 裡），也不用 $XDG_RUNTIME_DIR（git hook、cron、Orca 分頁不一定都有它，有的有、有的沒有就分成兩組 slot）。
-// 其他環境變數：HEAVY_CHECK_TIMEOUT、HEAVY_CHECK_WAIT_INTERVAL。
+// 其他環境變數：HEAVY_CHECK_TIMEOUT、HEAVY_CHECK_WAIT_INTERVAL、HEAVY_CHECK_REPO_PRIORITY（repo 優先序，逗號分隔）、HEAVY_CHECK_AGE_S（防餓死升級的間隔秒數）、HEAVY_CHECK_POLL（排隊重算的間隔秒數，預設 1）。
 // 量測 log：每次 run 拿到 slot 並結束、或等到逾時，在鎖檔目錄的 log.jsonl 追加一行
-//   `{ label, repo（label 冒號前）, pid, wait_ms, run_ms, exit, load1（拿到 slot 時的 1 分鐘 load；逾時時是放棄時的）, started_at（開始排隊，ISO）, timed_out }`。
+//   `{ label, repo（label 冒號前）, pid, wait_ms, run_ms, exit, load1（拿到 slot 時的 1 分鐘 load；逾時時是放棄時的）, started_at（開始排隊，ISO）, timed_out,
+//   priority（基本優先級）, effective_priority（拿到 slot 或逾時那一刻的有效優先級） }`；priority 兩欄是這版才加的，舊紀錄沒有，stats 不用它們。
 //   寫不進去只略過，不影響命令與 exit code。巢狀（SLOT_NESTED）與 SLOT_UNAVAILABLE 不記。
 // stderr（run；命令自己的輸出照原樣）：
-//   SLOT_WAIT <label> <已等秒數>s holders=<label>@<pid>:<已持有秒數>s[,…]   排隊中，每 interval 秒一行（第一行在等滿 interval 時）；holders 沒人時是 `-`
+//   SLOT_WAIT <label> <已等秒數>s holders=<label>@<pid>:<已持有秒數>s[,…] rank=<名次>/<排隊數> priority=<有效優先級>
+//                                                                           排隊中，每 interval 秒一行（第一行在等滿 interval 時）；holders 沒人時是 `-`；
+//                                                                           rank、priority 是最近一次算的排隊結果（還沒算過時是 `?`）
 //   SLOT_ACQUIRED <label> slot-<i>/<N> waited=<秒數>s                       拿到 slot，接著執行命令（量排隊時間用）
 //   SLOT_TIMEOUT <label> <已等秒數>s holders=…                               等到上限，不執行命令，exit 75：呼叫端當負載關卡處理（稍後重跑），不是檢查失敗
 //   SLOT_NESTED <label> held=<外層>                                          已在 slot 裡（HEAVY_SLOT_HELD），直接執行
 //   SLOT_UNAVAILABLE <label> <原因>                                          沒有 perl 或鎖檔目錄建不了，不限流、直接執行
 // stdout（status）：`SLOTS <忙>/<N> dir=<目錄>`，每個持有者 `HOLDER slot-<i> <label> pid=<pid> held=<秒數>s cwd=<目錄>`，
-//   每個排隊者 `WAITER <label> pid=<pid> waited=<秒數>s cwd=<目錄>`。
+//   每個排隊者依排隊順序 `WAITER <label> pid=<pid> waited=<秒數>s cwd=<目錄> rank=<名次> priority=<有效優先級> base=<基本優先級> repo_rank=<repo 名次>`
+//   （repo_rank 從 1 起算，沒列在 repo 優先序裡的 repo 是清單長度 + 1）。
 // stdout（stats）：每個 label 一行（依 label 排序）`STATS <label> n=<件數> timeouts=<逾時件數> wait_p50=<ms> wait_p90=<ms> run_p50=<ms> run_p90=<ms>`
 //   （run 只算拿到 slot 的件數，沒有時印 `-`）；沒有任何符合的紀錄時印 `STATS none`。
 // 不提供 acquire／release：wrapper 已涵蓋兩個 repo 的入口；而且 Claude 的每次 Bash 呼叫是新的行程，
@@ -43,7 +65,7 @@ import { constants, homedir, loadavg } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const USAGE = '用法：node scripts/heavy-slot.mjs run --label <repo>:<用途> [--timeout <秒>] [--interval <秒>] -- <command> [<arg>...]｜node scripts/heavy-slot.mjs status｜node scripts/heavy-slot.mjs stats [--since <ISO>] [--label <glob>]';
+const USAGE = '用法：node scripts/heavy-slot.mjs run --label <repo>:<用途> [--priority <high|normal|low>] [--timeout <秒>] [--interval <秒>] -- <command> [<arg>...]｜node scripts/heavy-slot.mjs status｜node scripts/heavy-slot.mjs stats [--since <ISO>] [--label <glob>]';
 
 /** 等待逾時的 exit code（EX_TEMPFAIL）：呼叫端以它加 SLOT_TIMEOUT 行判斷，不當成檢查失敗。 */
 export const SLOT_TIMEOUT_EXIT = 75;
@@ -53,13 +75,12 @@ const POLL = process.env.HEAVY_CHECK_POLL || '1';
 
 const SCRIPT = fileURLToPath(import.meta.url);
 
-// 依序試每個鎖檔，拿到就清空鎖檔、印 ACQUIRED <i>（持有者資訊由本程式接著寫入），然後讀 stdin 直到 EOF（呼叫者結束或關閉 stdin）才結束、釋放。
-// 排隊時父行程不在了（getppid 變了）就結束，不留孤兒輪詢。
+// stdin 每收到一行（本程式在輪到自己時送 TRY）就依序試每個鎖檔一次：拿到就清空鎖檔、印 ACQUIRED <i>（持有者資訊由本程式接著寫入），
+// 然後讀 stdin 直到 EOF（呼叫者結束或關閉 stdin）才結束、釋放；都拿不到印 BUSY。排隊時 stdin 關閉（呼叫者死掉）就結束，不留孤兒。
 const HOLDER = `use strict; use Fcntl qw(:flock);
 $| = 1;
-my ($poll, @files) = @ARGV;
-my $parent = getppid();
-while (1) {
+my @files = @ARGV;
+while (defined(my $line = <STDIN>)) {
   for my $i (0 .. $#files) {
     open(my $fh, '>>', $files[$i]) or die "open $files[$i]: $!\\n";
     if (flock($fh, LOCK_EX | LOCK_NB)) {
@@ -70,9 +91,9 @@ while (1) {
     }
     close($fh);
   }
-  exit 3 if getppid() != $parent;
-  select(undef, undef, undef, $poll);
-}`;
+  print "BUSY\\n";
+}
+exit 0;`;
 
 // 每個鎖檔一行 busy 或 free：拿得到共用鎖就是沒人持有（立刻放掉）。
 const PROBE = `use strict; use Fcntl qw(:flock);
@@ -159,13 +180,76 @@ export function readSlots({ dir = slotDir(), slots = slotCount() ?? 2 } = {}) {
   const holders = files.flatMap((file, i) => states[i] === 'busy' ? [{ slot: i + 1, label: '?', ...readJson(file) }] : []);
   let names = [];
   try { names = readdirSync(dir).filter(name => /^wait-\d+\.json$/.test(name)); } catch { /* 目錄還沒建 */ }
+  const holding = new Set(holders.map(h => h.pid));
   const waiters = names.flatMap(name => {
     const info = readJson(join(dir, name));
     const pid = Number(name.match(/\d+/)[0]);
     if (!alive(pid)) { rmSync(join(dir, name), { force: true }); return []; }
-    return info ? [{ ...info, pid }] : [];
+    // 剛拿到 slot、還沒刪 wait 檔的持有者不算排隊者。舊版 wait 檔沒有 priority：由 label 推。
+    if (!info || holding.has(pid)) return [];
+    return [{ ...info, pid, priority: PRIORITIES.includes(info.priority) ? info.priority : labelPriority(String(info.label ?? '')) }];
   });
   return { holders, waiters };
+}
+
+/** 優先級由高到低；排序時用索引，小的先。 */
+export const PRIORITIES = ['high', 'normal', 'low'];
+
+/** label 冒號後的用途 → 基本優先級（對照表見檔頭）。 */
+export function labelPriority(label) {
+  const use = label.includes(':') ? label.slice(label.indexOf(':') + 1) : '';
+  if (/^(push|push-gate|pre-push|land|land-checks)$|^(push|land)-/.test(use)) return 'high';
+  if (/^pre-commit$|^pre-commit-/.test(use)) return 'low';
+  return 'normal';
+}
+
+/** 防餓死升級的間隔毫秒數：$HEAVY_CHECK_AGE_S（預設 900；0 不升級）；不是非負數時用預設。 */
+export function ageMs(env = process.env) {
+  const value = env.HEAVY_CHECK_AGE_S ?? '900';
+  return /^\d+(\.\d+)?$/.test(value) ? Number(value) * 1000 : 900_000;
+}
+
+/** 等了 now - since 之後的有效優先級：每滿 age 毫秒升一級，最高 high。 */
+export function effectivePriority(priority, since, now = Date.now(), age = ageMs()) {
+  const base = Math.max(0, PRIORITIES.indexOf(priority));
+  const waited = now - Date.parse(since);
+  const steps = age > 0 && waited > 0 ? Math.floor(waited / age) : 0;
+  return PRIORITIES[Math.max(0, base - steps)];
+}
+
+/** label 的 repo：冒號前的字串；沒有冒號時整個 label。 */
+export const repoOf = label => String(label ?? '').split(':')[0];
+
+/** repo 優先序設定檔。 */
+export const repoPriorityFile = (env = process.env) => join(home(env), '.config/orca-heavy-check/repo-priority');
+
+/** repo 優先序（越前面越優先）：$HEAVY_CHECK_REPO_PRIORITY（逗號分隔）＞ 設定檔（一行一個，空行與 # 開頭略過）＞ spay2、ron-skills。 */
+export function repoPriority(env = process.env) {
+  let text = env.HEAVY_CHECK_REPO_PRIORITY?.split(',').join('\n');
+  if (text === undefined) {
+    try { text = readFileSync(repoPriorityFile(env), 'utf8'); } catch { return ['spay2', 'ron-skills']; }
+  }
+  return text.split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#'));
+}
+
+/** repo 的名次（0 起算）；沒列出的是清單長度，彼此同級。 */
+export const repoRank = (repo, order) => (order.includes(repo) ? order.indexOf(repo) : order.length);
+
+/**
+ * 排隊結果：{ order: [排好的等待者，各帶 effective（有效用途優先級）與 repoRank], granted: Set(這輪可以去試鎖的 pid) }。
+ * 依（repo 名次、有效用途優先級、since、pid）排序；只有最前面那一級 repo 的等待者能分到空出的 slot（slots - holders.length），
+ * 由列首往後分配。防餓死升級只給最前面那一級，後面的 repo 用基本優先級。
+ */
+export function queuePlan({ holders, waiters, slots, now = Date.now(), age = ageMs(), repos = repoPriority() }) {
+  const ranked = waiters.map(w => ({ ...w, repoRank: repoRank(repoOf(w.label), repos) }));
+  const top = Math.min(...ranked.map(w => w.repoRank));
+  const order = ranked
+    .map(w => ({ ...w, effective: w.repoRank === top ? effectivePriority(w.priority, w.since, now, age) : w.priority }))
+    .sort((a, b) => a.repoRank - b.repoRank || PRIORITIES.indexOf(a.effective) - PRIORITIES.indexOf(b.effective)
+      || (Date.parse(a.since) || 0) - (Date.parse(b.since) || 0) || a.pid - b.pid);
+  const free = Math.max(0, slots - holders.length);
+  const granted = new Set(order.filter(w => w.repoRank === top).slice(0, free).map(w => w.pid));
+  return { order, granted };
 }
 
 /** SLOT_WAIT／SLOT_TIMEOUT 的 holders 欄：`<label>@<pid>:<秒數>s`，逗號分隔；沒人時 `-`。 */
@@ -187,7 +271,7 @@ export function slotTimeoutLine(code, output) {
   return code === SLOT_TIMEOUT_EXIT ? String(output).match(/^SLOT_TIMEOUT .*$/m)?.[0] : undefined;
 }
 
-/** 命令列 → { command: 'run', label, timeoutSec, intervalSec, argv } 或 { command: 'status' }；錯誤時 { error }。 */
+/** 命令列 → { command: 'run', label, timeoutSec, intervalSec, argv, priority?（有給 --priority 才有） } 或 { command: 'status' }；錯誤時 { error }。 */
 export function parseArgs(argv, env = process.env) {
   const [command, ...rest] = argv;
   if (command === 'status') return rest.length ? { error: 'status 不接參數' } : { command };
@@ -215,9 +299,11 @@ export function parseArgs(argv, env = process.env) {
     if (flag === '--label') options.label = value;
     else if (flag === '--timeout') options.timeoutSec = value;
     else if (flag === '--interval') options.intervalSec = value;
+    else if (flag === '--priority') options.priority = value;
     else return { error: `不認得的選項 ${flag}` };
   }
   if (!options.label || !LABEL.test(options.label)) return { error: `--label 要是 <repo>:<用途>（[A-Za-z0-9_.:@/-]）：${options.label ?? '（沒有）'}` };
+  if (options.priority !== undefined && !PRIORITIES.includes(options.priority)) return { error: `--priority 要是 ${PRIORITIES.join('、')} 之一：${options.priority}` };
   for (const key of ['timeoutSec', 'intervalSec']) {
     const n = Number(options[key]);
     if (!/^\d+(\.\d+)?$/.test(String(options[key])) || (key === 'intervalSec' && n <= 0)) return { error: `${key === 'timeoutSec' ? '--timeout' : '--interval'} 要是${key === 'timeoutSec' ? '非負' : '正'}數：${options[key]}` };
@@ -239,7 +325,7 @@ function runDirect(argv, env = process.env) {
   });
 }
 
-async function run({ label, timeoutSec, intervalSec, argv }) {
+async function run({ label, timeoutSec, intervalSec, argv, priority: override }) {
   if (process.env.HEAVY_SLOT_HELD) {
     process.stderr.write(`SLOT_NESTED ${label} held=${process.env.HEAVY_SLOT_HELD}\n`);
     return runDirect(argv);
@@ -251,12 +337,15 @@ async function run({ label, timeoutSec, intervalSec, argv }) {
   }
   const dir = slotDir();
   const started = Date.now();
+  const priority = override ?? labelPriority(label);
+  const age = ageMs();
+  const repos = repoPriority();
   const record = { label, repo: label.split(':')[0], pid: process.pid, started_at: new Date(started).toISOString() };
   const info = { label, pid: process.pid, cwd: process.cwd(), since: new Date(started).toISOString() };
   const waitFile = join(dir, `wait-${process.pid}.json`);
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    writeFileSync(waitFile, JSON.stringify(info));
+    writeFileSync(waitFile, JSON.stringify({ ...info, priority }));
   } catch (error) {
     process.stderr.write(`SLOT_UNAVAILABLE ${label} ${error.code ?? error.message}\n`);
     return runDirect(argv);
@@ -264,46 +353,80 @@ async function run({ label, timeoutSec, intervalSec, argv }) {
   const dropWait = () => rmSync(waitFile, { force: true });
   process.on('exit', dropWait);
 
-  const holder = spawn('perl', ['-e', HOLDER, POLL, ...lockFiles(dir, slots)], { stdio: ['pipe', 'pipe', 'inherit'] });
-  const holders = () => {
+  const holder = spawn('perl', ['-e', HOLDER, ...lockFiles(dir, slots)], { stdio: ['pipe', 'pipe', 'inherit'] });
+  holder.stdin.on('error', () => { /* perl 已結束：close 事件會處理 */ });
+  // 最近一次算的排隊結果：SLOT_WAIT 的 holders、rank、priority 都從這裡來，不另外再讀。
+  let latest = { holders: undefined, rank: '?', total: '?', effective: '?' };
+  const plan = () => {
+    let state;
+    try { state = readSlots({ dir, slots }); } catch { return true; } // 讀不到排隊狀態（例如 probe 失敗）：退回直接試鎖
+    if (!state.waiters.some(w => w.pid === process.pid)) state.waiters.push({ ...info, priority });
+    const { order, granted } = queuePlan({ ...state, slots, age, repos });
+    const rank = order.findIndex(w => w.pid === process.pid);
+    latest = { holders: state.holders, rank: rank + 1, total: order.length, effective: order[rank].effective };
+    return granted.has(process.pid);
+  };
+  const holdersNow = () => {
     try { return holdersField(readSlots({ dir, slots }).holders); } catch { return '?'; }
   };
   const acquired = await new Promise(resolve => {
     let out = '';
+    let trying = false;
+    let finished = false;
     const timers = [];
-    const done = value => { timers.forEach(clearInterval); timers.forEach(clearTimeout); for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.off(signal, onSignal); resolve(value); };
+    const done = value => {
+      if (finished) return;
+      finished = true;
+      timers.forEach(clearInterval); timers.forEach(clearTimeout);
+      for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.off(signal, onSignal);
+      resolve(value);
+    };
     const onSignal = signal => { holder.kill('SIGKILL'); done({ signal }); };
     for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, onSignal);
+    const tick = () => {
+      if (finished || trying) return;
+      if (plan()) { trying = true; holder.stdin.write('TRY\n'); }
+    };
     holder.on('error', error => done({ error }));
     holder.on('close', code => done({ error: new Error(`perl exit ${code}`) }));
     holder.stdout.setEncoding('utf8').on('data', chunk => {
       out += chunk;
       const slot = out.match(/^ACQUIRED (\d+)$/m)?.[1];
-      if (slot !== undefined) done({ slot: Number(slot) + 1 });
+      if (slot !== undefined) return done({ slot: Number(slot) + 1 });
+      if (/^BUSY$/m.test(out)) { out = out.replace(/^BUSY\n/gm, ''); trying = false; }
     });
-    timers.push(setInterval(() => process.stderr.write(`SLOT_WAIT ${label} ${seconds(Date.now() - started)}s holders=${holders()}\n`), intervalSec * 1000));
+    tick();
+    timers.push(setInterval(tick, Number(POLL) * 1000));
+    timers.push(setInterval(() => {
+      const holders = latest.holders ? holdersField(latest.holders) : holdersNow();
+      process.stderr.write(`SLOT_WAIT ${label} ${seconds(Date.now() - started)}s holders=${holders} rank=${latest.rank}/${latest.total} priority=${latest.effective}\n`);
+    }, intervalSec * 1000));
     if (timeoutSec > 0) timers.push(setTimeout(() => { holder.kill('SIGKILL'); done({ timeout: true }); }, timeoutSec * 1000));
   });
-  dropWait();
-  if (acquired.signal) return signalExit(acquired.signal);
+  const effective = effectivePriority(priority, info.since, Date.now(), age);
+  if (acquired.signal) { dropWait(); return signalExit(acquired.signal); }
   if (acquired.timeout) {
-    process.stderr.write(`SLOT_TIMEOUT ${label} ${seconds(Date.now() - started)}s holders=${holders()}\n`);
-    logRun(dir, { ...record, wait_ms: Date.now() - started, run_ms: 0, exit: SLOT_TIMEOUT_EXIT, load1: loadavg()[0], timed_out: true });
+    dropWait();
+    process.stderr.write(`SLOT_TIMEOUT ${label} ${seconds(Date.now() - started)}s holders=${holdersNow()}\n`);
+    logRun(dir, { ...record, wait_ms: Date.now() - started, run_ms: 0, exit: SLOT_TIMEOUT_EXIT, load1: loadavg()[0], timed_out: true, priority, effective_priority: effective });
     return SLOT_TIMEOUT_EXIT;
   }
   if (acquired.error) {
+    dropWait();
     process.stderr.write(`SLOT_UNAVAILABLE ${label} ${acquired.error.code ?? acquired.error.message}\n`);
     return runDirect(argv);
   }
   holder.removeAllListeners('close');
   // 持有期間 perl 不再印東西，只等 stdin 關閉後自己結束。鎖檔只是記錄，從另一個 fd 寫入不影響 flock。
+  // 先寫鎖檔再刪 wait 檔：其他排隊者讀到的持有者才不會是上一個持有者留下的 label。
   try { writeFileSync(lockFiles(dir, slots)[acquired.slot - 1], JSON.stringify({ ...info, since: new Date().toISOString() })); } catch { /* 只影響 status 顯示 */ }
+  dropWait();
   process.stderr.write(`SLOT_ACQUIRED ${label} slot-${acquired.slot}/${slots} waited=${seconds(Date.now() - started)}s\n`);
   const runStarted = Date.now();
   const load1 = loadavg()[0];
   const code = await runDirect(argv, { ...process.env, HEAVY_SLOT_HELD: `${label} slot-${acquired.slot}` });
   holder.stdin.end();
-  logRun(dir, { ...record, wait_ms: runStarted - started, run_ms: Date.now() - runStarted, exit: code, load1, timed_out: false });
+  logRun(dir, { ...record, wait_ms: runStarted - started, run_ms: Date.now() - runStarted, exit: code, load1, timed_out: false, priority, effective_priority: effective });
   return code;
 }
 
@@ -319,7 +442,8 @@ function status() {
   const age = since => (since ? `${seconds(now - Date.parse(since))}s` : '?');
   console.log(`SLOTS ${holders.length}/${slots} dir=${dir}`);
   for (const h of holders) console.log(`HOLDER slot-${h.slot} ${h.label} pid=${h.pid ?? '?'} held=${age(h.since)} cwd=${h.cwd ?? '?'}`);
-  for (const w of waiters.sort((a, b) => String(a.since).localeCompare(String(b.since)))) console.log(`WAITER ${w.label} pid=${w.pid} waited=${age(w.since)} cwd=${w.cwd ?? '?'}`);
+  const { order } = queuePlan({ holders, waiters, slots, now, repos: repoPriority() });
+  order.forEach((w, i) => console.log(`WAITER ${w.label} pid=${w.pid} waited=${age(w.since)} cwd=${w.cwd ?? '?'} rank=${i + 1} priority=${w.effective} base=${w.priority} repo_rank=${w.repoRank + 1}`));
   return 0;
 }
 

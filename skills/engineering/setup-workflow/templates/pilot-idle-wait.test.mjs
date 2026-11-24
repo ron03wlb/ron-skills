@@ -56,10 +56,18 @@ const idle = { lines: ['POOL_EMPTY'] };
 
 test('probe 輸出一直不變：不結束，跑到上限時間印 IDLE_TIMEOUT', t => {
   const { run, calls } = fixture(t, [idle]);
-  const result = run(['--max-wait', '1.5']);
+  const result = run(['--max-wait', '0.1']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^IDLE_TIMEOUT 1\.5\n$/);
-  assert.ok(calls().length >= 3, `probe 只跑了 ${calls().length} 次`);
+  assert.match(result.stdout, /^IDLE_TIMEOUT 0\.1\n$/);
+  // 不依賴牆鐘內的次數（高負載下 probe 啟動可能超過 max-wait，#566）：保證基準一次加至少一次比對
+  assert.ok(calls().length >= 2, `probe 只跑了 ${calls().length} 次`);
+});
+
+test('probe 慢過 max-wait：仍比對過基準至少一次才印 IDLE_TIMEOUT', t => {
+  const { run, calls } = fixture(t, [idle]);
+  const result = run(['--max-wait', '0.001']);
+  assert.equal(result.stdout, 'IDLE_TIMEOUT 0.001\n');
+  assert.equal(calls().length, 2);
 });
 
 test('probe 出現基準沒有的新行：結束並印那一行', t => {

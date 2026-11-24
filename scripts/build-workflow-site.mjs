@@ -50,6 +50,8 @@ function renderInline(text, chapters) {
   const tokens = [];
   const hold = (html) => `\u0000${tokens.push(html) - 1}\u0000`;
   let out = text.replace(/`([^`]+)`/g, (_, code) => hold(`<code>${escapeHtml(code)}</code>`));
+  // CommonMark autolink：<https://…>、<mailto:…>；行內程式碼已先換成佔位符，所以 code 裡的不會被轉。
+  out = out.replace(/<((?:https?:\/\/|mailto:)[^\s<>]+)>/gi, (_, url) => hold(`<a href="${escapeHtml(url)}" rel="noopener" target="_blank">${escapeHtml(url)}</a>`));
   out = out.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, src) => hold(`<img src="${escapeHtml(rewriteHref(src, chapters))}" alt="${escapeHtml(alt)}" loading="lazy">`));
   out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, href) => {
     const target = rewriteHref(href, chapters);

@@ -1,5 +1,6 @@
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 import { test } from 'node:test';
+import './test/isolate-git-env.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -119,6 +120,22 @@ test('bypassReason：commit-tree 與下一行別的指令的 -n 不接成 git co
     // investing retro 1121a：heredoc 寫 retro 內文，敘述 git 改名、重設分支。
     "cat > .scratch/retro.md <<'EOF'\n- git branch -m 改名後 commit 被擋\n- 再 git reset -n 試一次\nEOF",
   ]) assert.equal(bypassReason(command), null, command);
+});
+
+// #564（investing retro 1123d，session c7744e1d）：直譯器 here-doc 本文接成一行後，`git(` 函式、敘述文字裡的 git、別處的 commit 與 -n 被接成 git commit -n。
+test('bypassReason：直譯器程式碼裡不是指令開頭的 git 不算（#564）', () => {
+  for (const command of [
+    `python3 - <<'EOF'\nfrom pathlib import Path\ndef git(root, *args, ok=(0,)):\n    return run(["git", "-C", root, *args])\nshown = git(root, "show", f"{ref}:a.md", ok=(0, 128))\n# commit 前先改文字，-n 不用\nEOF`,
+    `python3 - <<'EOF'\nsrc = "拒絕：指令以 git commit -n 繞過 git hook。整合分支 guard 與 push gate 都在 hook 內"\nPath("retro.md").write_text(src)\nEOF`,
+    `node - <<'EOF'\nconst note = 'hook 擋下 git commit -n 的寫法';\nEOF`,
+    `python3 -c "print('拒絕：指令以 git commit -n 繞過 git hook')"`,
+  ]) assert.equal(bypassReason(command), null, command);
+  // 字串開頭或 shell 分隔符之後的 git 仍是指令
+  for (const [command, reason] of [
+    ["python3 - <<'EOF'\nimport os\nos.system('cd x; git commit -n -m x')\nEOF", 'git commit -n'],
+    ["python3 - <<'EOF'\nos.system(\"x=$(git commit -n -m x)\")\nEOF", 'git commit -n'],
+    [`python3 -c "import os; os.system('git commit -n -m x')"`, 'git commit -n'],
+  ]) assert.equal(bypassReason(command), reason, command);
 });
 
 test('bypassReason：同一個指令的 -n／--no-verify 照攔，含多行訊息與行尾接續', () => {

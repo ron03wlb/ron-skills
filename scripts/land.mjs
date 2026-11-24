@@ -28,6 +28,7 @@
 // stdout：每步一行進度（PUSHED、PR、CHECKS_PASSED、RESTAMPED <pr> <新 tip>（合入 main 沒有衝突時是 MAIN_MERGED），`--local-checks` 時是 LOCAL_CHECKS <pr> <sha> <結果行>，收尾的 UNBARE、
 //   WORKTREE_RM_FALLBACK selector_not_found <路徑>（Orca 不認得的乾淨 worktree 改用 git worktree remove）、WORKTREE_REMOVED、BRANCH_DELETED，最後 MAIN、SKILL_CHANGED <名稱>（sync-skills 換掉內容的全域 skill，每個一行）、SYNC_SKILLS）；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
 //   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、pr-edit、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、local-checks-timeout、restamp-checks-failed、restamp-checks-timeout、slot-timeout、merge、not-merged、worktree-rm）。
+//   LANDED 行由 claude-hook-tab-state.mjs（旁邊的正本）的 DEFAULT_TRIGGERS.landed 以 regex 逐行比對，把分頁切成待 Retro；改這行的格式時一起改那裡的 regex 與 claude-hook-tab-state.test.mjs（#440）。
 // local-checks-timeout、restamp-checks-timeout 是檢查跑到 LAND_LOCAL_CHECKS_TIMEOUT_MS 被中止，不是檢查沒過：結果未知，在該 SHA 跑過檢查才重跑（#297）。
 // `--check-command` 經同目錄 heavy-slot.mjs 的全機共用 slot 執行（label `<主 checkout 目錄名>:land-checks`），最多排 LAND_SLOT_TIMEOUT_S 秒（預設 120，算在上面的時限裡）；
 // 等不到印 `STOP slot-timeout <sha> <已等秒數>s`：負載關卡，還沒 push、沒跑檢查，稍後重跑同一行。

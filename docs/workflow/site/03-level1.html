@@ -11,7 +11,7 @@
 <body>
 <button class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">目錄</button>
 <aside class="sidebar" id="sidebar" aria-label="流程導讀目錄">
-<nav class="chapters" aria-label="章節"><h2>章節</h2><a href="index.html">ron-skills 交付流程</a><a href="01-tooling.html">01 工具與角色</a><a href="02-lifecycle.html">02 Issue 生命週期</a><a href="03-level1.html" aria-current="page">03 L1 導入</a><a href="04-level2.html">04 L2 導入</a><a href="05-level3.html">05 L3 導入</a><a href="06-quality-gates.html">06 品質校驗時間軸</a><a href="07-rules.html">07 規則沉澱</a><a href="08-pitfalls.html">08 常見坑</a><a href="09-skills.html">09 Skills 索引</a></nav>
+<nav class="chapters" aria-label="章節"><h2>章節</h2><a href="index.html">ron-skills 交付流程</a><a href="01-tooling.html">01 工具與角色</a><a href="02-lifecycle.html">02 Issue 生命週期</a><a href="03-level1.html" aria-current="page">03 L1 導入</a><a href="04-level2.html">04 L2 導入</a><a href="05-level3.html">05 L3 導入</a><a href="06-quality-gates.html">06 品質校驗時間軸</a><a href="07-rules.html">07 規則沉澱</a><a href="08-pitfalls.html">08 常見坑</a><a href="09-skills.html">09 Skills 索引</a><a href="10-level4-bots.html">10 L4 bot 調度層（可選）</a></nav>
 <nav class="diagrams" aria-label="圖"><h2>圖（全頁開啟）</h2><a href="../diagrams/01-tooling.html" target="_blank" rel="noopener">交付流程工具版圖</a><a href="../diagrams/02-issue-labels.html" target="_blank" rel="noopener">Issue 狀態 label 生命週期</a><a href="../diagrams/02-main-flow.html" target="_blank" rel="noopener">單張 Issue 交付主流程</a><a href="../diagrams/04-worktree.html" target="_blank" rel="noopener">Issue worktree 生命週期</a><a href="../diagrams/05-pilot-loop.html" target="_blank" rel="noopener">/loop /issue-pilot 常駐循環</a><a href="../diagrams/07-retro-loop.html" target="_blank" rel="noopener">/retro 回饋迴圈</a></nav>
 <nav class="rules" aria-label="正式規範"><h2>正式規範（原始 Markdown）</h2><a href="../../../README.md">README.md</a><a href="../../../skills/engineering/issue-run/ADAPTER.md">skills/engineering/issue-run/ADAPTER.md</a></nav>
 </aside>
@@ -30,8 +30,8 @@
 <p>下面每一步寫它做什麼、做完的樣子，以及不用 <code>/setup-workflow</code> 時的手動備用。哪一步停在「不寫檔、只給修正指令」，修好之後重跑 <code>/setup-workflow</code> 即可。</p>
 <h3 id="1-環境">1. 環境</h3>
 <p>先在這台機器裝 skills（每台機器一次）：</p>
-<pre><code class="language-bash">git clone https://github.com/ron03wlb/ron-skills ~/code/ron-skills   # private：先取得讀取權限
-git clone https://github.com/ron03wlb/skills ~/code/skills           # Matt skills 的 fork
+<pre><code class="language-bash">git clone https://github.com/ron03wlb/ron-skills ~/code/ron-skills   # 公開 repo，直接 clone
+git clone https://github.com/ron03wlb/skills ~/code/skills           # Matt Pocock skills 的 fork（上游 mattpocock/skills）
 git clone https://github.com/backnotprop/pstack ~/code/pstack
 ~/code/ron-skills/bin/sync-skills --check   # overlay 能套用、沒有 OVERLAY_FAILED
 ~/code/ron-skills/bin/sync-skills           # 連結到 ~/.claude/skills/</code></pre>
@@ -124,7 +124,7 @@ gh issue close &lt;n&gt; --comment &quot;已合進 main：&lt;merge commit&gt;&q
 git branch -d issue/&lt;n&gt;-&lt;slug&gt; &amp;&amp; git push origin --delete issue/&lt;n&gt;-&lt;slug&gt;</code></pre>
 <p>做完的樣子：Issue 關閉，candidate 在 <code>origin/main</code> 上，本機與遠端都沒有工作分支。</p>
 <h3 id="9-issue-queue">9. <code>/issue-queue</code></h3>
-<p>第一張單跑順之後，用 <code>/issue-queue</code> 看所有開著的 Issue 怎麼分桶。它跑 <code>scripts/issue-pool.mjs</code>（<code>/setup-workflow</code> 在 L1 一定會複製這支；手動備用時自己跑 <code>copy-templates.mjs &lt;repo&gt; issue-pool</code>。tracker 要是 GitHub 或 GitLab，本機 Markdown tracker 沒有池子），第一行是 <code>進行中 &lt;N&gt;／上限 &lt;M&gt;</code>（L1 沒有 Pilot 段，上限顯示 <code>不限</code>），接著依 <code>ready</code>、<code>parent</code>、<code>human</code>、<code>retro-candidates</code>、<code>stale</code>、<code>claimed</code>…的順序列出分桶，<code>ready</code> 桶的順序就是開工順序。<code>needs-triage</code>、<code>unlabeled</code> 的單，以及上次分級後有新留言的 <code>needs-info</code> 單，它照 <code>/triage</code> 的規則逐張細化，每一則改動都等你確認；過期的認領（<code>stale</code>）只列出來，放不放由你決定。</p>
+<p>第一張單跑順之後，用 <code>/issue-queue</code> 看所有開著的 Issue 怎麼分桶。它跑 <code>scripts/issue-pool.mjs</code>（<code>/setup-workflow</code> 在 L1 一定會複製這支；手動備用時自己跑 <code>copy-templates.mjs &lt;repo&gt; issue-pool</code>。tracker 要是 GitHub 或 GitLab，本機 Markdown tracker 沒有池子），第一行是 <code>進行中 &lt;N&gt;／上限 &lt;M&gt;</code>（L1 沒有 Pilot 段，上限顯示 <code>不限</code>），接著依 <code>ready</code>、<code>parent</code>、<code>human</code>、<code>retro-candidates</code>、<code>stale</code>、<code>claimed</code>…的順序列出分桶，<code>ready</code> 桶的順序就是開工順序。<code>needs-triage</code>、<code>unlabeled</code> 的單，以及上次分級後有新留言的 <code>needs-info</code> 單，它照 <code>/triage</code> 的規則逐張細化：驗收每一項都能用指令、測試或檔案狀態檢查，又不涉及業務規則、範圍取捨或產品決定的單，它直接標 <code>ready-for-agent</code> 並在 Issue 留言寫依據，報告列出單號（判斷清單在 <code>issue-queue</code> 的 SKILL.md 第 5 步，拿不準就當成要你確認）；其餘改動都等你確認；過期的認領（<code>stale</code>）只列出來，放不放由你決定。</p>
 <p>做完的樣子：<code>/issue-queue</code> 印出上限行與分桶，你要開工的單在 <code>ready</code> 桶。</p>
 <h3 id="10-issue-run---pool">10. <code>/issue-run --pool</code></h3>
 <p>池子裡有幾張 <code>ready</code> 的單時，不必逐張打 <code>/issue-run &lt;n&gt;</code>：</p>

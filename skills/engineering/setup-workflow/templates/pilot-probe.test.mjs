@@ -2,7 +2,7 @@
 import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { FAST, orcaReplySource } from './test/fake-orca.mjs';
@@ -445,6 +445,30 @@ test('staged、沒有 regression 行、land 還活著：印 REGRESSING，land �
   ], out.join('\n'));
 });
 
+// #563（investing coordinator 2f87d255）：670 回歸期間（STAGED 之後、MERGED 之前）probe 印 RESTAGE 670 regression-failed none，
+// 標記的 pid 沒認出 land。reg-<key>.log 還在寫（10 分鐘內有寫入）、這個 staged SHA 還沒有 regression 行時也印 REGRESSING；log 舊了或已有 regression 行照舊。
+test('staged、沒有 regression 行、標記判斷不出 land，但 reg-<key>.log 還在寫：印 REGRESSING；log 舊了照舊 RESTAGE none', t => {
+  const { batch, probe, pilot } = fixture(t);
+  const staged = 'd4a2f71' + '0'.repeat(33);
+  const onto = '4c080c6' + '0'.repeat(33);
+  const append = (key, rows) => writeFileSync(join(pilot, `batch-${key}.md`), readFileSync(join(pilot, `batch-${key}.md`), 'utf8') + rows.map(row => `${row}\n`).join(''));
+  const old = new Date(Date.now() - 3600_000);
+  for (const key of ['81', '82', '83', '84']) batch(key, `staged ${staged} onto ${onto}`, [{ n: Number(key), state: 'done', candidate: 'abc1234' }]);
+  // 81：沒有標記、log 正在寫。82：log 一小時沒動。83：log 正在寫，但這個 SHA 已有失敗的 regression 行。84：沒有 log。
+  writeFileSync(join(pilot, 'reg-81.log'), '.... [ 89%]\n');
+  writeFileSync(join(pilot, 'reg-82.log'), '.... [ 89%]\n');
+  utimesSync(join(pilot, 'reg-82.log'), old, old);
+  writeFileSync(join(pilot, 'reg-83.log'), 'FAILED\n');
+  append('83', [`regression: ${staged} exit 1`]);
+  const out = lines(probe());
+  assert.deepEqual(out.filter(line => /^(RESTAGE|REGRESSING) /.test(line)), [
+    `REGRESSING 81 ${staged}`,
+    'RESTAGE 82 regression-failed none',
+    'RESTAGE 83 regression-failed 1',
+    'RESTAGE 84 regression-failed none',
+  ], out.join('\n'));
+});
+
 // 舊格式 `pushed` 的 batch 在 checkpoint 只剩 `regression: <sha>` 指出合入的內容（Integrate 是 ff-only，staged SHA 就是 pilot/integration 的 tip）；
 // `pushed <sha>`（#37）帶著同一個 SHA，還沒進 origin/main（PR 還開著）時印 NOT_IN_MAIN，coordinator 重跑 Push gate 接著合併。
 // 判斷的是 fetch 之後的 origin/main：另一個 clone 推上去、本機還沒 fetch 的合入也要算 IN_MAIN。
@@ -622,7 +646,7 @@ test('main 暫停旗標有效時 NOT_IN_MAIN／RESUME_PUSH 收成一行 MAIN_PAU
 
   flag('2999-12-01');
   let out = lines(probe());
-  assert.deepEqual(pushLines(out), ['IN_MAIN 14', 'MAIN_PAUSED 等 #246 過渡期 until 2999-12-01 pending 11 12 13'], out.join('\n'));
+  assert.deepEqual(pushLines(out), ['IN_MAIN 14', 'MAIN_PAUSED 等 #246 過渡期 until 2999-12-01 pending 3 batches'], out.join('\n'));
 
   // 過期：恢復各行。
   flag('2000-01-01');
@@ -640,7 +664,7 @@ test('main 暫停旗標有效時 NOT_IN_MAIN／RESUME_PUSH 收成一行 MAIN_PAU
   batch('16', `merged ${staged}`, [{ n: 16, state: 'done', candidate: 'abc1234' }]);
   batch('17', 'pushed', [{ n: 17, state: 'done', candidate: 'abc1234' }]);
   assert.deepEqual(pushLines(lines(probe())), ['IN_MAIN 14', 'NOT_IN_MAIN 15 regression-failed 1', 'NOT_IN_MAIN 16 no-regression', 'NOT_IN_MAIN 17 no-sha',
-    'MAIN_PAUSED 等 #246 過渡期 until 2999-12-01 pending 11 12 13']);
+    'MAIN_PAUSED 等 #246 過渡期 until 2999-12-01 pending 3 batches']);
   for (const key of ['15', '16', '17']) rmSync(join(pilot, `batch-${key}.md`));
 
   // 有開著的 all-push gate 時印 PUSH_PARKED。
@@ -733,6 +757,21 @@ test('段落 gate 的 resolved 寫進別的欄位時印 GATE_MALFORMED', t => {
   assert.deepEqual(lines(probe()), [
     'GATE G8 #31 consolidated 重派後仍有 findings',
     'GATE_MALFORMED G8 - status：resolved 2026-10-30T19:21:18+08:00 Operator 選預設',
+  ]);
+});
+
+// #453 第 2 項（#367 Spec review (c)）：openGates 讀 `- hold：` 只認 `#<n>`，手寫成 `- hold：320` 或 `- hold：#320（等 G28）`
+// 會被靜默忽略，Probe 又印回 STAGEABLE 320（#367 修掉的錯）。有 hold 欄卻解析不出號碼時印 GATE_MALFORMED 指出那一行。
+test('段落 gate 的 hold 欄解析不出號碼時印 GATE_MALFORMED', t => {
+  const { pilot, probe } = fixture(t);
+  const gate = (id, hold) => `## ${id} #320 等人決定\n- Issue：#320\n- question：選哪個？\n- parked：batch 320 的 Stage\n${hold}\n- opened：2026-11-18T11:00:00+08:00\n\n`;
+  writeFileSync(join(pilot, 'gates.md'), `# Gates\n\n${gate('G28', '- hold：320')}${gate('G29', '- hold：#320（等 G28）')}${gate('G30', '- hold：#320')}`);
+  assert.deepEqual(lines(probe()), [
+    'GATE G28 #320 等人決定',
+    'GATE_MALFORMED G28 - hold：320',
+    'GATE G29 #320 等人決定',
+    'GATE_MALFORMED G29 - hold：#320（等 G28）',
+    'GATE G30 #320 等人決定',
   ]);
 });
 
@@ -1844,7 +1883,8 @@ test('ready-for-human Issue 沒有對應的開放 gate 時印 HUMAN_NO_GATE <n> 
   const { pilot, probe } = fixture(t, { issues: [
     { ...issue(184, ISSUE_184, { labels: human }), title: 'taifex 來源' },
     { ...issue(133, 'Operator prerequisite：開跑前由 Operator 確認（保留期只能用一次）', { labels: human }), title: '保留期' },
-    { ...issue(190, '只有 resolved 的 gate，沒寫 prerequisite。', { labels: human }), title: '要人做的事' },
+    // G9 resolved 之後本文又改過（#417 第 1 項）：resolved 的 gate 不再算數，照印。
+    { ...issue(190, '只有 resolved 的 gate，沒寫 prerequisite。', { labels: human }), title: '要人做的事', lastEditedAt: '2026-11-02T00:00:00Z' },
     { ...issue(191, 'Operator prerequisite：無關，標的是 ready-for-agent'), title: 'agent 單' },
   ] });
   writeFileSync(join(pilot, 'gates.md'), G15);
@@ -1853,6 +1893,47 @@ test('ready-for-human Issue 沒有對應的開放 gate 時印 HUMAN_NO_GATE <n> 
     'HUMAN_NO_GATE 184 在 budgets.yaml 新增 taifex 來源…需 Operator 核准',
     'HUMAN_NO_GATE 190 要人做的事',
   ]);
+});
+
+// #417 第 1 項（G11／G12、G14／G15）：#331、#350 掛 ready-for-human，人已回覆、gate resolved、決定維持現狀，
+// 舊版 Probe 只認開著的 gate，每輪重印 HUMAN_NO_GATE，coordinator 三度開 gate 問同一組問題，或用 grep -v 濾掉。
+// resolved 時間不早於該 Issue 最近一次 label 變動與本文編輯的 gate 也算有 gate；之後 label 或本文再變動就重新印。
+test('ready-for-human Issue 的 gate 已 resolved、之後 label 與本文都沒變：不印 HUMAN_NO_GATE；resolve 後才變動的照印', t => {
+  const human = ['ready-for-human'];
+  const labeled = createdAt => ({ labelEvents: { nodes: [{ createdAt }] } });
+  const gates = `# Gates
+
+## G11 #331 worker 依難度選模型
+- Issue：#331
+- question：要不要做？
+- opened：2026-11-21T07:15:00+08:00
+- resolved 2026-11-21T07:30:00+08:00 維持 ready-for-human
+
+## G12 #350 其他專案 issue-queue refine 工具鏈通用化
+- Issue：#350
+- question：要不要做？
+- opened：2026-11-21T07:15:00+08:00
+- resolved 2026-11-21T07:30:00+08:00 維持 ready-for-human
+
+| id | Issue | question | options | default | parks | opened | status |
+|---|---|---|---|---|---|---|---|
+| G20 | #352 | 表格形式 | a｜b | a | #352 | 2026-11-21T07:00:00+08:00 | resolved 2026-11-21T07:30:00+08:00 選 a |
+`;
+  const { pilot, probe } = fixture(t, { issues: [
+    { ...issue(331, '要人決定', { labels: human }), title: 'worker 依難度選模型', lastEditedAt: '2026-11-20T10:00:00Z', ...labeled('2026-11-20T09:00:00Z') },
+    { ...issue(350, '要人決定', { labels: human }), title: 'other refine', ...labeled('2026-11-20T09:00:00Z') },
+    { ...issue(352, '表格 gate', { labels: human }), title: '表格 gate 的單' },
+  ] });
+  writeFileSync(join(pilot, 'gates.md'), gates);
+  assert.deepEqual(lines(probe()).filter(Boolean), []);
+  // 之後 #350 的 label 又變動（resolve 之後才重新掛回 ready-for-human）、#352 本文改過：重新印。
+  const { pilot: pilot2, probe: probe2 } = fixture(t, { issues: [
+    { ...issue(331, '要人決定', { labels: human }), title: 'worker 依難度選模型', lastEditedAt: '2026-11-20T10:00:00Z', ...labeled('2026-11-20T09:00:00Z') },
+    { ...issue(350, '要人決定', { labels: human }), title: 'other refine', ...labeled('2026-11-21T00:00:00Z') },
+    { ...issue(352, '表格 gate', { labels: human }), title: '表格 gate 的單', lastEditedAt: '2026-11-21T00:00:00Z' },
+  ] });
+  writeFileSync(join(pilot2, 'gates.md'), gates);
+  assert.deepEqual(lines(probe2()), ['HUMAN_NO_GATE 350 other refine', 'HUMAN_NO_GATE 352 表格 gate 的單']);
 });
 
 // #358（#324 第 5 項、#338 第 5 項）：ADAPTER_AHEAD 時 coordinator 照整合分支的 adapter 在主 checkout 跑腳本，
@@ -1886,11 +1967,10 @@ test('ADAPTER_AHEAD 時 adapter 指名、主 checkout 缺檔或內容不同的 s
   git('switch', '-q', 'main');
   let result = probe();
   assert.equal(result.status, 0, result.stderr);
+  // #563：依去處合成一行，不是每個腳本一行。
   assert.deepEqual(lines(result), [
     aheadLine(repo, 'docs/agents/pilot-rules.md', 'Watch'),
-    'SCRIPT_AHEAD scripts/blocked-by-sync.mjs sync-main',
-    'SCRIPT_AHEAD scripts/campaign-due.py sync-main',
-    'SCRIPT_AHEAD scripts/pilot-watch.mjs sync-main',
+    'SCRIPT_AHEAD sync-main scripts/blocked-by-sync.mjs scripts/campaign-due.py scripts/pilot-watch.mjs',
   ]);
 
   // main 自己改過（整合分支那份比較舊）的腳本不印。
@@ -1900,8 +1980,7 @@ test('ADAPTER_AHEAD 時 adapter 指名、主 checkout 缺檔或內容不同的 s
   result = probe();
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(lines(result).filter(line => line.startsWith('SCRIPT_AHEAD')), [
-    `SCRIPT_AHEAD scripts/blocked-by-sync.mjs run-in ${stage}`,
-    `SCRIPT_AHEAD scripts/pilot-watch.mjs run-in ${stage}`,
+    `SCRIPT_AHEAD run-in ${stage} scripts/blocked-by-sync.mjs scripts/pilot-watch.mjs`,
   ]);
 });
 
@@ -2018,6 +2097,9 @@ test('done 成員的 Issue 本文最後編輯晚於列的 started 時印 SCOPE_C
   batch('321-322-323', 'dispatched 2026-11-18T20:01:15+08:00', [321, 322, 323].map(n => ({ n, started, state: 'done', candidate: SHA })));
   batch('325-326', 'dispatched 2026-11-18T20:01:15+08:00', [{ n: 325, started }, { n: 326, started }]);
   batch('327', 'closed', [{ n: 327, started, state: 'done', candidate: SHA }]);
+  // #563：已合入、等 main 的 batch 不再印。
+  batch('328', `merged ${SHA}`, [{ n: 327, started, state: 'done', candidate: SHA }]);
+  batch('329', `pushed ${SHA}`, [{ n: 327, started, state: 'done', candidate: SHA }]);
   const result = probe();
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(lines(result).filter(line => line.startsWith('SCOPE_CHANGED ')), [
@@ -2274,4 +2356,39 @@ test('watch 的記錄早於成員的 started 或最後一次 resumed、號碼不
   const out = lines(probe());
   for (const n of [1, 2, 3]) assert.ok(out.includes(`WORKER ${n} STUCK exited`), out.join('\n'));
   assert.ok(out.includes(`WORKER 4 DONE ${OTHER}`), out.join('\n'));
+});
+
+// CoS item 89：#552 把 Retro trigger 寫在 issue-pilot Project hooks 步驟的後半，adapter「Project tick hooks：沒有」的 coordinator 照字面整步跳過，
+// retro-candidates 積到 20 張、最舊 74 小時沒觸發。Probe 每輪印 pilot-retro-due 的那一行，不靠 coordinator 記得去跑。
+test('adapter 有 Retro trigger 條目時印 RETRO_ 行（重用 tracker 查詢，不再跑 gh issue list）；沒有條目不印（CoS item 89）', t => {
+  const created = hours => new Date(Date.now() - hours * 3_600_000).toISOString();
+  const retro = (number, hours, body = '1. x') => ({ number, body, createdAt: created(hours), labels: { nodes: [{ name: 'retro-candidates' }] }, blockedBy: { nodes: [] }, parent: null });
+  const { probe, repo, ghLog } = fixture(t, { issues: [retro(1, 75), retro(2, 1), retro(3, 1, 'From: retro-collect\n1. y'), { ...retro(4, 99), labels: { nodes: [{ name: 'ready-for-agent' }] } }] });
+  const retroLine = result => result.stdout.split('\n').filter(line => line.startsWith('RETRO_'));
+  assert.deepEqual(retroLine(probe()), [], '沒有 adapter：不印');
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  writeFileSync(join(repo, 'docs/agents/issue-run.md'), '# adapter\n\n## Pilot\n\n見 [coordinator.md](coordinator.md)。\n');
+  // 實況：Project tick hooks 是「沒有」，Retro trigger 條目在 Pilot 段連到的檔裡。
+  writeFileSync(join(repo, 'docs/agents/coordinator.md'), '- **Project tick hooks.** 預設：沒有。\n\n- **Retro trigger.** `Retro trigger: count=5 age=8h`。\n');
+  const due = probe();
+  assert.equal(due.status, 0, due.stderr);
+  assert.deepEqual(retroLine(due), [`RETRO_DUE 2 oldest=75.0h → node scripts/pilot-retro-due.mjs ${repo} --start`]);
+  const order = due.stdout.trim().split('\n');
+  assert.ok(order.indexOf(retroLine(due)[0]) < order.findIndex(line => line.startsWith('HANDOFF_COUNT ')), '在 HANDOFF_COUNT 之前');
+  assert.doesNotMatch(readFileSync(ghLog, 'utf8'), /"issue","list"/, '用 probe 已抓的 Issue');
+  const collectIn = probe({ args: ['--retro-collect-in', '/elsewhere'] });
+  assert.deepEqual(retroLine(collectIn), [`RETRO_DUE 2 oldest=75.0h → node scripts/pilot-retro-due.mjs ${repo} --collect-in /elsewhere --start`]);
+  writeFileSync(join(repo, '.scratch/pilot/batch-523.md'), '# batch 523\ncurrent: staged abc1234\n');
+  assert.deepEqual(retroLine(probe()), ['RETRO_WAIT staged 523 2 oldest=75.0h']);
+});
+
+test('tracker 查詢失敗時 Retro trigger 由 pilot-retro-due 自己查（gh 也失敗時 RETRO_FAILED，不中斷其他行）', t => {
+  const { probe, repo } = fixture(t, { issues: null });
+  mkdirSync(join(repo, 'docs/agents'), { recursive: true });
+  writeFileSync(join(repo, 'docs/agents/issue-run.md'), '# adapter\n\n## Pilot\n\n- **Retro trigger.** 預設門檻。\n');
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^POOL_FAILED /m);
+  assert.match(result.stdout, /^RETRO_FAILED gh exit 1/m);
+  assert.match(result.stdout, /^HANDOFF_COUNT /m);
 });

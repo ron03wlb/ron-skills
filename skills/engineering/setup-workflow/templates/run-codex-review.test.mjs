@@ -304,7 +304,8 @@ test('額度字句只是被引用（非行首）或 Codex 成功結束：不判 
 // retro spay2 710b8f4e#2：額度用完時，空 rulings 先回 RULINGS_EMPTY，補好再跑才撞 CODEX_NO_CREDITS。預檢與 --quota 同源，排在參數檢查之前。
 const FUTURE_WEEKLY = { primary: null, secondary: { used_percent: 100.0, window_minutes: 10080, resets_at: 4102444800 } };
 test('額度預檢：rollout 顯示額度用完時，空 rulings 也先判 CODEX_NO_CREDITS（precheck），且不呼叫 Codex', t => {
-  for (const files of [[['rollout-a.jsonl', FUTURE_WEEKLY, 1000], ['rollout-b.jsonl', DEPLETED, 2000]], [['rollout-b.jsonl', DEPLETED, 2000]]]) {
+  const recent = Date.now() / 1000 - 3600; // 只有 reached、沒有 resets_at 的紀錄要在 24 小時內才擋（tooling-881）
+  for (const files of [[['rollout-a.jsonl', FUTURE_WEEKLY, 1000], ['rollout-b.jsonl', DEPLETED, 2000]], [['rollout-b.jsonl', DEPLETED, recent]]]) {
     const { result, call } = review(t, { rulings: '', codexHome: rolloutHome(t, files) });
     const json = JSON.parse(result.stderr.trim());
     assert.equal(json.error, 'CODEX_NO_CREDITS');
@@ -313,6 +314,25 @@ test('額度預檢：rollout 顯示額度用完時，空 rulings 也先判 CODEX
     assert.match(json.quota, /^CODEX_QUOTA .*reached=workspace_member_credits_depleted$/);
     assert.equal(call, null);
   }
+});
+// spay2 retro 1124c tooling-881：真實形狀（2026-11-21 rollout：secondary null、無 resets_at、行內 timestamp），預檢不呼叫 Codex 就不會有新紀錄。
+function depletedHome(t, hoursAgo) {
+  const home = mkdtempSync(join(realTmpdir(), 'codex-quota-')); t.after(() => rmSync(home, { recursive: true, force: true }));
+  const dir = join(home, 'sessions', '2026', '11', '21'); mkdirSync(dir, { recursive: true });
+  const at = new Date(Date.now() - hoursAgo * 3600 * 1000); const file = join(dir, 'rollout-2026-11-21T20-51-40-x.jsonl');
+  const limits = { limit_id: 'premium', limit_name: null, primary: null, secondary: null, credits: { has_credits: false, unlimited: false, balance: null }, individual_limit: null, spend_control_reached: null, plan_type: null, rate_limit_reached_type: 'workspace_member_credits_depleted' };
+  writeFileSync(file, JSON.stringify({ timestamp: at.toISOString(), ordinal: 13, type: 'event_msg', payload: { type: 'token_count', info: null, rate_limits: limits } }) + '\n');
+  utimesSync(file, at, at);
+  return home;
+}
+test('額度預檢：reached 紀錄沒有 resets_at 時，24 小時內仍擋，超過 24 小時放行實跑', t => {
+  const blocked = JSON.parse(review(t, { rulings: '', codexHome: depletedHome(t, 1) }).result.stderr.trim());
+  assert.equal(blocked.error, 'CODEX_NO_CREDITS');
+  assert.equal(blocked.precheck, true);
+  assert.equal(error(review(t, { rulings: '', codexHome: depletedHome(t, 48) }).result), 'RULINGS_EMPTY');
+  const ok = review(t, { codexHome: depletedHome(t, 48) });
+  assert.equal(ok.result.status, 0, ok.result.stderr);
+  assert.notEqual(ok.call, null);
 });
 test('額度預檢：週額度重置時間已過或額度未用完時不擋，照常回 RULINGS_EMPTY／呼叫 Codex', t => {
   assert.equal(error(review(t, { rulings: '', codexHome: rolloutHome(t, [['rollout-a.jsonl', WEEKLY, 1000], ['rollout-b.jsonl', DEPLETED, 2000]]) }).result), 'RULINGS_EMPTY');

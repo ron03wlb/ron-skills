@@ -170,7 +170,7 @@ test('bin/check --changed：沒有規則的路徑、CHECK_FULL=1、沒有 --chan
   const unmapped = f.run(['--changed', 'main']);
   assert.equal(unmapped.status, 0, unmapped.stdout + unmapped.stderr);
   assert.match(unmapped.stdout, /^CHECK_SUBSET full unmapped somewhere\/new\.txt$/m);
-  const full = ['guarded tests/a.test.mjs tests/b.test.mjs tests/check-coordinator-permissions.test.mjs tests/gh-tracker.test.mjs tests/pilot-probe-adapter-entries.test.mjs tests/pilot-project-flags.test.mjs tests/pilot-push-gate-scripts.test.mjs tests/pilot-split.test.mjs tests/pilot-store-usage.test.mjs tests/template-copies.test.mjs', 'guarded skills/engineering/setup-workflow/templates/t.test.mjs'];
+  const full = ['guarded tests/a.test.mjs tests/b.test.mjs tests/check-coordinator-permissions.test.mjs tests/gh-tracker.test.mjs tests/pilot-probe-adapter-entries.test.mjs tests/pilot-project-flags.test.mjs tests/pilot-push-gate-scripts.test.mjs tests/pilot-split.test.mjs tests/pilot-store-usage.test.mjs tests/setup-workflow-stations.test.mjs tests/template-copies.test.mjs', 'guarded skills/engineering/setup-workflow/templates/t.test.mjs'];
   assert.deepEqual(unmapped.steps.filter(step => step.startsWith('guarded')), full);
   assert.ok(unmapped.steps.includes('sync-skills') && unmapped.steps.includes('hook-acceptance.mjs'));
   assert.match(unmapped.stdout.trim().split('\n').at(-1), /^CHECK_PASS tests /);

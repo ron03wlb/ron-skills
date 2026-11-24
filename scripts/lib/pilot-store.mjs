@@ -219,20 +219,24 @@ export const isResolvedSection = body => /^- (?:G\d+ )?resolved\b/m.test(body);
 
 /**
  * gates.md 還開著的 gate：表格 status 欄不以 `resolved` 開頭的列，或 `## G<n>` 段落裡沒有 `resolved` 那一行的 gate。
- * 每個 `{ line, id, issue, title, parked, opened, malformed }`：`line` 是 GATE 行去掉前綴的內容；表格列的 title 是 question 欄，段落的是標題去掉 id；
- * `parked` 是表格的 parks 欄或段落的 `- parked：` 那一行；`hold` 是段落 `- hold：#<n>` 的號碼（pilot-gate open --hold，#367），沒有時空字串（表格列沒有這欄）。
+ * 每個 `{ line, id, issue, title, parked, opened, hold, malformed }`：`line` 是 GATE 行去掉前綴的內容；表格列的 title 是 question 欄，段落的是標題去掉 id；
+ * `parked` 是表格的 parks 欄或段落的 `- parked：` 那一行；`hold` 是段落 `- hold：#<n>` 的號碼（pilot-gate open --hold，#367），沒有時空字串（表格列沒有這欄）；
+ * `malformed` 是段落裡寫壞的行（GATE_MALFORMED 指出的那一行），依出現順序：resolved 寫進別的欄位（retro a6），以及 hold 欄不是單獨一個 `#<n>`
+ * （#453 第 2 項：`- hold：320`、`- hold：#320（等 G28）` 舊版靜默忽略，Probe 又印回 STAGEABLE）；表格列是空陣列。
  */
 export function openGates(text) {
   const gates = [];
   for (const cells of text.split('\n').map(gateRow)) {
     if (cells && !isResolvedRow(cells)) {
-      gates.push({ line: `${cells[0]} ${cells[1]} ${cells[2]}`, id: cells[0], issue: cells[1], title: cells[2], parked: cells[5] ?? '', opened: cells[6] ?? '', hold: '' });
+      gates.push({ line: `${cells[0]} ${cells[1]} ${cells[2]}`, id: cells[0], issue: cells[1], title: cells[2], parked: cells[5] ?? '', opened: cells[6] ?? '', hold: '', malformed: [] });
     }
   }
   for (const { id, title, body } of gateSections(text)) {
     if (isResolvedSection(body)) continue;
-    // resolved 寫進別的欄位（`- status：resolved …`）不算解除；指出那一行（retro a6）。
-    const malformed = body.match(/^- [^：:\n]+[：:]\s*resolved\s+\d{4}-\d\d-\d\dT.*$/m)?.[0].trim();
+    // resolved 寫進別的欄位（`- status：resolved …`）不算解除；指出那一行（retro a6）。hold 欄解析不出號碼也指出（#453 第 2 項）。
+    const hold = /^- hold[：:]\s*(.*)$/m;
+    const malformed = body.split('\n').filter(line => /^- [^：:\n]+[：:]\s*resolved\s+\d{4}-\d\d-\d\dT/.test(line) || (hold.test(line) && !/^#\d+$/.test(line.match(hold)[1].trim())))
+      .map(line => line.trim());
     const field = name => body.match(new RegExp(`^- ${name}[：:]\\s*(.*)$`, 'm'))?.[1].trim() ?? '';
     gates.push({ line: title, id, issue: field('Issue').match(/#\d+/)?.[0] ?? '', title: title.slice(id.length).trim(), parked: field('parked'), opened: field('opened'), hold: field('hold').match(/^#(\d+)$/)?.[1] ?? '', malformed });
   }
@@ -292,6 +296,26 @@ export function resolvedGateLines(text, sessions) {
   });
 }
 
-/** pilot-probe 與 pilot-gate list 印的 gate 行：每個開著的 gate 一行 `GATE <line>`，resolved 寫錯欄位的再加 `GATE_MALFORMED <id> <那一行>`。 */
+/**
+ * pilot-probe 與 pilot-gate list 印的 gate 行：每個開著的 gate 一行 `GATE <line>`，段落裡每個寫壞的行（resolved 寫錯欄位、hold 欄解析不出號碼）
+ * 再各加一行 `GATE_MALFORMED <id> <那一行>`。
+ */
 export const gateLines = text => openGates(text)
-  .flatMap(gate => [`GATE ${gate.line}`, ...(gate.malformed ? [`GATE_MALFORMED ${gate.id} ${gate.malformed}`] : [])]);
+  .flatMap(gate => [`GATE ${gate.line}`, ...gate.malformed.map(line => `GATE_MALFORMED ${gate.id} ${line}`)]);
+
+/**
+ * gates.md 已 resolved 的 gate（#417 第 1 項）：每個 `{ id, issue, resolved }`，`issue` 是表格列的 Issue 欄或段落 `- Issue：` 那一行的原文，
+ * `resolved` 是 resolved 標記的時間（表格 status 欄 `resolved <time> …`、段落 `- resolved <time> …`）。
+ * pilot-probe 的 HUMAN_NO_GATE 用它判斷 ready-for-human 的單是不是已經問過人、人決定維持現狀。
+ */
+export function resolvedGates(text) {
+  const gates = [];
+  for (const cells of text.split('\n').map(gateRow)) {
+    if (cells && isResolvedRow(cells)) gates.push({ id: cells[0], issue: cells[1] ?? '', resolved: cells.at(-1).match(/^resolved\s+(\S+)/)?.[1] ?? '' });
+  }
+  for (const { id, body } of gateSections(text)) {
+    const resolved = body.match(/^- (?:G\d+ )?resolved\s+(\S+)/m)?.[1];
+    if (resolved) gates.push({ id, issue: body.match(/^- Issue[：:]\s*(.*)$/m)?.[1] ?? '', resolved });
+  }
+  return gates;
+}

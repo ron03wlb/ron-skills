@@ -20,8 +20,8 @@ L1 的目標：在一個還沒有 adapter 的 repo 裡，把第一張 Issue 用 
 先在這台機器裝 skills（每台機器一次）：
 
 ```bash
-git clone https://github.com/ron03wlb/ron-skills ~/code/ron-skills   # private：先取得讀取權限
-git clone https://github.com/ron03wlb/skills ~/code/skills           # Matt skills 的 fork
+git clone https://github.com/ron03wlb/ron-skills ~/code/ron-skills   # 公開 repo，直接 clone
+git clone https://github.com/ron03wlb/skills ~/code/skills           # Matt Pocock skills 的 fork（上游 mattpocock/skills）
 git clone https://github.com/backnotprop/pstack ~/code/pstack
 ~/code/ron-skills/bin/sync-skills --check   # overlay 能套用、沒有 OVERLAY_FAILED
 ~/code/ron-skills/bin/sync-skills           # 連結到 ~/.claude/skills/
@@ -156,7 +156,7 @@ git branch -d issue/<n>-<slug> && git push origin --delete issue/<n>-<slug>
 
 ### 9. `/issue-queue`
 
-第一張單跑順之後，用 `/issue-queue` 看所有開著的 Issue 怎麼分桶。它跑 `scripts/issue-pool.mjs`（`/setup-workflow` 在 L1 一定會複製這支；手動備用時自己跑 `copy-templates.mjs <repo> issue-pool`。tracker 要是 GitHub 或 GitLab，本機 Markdown tracker 沒有池子），第一行是 `進行中 <N>／上限 <M>`（L1 沒有 Pilot 段，上限顯示 `不限`），接著依 `ready`、`parent`、`human`、`retro-candidates`、`stale`、`claimed`…的順序列出分桶，`ready` 桶的順序就是開工順序。`needs-triage`、`unlabeled` 的單，以及上次分級後有新留言的 `needs-info` 單，它照 `/triage` 的規則逐張細化，每一則改動都等你確認；過期的認領（`stale`）只列出來，放不放由你決定。
+第一張單跑順之後，用 `/issue-queue` 看所有開著的 Issue 怎麼分桶。它跑 `scripts/issue-pool.mjs`（`/setup-workflow` 在 L1 一定會複製這支；手動備用時自己跑 `copy-templates.mjs <repo> issue-pool`。tracker 要是 GitHub 或 GitLab，本機 Markdown tracker 沒有池子），第一行是 `進行中 <N>／上限 <M>`（L1 沒有 Pilot 段，上限顯示 `不限`），接著依 `ready`、`parent`、`human`、`retro-candidates`、`stale`、`claimed`…的順序列出分桶，`ready` 桶的順序就是開工順序。`needs-triage`、`unlabeled` 的單，以及上次分級後有新留言的 `needs-info` 單，它照 `/triage` 的規則逐張細化：驗收每一項都能用指令、測試或檔案狀態檢查，又不涉及業務規則、範圍取捨或產品決定的單，它直接標 `ready-for-agent` 並在 Issue 留言寫依據，報告列出單號（判斷清單在 `issue-queue` 的 SKILL.md 第 5 步，拿不準就當成要你確認）；其餘改動都等你確認；過期的認領（`stale`）只列出來，放不放由你決定。
 
 做完的樣子：`/issue-queue` 印出上限行與分桶，你要開工的單在 `ready` 桶。
 

@@ -88,4 +88,6 @@
 
 - **Retro collect.** 見 [pilot-retro-collect.md](pilot-retro-collect.md)：`/retro-collect` 讀那裡的同名條目；`/retro` 只看這一條在不在，決定要不要進收集模式。
 
-- **Retro trigger.** 見 [pilot-retro-collect.md](pilot-retro-collect.md)：Project hooks 那一步讀那裡的同名條目。
+- **Retro trigger.** 見 [pilot-retro-collect.md](pilot-retro-collect.md)：每輪第 4 步讀那裡的同名條目。
+
+- **Orca orchestration.** 見 [pilot-round.md](pilot-round.md)：用 orchestration 向 bot 提問或回報時讀。
