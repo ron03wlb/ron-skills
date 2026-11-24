@@ -46,6 +46,16 @@ test('renderMarkdown：標題、表格、巢狀清單、程式碼區塊、引言
   assert.match(html, /<blockquote><p>引 <em>言<\/em><\/p><\/blockquote>/);
 });
 
+test('renderMarkdown：CommonMark autolink <https://…>、<mailto:…> 轉成連結，code 裡原樣保留，網址的 & 與 _ 正確跳脫', () => {
+  const { html } = renderMarkdown('# t\n\n公開在 <https://spay2-workflow-docs.pages.dev>。寄 <mailto:a_b@example.com>。查 <https://example.com/a_b?x=1&y=2>，`<https://in.code>` 不轉，a < b 不動。\n\n```md\n<https://in.block>\n```\n', [], []);
+  assert.match(html, /公開在 <a href="https:\/\/spay2-workflow-docs\.pages\.dev" rel="noopener" target="_blank">https:\/\/spay2-workflow-docs\.pages\.dev<\/a>。/);
+  assert.match(html, /<a href="mailto:a_b@example\.com" rel="noopener" target="_blank">mailto:a_b@example\.com<\/a>/);
+  assert.match(html, /<a href="https:\/\/example\.com\/a_b\?x=1&amp;y=2" rel="noopener" target="_blank">https:\/\/example\.com\/a_b\?x=1&amp;y=2<\/a>/);
+  assert.match(html, /<code>&lt;https:\/\/in\.code&gt;<\/code> 不轉，a &lt; b 不動。/);
+  assert.match(html, /<pre><code class="language-md">&lt;https:\/\/in\.block&gt;<\/code><\/pre>/);
+  assert.doesNotMatch(html, /&gt;。/);
+});
+
 test('buildSite：首頁與每章一頁，側邊欄列出每章、每張圖與正式規範，互動圖以 iframe 內嵌', () => {
   const files = buildSite(root);
   assert.deepEqual(Object.keys(files).sort(), ['01-tooling.html', '02-lifecycle.html', 'index.html', 'static/site.css', 'static/site.js']);
