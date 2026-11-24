@@ -59,7 +59,7 @@ Follow the adapter's 〈練習證據〉 table for order and fields:
 
 1. **Practice Attempt Note**: check the adapter's path first (an existing file for the same day and question gets the adapter's suffix, unless this is a resumed `paused` note, which is updated in place). Write the Markdown file, then re-read it.
 2. **Growth**: grep for the T 題 before adding rows; then update the Mapping Matrix (new T 題 only), the ledger row (`Principal weakness` reads `<weakness>（練習 [[<note file name>]]）`), the ledger `updated` date, and the Current View BQ/English summary (BQ/English only). Re-read each file.
-3. **生活總控 record**: upsert the `kind: "practice"` record keyed by `tid` (the question name when unbanked) in the adapter's artifact, appending this attempt to `attempts[]`; its `result` and `nextReview` match the ledger row. Read the record back. Then the optional Miro item, only when the adapter says the Miro CLI is ready; otherwise skip it.
+3. **生活總控 record**: upsert the `kind: "practice"` record keyed by `tid` (the question name when unbanked) in the adapter's artifact, appending this attempt to `attempts[]`; its `result` and `nextReview` match the ledger row. Read the record back.
 
 On any failure, stop and report which steps landed and which did not; steps already written stay. Finish by listing every object written with its ID or path.
 
@@ -77,5 +77,5 @@ On any failure, stop and report which steps landed and which did not; steps alre
 - Mastery is written to the Growth ledger only. The Practice Attempt Note carries dated scores and the next starting point, never a current-status field; its `status` frontmatter is only `closed` or `paused`. When the 生活總控 record and the ledger disagree, the ledger wins and the record is corrected.
 - New understanding goes into the note's 要記住的修正 list and does not change Formal Notes by default. Only when the user explicitly asks at the close, write it into a Formal Note under the direct-write conditions the adapter cites, and name the changed sections in the note's Growth section.
 - Current View priorities, focus and adjustments change only at the user's reviews.
-- Company dossier questions are rewritten as generic questions before any write, without company names or dossier content: the 生活總控 record and Miro are outside Growth's private scope.
+- Company dossier questions are rewritten as generic questions before any write, without company names or dossier content: the 生活總控 record is outside Growth's private scope.
 - Never write to Heptabase: no create, edit or delete. Old Practice Attempt Cards are read-only history.
