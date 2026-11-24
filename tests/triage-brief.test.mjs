@@ -15,7 +15,7 @@ const entry = (text, name) => {
 // #381（investing#379 第 5 項）：coordinator 派 triage 子代理時每次手寫 30–40 行 prompt，主 checkout、ADAPTER_AHEAD 的 stage 版指令、
 // macOS 沒有 timeout、主 checkout 寫入防護這些 repo 專屬事實常漏。改成 adapter 的 **Triage brief** 條目提供範本，SKILL 的 Pick 指向它（不做 pilot-brief.mjs）。
 test('issue-pilot SKILL 的 Pick：子代理細化 needs-triage 時從 adapter 的 Triage brief 條目起頭', () => {
-  const pick = read('skills/engineering/issue-pilot/SKILL.md').split('\n').find(line => line.startsWith('4. **Pick.**'));
+  const pick = read('skills/engineering/issue-pilot/SKILL.md').split('\n').find(line => line.startsWith('5. **Pick.**'));
   assert.match(pick, /refine any `needs-triage` member per the adapter before dispatching it; when a subagent does the refining, start its prompt from the adapter's Pilot \*\*Triage brief\*\* entry when it has one/);
 });
 

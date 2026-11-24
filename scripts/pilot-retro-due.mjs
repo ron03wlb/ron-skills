@@ -5,6 +5,7 @@
 // 舊規則「retro-candidates 累積 ≥3（POOL_EMPTY 時 ≥1）」只寫在 issue-pilot SKILL 的 prose，沒有 script，ron-skills 的 adapter 也沒有 Retro trigger 條目，從沒觸發過。
 //
 // 用法：node scripts/pilot-retro-due.mjs <coordinator checkout> [--collect-in <checkout>] [--start]
+//       node scripts/pilot-retro-due.mjs <Retro collect checkout> --log-collect <key> [--item <Issue 或名單項>=<結果>]...
 //   <coordinator checkout>：`.scratch/pilot/` 與 adapter（工作樹的 docs/agents/issue-run.md 及其 Pilot 段連到、再連到的同目錄 .md）所在。
 //   --collect-in：Retro collect 條目指定 `/retro-collect` 跑的 checkout（Roster command 在這裡跑、分頁在這裡開、紀錄寫在這裡），預設同上。
 //   啟用：adapter 有 `- **Retro trigger.**` 條目；沒有時印 RETRO_OFF no-trigger-entry。門檻是同一批檔裡的宣告行 `Retro trigger: count=<n> age=<h>h`，
@@ -13,11 +14,15 @@
 //     Retro collect 條目宣告了 `Roster command:`（ADR 0003 的 Declared roster）時，在 --collect-in 以 sh -c 跑它（反引號內的指令），
 //       輸出裡第一個字在同一條目 `Roster due: <TOKEN>[,<TOKEN>…]` 列出的行各算一則（例如 spay2 的 `DONE`）；年齡取該行第一個 ISO 8601 時刻，
 //       沒有時取該行第一個存在的檔案（絕對路徑或相對 --collect-in）的 mtime，都沒有時只計數、不算年齡。有 Roster command 卻沒有 Roster due 時 RETRO_FAILED roster-due-missing。
-//     否則是開著的 `retro-candidates` Issue（tracker 照 docs/agents/issue-tracker.md：寫 glab 是 GitLab，其他用 gh），內文有 `From: retro-collect` 行的不算
+//     否則是開著的 `retro-candidates` Issue（tracker 照 docs/agents/issue-tracker.md：寫 glab 是 GitLab，其他用 gh，`--limit 1000`：gh 預設只回 30 張，
+//       1123a 開著 42 張只看到 30 張），內文有 `From: retro-collect` 行的不算
 //       （收集者自己的 retro，不讓一次收集觸發下一次），年齡取建立時間。
 //   安全點：`.scratch/pilot/batch-*.md` 有 `current: staged …` 的 batch（stage 到整合分支合入之間，含 regression 在跑）時，到期也只印 RETRO_WAIT。
 //   已有收集者：--collect-in 的 `.scratch/retro/collector`（`--start` 寫的 `<ISO 時刻> <handle>`）的 handle 還在 `orca terminal list`、標題是 `處理中｜` 開頭時，
 //     到期也只印 RETRO_RUNNING；收集者跑完會把分頁換成待 Retro／待關閉，就不算在跑。讀不到 Orca（沒有 ORCA_CLI_COMMAND 或呼叫失敗）時當作沒有在跑。
+//     手動開的收集者（沒經 --start、分頁標題沒有狀態前綴；CoS item 89：term_41eb9968「Retro-collect retro-candidates issues」收 20 張時這裡印了 RETRO_DUE）
+//     由計畫檔認：--collect-in 的 `.scratch/retro/plan-<key>.md` 最近 4 小時內改過，而且還沒有 `reports/<日期>-<key>.md`、triggers.log 也沒有這個 key 的
+//     collect 行（retro-collect 的 Close 兩者都寫，落地失敗也寫）時印 RETRO_RUNNING plan-<key>；超過 4 小時沒動的計畫檔當作中斷，不擋下一次。
 // stdout（一律一行）：
 //   RETRO_OFF no-trigger-entry
 //   RETRO_IDLE <則數> oldest=<小時|-> threshold count=<n> age=<h>h
@@ -27,12 +32,18 @@
 //   RETRO_FAILED <原因>（tracker 或 Roster command 失敗、宣告格式錯；exit 1）
 //   --start：重新判斷，到期時開分頁（orca-session-split.mjs 的 openSession，新分頁、標題 `處理中｜retro-collect`，第一個 prompt `/retro-collect`），
 //     寫 `.scratch/retro/collector`，印 RETRO_STARTED <handle>；沒到期時印上面那一行、不開；開分頁失敗印 RETRO_START_FAILED <原因>（exit 4）。
+//     開成功時（CoS item 89：自動觸發沒接上卻沒人發現，要留證據）也在 --collect-in 的 `.scratch/retro/triggers.log`（JSONL）追加一行
+//     `{"time","event":"start","trigger":"count"|"age"|"count+age","uncollected","oldestHours","handle","threshold":{"count","ageHours"}}`，
+//     並以同目錄的 pilot-decision.mjs 在 coordinator checkout 的 decisions.md 記一列（沒有那支或它失敗時 stderr 說明，照樣印 RETRO_STARTED）。
+//   --log-collect <key>：`/retro-collect` 結束時在 `.scratch/retro/triggers.log` 追加 `{"time","event":"collect","key","collected","items":[{"ref","result"}]}`，
+//     collected 是 --item 的數量；印 `RETRO_LOGGED <key> <collected>`。
 //   `<小時>` 取到小數一位。環境變數 RETRO_DUE_NOW（ISO 時刻）給測試固定現在時刻。
+//   pilot-probe.mjs 每個 tick 以 evaluate() 印同一行（帶它已抓的 Issue，不再多跑一次 gh），coordinator 不必記得另外跑這一支。
 // exit：0 印完；1 RETRO_FAILED；2 用法錯誤；4 RETRO_START_FAILED。
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { trackerKind } from './lib/hosts.mjs';
 import { orca } from './orca-session-send.mjs';
 import { openSession } from './orca-session-split.mjs';
@@ -41,9 +52,12 @@ import { WORKING, recordedTitle, tabTitleOf } from './tab-state.mjs';
 export const DEFAULT_COUNT = 5;
 export const DEFAULT_AGE_HOURS = 8;
 export const COLLECTOR_FILE = '.scratch/retro/collector';
+export const TRIGGERS_LOG = '.scratch/retro/triggers.log';
+export const TRACKER_LIMIT = 1000;
+export const PLAN_FRESH_HOURS = 4;
 const ADAPTER = 'docs/agents/issue-run.md';
 const HOUR = 3_600_000;
-const USAGE = '用法：node scripts/pilot-retro-due.mjs <coordinator checkout> [--collect-in <checkout>] [--start]';
+const USAGE = '用法：node scripts/pilot-retro-due.mjs <coordinator checkout> [--collect-in <checkout>] [--start]｜<checkout> --log-collect <key> [--item <ref>=<result>]...';
 
 /** adapter 檔：issue-run.md，加上它 Pilot 段連到的同目錄 .md，再加上那些檔連到的同目錄 .md（spay2 的 Retro collect 在第二層）。[{ file, content }] */
 export function adapterTexts(root) {
@@ -113,6 +127,9 @@ export function rosterItems(output, due, cwd) {
   });
 }
 
+/** GraphQL 抓的開著 Issue（labels.nodes[].name，pilot-probe 的 tracker 查詢）裡掛 `retro-candidates` 的。 */
+export const labelledRetro = issues => issues.filter(issue => (issue.labels?.nodes ?? issue.labels ?? []).some(label => (label.name ?? label) === 'retro-candidates'));
+
 /** tracker 的 Issue 列表 → 未收集的 [{ id, createdAt }]：內文有 `From: retro-collect` 行的不算。 */
 export function trackerItems(issues) {
   return issues
@@ -143,7 +160,10 @@ export function retroDue({ items, threshold, now, staged = null, running = null 
   const oldest = ages.length ? Math.max(...ages) : null;
   const due = items.length >= threshold.count || (items.length > 0 && oldest !== null && oldest >= threshold.ageHours * HOUR);
   const state = !due ? 'IDLE' : staged ? 'WAIT' : running ? 'RUNNING' : 'DUE';
-  return { state, count: items.length, oldest, staged, running };
+  const byCount = items.length >= threshold.count;
+  const byAge = items.length > 0 && oldest !== null && oldest >= threshold.ageHours * HOUR;
+  const trigger = !due ? null : byCount && byAge ? 'count+age' : byCount ? 'count' : 'age';
+  return { state, count: items.length, oldest, staged, running, trigger };
 }
 
 /** 判斷結果 → 輸出行。 */
@@ -171,8 +191,25 @@ export async function runningCollector(collectIn, cli) {
   }
 }
 
-/** 未收集的 retro：[{ id, createdAt }]；失敗時 throw（訊息是 RETRO_FAILED 的原因）。 */
-export function uncollected(checkout, collectIn, texts) {
+/** 還在收集的計畫檔：最近 PLAN_FRESH_HOURS 內改過、沒有報告、triggers.log 沒有 collect 行的 `plan-<key>.md`，回 `plan-<key>`；沒有時 null。 */
+export function planInProgress(collectIn, now) {
+  const dir = join(collectIn, '.scratch/retro');
+  if (!existsSync(dir)) return null;
+  const reports = existsSync(join(dir, 'reports')) ? readdirSync(join(dir, 'reports')) : [];
+  const log = existsSync(join(collectIn, TRIGGERS_LOG)) ? readFileSync(join(collectIn, TRIGGERS_LOG), 'utf8') : '';
+  const logged = new Set(log.split('\n').flatMap(line => {
+    try { const record = JSON.parse(line); return record.event === 'collect' ? [record.key] : []; } catch { return []; }
+  }));
+  const plans = readdirSync(dir).map(name => ({ name, key: name.match(/^plan-(.+)\.md$/)?.[1] })).filter(({ key }) => key)
+    .map(plan => ({ ...plan, mtime: statSync(join(dir, plan.name)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
+  const live = plans.find(({ key, mtime }) => now - mtime < PLAN_FRESH_HOURS * HOUR
+    && !reports.some(report => report.endsWith(`-${key}.md`)) && !logged.has(key));
+  return live ? `plan-${live.key}` : null;
+}
+
+/** 未收集的 retro：[{ id, createdAt }]；失敗時 throw（訊息是 RETRO_FAILED 的原因）。
+ *  issues：呼叫者已從 GitHub 抓好的開著 Issue（pilot-probe 的 GraphQL 結果，全部頁），給了就不再跑 gh；GitLab 與 Declared roster 不用它。 */
+export function uncollected(checkout, collectIn, texts, issues) {
   const roster = declaredRoster(entryText(texts, 'Retro collect'));
   if (roster) {
     if (!roster.due) throw new Error('roster-due-missing');
@@ -182,31 +219,52 @@ export function uncollected(checkout, collectIn, texts) {
   }
   const doc = existsSync(join(checkout, 'docs/agents/issue-tracker.md')) ? readFileSync(join(checkout, 'docs/agents/issue-tracker.md'), 'utf8') : null;
   const gitlab = trackerKind(doc) === 'gitlab';
+  if (issues && !gitlab) return trackerItems(labelledRetro(issues));
   const [bin, args] = gitlab
     ? ['glab', ['issue', 'list', '--label', 'retro-candidates', '--per-page', '100', '-O', 'json']]
-    : ['gh', ['issue', 'list', '--state', 'open', '--label', 'retro-candidates', '--limit', '200', '--json', 'number,createdAt,body']];
+    : ['gh', ['issue', 'list', '--state', 'open', '--label', 'retro-candidates', '--limit', String(TRACKER_LIMIT), '--json', 'number,createdAt,body']];
   const run = spawnSync(bin, args, { cwd: checkout, encoding: 'utf8', timeout: 120000, maxBuffer: 64 * 1024 * 1024 });
   if (run.status !== 0) throw new Error(`${bin} exit ${run.status ?? run.error?.code ?? run.signal}：${(run.stderr ?? '').trim().split('\n').at(-1) ?? ''}`);
   return trackerItems(JSON.parse(run.stdout || '[]'));
 }
 
 /** 整支的判斷：{ line, result? }。 */
-export async function evaluate({ checkout, collectIn, cli, now, startCommand }) {
+export async function evaluate({ checkout, collectIn, cli, now, startCommand, issues }) {
   const texts = adapterTexts(checkout);
   if (!entryText(texts, 'Retro trigger')) return { line: 'RETRO_OFF no-trigger-entry' };
   const threshold = declaredThreshold(texts.map(({ content }) => content).join('\n'));
   if (!threshold) return { line: 'RETRO_FAILED bad-declaration（格式：Retro trigger: count=<n> age=<h>h）', failed: true };
   let items;
   try {
-    items = uncollected(checkout, collectIn, texts);
+    items = uncollected(checkout, collectIn, texts, issues);
   } catch (error) {
     return { line: `RETRO_FAILED ${error.message}`, failed: true };
   }
   const staged = stagedBatch(checkout);
   const probe = retroDue({ items, threshold, now, staged });
-  const running = probe.state === 'DUE' ? await runningCollector(collectIn, cli) : null;
+  const running = probe.state === 'DUE' ? (await runningCollector(collectIn, cli)) ?? planInProgress(collectIn, now) : null;
   const result = retroDue({ items, threshold, now, staged, running });
-  return { line: dueLine(result, threshold, startCommand), result };
+  return { line: dueLine(result, threshold, startCommand), result, threshold };
+}
+
+/** `.scratch/retro/triggers.log` 追加一行 JSON。 */
+export function appendTrigger(collectIn, record) {
+  mkdirSync(join(collectIn, '.scratch/retro'), { recursive: true });
+  appendFileSync(join(collectIn, TRIGGERS_LOG), `${JSON.stringify(record)}\n`);
+}
+
+/** 開分頁成功後的紀錄：triggers.log 一行、decisions.md 一列（同目錄的 pilot-decision.mjs）。回 decisions 失敗的原因或 null。 */
+export function recordStart({ checkout, collectIn, now, result, threshold, handle }) {
+  const oldestHours = result.oldest === null ? null : Math.floor(result.oldest / HOUR * 10) / 10;
+  appendTrigger(collectIn, { time: new Date(now).toISOString(), event: 'start', trigger: result.trigger, uncollected: result.count, oldestHours, handle, threshold });
+  const decision = join(dirname(fileURLToPath(import.meta.url)), 'pilot-decision.mjs');
+  if (!existsSync(decision)) return 'no-pilot-decision';
+  const run = spawnSync(process.execPath, [decision, checkout,
+    '--decision', `retro-collect 自動觸發，開分頁 ${handle}`,
+    '--reason', `RETRO_DUE ${result.trigger} ${result.count} oldest=${hours(result.oldest)}（門檻 count=${threshold.count} age=${threshold.ageHours}h）`,
+    '--evidence', `${join(collectIn, TRIGGERS_LOG)}`,
+    '--result', `RETRO_STARTED ${handle}`], { encoding: 'utf8' });
+  return run.status === 0 ? null : `pilot-decision exit ${run.status}：${(run.stderr || run.stdout).trim().split('\n').at(-1) ?? ''}`;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -214,23 +272,40 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const positional = [];
   let collectArg;
   let start = false;
+  let logKey;
+  const logItems = [];
   let bad = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--start') start = true;
+    else if (args[i] === '--log-collect') { logKey = args[++i]; if (!logKey || logKey.startsWith('--')) bad = true; }
+    else if (args[i] === '--item') {
+      const item = args[++i] ?? '';
+      const at = item.indexOf('=');
+      if (at < 1 || at === item.length - 1) bad = true;
+      else logItems.push({ ref: item.slice(0, at), result: item.slice(at + 1) });
+    }
     else if (args[i] === '--collect-in') { collectArg = args[++i]; if (!collectArg || collectArg.startsWith('--')) bad = true; }
     else if (args[i].startsWith('--')) bad = true;
     else positional.push(args[i]);
   }
-  if (bad || positional.length !== 1) {
+  // --item 只跟 --log-collect；--log-collect 不和判斷用的 --start、--collect-in 混用。
+  const logMisuse = logKey === undefined ? logItems.length > 0 : start || collectArg !== undefined;
+  if (bad || positional.length !== 1 || logMisuse) {
     console.error(USAGE);
     process.exit(2);
+  }
+  if (logKey !== undefined) {
+    const now = process.env.RETRO_DUE_NOW ? Date.parse(process.env.RETRO_DUE_NOW) : Date.now();
+    appendTrigger(resolve(positional[0]), { time: new Date(now).toISOString(), event: 'collect', key: logKey, collected: logItems.length, items: logItems });
+    console.log(`RETRO_LOGGED ${logKey} ${logItems.length}`);
+    process.exit(0);
   }
   const checkout = resolve(positional[0]);
   const collectIn = resolve(collectArg ?? positional[0]);
   const now = process.env.RETRO_DUE_NOW ? Date.parse(process.env.RETRO_DUE_NOW) : Date.now();
   const cli = process.env.ORCA_CLI_COMMAND;
   const startCommand = `node scripts/pilot-retro-due.mjs ${positional[0]}${collectArg ? ` --collect-in ${collectArg}` : ''} --start`;
-  const { line, result, failed } = await evaluate({ checkout, collectIn, cli, now, startCommand });
+  const { line, result, failed, threshold } = await evaluate({ checkout, collectIn, cli, now, startCommand });
   if (!start || result?.state !== 'DUE') {
     console.log(line);
     process.exit(failed ? 1 : 0);
@@ -246,5 +321,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   mkdirSync(join(collectIn, '.scratch/retro'), { recursive: true });
   writeFileSync(join(collectIn, COLLECTOR_FILE), `${new Date(now).toISOString()} ${opened.handle}\n`);
+  const recordError = recordStart({ checkout, collectIn, now, result, threshold, handle: opened.handle });
+  if (recordError) console.error(`decisions.md 沒記到（${recordError}）；triggers.log 已記`);
   console.log(`RETRO_STARTED ${opened.handle}`);
 }

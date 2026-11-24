@@ -4,7 +4,7 @@
 // 每個 running 成員的 terminal 與 tracker 上的母單，各印一行狀態，不必再手動拼 `orca terminal read` 的 JSON（手拼時漏過 exited 卻沒有結果行的 worker）。
 // 存檔格式照 issue-pilot 的 PILOT-STORE.md；專案不同的值由參數傳入。
 //
-// 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>] [--worker-state <路徑>]
+// 用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>] [--worker-state <路徑>] [--retro-collect-in <checkout>]
 //   --integration 整合分支，預設 pilot/integration；--main 主分支，預設 main。讀 running 成員要 ORCA_CLI_COMMAND，沒有時其他檢查照跑。
 //   --skip-labels：adapter 宣告的「不進分級的 label」（逗號分隔，同 issue-pool.mjs 的 --skip-labels，#326）：掛著的單與 retro-candidates 一樣，
 //            不進 POOL_READY／POOL_TRIAGE／COUNTERPART_BARE 的 ready 桶，也不算 DEPS_PROSE「最後做」的新單。沒帶時只有內建的 retro-candidates、parent。
@@ -25,6 +25,7 @@
 //   --handoff-after <n>（#368）：交接門檻，本 coordinator session 合入幾批就交接（adapter 的 Defaults 帶入），預設 2；不是正整數時是用法錯誤（exit 2）。
 //   --worker-state <路徑>（#466）：worker checkpoint 的路徑，`<worktree>`、`<n>` 換成成員列的 worktree 與號碼，預設 `<worktree>/.scratch/issue-run-<n>/state.md`；
 //            terminal 已結束卻沒有結果行時讀它，見下面的 WORKER … from-state。
+//   --retro-collect-in <checkout>（CoS item 89）：Retro trigger 的 --collect-in（`/retro-collect` 在別的 checkout 跑時才帶），預設主 checkout。
 //   --tail <handle> [--lines <n>]（取代主 checkout 引數，只做這件事）：印那個 worker 分頁畫面的最後 n 行（預設 40），給 Watch 用，不必手拼 JSON 或依賴 jq（#295）；
 //            沒有 ORCA_CLI_COMMAND 或讀不到時 stderr 說明、exit 1。
 //   --apply、--status 都不改其他輸出行，stdout 與不帶旗標時相同（APPLY_MISS、PARENT_APPLY_FAILED 除外）。
@@ -125,6 +126,11 @@
 //   Memory audit（#347）：MEMORY_AUDIT_DUE <天數|?>d last=<YYYY-MM-DD|none> → node scripts/memory-audit.mjs --run（主分支的 adapter 或它 Pilot 段連到的檔
 //          宣告 `Memory audit days: <n>`，而 .scratch/pilot/memory-audit.md 最後一筆距今 n 天以上或沒有紀錄；判斷是同目錄 memory-audit.mjs 的 memoryAuditLine；
 //          沒宣告時不印；在 BEHIND_MAIN 之後）
+//   Retro trigger（CoS item 89）：RETRO_IDLE｜RETRO_DUE … → <--start 指令>｜RETRO_WAIT｜RETRO_RUNNING｜RETRO_FAILED …（主 checkout 工作樹的 adapter 有
+//          `- **Retro trigger.**` 條目、同目錄有 pilot-retro-due.mjs 時，每次印它不帶 --start 的那一行，格式與判斷同那一支；沒有條目或沒有那支時不印。
+//          未收集數取這一輪 tracker 查詢已抓的 Issue（不再多跑一次 gh；那次查詢失敗、GitLab 或 Declared roster 時由 pilot-retro-due 自己查）。
+//          #552 把 Retro trigger 寫在 issue-pilot 的 Project hooks 步驟後半，adapter 沒有 Project tick hooks 的 coordinator 連同它整步跳過，
+//          retro-candidates 積到 20 張、最舊 74 小時都沒觸發；印在 Probe 裡，coordinator 每輪都看得到；在 MEMORY_AUDIT_DUE 之後、HANDOFF_COUNT 之前）
 //   交接（#368，每次都印一行）：HANDOFF_COUNT <n>/<門檻>（本 coordinator session 派工、已合入的 batch 數：`coordinator` 檔的 pid 在 sessions.md 最後一筆
 //          start 行的時間是 session 開始（早於 coordinator 檔的 since 時取 since）；batch 成員列最早的 started 不早於它，current 是 merged／pushed，或 closed 而有 done 成員（`closed moved` 不算）；
 //          沒有 coordinator 檔、sessions.md 或這個 pid 的 start 行時是 0，前任派的 batch 不算），n 達門檻時下一行印 HANDOFF_DUE；在 MEMORY_AUDIT_DUE 之後
@@ -149,7 +155,7 @@ const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){reposi
 // 只看自己那幾行的測試比對整份 stdout 前用它去掉，probe 再加常駐行時改這一處即可（#556）。
 export const ALWAYS_LINES = /^(POOL_|HANDOFF_COUNT )/;
 
-const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>] [--worker-state <路徑>]｜node scripts/pilot-probe.mjs --tail <handle> [--lines <n>]';
+const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>] [--worker-state <路徑>] [--retro-collect-in <checkout>]｜node scripts/pilot-probe.mjs --tail <handle> [--lines <n>]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const TRACKER = join(dirname(fileURLToPath(import.meta.url)), 'gh-tracker.mjs');
 
@@ -1224,7 +1230,19 @@ export async function workerTail(ctx, handle, lines = 40) {
   return (terminal?.tail ?? []).slice(-lines);
 }
 
-export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false, capacity, skipLabels = [], handoffAfter = 2 } = {}) {
+/** Retro trigger 那一行（同目錄的 pilot-retro-due.mjs 的 evaluate，不帶 --start）；沒有那支或 adapter 沒有條目時 []。 */
+export async function retroLines(ctx, checkout, { collectIn, issues } = {}) {
+  const script = join(dirname(fileURLToPath(import.meta.url)), 'pilot-retro-due.mjs');
+  if (!existsSync(script)) return [];
+  const { evaluate } = await import(pathToFileURL(script).href);
+  const at = process.env.RETRO_DUE_NOW ? Date.parse(process.env.RETRO_DUE_NOW) : Date.now();
+  const startCommand = `node scripts/pilot-retro-due.mjs ${checkout}${collectIn ? ` --collect-in ${collectIn}` : ''} --start`;
+  // 沒有 Retro trigger 條目時 evaluate 只回那一行（沒有 result、不是 failed），Probe 不印。
+  const { line, result, failed } = await evaluate({ checkout, collectIn: collectIn ?? checkout, cli: ctx.cli, now: at, startCommand, issues });
+  return result || failed ? [line] : [];
+}
+
+export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false, capacity, skipLabels = [], handoffAfter = 2, retroCollectIn } = {}) {
   const pilot = join(checkout, '.scratch/pilot');
   // 開著的 batch checkpoint 的成員：Pool 不再挑它們，池子摘要也略過。
   const batched = new Set(batchFiles(pilot).map(file => parseBatch(readFileSync(join(pilot, file), 'utf8')))
@@ -1304,6 +1322,9 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   const record = join(checkout, MEMORY_AUDIT_FILE);
   const memoryAudit = memoryAuditLine(existsSync(record) ? readFileSync(record, 'utf8') : null, days);
   if (memoryAudit) out.push(memoryAudit);
+  // tracker 查詢失敗（POOL_FAILED）時不給 issues，pilot-retro-due 自己查一次。
+  const trackerOk = !tracker.lines.some(line => line.startsWith('POOL_FAILED '));
+  out.push(...await retroLines(ctx, checkout, { collectIn: retroCollectIn, issues: trackerOk ? tracker.issues : undefined }));
   out.push(...handoffLines(batches, sessionStart(readStore(pilot, 'coordinator'), readStore(pilot, 'sessions.md')), handoffAfter));
   if (capacity) {
     out.push(...envMissingLines());
@@ -1349,7 +1370,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       options[flag] = true;
       continue;
     }
-    const name = new Map(Object.entries({ '--integration': 'integration', '--main': 'main', '--capacity': 'capacity', '--skip-labels': 'skipLabels', '--handoff-after': 'handoffAfter', '--worker-state': 'workerState' })).get(args[i]);
+    const name = new Map(Object.entries({ '--integration': 'integration', '--main': 'main', '--capacity': 'capacity', '--skip-labels': 'skipLabels', '--handoff-after': 'handoffAfter', '--worker-state': 'workerState', '--retro-collect-in': 'retroCollectIn' })).get(args[i]);
     const value = args[++i];
     if (!name || !value || value.startsWith('--') || name in options) bad = true;
     else options[name] = value;
