@@ -468,6 +468,39 @@ test('stage 前同步失敗（sync-main 衝突）：STOP conflict sync-main、�
 });
 
 // #502（investing#601）：worker 的 `POSTLAND <n> <command>` 經 pilot-watch 記成 checkpoint 的 `postland:` 行；落地整合分支後每條印 POSTLAND_PENDING，
+// #500（investing retro 1122a，#504）：成員合了衝突、重報 DONE 新候選後，checkpoint 已是 merged <舊 SHA>，pilot-land 只回舊的 MERGED。
+// candidate 不在 merged SHA 裡就從 Stage 重來（新 STAGED、自己的 Regression、新 MERGED）；candidate 是 merged 本身或它的祖先時照舊只回 MERGED。
+test('merged 之後成員重報 DONE 新候選：重新 stage、跑 Regression、印新的 MERGED；candidate 已在 merged 裡時只回舊的 MERGED', t => {
+  const fx = fixture(t, { members: [{ n: 504, files: { 'a.txt': 'a\n' } }] });
+  const first = fx.land(fx.key);
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  const [, merged] = first.last.match(/^MERGED 504 ([0-9a-f]{40})$/);
+  const memberTip = git(fx.repo, 'rev-parse', 'issue/504-x');
+  const setCandidate = sha => writeFileSync(fx.file, fx.read().replace(/\| done \| \S+ \|$/m, `| done | ${sha} |`));
+  // candidate 是 merged 的祖先（成員 tip）或 merged 本身：照舊只回 MERGED，不再跑 Regression。
+  for (const sha of [memberTip, merged]) {
+    setCandidate(sha);
+    const again = fx.land(fx.key);
+    assert.equal(again.status, 0, again.stdout + again.stderr);
+    assert.deepEqual(again.lines, [`MERGED 504 ${merged}`]);
+  }
+  assert.equal(fx.checks(), 'check \n');
+  // 成員在分支上多了新 commit（修衝突），重報 DONE <B>。
+  const tree = join(fx.temp, 'issue-504');
+  write(tree, { 'b.txt': 'b\n' });
+  git(tree, 'add', '.');
+  git(tree, 'commit', '-qm', 'fix conflict');
+  setCandidate(git(tree, 'rev-parse', 'HEAD'));
+  const restaged = fx.land(fx.key);
+  assert.equal(restaged.status, 0, restaged.stdout + restaged.stderr);
+  assert.match(restaged.lines.join('\n'), new RegExp(`^STAGED 504 [0-9a-f]{40} onto ${merged}$`, 'm'));
+  const [, next] = restaged.last.match(/^MERGED 504 ([0-9a-f]{40})$/);
+  assert.notEqual(next, merged);
+  assert.equal(fx.checks(), 'check \ncheck \n', '新候選自己跑 Regression');
+  assert.match(fx.read(), new RegExp(`^current: merged ${next}$`, 'm'));
+  assert.equal(git(fx.repo, 'show', `${next}:b.txt`), 'b');
+});
+
 // coordinator 照 adapter 執行或開 gate。MERGED 仍是最後一行；已 merged 的重跑照樣再印（還沒有人跑之前都算 pending）。
 test('checkpoint 有 postland 行：MERGED 之前對每個 done 成員的每條印 POSTLAND_PENDING <n> <command>，不是成員的不印', t => {
   const f = fixture(t, { members: [{ n: 601, files: { 'a.txt': 'a\n' } }, { n: 602, files: { 'b.txt': 'b\n' } }] });

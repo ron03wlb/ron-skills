@@ -212,8 +212,8 @@
     },
     "scripts/pilot-dispatch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-dispatch.mjs",
-      "commit": "ca7adba1675c46fbfb602100f4a17076f46e04c1",
-      "sha256": "460fafc7d60d62d33b09f285452a2b79bf339f6001cb6a4c5420e447314622a9"
+      "commit": "bfb0cfd8cae96d0edc7564f3623a9cc52fca14d7",
+      "sha256": "a175d7d5489764b1db1da34bc281f10929edab844a04cf311ea52679162d3ac8"
     },
     "scripts/pilot-gate.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-gate.mjs",
@@ -237,8 +237,8 @@
     },
     "scripts/pilot-land.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-land.mjs",
-      "commit": "2fc8c7699d24e52656a872cf44dc764bda84ecb6",
-      "sha256": "407006c6879973aa4ae0422c471c8643b2d0451d103de0e9f852abb3e7591f81"
+      "commit": "bfb0cfd8cae96d0edc7564f3623a9cc52fca14d7",
+      "sha256": "2e03bcb03e27608f058bb38e789d53359ff8c0a5e72b7bc7474380a9965e44a3"
     },
     "scripts/pilot-pr-body.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-pr-body.mjs",
@@ -247,13 +247,13 @@
     },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",
-      "commit": "0974271214ce25113e90ae3bee6fd8b97e810320",
-      "sha256": "ccb81af8584cb6532f5165b28eb3b49f92897a83c244c398f6b8cb7c93ea1ff0"
+      "commit": "bfb0cfd8cae96d0edc7564f3623a9cc52fca14d7",
+      "sha256": "cb1d5a58fac9832612aed4143ce8a34b6cf1287c100785fd9c927630704d97ae"
     },
     "scripts/pilot-register.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-register.mjs",
-      "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
-      "sha256": "29140b54f6aa075864b3f699288af760a268d81e3b380dcc43dea0b9df338251"
+      "commit": "bfb0cfd8cae96d0edc7564f3623a9cc52fca14d7",
+      "sha256": "9960f6943916a159467c61e45266cf29f4eea4298941e276f6af3768319a4abf"
     },
     "scripts/pilot-request.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-request.mjs",

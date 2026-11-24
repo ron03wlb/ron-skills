@@ -926,7 +926,8 @@ function drafted(t, { review = true } = {}) {
   writeFileSync(join(fx.repo, '.gitignore'), '.scratch/\n');
   mkdirSync(join(fx.repo, 'docs'));
   writeFileSync(join(fx.repo, 'docs/pilot.md'), '# Pilot\n\n- **Probe.** 舊的 Probe。\n\n- **Stage.** 舊的 Stage。\n\n- **Close.** 舊的 Close。\n');
-  writeFileSync(join(fx.repo, 'src.mjs'), 'export const a = 1;\n\nexport const b = 2;\n');
+  // 兩邊改的是同一個函式的不同行（#551 的「兩邊都改過的函式」）。
+  writeFileSync(join(fx.repo, 'src.mjs'), 'export function watch(x) {\n  const a = 1;\n\n  const b = 2;\n  return a + b + x;\n}\n');
   git(fx.repo, 'add', '.');
   git(fx.repo, 'commit', '-qm', 'base');
   git(fx.repo, 'branch', '-f', 'pilot/integration', 'main');
@@ -962,6 +963,12 @@ function drafted(t, { review = true } = {}) {
   return { ...fx, tree, base, candidate, section, before };
 }
 
+test('hunkFunctions：取 git diff -U0 hunk 標頭的函式行，沒有標頭文字的 hunk 不算（#551）', async () => {
+  const { hunkFunctions } = await import('./pilot-dispatch.mjs');
+  const diff = 'diff --git a/x b/x\n@@ -2 +2 @@ export function watch(x) {\n-a\n+b\n@@ -9,0 +10,2 @@\n+c\n@@ -20 +21 @@   function scrollbackMatch(tail) \n-d\n+e\n';
+  assert.deepEqual([...hunkFunctions(diff)], ['export function watch(x) {', 'function scrollbackMatch(tail)']);
+});
+
 test('--fresh 不帶 --note：印 NOTE_DRAFT，草稿有原 Issue、prior、merge-base、共同檔與條目、review-only 段與空白的怎麼整併；不派工', t => {
   const fx = drafted(t);
   // 草稿只讀不寫：沒有 Orca 也能跑。
@@ -983,6 +990,14 @@ test('--fresh 不帶 --note：印 NOTE_DRAFT，草稿有原 Issue、prior、merg
   assert.ok(common.includes(`- 逐檔取 prior 新增的字詞：\`git diff ${fx.base} ${fx.candidate} --word-diff=porcelain -- docs/pilot.md | grep '^+[^+]'\``), common);
   assert.ok(common.includes(`- 逐檔取 prior 的 diff：\`git diff ${fx.base} ${fx.candidate} -- src.mjs\``), common);
   assert.doesNotMatch(common, /word-diff=porcelain -- src\.mjs/);
+  // #551：程式檔列兩邊 hunk 標頭都出現的函式；.md 不列。
+  assert.ok(common.includes('- 兩邊都改過的函式：`export function watch(x) {`'), common);
+  assert.equal(common.match(/兩邊都改過的函式/g).length, 1);
+  // #551：固定的整併注意段：只 merge prior、測試改到 prior 的新簽章、交會路徑補測試。
+  const notice = draft.slice(draft.indexOf('## 整併注意'), draft.indexOf('## 怎麼整併'));
+  assert.ok(notice.includes(`只 \`git merge --no-ff ${fx.candidate}\`，不要再 merge pilot/integration`), notice);
+  assert.match(notice, /改到符合 prior 的新簽章/);
+  assert.match(notice, /交會的那條路徑補一個測試/);
   assert.doesNotMatch(draft, /member-only|integration-only|later\.txt/);
   // 不印完整 diff。
   assert.doesNotMatch(draft, /^@@|^[-+]- \*\*|成員改的|整合分支改的|a = 46|b = 99/m);
@@ -1059,7 +1074,7 @@ test('--fresh 不帶 --note：checkpoint 用別的寫法記 review-only、沒有
     '# issue-run 46\n\n## rulings\n- review 1：P2 已修。\n- review-only verifier round @ abc：P2 src.mjs:1 仍在。\n- P3 命名。\n\n## notes\n不該抄進來。\n');
   assert.equal(fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch']).status, 0);
   const draft = readFileSync(join(fx.repo, '.scratch/pilot/fresh-46.md'), 'utf8');
-  assert.ok(draft.includes('- review-only verifier round @ abc：P2 src.mjs:1 仍在。\n- P3 命名。\n\n## 怎麼整併'), draft);
+  assert.ok(draft.includes('- review-only verifier round @ abc：P2 src.mjs:1 仍在。\n- P3 命名。\n\n## 整併注意'), draft);
   assert.doesNotMatch(draft, /review 1|不該抄進來|沒有 review-only 段/);
 });
 
@@ -1099,7 +1114,7 @@ test('--fresh 不帶 --note：checkpoint 沒有 review-only 段時讀成員行 h
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(orca.reads(), /^terminal read --terminal term_46 --screen --json$/m);
   const draft = readFileSync(join(fx.repo, '.scratch/pilot/fresh-46.md'), 'utf8');
-  const review = draft.slice(draft.indexOf('## 最後一輪 review-only'), draft.indexOf('## 怎麼整併'));
+  const review = draft.slice(draft.indexOf('## 最後一輪 review-only'), draft.indexOf('## 整併注意'));
   assert.match(review, /來源：worker 分頁尾段（term_46）/);
   assert.ok(review.includes(`Review 結果（兩軸分開）\n- Standards：第 1 輪一個 P2，已修正。\n- Spec：第 2 輪 re-review 沒有 P1 或 P2。\n證據留言：https://example.test/46#c1\nDONE 46 ${SHA}\n`), review);
   assert.doesNotMatch(review, /舊的一輪|中間的工具輸出|Cooked|❯|沒有 review-only 段/);

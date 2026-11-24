@@ -55,12 +55,16 @@
 //   prior 分支與 SHA（batch-<key>.md 那列的 candidate，空的取分支 tip）與 `git merge-base <分支> <整合分支>`；成員（prior SHA）與整合分支
 //   自 merge-base 以來共同改過的檔，各附兩邊的 `git diff --stat` 那一行，`.md` 再附兩邊改到的 `- **<名稱>.**` 條目（pilot-probe 的 changedUnits；有條目外的改動時另註明），不印完整 diff；
 //   每檔另附一行 worker 可逐檔取用 prior 改動的指令（#484：整批 diff 撞輸出上限）：`.md` 是 `git diff <merge-base> <prior> --word-diff=porcelain -- <檔> | grep '^+[^+]'`（只取新增字詞），
-//   其他檔是 `git diff <merge-base> <prior> -- <檔>`；
+//   其他檔是 `git diff <merge-base> <prior> -- <檔>`；非 `.md` 的共同檔另列兩邊 `git diff -U0` 的 hunk 標頭（`@@ … @@ <所在函式>`）都出現的函式行
+//   （`- 兩邊都改過的函式：…`，沒有交集時不印；#551：#502 與 #537 都改 pilot-watch 的 watch()，機械式兩邊都留、測試全綠，交會路徑卻漏記 POSTLAND）；
 //   worker checkpoint（`<worktree>/.scratch/issue-run-<n>/state.md`）最後一個含 `review-only` 的行（如 `final review-only round`）到結果行（`DONE|STOP <n>`）的原文，
 //   沒有結果行時到下一個 `#`／`##` 標題（不含）或檔尾（worker 的 checkpoint 沒有固定寫法），
 //   沒有這段時改抄 worker 分頁尾段（#261）：batch-<key>.md 那列有 handle、設了 ORCA_CLI_COMMAND 時讀 pilot.md 的 Watch 同一個來源
 //   `terminal read --screen --json` 的 `.result.terminal.tail`（整段，不只 Watch 看的最後 40 行），從最後一個以「Review」開頭的行到結果行，註明來源是分頁尾段；
 //   讀不到（沒有 handle、分頁已關、沒有 ORCA_CLI_COMMAND、找不到起訖行）時才寫明要補 worker 分頁尾段；
+//   「怎麼整併」之前是固定的「整併注意」段（#551，investing retro 1123c：note 寫「先 merge prior 再 merge 整合分支」，worktree 已在整合分支 tip，
+//   第二個 merge 只回 unmerged files；「兩邊測試都保留」讓整合分支新增的測試呼叫 prior 已改掉的舊簽章）：只 merge prior、
+//   兩邊測試都保留但改到 prior 的新簽章並以測試為準、兩邊都改過的函式要查交會路徑並補測試。
 //   最後一段空白的「怎麼整併」給 coordinator 補，補完再帶 --note 重跑。
 //
 // 容量檢查是派工路徑（一般派工與帶 --note 的 --fresh）的預設（#534：從草稿切到派工時只加 --note，漏了 --capacity --repo-cap 4 就無聲派出）：
@@ -604,6 +608,11 @@ function screenTail(n, handle) {
   return { handle, text: picked.map(line => line.slice(indent)).join('\n') };
 }
 
+/** `git diff -U0` 輸出裡 hunk 標頭（`@@ -a,b +c,d @@ <所在函式>`）的函式行（去掉頭尾空白）；標頭沒有文字的 hunk 不算（#551）。 */
+export function hunkFunctions(diff) {
+  return new Set([...diff.matchAll(/^@@ [^@]* @@(.*)$/gm)].map(match => match[1].trim()).filter(Boolean));
+}
+
 /**
  * 沒帶 --note 的 --fresh：寫 fresh-<n>.md 草稿（內容見檔頭），傳回 `{ path }` 或 `{ stop }`（不含 `STOP `）。只讀 git、gh 與檔案，不改任何狀態。
  */
@@ -642,10 +651,22 @@ function freshDraft(main, key, integration, { n, branch }) {
   const fetch = path => (path.endsWith('.md')
     ? `- 逐檔取 prior 新增的字詞：\`git diff ${base} ${prior} --word-diff=porcelain -- ${path} | grep '^+[^+]'\``
     : `- 逐檔取 prior 的 diff：\`git diff ${base} ${prior} -- ${path}\``);
+  // 兩邊都改過的函式（#551）：只看程式檔，`.md` 已有條目。
+  const functions = ref => path => {
+    const result = git('diff', '-U0', base, ref, '--', path);
+    if (result.status !== 0) throw new Error(`diff -U0 ${result.stderr.trim()}`);
+    return hunkFunctions(result.stdout);
+  };
+  const shared = path => {
+    if (path.endsWith('.md')) return [];
+    const theirs = functions(integration)(path);
+    const both = [...functions(prior)(path)].filter(line => theirs.has(line));
+    return both.length ? [`- 兩邊都改過的函式：${both.map(line => `\`${line}\``).join('、')}`] : [];
+  };
   let common;
   try {
     common = [...member.keys()].filter(path => other.has(path)).sort()
-      .map(path => [`### ${path}`, '', side('成員', prior, member.get(path), path), side('整合分支', integration, other.get(path), path), fetch(path)].join('\n'));
+      .map(path => [`### ${path}`, '', side('成員', prior, member.get(path), path), side('整合分支', integration, other.get(path), path), ...shared(path), fetch(path)].join('\n'));
   } catch (error) {
     return { stop: `${n} git ${error.message}` };
   }
@@ -678,6 +699,12 @@ function freshDraft(main, key, integration, { n, branch }) {
     `來源：${source}`,
     '',
     review,
+    '',
+    '## 整併注意',
+    '',
+    `- fresh worktree 的 ${branch} 已從 ${integration} 的 tip 開出：只 \`git merge --no-ff ${prior}\`，不要再 merge ${integration}（已經含著；衝突沒解完時第二個 merge 只回 \`Merging is not possible because you have unmerged files\`）。`,
+    '- 兩邊的測試都保留，但改到符合 prior 的新簽章與新行為；解完以測試結果為準，不以衝突標記清乾淨為準。',
+    '- 列了「兩邊都改過的函式」的檔：檢查一邊的新路徑會不會餵給另一邊的新讀取，並為交會的那條路徑補一個測試；「怎麼整併」不要只寫兩邊沒有設計取捨。',
     '',
     '## 怎麼整併',
     '',
