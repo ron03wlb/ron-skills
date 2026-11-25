@@ -214,8 +214,7 @@ for (const name of names) {
   if (!flags.has('--no-tests') && existsSync(join(TEMPLATES, testFile))) visit(testFile, file);
 }
 
-// #631：明列的範本在 setup-workflow SKILL.md Templates 表那列的 brings 沒涵蓋它的相依時，stderr 每項印 `SKILL_BRINGS_MISSING <範本> <相依>`
-// （tests/skill-brings.test.mjs 同一套比對，在 pre-commit 排完 slot 才跑到）。只警告、不改 exit code：副本本身沒錯，缺的是 ron-skills 的文件，
+// SKILL_BRINGS_MISSING（輸出契約見檔頭）只警告、不改 exit code：副本本身沒錯，缺的是 ron-skills 的文件，
 // consumer 的複製不該被它擋；ron-skills 的 commit 仍由那支測試擋。相依照 --no-tests 算、不看 --exclude／localExceptions，與那支測試一致。
 const SKILL_MD = join(TEMPLATES, '../SKILL.md');
 const BRINGS = fileURLToPath(new URL('./skill-brings.mjs', import.meta.url));

@@ -46,7 +46,7 @@ Also name the baseline suites a behavior-preserving refactor runs green before i
 
 ## Review
 
-The review command and its output, and what the skill's [Review rules](SKILL.md#review-rules) need: where non-blocking findings go as follow-ups, the files pinned by hash, the safety-fact classes, the high-risk classes with the scenario driver and verifier runner, and the cross-model command.
+The review command and its output, and what the skill's [Review rules](SKILL.md#review-rules) need: where non-blocking findings go as follow-ups, the files pinned by hash, the safety-fact classes, the high-risk classes with the scenario driver and verifier runner, and the cross-model command. With a Codex runner, also the output line that sends a round to the `code-review` skill.
 Default: the `code-review` skill on the run's branch; follow-ups in the Issue's report; no pinned files; the default safety-fact classes; no high-risk classes.
 
 ## Candidate and acceptance

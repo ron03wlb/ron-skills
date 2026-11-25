@@ -103,7 +103,7 @@
 //   send 的 STOP 記 running：worker 可能其實已在跑，交給 Probe 判定，#354），STOP 原因只在 stdout。
 //   每個成員的 STOP 行（含 --fresh 與草稿的）最後一欄是 ` row=<kept|stop|running>`：這一行之後成員列沒動（kept），或寫成 stop、running（investing#481：
 //   哪些 STOP 改寫成員列以前只能讀程式碼）。HOLD 行不改成員列。不屬於成員的 STOP capacity、STOP orca-unavailable 不寫任何列，也沒有這一欄。
-//   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`，有草稿時再印 `DRAFT_ARCHIVED <n> <path>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> overlap …`、`STOP <n> overlap-check …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP <n> backup <原因>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
+//   --fresh 帶 --note 時 prior 有未提交改動、已備份就先印 `DIRTY_BACKUP <n> <patch>`；成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`，有草稿時再印 `DRAFT_ARCHIVED <n> <path>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> overlap …`、`STOP <n> overlap-check …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP <n> backup <原因>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
 // exit：0 全部派出（草稿：寫好）；4 有成員 STOP 或 HOLD（或 STOP capacity、STOP orca-unavailable）；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤（含草稿帶了派工旗標、Env sync 宣告寫錯）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -565,6 +565,7 @@ async function refresh(cli, main, key, integration, { n, branch }, note, again, 
     // #625：prior 工作樹有未提交改動不再 STOP dirty：備份成 patch、stash，草稿的「prior 未提交的改動」段列出；備份本身失敗才 STOP。
     const saved = backupDirty(main, worktree, n);
     if (saved.error) return { stop: `${n} backup ${saved.error}` };
+    if (saved.patch) console.log(`DIRTY_BACKUP ${n} ${saved.patch}`);
   }
 
   try {
@@ -794,7 +795,7 @@ function freshDraft(main, key, integration, { n, branch }, allowOverlap) {
     `- fresh worktree 的 ${branch} 已從 ${integration} 的 tip 開出：只 \`git merge --no-ff ${prior}\`，不要再 merge ${integration}（已經含著；衝突沒解完時第二個 merge 只回 \`Merging is not possible because you have unmerged files\`）。`,
     '- 兩邊的測試都保留，但改到符合 prior 的新簽章與新行為；解完以測試結果為準，不以衝突標記清乾淨為準。',
     '- 列了「兩邊都改過的函式」的檔：檢查一邊的新路徑會不會餵給另一邊的新讀取，並為交會的那條路徑補一個測試；「怎麼整併」不要只寫兩邊沒有設計取捨。',
-    ...entrySurvivalLines(main),
+    ...entrySurvivalLines(main, integration),
     '',
     ...dirtySection(main, priorTree, n),
     '## 怎麼整併',
@@ -804,9 +805,9 @@ function freshDraft(main, key, integration, { n, branch }, allowOverlap) {
 }
 
 /** 草稿「整併注意」的 entry-survival 與 port-entries 行（#618）：對應的 scripts/ 檔在 repo 裡才印。 */
-function entrySurvivalLines(main) {
+function entrySurvivalLines(main, integration) {
   const lines = [];
-  if (existsSync(join(main, 'scripts/entry-survival.mjs'))) lines.push('- 整併後跑 `node scripts/entry-survival.mjs $(git merge-base HEAD pilot/integration)`，確認兩邊的條目都還在；review-only verifier 會自己再跑一次。');
+  if (existsSync(join(main, 'scripts/entry-survival.mjs'))) lines.push(`- 整併後跑 \`node scripts/entry-survival.mjs $(git merge-base HEAD ${integration})\`，把印出的每行 \`ENTRY_LOST\`／\`ENTRY_CHANGED\` 抄進 checkpoint notes、逐條註明是 prior 有意改寫還是被蓋掉（判讀見 \`node scripts/adapter-line.mjs 'Entry survival'\`）；review-only verifier 會自己再跑一次。`);
   if (existsSync(join(main, 'scripts/port-entries.mjs'))) lines.push('- prior 改到的條目已搬到別的檔、`git apply -3` 衝突時，跑 `node scripts/port-entries.mjs <base> <prior> <檔> [<目標檔>]`，再手動處理印出的 `NO_MATCH`／`AMBIGUOUS`。');
   return lines;
 }
