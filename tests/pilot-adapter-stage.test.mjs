@@ -110,6 +110,153 @@ test('Stage：STOP conflict 標來源與種類；同批成員衝突先 move 出�
   assert.deepEqual([...at].sort((a, b) => a - b), at, '先 move、再合入其餘成員、最後重派');
 });
 
+// #560：來源全是 integration 的 code／other 衝突，G16–G33 每次都答預設的 fresh 重派，人不在時一個 gate 擋一整晚。
+// fixture 是真實的 STOP 行（#131，tests/pilot-land.test.mjs 也用它）：讀來源與種類欄，找出 Stage conflict 管這個組合的那一句。
+test('Stage：來源只有 integration 的 code 衝突照 Fresh redispatch 重派、open 後立刻 resolve，不開 gate 等人；例外仍問人', () => {
+  const stage = line('Stage conflict');
+  const fixture = 'STOP conflict 131 scripts/pilot-close.mjs=integration:code';
+  const fields = fixture.split(' ').slice(3).map(field => field.slice(field.indexOf('=') + 1).split(':'));
+  assert.deepEqual(fields, [['integration', 'code']]);
+  const rule = stage.split('。').find(sentence => /來源全是 `integration`/.test(sentence) && /`code`/.test(sentence)) ?? '';
+  assert.ok(rule, 'Stage conflict 要有一句管「來源全是 `integration`」的 `code`／`other` 衝突');
+  // 照順序讀不能先重派才讀到例外（#293 同類，#560 final review P2）：重派動作之前先指向例外清單與查詢，都沒命中才重派。
+  const redispatchAt = rule.indexOf('照 Fresh redispatch 重派');
+  const exceptionsFirst = rule.search(/先照下面「仍開 gate 等人」的例外清單逐項查[^。]*都沒命中才/);
+  assert.ok(exceptionsFirst >= 0 && exceptionsFirst < redispatchAt, '重派句要先寫「先查例外、都沒命中才重派」，再寫重派動作');
+  assert.match(rule, /`code` 或 `other` 時[^。]*都沒命中才不等人，照 Fresh redispatch 重派/);
+  assert.match(rule, /照 Gates 先 `open` 再立刻 `resolve` 留紀錄、不通知/);
+  // 同 batch 有 OVERLAP 時的順序寫在同一句：先 move、讓其餘成員合入，再重派。
+  assert.match(rule, /印過 `OVERLAP <n> <m>` 時先 move、讓其餘成員合入再重派/);
+  assert.doesNotMatch(stage, /來源含 `integration` 的 `code`、`other`，或 `unknown`）照舊變成 gate/, '舊規則把它們一律變成 gate');
+  // 例外清單：設計取捨、整合分支那一邊有不是經 pilot 合入的改動（從 main 帶進來或人改的）、要暫緩或放棄；unknown 照舊開 gate。
+  const exceptions = stage.slice(stage.indexOf('下列情況仍開 gate 等人'));
+  assert.ok(stage.includes('下列情況仍開 gate 等人'), '例外清單要寫明');
+  assert.match(exceptions, /設計取捨/);
+  assert.match(exceptions, /git -C <主 checkout> log --first-parent --format='%H %s' <base>\.\.pilot\/integration -- <路徑…>/);
+  // 經 pilot 合入的不只 issue/ 分支：retro 請求分支也 stage 進來（`Merge branch 'retro/fix-347-case' into pilot/stage-req-347`）；sync-main 帶進的 main 改動不算。
+  assert.match(exceptions, /`Merge branch '…' into pilot\/stage-<key>`.*`retro\/` 請求分支.*`pilot\/stage-sync-main` 不算/);
+  assert.match(exceptions, /`main`/);
+  assert.match(exceptions, /暫緩或放棄/);
+  assert.match(exceptions, /`unknown`[^。]*照舊變成 gate/);
+  // 同 batch 有 OVERLAP 先 move 再重派；多個 batch 互相 overlap 依號碼一次一張、其餘 park --after（與 Dispatch stops 一致）。
+  // 暫擱的成員要帶 --fresh：Probe 才印 UNPARK_FRESH 直接重派，否則印 UNPARK、先 stage 再撞同一個整合衝突（#482）。
+  for (const text of [stage, line('Dispatch stops')]) assert.match(text, /依號碼一次只重派一張.*park <key> <n> --after <先做的那張> --fresh --reason <原因>/);
+});
+
+// #560 review：人工改動可能藏在 stage 合併後面（成員分支合過 main、成員改了檔名），整合 PR 合併後整合分支快轉、
+// first-parent 只剩 PR 合併，本機 main 也可能落後 origin/main。照 Stage conflict 寫的指令在真的 repo 上跑：
+// 有人工改動的要保留 gate，只有 pilot 改動的才直接重派。
+// human：人工改動落在 'main' 或直接進 'integration'；rename：'split' 改名與大改分兩個 commit，'combined' 同一個 commit（git 認不出改名）。
+function hiddenChangeFixture(t, { human, rename, landed, lagging }) {
+  const repo = mkdtempSync(join(realTmpdir(), 'pilot-stage-hidden-'));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  const git = (...args) => {
+    const result = spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8', env });
+    assert.equal(result.status, 0, `git ${args.join(' ')}：${result.stderr}`);
+    return result.stdout.trim();
+  };
+  const body = (mark, at = -1) => Array.from({ length: 30 }, (_, i) => `export const step${i} = '${i === at || at < 0 ? mark : 'base'}-${i}';`).join('\n') + '\n';
+  const humanEdit = branch => {
+    git('switch', '-q', branch);
+    writeFileSync(join(repo, 'old.mjs'), body('human', 3));
+    git('commit', '-qam', 'Human changes deploy policy');
+  };
+  git('init', '-q', '-b', 'main');
+  writeFileSync(join(repo, 'old.mjs'), body('base'));
+  git('add', '.');
+  git('commit', '-qm', 'base');
+  const base = git('rev-parse', 'HEAD');
+  git('branch', 'pilot/integration');
+  git('branch', 'issue/131-member');
+  if (human === 'main') humanEdit('main');
+  if (human === 'integration') humanEdit('pilot/integration');
+  // 成員分支從 main 開出：main 上的人工改動跟著它進 stage。
+  git('switch', '-qc', 'issue/100-member', 'main');
+  if (rename === 'split') {
+    git('mv', 'old.mjs', 'new.mjs');
+    git('commit', '-qm', 'Rename old.mjs to new.mjs');
+    // 改寫第 20 行以後：合併時 git 仍認得出改名，直接改進整合分支的第 3 行才能跟著合進來。
+    const kept = readFileSync(join(repo, 'new.mjs'), 'utf8').split('\n').slice(0, 20);
+    writeFileSync(join(repo, 'new.mjs'), [...kept, ...Array.from({ length: 10 }, (_, i) => `export const rewritten${i} = ${i};`)].join('\n') + '\n');
+    git('commit', '-qam', 'Rewrite new.mjs');
+  } else if (rename === 'combined') {
+    git('rm', '-q', 'old.mjs');
+    writeFileSync(join(repo, 'new.mjs'), Array.from({ length: 30 }, (_, i) => `export function task${i}() { return ${i * 7}; }`).join('\n') + '\n');
+    git('add', 'new.mjs');
+    git('commit', '-qm', 'Replace old.mjs with new.mjs');
+  } else {
+    writeFileSync(join(repo, 'old.mjs'), readFileSync(join(repo, 'old.mjs'), 'utf8').replace("'base-20'", "'member-20'"));
+    git('commit', '-qam', 'Member edits old.mjs');
+  }
+  git('switch', '-q', 'pilot/integration');
+  git('merge', '-q', '--no-ff', '-m', "Merge branch 'issue/100-member' into pilot/stage-100", 'issue/100-member');
+  git('switch', '-q', 'main');
+  if (landed) {
+    // land.mjs：整合 PR 以 merge commit 合進 main，再讓整合分支快轉到 main。
+    git('merge', '-q', '--no-ff', '-m', 'Merge pull request #200 from owner/pilot/integration', 'pilot/integration');
+    git('branch', '-f', 'pilot/integration', 'main');
+  }
+  git('update-ref', 'refs/remotes/origin/main', 'main');
+  // 本機 main 停在原處（主 checkout 有未提交改動，land.mjs 沒讓它跟上）。
+  if (lagging) git('reset', '-q', '--hard', base);
+  return { repo, file: rename ? 'new.mjs' : 'old.mjs' };
+}
+
+test('Stage：藏在 stage 合併後面、改名、整合 PR 快轉之後或本機 main 落後時，人工改動仍開 gate', t => {
+  const stage = line('Stage conflict');
+  const command = pattern => {
+    const found = stage.match(pattern);
+    assert.ok(found, `Stage conflict 要寫明指令 ${pattern}`);
+    return found[1];
+  };
+  assert.match(stage, /`<base>` 是 `git -C <主 checkout> merge-base <分支> pilot\/integration`/);
+  const paths = command(/`(git -C <主 checkout> log --follow --name-status --format= <base>\.\.pilot\/integration -- <檔>)`/);
+  const absent = command(/`(git -C <主 checkout> cat-file -e <base>:<路徑>)`/);
+  const integrationSide = command(/`(git -C <主 checkout> log --first-parent --format='%H %s' <base>\.\.pilot\/integration -- <路徑…>)`/);
+  const beneathPr = command(/`(git -C <主 checkout> log --first-parent --format='%H %s' <base>\.\.<PR>\^2 -- <路徑…>)`/);
+  const mainSide = command(/`(git -C <主 checkout> log --first-parent --format=%s main origin\/main \^<base> -- <路徑…>)`/);
+  const pilotMerge = /^Merge branch '[^']+' into pilot\/stage-(?!sync-main)|^Merge pull request #\d+ from \S+\/pilot\/integration$/;
+  const pilotPr = /^Merge pull request #\d+ from \S+\/pilot\/integration$/;
+  assert.match(stage, /`Merge pull request #… from …\/pilot\/integration` 以外的行[^。]*開 gate/, 'main 那一邊只認整合 PR 合併');
+  const run = (template, repo, values) => {
+    const text = Object.entries(values).reduce((acc, [key, value]) => acc.replaceAll(key, value), template.replaceAll('<主 checkout>', repo));
+    return spawnSync('bash', ['-c', text], { encoding: 'utf8', env });
+  };
+  const lines = result => {
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.split('\n').filter(Boolean);
+  };
+  const decide = ({ repo, file }) => {
+    const base = lines(spawnSync('git', ['-C', repo, 'merge-base', 'issue/131-member', 'pilot/integration'], { encoding: 'utf8', env }))[0];
+    // 每行是「狀態\t路徑」，改名行是「R<相似度>\t舊\t新」：狀態欄之後的路徑都算。
+    const names = [...new Set([file, ...lines(run(paths, repo, { '<base>': base, '<檔>': file })).flatMap(entry => entry.split('\t').slice(1))])];
+    if (names.every(name => run(absent, repo, { '<base>': base, '<路徑>': name }).status !== 0)) return 'gate';
+    const quoted = names.map(name => `'${name}'`).join(' ');
+    // 整合 PR 合併後整合分支快轉：直接進整合分支的改動在 PR 合併的第二個 parent 底下，沿 ^2 用同一條查詢往下查。
+    const integrationHuman = (template, values) => lines(run(template, repo, { '<base>': base, '<路徑…>': quoted, ...values })).some(entry => {
+      const [sha, ...words] = entry.split(' ');
+      const subject = words.join(' ');
+      if (!pilotMerge.test(subject)) return true;
+      return pilotPr.test(subject) && integrationHuman(beneathPr, { '<PR>': sha });
+    });
+    if (integrationHuman(integrationSide, {})) return 'gate';
+    return lines(run(mainSide, repo, { '<base>': base, '<路徑…>': quoted })).some(subject => !pilotPr.test(subject)) ? 'gate' : 'redispatch';
+  };
+  const cases = [
+    { rename: false, landed: false }, { rename: false, landed: true },
+    { rename: 'split', landed: false }, { rename: 'split', landed: true },
+    { rename: 'split', landed: true, lagging: true }, { rename: false, landed: true, lagging: true },
+  ];
+  for (const options of cases) {
+    const label = JSON.stringify(options);
+    assert.equal(decide(hiddenChangeFixture(t, { ...options, human: 'main' })), 'gate', `${label}：main 的人工改動要保留 gate`);
+    assert.equal(decide(hiddenChangeFixture(t, { ...options, human: null })), 'redispatch', `${label}：只有 pilot 改動，照常重派`);
+  }
+  for (const landed of [false, true]) assert.equal(decide(hiddenChangeFixture(t, { human: 'integration', rename: 'split', landed })), 'gate', `landed=${landed}：直接改進整合分支的舊路徑也要保留 gate`);
+  // 同一個 commit 改名又大改，git 認不出改名、接不回 merge-base 的路徑：看不出來源，有沒有人工改動都保留 gate。
+  for (const human of ['main', null]) assert.equal(decide(hiddenChangeFixture(t, { human, rename: 'combined', landed: false })), 'gate', `combined/${human}：接不回舊路徑要保留 gate`);
+});
+
 test('Integrate 比對 stage 時記下的 tip，不數 parent', () => {
   assert.match(line('Integrate'), /`onto <tip>`.*`STOP drift`/);
   assert.match(line('Stage'), /`current: staged <sha> onto <tip>`/);
