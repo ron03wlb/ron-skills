@@ -37,3 +37,23 @@ test('Handoff：交接訊息第一行列出未回覆的 gate，回答由下一�
   // 第 3 步告訴人交接結果時，也要把這一行放在最前面
   assert.match(handoff, /after the `OPEN_GATES` line when a gate is still unanswered/);
 });
+
+// HANDOFF_DUE 時沒有前景工作就交接；背景工作不算不安全點；最多延後一輪；延後時照常 Stage 與派工
+// （CoS item 134：spay2-7a 把 push gate、regression 當成不安全點一再延後，19 張 ready、0 個 worker）。
+test('Handoff：沒有前景工作就交接，背景工作不延後，最多延後一輪且不停工', () => {
+  const handoff = section('Handoff');
+  assert.match(handoff, /no foreground work, you MUST hand off at the end of this tick/);
+  assert.match(handoff, /Background tasks are never foreground work/);
+  assert.match(handoff, /NEVER defer a handoff for one/);
+  assert.match(handoff, /On the next tick where the handoff is still due, you MUST hand off/);
+  assert.match(handoff, /NEVER defer a second time/);
+  assert.match(handoff, /deferring tick runs Pick, Dispatch, and Land \(staging included\)/);
+  assert.match(handoff, /handle \(task id and output file\), command, and expected result/);
+  assert.doesNotMatch(handoff, /until it exits this is not a safe point/);
+  assert.doesNotMatch(handoff, /restart that deferral whenever/);
+  const land = skill.split('\n').find(line => line.startsWith('7. **Land.**'));
+  assert.match(land, /On a tick that defers the handoff, Land exactly as below/);
+  const adapter = readFileSync(new URL('../docs/agents/pilot-after-merge.md', import.meta.url), 'utf8');
+  assert.match(adapter, /背景工作 NEVER 算不安全點/);
+  assert.match(adapter, /下一輪仍是 `HANDOFF_DUE` 就 MUST 交接/);
+});
