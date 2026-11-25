@@ -297,8 +297,8 @@
     },
     "scripts/worktree-overlap.mjs": {
       "template": "skills/engineering/setup-workflow/templates/worktree-overlap.mjs",
-      "commit": "bfb0cfd8cae96d0edc7564f3623a9cc52fca14d7",
-      "sha256": "65a260d16768251f2134a1d003730f60c5fa88266660dba95451b53a1a715378"
+      "commit": "8d73ec6bd904e7b7840e7c3421cb5187c4365e8f",
+      "sha256": "669ce3cb98f54c516527b49f1e35358e05650e1fbcf68ce2da42df0c20150fa6"
     }
   },
   "source": "ron03wlb/ron-skills"
