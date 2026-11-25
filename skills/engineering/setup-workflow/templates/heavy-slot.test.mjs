@@ -3,11 +3,11 @@ import './test/isolate-heavy-slot-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { realTmpdir } from './test/real-tmpdir.mjs';
-import { ageMs, effectivePriority, holdersField, labelPriority, parseArgs, percentile, queuePlan, repoOf, repoPriority, repoPriorityFile, slotCommand, slotCount, slotDir, slotTimeoutLine, statsLines, SLOT_TIMEOUT_EXIT } from './heavy-slot.mjs';
+import { ageMs, effectivePriority, holdersField, labelPriority, parseArgs, percentile, queuePlan, repoOf, resumeKey, resumeMs, repoPriority, repoPriorityFile, slotCommand, slotCount, slotDir, slotTimeoutLine, statsLines, SLOT_TIMEOUT_EXIT } from './heavy-slot.mjs';
 
 const script = new URL('./heavy-slot.mjs', import.meta.url).pathname;
 
@@ -17,6 +17,7 @@ function fixture(t, slots = 2, extraEnv = {}) {
   const env = { ...process.env, HEAVY_CHECK_DIR: join(dir, 'locks'), HEAVY_CHECK_SLOTS: String(slots), HEAVY_CHECK_POLL: '0.05', ...extraEnv };
   delete env.HEAVY_SLOT_HELD;
   delete env.HEAVY_CHECK_AGE_S;
+  delete env.HEAVY_CHECK_RESUME_S;
   // repo 優先序固定成預設值：不讀機器上真實的 ~/.config/orca-heavy-check/repo-priority。
   env.HEAVY_CHECK_REPO_PRIORITY = 'spay2,ron-skills';
   Object.assign(env, extraEnv);
@@ -401,4 +402,55 @@ test('沒有冒號或用途不認得的 label（例如手動跑的 dbg）：優�
   hold.release();
   await Promise.all([hold.done, dbg.done, check.done]);
   assert.deepEqual(order(), ['dbg', 'x:check']);
+});
+
+/** 鎖檔目錄裡的 resume-*.json。 */
+const resumeFiles = env => (existsSync(env.HEAVY_CHECK_DIR) ? readdirSync(env.HEAVY_CHECK_DIR).filter(name => /^resume-[0-9a-f]+\.json$/.test(name)) : []);
+
+test('逾時後照原指令重跑：沿用原 since，排在逾時期間才進場的等待者前面；拿到 slot 後刪掉紀錄（retro 00abd5f9#1）', async t => {
+  const { dir, env, start, status, holdUntil, enqueue, order, until } = fixture(t, 1);
+  const hold = await holdUntil('t:hold');
+  const command = `echo t:a >> ${dir}/order`;
+  const first = await start('t:a', command, ['--timeout', '0.5']).done;
+  assert.equal(first.code, SLOT_TIMEOUT_EXIT, first.stderr);
+  assert.doesNotMatch(first.stderr, /^SLOT_RESUMED/m, '第一次不是沿用');
+  assert.equal(resumeFiles(env).length, 1, '逾時留下 resume 紀錄');
+  const b = await enqueue('t:b');
+  const again = start('t:a', command);
+  await until(() => new RegExp(`^WAITER t:a pid=${again.child.pid} `, 'm').test(status().stdout), 't:a 重跑後排進隊伍');
+  const waiters = status().stdout.split('\n').filter(line => line.startsWith('WAITER'));
+  assert.deepEqual(waiters.map(line => line.split(' ')[1]), ['t:a', 't:b'], '重跑的 t:a 仍排在後到的 t:b 前面');
+  assert.match(await until2(() => again.stderr(), /^SLOT_RESUMED /m), /^SLOT_RESUMED t:a since=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/m);
+  hold.release();
+  const results = await Promise.all([again.done, b.done, hold.done]);
+  assert.deepEqual(results.map(r => r.code), [0, 0, 0]);
+  assert.deepEqual(order(), ['t:a', 't:b']);
+  assert.deepEqual(resumeFiles(env), [], '拿到 slot 後刪掉紀錄');
+});
+
+test('resume 紀錄過期（HEAVY_CHECK_RESUME_S）不沿用並清掉；不同指令不共用紀錄', async t => {
+  const { dir, env, start, status, holdUntil, enqueue, order, until } = fixture(t, 1, { HEAVY_CHECK_RESUME_S: '0.3' });
+  const hold = await holdUntil('t:hold');
+  const command = `echo t:a >> ${dir}/order`;
+  assert.equal((await start('t:a', command, ['--timeout', '0.3']).done).code, SLOT_TIMEOUT_EXIT);
+  assert.equal(resumeFiles(env).length, 1);
+  await sleep(600);
+  const b = await enqueue('t:b');
+  const again = start('t:a', command);
+  await until(() => new RegExp(`^WAITER t:a pid=${again.child.pid} `, 'm').test(status().stdout), 't:a 重跑後排進隊伍');
+  const waiters = status().stdout.split('\n').filter(line => line.startsWith('WAITER'));
+  assert.deepEqual(waiters.map(line => line.split(' ')[1]), ['t:b', 't:a'], '過期紀錄不沿用：排在 t:b 後面');
+  assert.doesNotMatch(again.stderr(), /^SLOT_RESUMED/m);
+  assert.deepEqual(resumeFiles(env), [], '過期紀錄已清掉');
+  hold.release();
+  assert.deepEqual((await Promise.all([again.done, b.done, hold.done])).map(r => r.code), [0, 0, 0]);
+  assert.deepEqual(order(), ['t:b', 't:a']);
+  // 鍵是 label＋cwd＋argv：任一不同就是另一筆。
+  assert.equal(resumeKey('t:a', '/x', ['a']), resumeKey('t:a', '/x', ['a']));
+  assert.notEqual(resumeKey('t:a', '/x', ['a']), resumeKey('t:a', '/x', ['b']));
+  assert.notEqual(resumeKey('t:a', '/x', ['a']), resumeKey('t:a', '/y', ['a']));
+  assert.notEqual(resumeKey('t:a', '/x', ['a b']), resumeKey('t:a', '/x', ['a', 'b']));
+  assert.equal(resumeMs({}), 7_200_000);
+  assert.equal(resumeMs({ HEAVY_CHECK_RESUME_S: '60' }), 60_000);
+  assert.equal(resumeMs({ HEAVY_CHECK_RESUME_S: '0' }), 0);
 });

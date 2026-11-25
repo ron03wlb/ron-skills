@@ -23,6 +23,11 @@
 //   防餓死：每等滿 $HEAVY_CHECK_AGE_S 秒（預設 900，0 不升級）用途優先級升一級（low→normal→high），不會比 high 更高；
 //     只在沒有更前面的 repo 在等時生效（有 spay2 在等時，ron-skills 的等待者不升級，也不會排到 spay2 前面）。
 //   還沒換成這版的副本（舊版等待者）照舊每秒搶鎖、不看排隊；它的 wait 檔照樣算進列裡（優先級由 label 推）。
+// 逾時重跑保留排隊位置（retro 00abd5f9#1：spay2 check-contracts 逾時前 rank 1/5，照原指令重跑後 since 重設成現在，掉到 3/5、老化歸零）：
+//   SLOT_TIMEOUT 時把這次排隊用的 since 與基本優先級寫進 `<dir>/resume-<鍵>.json`（鍵＝label＋cwd＋<command> argv 的 sha256 前 16 字元，
+//   `{ label, cwd, argv, since, priority, saved_at }`）。同鍵的下一次 run 若在 saved_at 後 $HEAVY_CHECK_RESUME_S 秒內（預設 7200，0 不沿用也不寫）
+//   開始排隊，就沿用該 since（排序與防餓死升級都照原 since 算）與 priority（有給 --priority 時以它為準），並印 SLOT_RESUMED；
+//   拿到 slot 時刪掉紀錄，再次逾時則以同一個 since 覆寫；過期的紀錄讀到時忽略並刪掉。--timeout、SLOT_WAIT 的已等秒數與 log 的 wait_ms 仍從這次 run 起算。
 // 巢狀：在 slot 裡跑的命令帶環境變數 HEAVY_SLOT_HELD；裡面再呼叫 run（例如 bin/check 的測試跑 pre-commit）時直接執行，不再拿第二個 slot（避免 N 個持有者互等）。
 //
 // 用法：node scripts/heavy-slot.mjs run --label <repo>:<用途> [--priority <high|normal|low>] [--timeout <秒>] [--interval <秒>] -- <command> [<arg>...]
@@ -38,7 +43,8 @@
 // slot 數（全機一個設定）：$HEAVY_CHECK_SLOTS（測試用）＞ ~/.config/orca-heavy-check/slots（內容是一個正整數）＞ 2。adapter 不宣告 slot 數，只宣告哪些檢查經 slot 跑。
 // 鎖檔目錄：$HEAVY_CHECK_DIR，預設 ~/.local/state/orca-heavy-check。不用 /tmp、~/.cache（會被清理：持有中的鎖檔被刪，下一個行程建新的同名檔
 //   就 flock 得到，兩支同時在 slot 裡），也不用 $XDG_RUNTIME_DIR（git hook、cron、Orca 分頁不一定都有它，有的有、有的沒有就分成兩組 slot）。
-// 其他環境變數：HEAVY_CHECK_TIMEOUT、HEAVY_CHECK_WAIT_INTERVAL、HEAVY_CHECK_REPO_PRIORITY（repo 優先序，逗號分隔）、HEAVY_CHECK_AGE_S（防餓死升級的間隔秒數）、HEAVY_CHECK_POLL（排隊重算的間隔秒數，預設 1）。
+// 其他環境變數：HEAVY_CHECK_TIMEOUT、HEAVY_CHECK_WAIT_INTERVAL、HEAVY_CHECK_REPO_PRIORITY（repo 優先序，逗號分隔）、HEAVY_CHECK_AGE_S（防餓死升級的間隔秒數）、HEAVY_CHECK_POLL（排隊重算的間隔秒數，預設 1）、
+//   HEAVY_CHECK_RESUME_S（逾時紀錄的沿用期限秒數，預設 7200，0 停用）。
 // 量測 log：每次 run 拿到 slot 並結束、或等到逾時，在鎖檔目錄的 log.jsonl 追加一行
 //   `{ label, repo（label 冒號前）, pid, wait_ms, run_ms, exit, load1（拿到 slot 時的 1 分鐘 load；逾時時是放棄時的）, started_at（開始排隊，ISO）, timed_out,
 //   priority（基本優先級）, effective_priority（拿到 slot 或逾時那一刻的有效優先級） }`；priority 兩欄是這版才加的，舊紀錄沒有，stats 不用它們。
@@ -49,6 +55,7 @@
 //                                                                           rank、priority 是最近一次算的排隊結果（還沒算過時是 `?`）
 //   SLOT_ACQUIRED <label> slot-<i>/<N> waited=<秒數>s                       拿到 slot，接著執行命令（量排隊時間用）
 //   SLOT_TIMEOUT <label> <已等秒數>s holders=…                               等到上限，不執行命令，exit 75：呼叫端當負載關卡處理（稍後重跑），不是檢查失敗
+//   SLOT_RESUMED <label> since=<ISO>                                         沿用上次逾時留下的 since（見「逾時重跑保留排隊位置」），只是資訊、不必處理，接著照常排隊
 //   SLOT_NESTED <label> held=<外層>                                          已在 slot 裡（HEAVY_SLOT_HELD），直接執行
 //   SLOT_UNAVAILABLE <label> <原因>                                          沒有 perl 或鎖檔目錄建不了，不限流、直接執行
 // stdout（status）：`SLOTS <忙>/<N> dir=<目錄>`，每個持有者 `HOLDER slot-<i> <label> pid=<pid> held=<秒數>s cwd=<目錄>`，
@@ -60,6 +67,7 @@
 //   「acquire 的行程死掉就釋放」與「跨呼叫持有」互斥，只能靠常駐的持有者，又會回到行程死了 slot 卻沒放的風險。
 // exit：run 是命令的 exit code，75 等待逾時，2 用法錯誤；status、stats 0，2 用法錯誤。
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { constants, homedir, loadavg } from 'node:os';
 import { join } from 'node:path';
@@ -217,6 +225,24 @@ export function effectivePriority(priority, since, now = Date.now(), age = ageMs
   return PRIORITIES[Math.max(0, base - steps)];
 }
 
+/** 逾時紀錄的沿用期限毫秒數：$HEAVY_CHECK_RESUME_S（預設 7200；0 停用）；不是非負數時用預設。 */
+export function resumeMs(env = process.env) {
+  const value = env.HEAVY_CHECK_RESUME_S ?? '7200';
+  return /^\d+(\.\d+)?$/.test(value) ? Number(value) * 1000 : 7_200_000;
+}
+
+/** 逾時紀錄的鍵：label＋cwd＋命令 argv 的 sha256 前 16 字元。 */
+export const resumeKey = (label, cwd, argv) => createHash('sha256').update(JSON.stringify([label, cwd, argv])).digest('hex').slice(0, 16);
+
+/** 讀同鍵的逾時紀錄：期限內傳回 { since, priority }；過期或壞掉的刪掉並傳回 undefined。 */
+function takeResume(file, now, limit) {
+  const saved = readJson(file);
+  if (!saved) return undefined;
+  const fresh = limit > 0 && now - Date.parse(saved.saved_at) <= limit && !Number.isNaN(Date.parse(saved.since));
+  if (!fresh) { rmSync(file, { force: true }); return undefined; }
+  return { since: saved.since, priority: PRIORITIES.includes(saved.priority) ? saved.priority : undefined };
+}
+
 /** label 的 repo：冒號前的字串；沒有冒號時整個 label。 */
 export const repoOf = label => String(label ?? '').split(':')[0];
 
@@ -337,14 +363,22 @@ async function run({ label, timeoutSec, intervalSec, argv, priority: override })
   }
   const dir = slotDir();
   const started = Date.now();
-  const priority = override ?? labelPriority(label);
   const age = ageMs();
   const repos = repoPriority();
+  const resumeLimit = resumeMs();
+  const resumeFile = join(dir, `resume-${resumeKey(label, process.cwd(), argv)}.json`);
   const record = { label, repo: label.split(':')[0], pid: process.pid, started_at: new Date(started).toISOString() };
-  const info = { label, pid: process.pid, cwd: process.cwd(), since: new Date(started).toISOString() };
   const waitFile = join(dir, `wait-${process.pid}.json`);
+  let priority = override ?? labelPriority(label);
+  let info = { label, pid: process.pid, cwd: process.cwd(), since: new Date(started).toISOString() };
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const resumed = takeResume(resumeFile, started, resumeLimit);
+    if (resumed) {
+      info = { ...info, since: resumed.since };
+      priority = override ?? resumed.priority ?? priority;
+      process.stderr.write(`SLOT_RESUMED ${label} since=${resumed.since}\n`);
+    }
     writeFileSync(waitFile, JSON.stringify({ ...info, priority }));
   } catch (error) {
     process.stderr.write(`SLOT_UNAVAILABLE ${label} ${error.code ?? error.message}\n`);
@@ -407,6 +441,9 @@ async function run({ label, timeoutSec, intervalSec, argv, priority: override })
   if (acquired.signal) { dropWait(); return signalExit(acquired.signal); }
   if (acquired.timeout) {
     dropWait();
+    if (resumeLimit > 0) {
+      try { writeFileSync(resumeFile, JSON.stringify({ label, cwd: info.cwd, argv, since: info.since, priority, saved_at: new Date().toISOString() })); } catch { /* 只影響下次重跑的排隊位置 */ }
+    }
     process.stderr.write(`SLOT_TIMEOUT ${label} ${seconds(Date.now() - started)}s holders=${holdersNow()}\n`);
     logRun(dir, { ...record, wait_ms: Date.now() - started, run_ms: 0, exit: SLOT_TIMEOUT_EXIT, load1: loadavg()[0], timed_out: true, priority, effective_priority: effective });
     return SLOT_TIMEOUT_EXIT;
@@ -419,6 +456,7 @@ async function run({ label, timeoutSec, intervalSec, argv, priority: override })
   holder.removeAllListeners('close');
   // 持有期間 perl 不再印東西，只等 stdin 關閉後自己結束。鎖檔只是記錄，從另一個 fd 寫入不影響 flock。
   // 先寫鎖檔再刪 wait 檔：其他排隊者讀到的持有者才不會是上一個持有者留下的 label。
+  rmSync(resumeFile, { force: true });
   try { writeFileSync(lockFiles(dir, slots)[acquired.slot - 1], JSON.stringify({ ...info, since: new Date().toISOString() })); } catch { /* 只影響 status 顯示 */ }
   dropWait();
   process.stderr.write(`SLOT_ACQUIRED ${label} slot-${acquired.slot}/${slots} waited=${seconds(Date.now() - started)}s\n`);
