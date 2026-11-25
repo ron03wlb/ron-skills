@@ -27,6 +27,7 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 2. **Drain 收件**：每個做完的 worker 分成 `DONE`（記下 candidate SHA）、`STOP`（照停因處理）或問題（只依 adapter 或 skill 的規則回答，產品問題變成 gate）。
 3. **Project hooks**：跑 adapter 列的專案檢查（見下方 tick hooks）；沒列就略過這些腳本。
 4. **Retro trigger**：adapter 有 **Retro trigger** 條目時每輪都做，不論有沒有 tick hooks：照 Probe 印的 `RETRO_` 行（或自己跑 due 指令），到期就開分頁跑 `/retro-collect`（見下方 Retro）。
+   接著，adapter 有 **Tab sweep** 條目時（選用，沒有就跳過）跑 `tab-sweep.mjs`：主 checkout 裡閒置 10 分鐘以上、畫面也閒置的分頁，`待 Retro｜` 送一次 `/retro`、`待關閉｜` 關掉；自己、現任 coordinator 與其他 worktree 的分頁不動，看不清楚就跳過並記進 `decisions.md`。
 5. **Pick 挑單**：worker 數低於上限時，依 adapter 的 Pool 規則挑下一批；`needs-triage` 的單先照 Readiness 補齊，交給子代理補齊時 prompt 從 adapter 的 Triage brief 條目起頭。
 6. **Dispatch 派工**：每張開一個 worktree 與 terminal，執行 `/issue-run <n> --worker <batch checkpoint>`。
 7. **Land 落地**：整批成員都 `DONE` 或 `STOP` 後，在批次分支依號碼合入、在 staged SHA 跑回歸、通過才合進整合分支，然後照 Push gate 交出 push 指令；adapter 允許時自己 push、開 PR／MR、合併，接著結案。
@@ -83,6 +84,7 @@ L3 的專案事實全寫在 adapter 的 `## Pilot` 段，每一條一個項目�
 | Project tick hooks | 每輪要跑的專案檢查 |
 | Retro collect | `/retro-collect` 需要的事實：retro worktree、檢查、合入與 push |
 | Retro trigger | 選填：啟用自動收集，宣告門檻 `Retro trigger: count=<n> age=<h>h`（沒宣告是 5 則／8 小時）與到期指令 `pilot-retro-due.mjs`；沒寫時由人輸入 `/retro-collect` |
+| Tab sweep | 選填：每輪在 Retro trigger 之後跑 `tab-sweep.mjs <主 checkout>`（宣告 roster 的專案加 `--roster '<狀態指令>'`），接手停在待 Retro／待關閉的分頁；沒寫時由人或看守處理 |
 
 沒有專用腳本也能起步：Probe、Watch 可以先寫成手動指令序列，等真的跑出摩擦再做成腳本。ron-skills 就是這樣：手拼 probe 漏過 terminal 已結束卻沒有結果行的 worker，之後才把 Probe 做成 `scripts/pilot-probe.mjs`，一次印出主 checkout、開著的請求與 gate、各 worker 與 batch 的狀態。它和 Dispatch 的 `scripts/pilot-dispatch.mjs` 後來都搬成 setup-workflow 正本：整合分支不是 `pilot/integration` 時帶 `--integration <分支>`，同目錄有 Bare guard 的正本 `pilot-unbare.sh` 時先跑它（`pilot-land.mjs`、`pilot-close.mjs` 在所有平台都要它；Orca 跑在 WSL 時另帶 hook 版 `claude-hook-unbare.sh`，掛在 `PreToolUse`）。同一台機器上有好幾個 coordinator（不同 repo 的 pilot）時，Probe 帶 `--capacity <repo>`、Dispatch 帶 `--capacity`，經同目錄 `pilot-capacity.mjs` 的全機帳本合計 worker 數，超過上限就不派（#178：8 個 worker 同時跑 `bin/check`，load 拉到 90，Regression 的計時測試失敗）。Push gate 也一樣：先在 adapter 寫成 push、開 PR、等 CI、合併、跟上主線的指令序列，實際跑過之後才收斂成 `scripts/land.mjs`。pilot 帶 `--keep-branch`，保留整合分支並讓它以 `--ff-only` 跟上主線；手動分支（retro、單獨跑的 `/issue-run`）不帶，合入後一併移除 worktree 與分支。兩者共用同一個結果行：`LANDED <pr> <merge sha>` 或 `STOP <原因>`，每一步都能從中斷處重跑。
 
