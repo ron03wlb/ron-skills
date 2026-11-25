@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
-// copy-templates: requires orca-worktree-create.mjs pilot-unbare.sh
+// copy-templates: requires orca-worktree-create.mjs pilot-unbare.sh pilot-pr-body.mjs land.mjs
 // setup-workflow 正本：/issue-pilot coordinator 的 Stage → Regression → hold 檢查 → Integrate，一個指令完成（adapter Pilot 段的 Stage、Regression、Integrate；
 // 結果行與 checkpoint 格式見 skills/engineering/issue-pilot/PILOT-STORE.md 的 Canonical scripts）。專案值都從參數來：
 //   --check-command <指令>  Regression 指令，在 stage worktree 以 sh 執行（預設 bin/check）；
@@ -58,6 +58,14 @@
 //   認得 sync-main 標記、往前驗 staged SHA 那一行；寫不進去時 STOP checkpoint），再快轉整合分支、刪 stage 分支，
 //   最後印 `SYNCED <sha> <CHECK_PASS 行>`（Regression 沒印 CHECK_PASS 時只有 `SYNCED <sha>`）。
 //   STOP 時整合分支都不動，重跑同一行重新來過。exit 與 batch 相同（SYNCED 是 0）。
+// push --title <標題>（Push gate 單一入口，#395）：同 sync-main 先交給 stage worktree 的同名腳本，再在主 checkout 依序
+//   1. 跑旁邊的 pilot-pr-body.mjs <主 checkout> --out <主 checkout>/.scratch/pilot/pr-body.md，照印它的輸出；它 STOP 就以它的最後一行與 exit 結束，不 land；
+//   2. 跑旁邊的 land.mjs <整合分支> --keep-branch --title <標題> --body-file <同一個檔> --check-command <Regression 指令>（有帶 --main 時也傳），照印它的輸出
+//      （PR 已開著時 land.mjs 以 gh pr edit 換上新的標題與 body）；
+//   3. land.mjs 印 `STOP behind-main …`（stage 之後 origin/<主分支> 才前進）時不照印那行，改印 `PUSH_BEHIND_MAIN <整合分支>`（不同於 Probe 的 `BEHIND_MAIN <落後數> <sha>`），跑同 sync-main 的步驟
+//      （印 RECORDED、SYNCED；它的 STOP 就以那行結束，不 land），再從 1 重來一次；第二次還是 behind-main 就照印 land.mjs 的 STOP 行結束。
+//   最後一行與 exit 是 land.mjs 的（`LANDED <pr> <merge sha>` exit 0，`STOP <原因>` exit 4）；pilot-pr-body.mjs 或 sync-main STOP 時是它們的 STOP 行（exit 4）。land.mjs 等 CI 最多約 8 分鐘、sync-main 的 Regression
+//   另計，所以 coordinator 以背景執行；`STOP checks-timeout <pr>` 時重跑同一行，PR 沿用、body 重產。
 // resolver 模組的契約（都可省略；ron-skills 的 scripts/pilot-resolve.mjs 是一例）：
 //   resolveFile(tree, path, kinds)  合併中途、不是戳記檔的衝突檔：傳回合併後的全文（本檔寫回並 git add），解不了傳回 undefined；
 //                                   用到的解法名稱加進 Set kinds，依加入順序出現在 RESOLVED 行。
@@ -65,6 +73,7 @@
 //   STAMP_FILES、restamp(tree, files)  專案自己的戳記檔：其他檔都解完、workflow-templates.json 重算之後呼叫，重算並 git add，解不了傳回 false。
 //
 // 用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [<選項>…] | sync-main [<選項>…]（在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）
+//   | push --title <標題> [<選項>…]
 //   選項：--check-command <指令>、--integration <分支>、--main <分支>、--resolver <模組>、--load-max <n>
 // stdout：最後一行是 `MERGED <key> <sha>`，或 `STOP regression <exit>`、`STOP hold`、`STOP held <n> <gate id>`、`STOP operator-questions <n> <數量>`、`STOP drift`（tip 變了，下一輪重新 stage）、
 //   `STOP conflict <n> <檔>=<來源>:<種類> …`（已 abort，stage worktree 乾淨；每個衝突檔一項）：來源是 `member <m>`（本次 stage
@@ -85,7 +94,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { slotCommand, slotTimeoutLine } from './heavy-slot.mjs';
 import { CheckpointLocked, dropRegressing, exitIfLocked, gateIssues, heldIssues, openGates, postlandEntries, runInStageWorktree, updateCheckpoint } from './lib/pilot-store.mjs';
 
-const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--check-command <指令>] [--integration <分支>] [--main <分支>] [--resolver <模組>] [--load-max <n>] | sync-main [同上選項，不含 --branch]（--branch 時 key 是 req-<n>；門檻預設 $PILOT_LOAD_MAX，再來 3 × 核心數；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
+const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--check-command <指令>] [--integration <分支>] [--main <分支>] [--resolver <模組>] [--load-max <n>] | sync-main [同上選項，不含 --branch] | push --title <標題> [同 sync-main 的選項]（--branch 時 key 是 req-<n>；門檻預設 $PILOT_LOAD_MAX，再來 3 × 核心數；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
 const LOAD = /^\d+(\.\d+)?$/;
 const MANIFEST = 'docs/agents/workflow-templates.json';
 const here = dirname(fileURLToPath(import.meta.url));
@@ -529,6 +538,36 @@ function postlandPending(key) {
 
 const SYNC_BRANCH = 'pilot/stage-sync-main';
 
+/** 子腳本（旁邊的 pilot-pr-body.mjs、land.mjs）在主 checkout 跑：stdout 照印，傳回 exit code 與最後一行。stderr 直接顯示。 */
+function runScript(main, name, args, { hide } = {}) {
+  const result = spawnSync(process.execPath, [join(here, name), ...args], { cwd: main, encoding: 'utf8', env: childEnv, stdio: ['ignore', 'pipe', 'inherit'] });
+  const lines = (result.stdout ?? '').trimEnd().split('\n').filter(Boolean);
+  const last = lines.at(-1) ?? '';
+  const shown = hide?.(last) ? lines.slice(0, -1) : lines;
+  if (shown.length) process.stdout.write(`${shown.join('\n')}\n`);
+  return { code: result.status ?? 1, last };
+}
+
+/**
+ * push：Push gate 單一入口（#395）。pr-body → land；land 印 STOP behind-main 時 sync-main、重產 body、再 land 一次。
+ * 傳回要結束的 exit code；最後一行已印出（land.mjs 或 pilot-pr-body.mjs 的）。sync-main 的 STOP 丟 Stop。
+ */
+function push(title, loadMax, mainOption) {
+  const main = mainCheckout();
+  const body = join(main, '.scratch/pilot/pr-body.md');
+  mkdirSync(dirname(body), { recursive: true });
+  const behind = line => line.startsWith('STOP behind-main ');
+  for (let attempt = 0; ; attempt++) {
+    const prBody = runScript(main, 'pilot-pr-body.mjs', [main, '--out', body]);
+    if (prBody.code !== 0) return prBody.code;
+    const landed = runScript(main, 'land.mjs', [config.integration, '--keep-branch', '--title', title, '--body-file', body, '--check-command', config.check,
+      ...(mainOption ? ['--main', mainOption] : [])], { hide: line => attempt === 0 && behind(line) });
+    if (attempt > 0 || !behind(landed.last)) return landed.code;
+    console.log(`PUSH_BEHIND_MAIN ${config.integration}`);
+    console.log(`SYNCED ${syncMain(loadMax, main).value}`);
+  }
+}
+
 /**
  * sync-main：讓整合分支包含 origin/<主分支>（Push gate 的 STOP behind-main，#193；batch 要 stage 前也呼叫，#366）。
  * 傳回 `{ value, moved }`：value 是 SYNCED 行 `<sha> <說明>`，moved 是整合分支有沒有前進；其他結果丟 Stop。
@@ -602,12 +641,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const options = {};
   let bad = false;
   for (let i = 0; i < rest.length; i += 2) {
-    const name = new Map(Object.entries({ '--branch': 'request', '--load-max': 'loadMax', '--check-command': 'check', '--integration': 'integration', '--main': 'main', '--resolver': 'resolver' })).get(rest[i]);
+    const name = new Map(Object.entries({ '--branch': 'request', '--title': 'title', '--load-max': 'loadMax', '--check-command': 'check', '--integration': 'integration', '--main': 'main', '--resolver': 'resolver' })).get(rest[i]);
     if (!name || name in options || rest[i + 1] === undefined) bad = true;
     else options[name] = rest[i + 1];
   }
-  const { request, check = config.check, integration = config.integration, main = config.main, resolver } = options;
-  if (key === 'sync-main' && !bad) runInStageWorktree(import.meta.url, process.argv.slice(2), { integration });
+  const { request, title, check = config.check, integration = config.integration, main = config.main, resolver } = options;
+  // --title 只給 push，push 一定要有。
+  if ((key === 'push') !== (title !== undefined) || (title !== undefined && !title.trim())) bad = true;
+  if ((key === 'sync-main' || key === 'push') && !bad) runInStageWorktree(import.meta.url, process.argv.slice(2), { integration });
   // 本檔所在 checkout 的根：副本在 <root>/scripts/，正本在 <root>/skills/engineering/setup-workflow/templates/，都以 scripts/ 的上一層為準。
   const resolverPath = resolver === undefined ? undefined : resolve(here, '..', resolver);
   const branchName = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
@@ -622,7 +663,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   Object.assign(config, { check, integration, main });
   if (resolverPath) config.resolver = await import(pathToFileURL(resolverPath).href);
   try {
-    // `sync-main --branch …` 已被上面 req-<n> 的檢查擋成用法錯誤。
+    // `sync-main --branch …`、`push --branch …` 已被上面 req-<n> 的檢查擋成用法錯誤。
+    if (key === 'push') process.exit(push(title, Number(loadMax), options.main));
     if (key === 'sync-main') {
       console.log(`SYNCED ${syncMain(Number(loadMax)).value}`);
       process.exit(0);

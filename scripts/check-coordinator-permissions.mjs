@@ -4,28 +4,35 @@
 // 缺了 auto mode 會擋成 External System Writes，coordinator 只好把留言、關單交給人（ron-skills #96、#131）；
 // push 答否時多了 land、pilot-close 的規則，則是讓 agent 自己 push、合併，越過人選的 Push gate（#244）。
 // 用法：node scripts/check-coordinator-permissions.mjs [--push] [<settings>]（<settings> 預設 .claude/settings.json）
-//   一律要有 gh-tracker.mjs 的放行規則；--push（push 答是）時 land.mjs、pilot-close.mjs 也要有，沒帶時兩者都不能有。
+//   一律要有 gh-tracker.mjs 的放行規則；--push（push 答是）時 land.mjs、pilot-close.mjs 也要有，scripts/ 有 pilot-land.mjs（有 pilot）時再加它的 push 子指令；沒帶時這些都不能有。
 //   放行的腳本都要在 cwd（repo 根）的 scripts/ 下存在：放行不存在的路徑，等於預先放行之後放到那裡的任何腳本（#244 審查：pilot-close.mjs 在 #245 之前不是正本）。
 //   通過印一行、exit 0；不一致時 stderr 逐條列出、exit 1；旗標錯誤 exit 2。
-// 規則一律是 `Bash(node scripts/<name>:*)`：比對的是在 repo 根執行的相對路徑。
+// 規則一律是 `Bash(node scripts/<name>:*)`：比對的是在 repo 根執行的相對路徑。<name> 可帶子指令（`pilot-land.mjs push`）：只放行那個子指令，
+// 同一支的 stage、sync-main 不放行；萬用字元 `pilot-land.mjs:*` 不算數（#395 G26）。
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const TRACKER_SCRIPTS = ['gh-tracker.mjs'];
-export const PUSH_SCRIPTS = ['land.mjs', 'pilot-close.mjs'];
+export const PUSH_SCRIPTS = ['land.mjs', 'pilot-close.mjs', 'pilot-land.mjs push'];
+// 只在 scripts/ 有這支腳本時才要求：沒有 pilot 的 repo 不帶 pilot-land.mjs。
+const WHEN_PRESENT = ['pilot-land.mjs push'];
+
+/** 規則名稱裡的腳本檔名（去掉子指令）。 */
+export const scriptFile = name => name.split(' ')[0];
 
 export const allowRule = name => `Bash(node scripts/${name}:*)`;
 
-/** missing：該有卻沒有放行規則的腳本；extra：push 答否時卻有放行規則的腳本；absent：有放行規則、檔案卻不存在的腳本（exists 判斷）。 */
+/** missing：該有卻沒有放行規則的腳本；extra：push 答否時卻有放行規則的腳本；absent：有放行規則、檔案卻不存在的腳本（exists 以檔名判斷）。 */
 export function permissionProblems(settings, { push = false, exists = () => true } = {}) {
   const allow = settings?.permissions?.allow ?? [];
   const has = name => allow.includes(allowRule(name));
+  const present = name => exists(scriptFile(name));
   const [required, forbidden] = push ? [[...TRACKER_SCRIPTS, ...PUSH_SCRIPTS], []] : [TRACKER_SCRIPTS, PUSH_SCRIPTS];
   return {
-    missing: required.filter(name => !has(name)),
+    missing: required.filter(name => !has(name) && (!WHEN_PRESENT.includes(name) || present(name))),
     extra: forbidden.filter(has),
-    absent: [...TRACKER_SCRIPTS, ...PUSH_SCRIPTS].filter(name => has(name) && !exists(name)),
+    absent: [...TRACKER_SCRIPTS, ...PUSH_SCRIPTS].filter(name => has(name) && !present(name)),
   };
 }
 
