@@ -42,7 +42,7 @@ status=0
 if ((status == 75)) && [[ -n ${slot:-} ]]; then
   # SLOT_TIMEOUT 行 heavy-slot 已印在 stderr。附上誰占著 slot，並寫明下一步：直接重跑 commit 多半只是再等 30 分鐘（#605）。
   node scripts/heavy-slot.mjs status >&2 || true
-  echo "下一步：先在要 commit 的樹上跑完整 bin/check（不經 slot），通過後再 git commit；同一棵樹 pre-commit 會印 CHECK_STAMP_FRESH 直接放行。" >&2
+  echo "下一步：先在要 commit 的樹上跑完整 bin/check（它自己排 slot，label ron-skills:bin-check 是 normal 優先級，排在 pre-commit 的 low 前面），通過後再 git commit；同一棵樹 pre-commit 會印 CHECK_STAMP_FRESH 直接放行。" >&2
   echo "        stamp 要求工作樹與要 commit 的樹相同（scripts/check-stamp.mjs fresh），沒 stage 的修改與未追蹤的新檔要先 stage 或移開。" >&2
   exit 1
 fi
