@@ -820,22 +820,76 @@ test('--fresh 把原 batch 的成員全部搬走：原 batch 的 current: 寫成
   assert.match(fx.checkpoint('23'), new RegExp(`^current: dispatched ${ISO}$`, 'm'));
 });
 
-test('--fresh：工作樹有未提交改動時 STOP dirty，分支、worktree、分頁、checkpoint 與 Issue 都不動', t => {
+test('--fresh：工作樹有未提交改動時備份成 patch 並 stash，不 STOP dirty，照常重派（#625）', t => {
   const fx = conflicted(t);
   writeFileSync(join(fx.tree, 'stray.txt'), 'uncommitted\n');
-  const before = fx.checkpoint('23-46');
+  writeFileSync(join(fx.tree, 'work.txt'), 'edited, unstaged\n');
+  mkdirSync(join(fx.tree, '.claude'));
+  writeFileSync(join(fx.tree, '.claude/settings.json'), '{"permissions":{"allow":["Bash(node scripts/pilot-land.mjs push:*)"]}}\n');
+  git(fx.tree, 'add', '.claude/settings.json');
   const result = fresh(fx);
-  assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.deepEqual(lines(result), ['STOP dirty 46 row=kept']);
-  assert.equal(git(fx.repo, 'rev-parse', 'issue/46-pilot-dispatch'), fx.head);
-  assert.equal(git(fx.repo, 'branch', '--list', '*-prior*'), '');
-  assert.equal(git(fx.tree, 'branch', '--show-current'), 'issue/46-pilot-dispatch');
-  assert.ok(existsSync(join(fx.tree, 'stray.txt')));
-  assert.ok(existsSync(join(fx.tree, '.scratch/issue-run-46/state.md')));
-  assert.doesNotMatch(fx.calls(), /^terminal close /m);
-  assert.equal(fx.checkpoint('23-46'), before);
-  assert.equal(existsSync(join(fx.repo, '.scratch/pilot/batch-46.md')), false);
-  assert.doesNotMatch(fx.ghCalls(), /^issue comment /m);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const patch = join(fx.repo, '.scratch/pilot/backup/issue-46-dirty.patch');
+  assert.ok(existsSync(patch), result.stdout);
+  const body = readFileSync(patch, 'utf8');
+  assert.match(body, /^diff --git a\/\.claude\/settings\.json b\/\.claude\/settings\.json$/m);
+  assert.match(body, /^diff --git a\/work\.txt b\/work\.txt$/m);
+  assert.match(body, /^\+\+\+ b\/stray\.txt$/m);
+  assert.equal(git(fx.tree, 'status', '--porcelain', '--untracked-files=all'), '');
+  assert.match(git(fx.tree, 'stash', 'list'), /pilot-dispatch issue-46 dirty backup/);
+  assert.equal(git(fx.repo, 'branch', '--list', '*-prior*').trim(), 'issue/46-pilot-dispatch-prior');
+});
+
+test('--fresh 草稿：prior 工作樹有未提交改動時備份、stash，草稿列出 patch、改到的檔、wip patch，settings.json 單獨一行；重跑草稿不撞 draft-filled（#625）', t => {
+  const fx = drafted(t);
+  mkdirSync(join(fx.tree, '.claude'));
+  writeFileSync(join(fx.tree, '.claude/settings.json'), '{"permissions":{}}\n');
+  writeFileSync(join(fx.tree, 'member-only.txt'), 'edited after commit\n');
+  mkdirSync(join(fx.tree, '.scratch/issue-run-46-prior/wip'), { recursive: true });
+  writeFileSync(join(fx.tree, '.scratch/issue-run-46-prior/wip/g26.patch'), 'wip\n');
+  const run = () => fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch'], { ORCA_CLI_COMMAND: '' });
+  for (const round of [1, 2]) {
+    const result = run();
+    assert.equal(result.status, 0, `round ${round}\n${result.stdout}${result.stderr}`);
+  }
+  const patch = join(fx.repo, '.scratch/pilot/backup/issue-46-dirty.patch');
+  assert.ok(existsSync(patch));
+  assert.equal(git(fx.tree, 'status', '--porcelain'), '');
+  const draft = readFileSync(join(fx.repo, '.scratch/pilot/fresh-46.md'), 'utf8');
+  const section = draft.slice(draft.indexOf('## prior 未提交的改動'), draft.indexOf('## 怎麼整併'));
+  assert.ok(section.includes(`\`${patch}\``), section);
+  assert.match(section, /`\.claude\/settings\.json`、`member-only\.txt`|`member-only\.txt`、`\.claude\/settings\.json`/);
+  assert.ok(section.includes(join(fx.tree, '.scratch/issue-run-46-prior/wip/g26.patch')), section);
+  assert.match(section, /^- `\.claude\/settings\.json` 是受保護、owner 手改的檔/m);
+  assert.match(draft, /## 怎麼整併\n+$/);
+});
+
+test('--fresh 草稿：沒有未提交改動、沒有 wip patch 時不印「prior 未提交的改動」段', t => {
+  const fx = drafted(t);
+  assert.equal(fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch'], { ORCA_CLI_COMMAND: '' }).status, 0);
+  assert.doesNotMatch(readFileSync(join(fx.repo, '.scratch/pilot/fresh-46.md'), 'utf8'), /prior 未提交的改動/);
+});
+
+test('--fresh 草稿：整併注意在 scripts/entry-survival.mjs、port-entries.mjs 存在時才印對應指令（#618）', t => {
+  const fx = drafted(t);
+  const notice = () => {
+    assert.equal(fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch'], { ORCA_CLI_COMMAND: '' }).status, 0);
+    const draft = readFileSync(join(fx.repo, '.scratch/pilot/fresh-46.md'), 'utf8');
+    return draft.slice(draft.indexOf('## 整併注意'), draft.indexOf('## 怎麼整併'));
+  };
+  const none = notice();
+  assert.doesNotMatch(none, /entry-survival|port-entries/);
+  mkdirSync(join(fx.repo, 'scripts'), { recursive: true });
+  writeFileSync(join(fx.repo, 'scripts/entry-survival.mjs'), '');
+  const survival = notice();
+  assert.ok(survival.includes('node scripts/entry-survival.mjs $(git merge-base HEAD pilot/integration)'), survival);
+  assert.match(survival, /review-only verifier 會自己再跑/);
+  assert.doesNotMatch(survival, /port-entries/);
+  writeFileSync(join(fx.repo, 'scripts/port-entries.mjs'), '');
+  const both = notice();
+  assert.ok(both.includes('node scripts/port-entries.mjs <base> <prior> <檔> [<目標檔>]'), both);
+  assert.match(both, /git apply -3` 衝突/);
+  assert.match(both, /NO_MATCH`／`AMBIGUOUS/);
 });
 
 test('--fresh：重派過的 Issue 再衝突時 STOP refresh-twice、什麼都不動；--again 另存成 -prior2', t => {

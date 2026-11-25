@@ -31,6 +31,8 @@ Edit the "Label in our tracker" column to match whatever vocabulary you actually
 
 把本文存檔後跑 `node scripts/brief-check.mjs --paths <本文檔>`：每行 `BRIEF_PATH_MISSING <path>` 都要處理，路徑寫錯就改本文，是要新增的檔或其他 repo 的路徑就在本文寫明（advisory，exit 0，不擋 label；#515：#381 寫了不存在的 `issue-pilot/ADAPTER.md`，worker 多花四次呼叫找真正的位置）。
 
+驗收裡的輸出範例寫成腳本實際會印的完整字串，和 Desired behavior 的格式行逐字對得上：格式行的參數是 repo 相對路徑，範例也寫 repo 相對路徑，不寫 basename（#620：#599 的格式行是 `PORTED <條目> <目標檔>`、`<目標檔>` 相對 repo 根，驗收卻寫 `PORTED Probe pilot-round.md`，worker 只能自己挑一個讀法記成 ruling）。
+
 驗收裡「改 `skills/engineering/setup-workflow/templates/` 的正本與測試，`scripts/` 副本用 `skills/engineering/setup-workflow/scripts/copy-templates.mjs` 同步」這一項，只在 `node scripts/worktree-overlap.mjs <要改的檔>…` 印 `TEMPLATE_COPY` 時才寫；沒印就不是範本副本，寫了 worker 得先查清單、記一條 ruling 才知道不適用（#438：#380 的 `scripts/sync-skills.mjs` 不在 `docs/agents/workflow-templates.json`）。
 
 ## `parent` label

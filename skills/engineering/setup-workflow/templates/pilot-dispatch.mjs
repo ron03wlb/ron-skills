@@ -35,7 +35,7 @@
 // 都中止進行中的步驟，進行中與還沒派的成員都 STOP 並寫進 checkpoint。預設預算 510 秒，加上收尾的 git 與寫檔，在 540 秒內結束。
 //
 // --fresh（#124）把一個成員重派成 fresh worker（Stage 的同一條目衝突之後），worktree 與分支名稱不變，舊分支就地另存：
-//   工作樹有未提交改動 → `STOP dirty <n>`，什麼都不動；關掉 worktree 裡每個 terminal（checkpoint 可能只記了其中一個）；
+//   工作樹有未提交改動（#625）→ 先備份：staged、未 staged、未追蹤的改動存成 `<主 checkout>/.scratch/pilot/backup/issue-<n>-dirty.patch`（已有時接 -2…）並 stash；備份或 stash 失敗才 `STOP <n> backup <原因>`（改動留原處）；關掉 worktree 裡每個 terminal（checkpoint 可能只記了其中一個）；
 //   `branch -m <分支> <分支>-prior`；`switch -c <分支> <整合分支>`；worker 的 `.scratch/issue-run-<n>` 改名成 `issue-run-<n>-prior`（fresh worker 才不讀到舊 checkpoint）；
 //   在 Issue 留言 --note 的內容加一行 `prior: <prior 分支> @ <sha>`（gh）；把成員拆到自己的 batch（原 batch 那列記 `moved batch-<n>`，成員因此全是 moved 時原 batch 的 `current:` 寫成 `closed moved`，#205；batch-<n>.md 是表頭加一列；
 //   原 batch 就是 `<n>` 時就地改寫 `current:` 與 `integration:`）；最後照一般 Dispatch 開分頁、送出 `/issue-run <n> --worker <batch-<n>.md>`。
@@ -70,6 +70,9 @@
 //   「怎麼整併」之前是固定的「整併注意」段（#551，investing retro 1123c：note 寫「先 merge prior 再 merge 整合分支」，worktree 已在整合分支 tip，
 //   第二個 merge 只回 unmerged files；「兩邊測試都保留」讓整合分支新增的測試呼叫 prior 已改掉的舊簽章）：只 merge prior、
 //   兩邊測試都保留但改到 prior 的新簽章並以測試為準、兩邊都改過的函式要查交會路徑並補測試。
+//   「整併注意」另固定印 scripts/entry-survival.mjs（存在時，#618）與 scripts/port-entries.mjs（存在時）的指令；
+//   草稿這一步若發現 prior 工作樹有未提交改動（#625），同樣備份並 stash，並在「怎麼整併」前加「prior 未提交的改動」段：patch 路徑、改到的檔、
+//   `.scratch/issue-run-<n>*/wip/*.patch`，`.claude/settings.json`（受保護、owner 手改）單獨一行（段不放進「怎麼整併」，免得重跑草稿撞上 draft-filled）。
 //   最後一段空白的「怎麼整併」給 coordinator 補，補完再帶 --note 重跑。
 //
 // 容量檢查是派工路徑（一般派工與帶 --note 的 --fresh）的預設（#534：從草稿切到派工時只加 --note，漏了 --capacity --repo-cap 4 就無聲派出）：
@@ -100,7 +103,7 @@
 //   send 的 STOP 記 running：worker 可能其實已在跑，交給 Probe 判定，#354），STOP 原因只在 stdout。
 //   每個成員的 STOP 行（含 --fresh 與草稿的）最後一欄是 ` row=<kept|stop|running>`：這一行之後成員列沒動（kept），或寫成 stop、running（investing#481：
 //   哪些 STOP 改寫成員列以前只能讀程式碼）。HOLD 行不改成員列。不屬於成員的 STOP capacity、STOP orca-unavailable 不寫任何列，也沒有這一欄。
-//   --fresh 成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`，有草稿時再印 `DRAFT_ARCHIVED <n> <path>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> overlap …`、`STOP <n> overlap-check …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP dirty <n>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
+//   --fresh 帶 --note 時 prior 有未提交改動、已備份就先印 `DIRTY_BACKUP <n> <patch>`；成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`，有草稿時再印 `DRAFT_ARCHIVED <n> <path>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> overlap …`、`STOP <n> overlap-check …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP <n> backup <原因>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
 // exit：0 全部派出（草稿：寫好）；4 有成員 STOP 或 HOLD（或 STOP capacity、STOP orca-unavailable）；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤（含草稿帶了派工旗標、Env sync 宣告寫錯）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -558,7 +561,12 @@ async function refresh(cli, main, key, integration, { n, branch }, note, again, 
   const git = (...args) => run('git', ['-C', worktree, ...args]);
   const status = git('status', '--porcelain');
   if (status.status !== 0) return { stop: `${n} git status ${status.stderr.trim()}` };
-  if (status.stdout.trim()) return { stop: `dirty ${n}` };
+  if (status.stdout.trim()) {
+    // #625：prior 工作樹有未提交改動不再 STOP dirty：備份成 patch、stash，草稿的「prior 未提交的改動」段列出；備份本身失敗才 STOP。
+    const saved = backupDirty(main, worktree, n);
+    if (saved.error) return { stop: `${n} backup ${saved.error}` };
+    if (saved.patch) console.log(`DIRTY_BACKUP ${n} ${saved.patch}`);
+  }
 
   try {
     for (const handle of open) await orca(ctx, 'terminal', 'close', '--terminal', handle);
@@ -596,6 +604,69 @@ async function refresh(cli, main, key, integration, { n, branch }, note, again, 
 }
 
 /**
+ * prior 工作樹有未提交的改動時（#625）：staged、未 staged 與未追蹤的檔（`.scratch/` 除外）存成 `<主 checkout>/.scratch/pilot/backup/issue-<n>-dirty.patch`
+ * （已有時接 -2、-3…，不覆寫），再 stash（含未追蹤）讓工作樹乾淨。傳回 `{ patch, files }`，沒有改動時 `{}`，備份或 stash 失敗時 `{ error }`（改動留在原處）。
+ */
+function backupDirty(main, worktree, n) {
+  const git = (...args) => run('git', ['-C', worktree, ...args]);
+  const status = git('status', '--porcelain');
+  if (status.status !== 0) return { error: `git status ${status.stderr.trim()}` };
+  if (!status.stdout.trim()) return {};
+  const tracked = git('diff', 'HEAD');
+  const untracked = git('ls-files', '-o', '--exclude-standard', '-z');
+  if (tracked.status !== 0 || untracked.status !== 0) return { error: `git diff ${(tracked.stderr + untracked.stderr).trim()}` };
+  const added = untracked.stdout.split('\0').filter(file => file && !file.startsWith('.scratch/')).map(file => git('diff', '--no-index', '--', '/dev/null', file).stdout);
+  const body = [tracked.stdout, ...added].join('');
+  if (!body.trim()) return {};
+  const dir = join(main, '.scratch/pilot/backup');
+  let patch = join(dir, `issue-${n}-dirty.patch`);
+  for (let k = 2; existsSync(patch); k++) patch = join(dir, `issue-${n}-dirty-${k}.patch`);
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(patch, body);
+  } catch (error) {
+    return { error: `寫入 ${patch} 失敗：${error.message}` };
+  }
+  // .scratch/ 沒被 ignore 時要排除（worker 的 checkpoint 不能被 stash 走）；被 ignore 時給 pathspec 反而讓 git 報錯。
+  const keep = git('check-ignore', '-q', '.scratch/x').status === 0 ? [] : ['--', '.', ':!.scratch'];
+  const stash = git('stash', 'push', '-u', '-m', `pilot-dispatch issue-${n} dirty backup`, ...keep);
+  if (stash.status !== 0) return { error: `git stash ${stash.stderr.trim()}（patch 已存 ${patch}，工作樹沒動）` };
+  return { patch, files: patchFiles(body) };
+}
+
+/** patch 文字裡 `diff --git a/<檔> b/<檔>` 標頭的檔名（依出現順序、去重）。 */
+function patchFiles(body) {
+  return [...new Set([...body.matchAll(/^diff --git a\/(.+) b\/.+$/gm)].map(match => match[1]))];
+}
+
+/**
+ * 草稿的「prior 未提交的改動」段（#625）：`.scratch/pilot/backup/issue-<n>-dirty*.patch` 的路徑與改到的檔、worktree 裡
+ * `.scratch/issue-run-<n>-*` 下 wip/ 的 `.patch`；`.claude/settings.json`（受保護、owner 手改）單獨一行。都沒有時傳回空陣列。
+ */
+function dirtySection(main, worktree, n) {
+  const dir = join(main, '.scratch/pilot/backup');
+  const backups = existsSync(dir) ? readdirSync(dir).filter(file => new RegExp(`^issue-${n}-dirty(-\\d+)?\\.patch$`).test(file)).sort() : [];
+  const scratch = worktree && join(worktree, '.scratch');
+  const wip = scratch && existsSync(scratch)
+    ? readdirSync(scratch).filter(name => new RegExp(`^issue-run-${n}(-prior\\d*)?$`).test(name)).sort()
+      .flatMap(name => existsSync(join(scratch, name, 'wip')) ? readdirSync(join(scratch, name, 'wip')).filter(file => file.endsWith('.patch')).sort().map(file => join(scratch, name, 'wip', file)) : [])
+    : [];
+  if (!backups.length && !wip.length) return [];
+  const out = ['## prior 未提交的改動', ''];
+  let protectedFile = false;
+  for (const file of backups) {
+    const patch = join(dir, file);
+    const files = patchFiles(readFileSync(patch, 'utf8'));
+    protectedFile ||= files.includes('.claude/settings.json');
+    out.push(`- prior worktree 的 staged、未 staged 與未追蹤改動已存成 \`${patch}\`（已 stash，工作樹乾淨）；套用：\`git apply -3 ${patch}\`。改到的檔：${files.length ? files.map(f => `\`${f}\``).join('、') : '（讀不到檔名）'}`);
+  }
+  for (const patch of wip) out.push(`- 舊 worker 的 wip patch：\`${patch}\`（prior 的 commit 不含它；由 worker 決定要不要套）`);
+  if (protectedFile) out.push('- `.claude/settings.json` 是受保護、owner 手改的檔，prior 的未提交改動動到了它：fresh worker 不能自己改，缺的權限規則要請 owner 補，或停下回報。');
+  out.push('- 哪些要沿用由「怎麼整併」決定；沒寫就視為不沿用。', '');
+  return out;
+}
+
+/**
  * worker 分頁尾段（#261）：讀 pilot.md 的 Watch 同一個來源 `terminal read --screen --json` 的 `.result.terminal.tail`（整段，不只 Watch 看的最後 40 行），
  * 取最後一個結果行（`DONE|STOP <n>`）與它之前最後一個以「Review」開頭的行（行首空白與 TUI 的 ⏺ 不算），去掉共同縮排。
  * 沒有 handle、沒有 ORCA_CLI_COMMAND、Orca 失敗（分頁已關）或找不到起訖行時傳回 undefined。
@@ -621,7 +692,7 @@ export function hunkFunctions(diff) {
 }
 
 /**
- * 沒帶 --note 的 --fresh：寫 fresh-<n>.md 草稿（內容見檔頭），傳回 `{ path }` 或 `{ stop }`（不含 `STOP `）。只讀 git、gh 與檔案，不改任何狀態。
+ * 沒帶 --note 的 --fresh：寫 fresh-<n>.md 草稿（內容見檔頭），傳回 `{ path }` 或 `{ stop }`（不含 `STOP `）。只讀 git、gh 與檔案；唯一例外是 prior 工作樹有未提交改動時的備份與 stash（#625）。
  */
 function freshDraft(main, key, integration, { n, branch }, allowOverlap) {
   if (!hasBranch(main, branch)) return { stop: missingBranch(main, key, { n, branch }) };
@@ -632,6 +703,10 @@ function freshDraft(main, key, integration, { n, branch }, allowOverlap) {
   const merge = existsSync(path) ? readFileSync(path, 'utf8').split(/^## 怎麼整併$/m)[1] : undefined;
   if (merge?.trim()) return { stop: `${n} draft-filled ${path}` };
   const git = (...args) => run('git', ['-C', main, ...args]);
+  const priorTree = worktreeOf(main, branch);
+  // #625：prior 工作樹有未提交改動時，草稿這一步就備份並 stash（之後的 --note 重派才不會 STOP dirty）。
+  const saved = priorTree ? backupDirty(main, priorTree, n) : {};
+  if (saved.error) return { stop: `${n} backup ${saved.error}` };
   const viewed = run('gh', ['issue', 'view', n, '--json', 'title']);
   let title;
   try { title = viewed.status === 0 && JSON.parse(viewed.stdout).title; } catch { title = undefined; }
@@ -720,11 +795,21 @@ function freshDraft(main, key, integration, { n, branch }, allowOverlap) {
     `- fresh worktree 的 ${branch} 已從 ${integration} 的 tip 開出：只 \`git merge --no-ff ${prior}\`，不要再 merge ${integration}（已經含著；衝突沒解完時第二個 merge 只回 \`Merging is not possible because you have unmerged files\`）。`,
     '- 兩邊的測試都保留，但改到符合 prior 的新簽章與新行為；解完以測試結果為準，不以衝突標記清乾淨為準。',
     '- 列了「兩邊都改過的函式」的檔：檢查一邊的新路徑會不會餵給另一邊的新讀取，並為交會的那條路徑補一個測試；「怎麼整併」不要只寫兩邊沒有設計取捨。',
+    ...entrySurvivalLines(main, integration),
     '',
+    ...dirtySection(main, priorTree, n),
     '## 怎麼整併',
     '',
   ].join('\n'));
   return { path };
+}
+
+/** 草稿「整併注意」的 entry-survival 與 port-entries 行（#618）：對應的 scripts/ 檔在 repo 裡才印。 */
+function entrySurvivalLines(main, integration) {
+  const lines = [];
+  if (existsSync(join(main, 'scripts/entry-survival.mjs'))) lines.push(`- 整併後跑 \`node scripts/entry-survival.mjs $(git merge-base HEAD ${integration})\`，把印出的每行 \`ENTRY_LOST\`／\`ENTRY_CHANGED\` 抄進 checkpoint notes、逐條註明是 prior 有意改寫還是被蓋掉（判讀見 \`node scripts/adapter-line.mjs 'Entry survival'\`）；review-only verifier 會自己再跑一次。`);
+  if (existsSync(join(main, 'scripts/port-entries.mjs'))) lines.push('- prior 改到的條目已搬到別的檔、`git apply -3` 衝突時，跑 `node scripts/port-entries.mjs <base> <prior> <檔> [<目標檔>]`，再手動處理印出的 `NO_MATCH`／`AMBIGUOUS`。');
+  return lines;
 }
 
 /**
