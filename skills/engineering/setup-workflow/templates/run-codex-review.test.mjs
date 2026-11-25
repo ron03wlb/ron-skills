@@ -40,7 +40,7 @@ function worktree(temp) {
   return repo;
 }
 
-function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit = 0, staleReport = false, rulings, writes = [], outDir = '.scratch/issue-run-1', baseline, checkpoint, capacity = '', spec = 'spec.md', specContent = '# spec\n', checkSpec = false, codexHome } = {}) {
+function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit = 0, staleReport = false, rulings, writes = [], outDir = '.scratch/issue-run-1', baseline, checkpoint, capacity = '', spec = 'spec.md', specContent = '# spec\n', checkSpec = false, codexHome, baselineArg } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'codex-review-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const bin = join(temp, 'codex'); writeFileSync(bin, FAKE); chmodSync(bin, 0o755);
@@ -78,7 +78,7 @@ function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit 
   }
   // spec 以 runner 的 cwd（temp，模擬主 checkout）為準寫入，不在 worktree 內；specContent 為 null 時不建立。
   if (specContent !== null) { mkdirSync(dirname(join(temp, spec)), { recursive: true }); writeFileSync(join(temp, spec), specContent); }
-  const fixedPoint = baseline ?? git(repo, 'rev-parse', '--short', 'HEAD');
+  const fixedPoint = baselineArg?.(repo) ?? baseline ?? git(repo, 'rev-parse', '--short', 'HEAD');
   const result = run(temp, [process.execPath, join(source, 'run-codex-review.mjs'), fixedPoint, spec, repo, out, ...extra],
     { env: { CODEX_BIN: bin, FAKE_ARGV: argvFile, FAKE_LOG: log, FAKE_REPORT: report, FAKE_EXIT: String(exit), FAKE_WRITES: JSON.stringify(writes), FAKE_CAPACITY: capacity, FAKE_CHECK_SPEC: checkSpec ? '1' : '', CODEX_HOME: codexHome ?? join(temp, 'codex-home') } });
   const models = existsSync(`${argvFile}.models`) ? readFileSync(`${argvFile}.models`, 'utf8').trim().split('\n') : [];
@@ -167,6 +167,27 @@ test('stacked：傳入值不等於 checkpoint baseline:（舊候選）時判 BAS
   const { result, repo, call } = review(t, { outDir: '.scratch/issue-run-1/r2', checkpoint: 'stacked-old' });
   assert.equal(error(result), 'BASELINE_STALE'); assert.equal(call, null);
   assert.equal(JSON.parse(result.stderr.trim()).mergeBase, git(repo, 'rev-parse', 'HEAD'));
+});
+// spay2 retro 5e2b0c21#2：deliver-sync-baseline 把 state.md 的 baseline: 改成新的 merge-base，同一命令裡的 review 仍收到寫死的舊值而 BASELINE_STALE。
+// 這裡以 stale checkpoint 模擬 sync 之後：state.md 的 baseline: 已寫回 merge-base（main），傳 state:<path> 讀到它即照常審查。
+const syncedState = repo => {
+  const file = join(repo, '.scratch/issue-run-1/state.md');
+  writeFileSync(file, readFileSync(file, 'utf8').replace(/^baseline: \S+/m, `baseline: ${git(repo, 'rev-parse', 'main')}`));
+  return 'state:repo/.scratch/issue-run-1/state.md';
+};
+test('baseline 為 state:<path>（相對 runner cwd）時讀該檔 baseline: 行當 fixed point：sync 後串接不判 BASELINE_STALE', t => {
+  const { result, repo, call } = review(t, { outDir: '.scratch/issue-run-1/r2', checkpoint: 'stale', baselineArg: syncedState });
+  assert.equal(result.status, 0, result.stderr); assert.notEqual(call, null);
+  assert.match(call.stdin, new RegExp(`Fixed point: ${git(repo, 'rev-parse', 'main')}\\.`));
+});
+test('state:<path> 讀不到檔或沒有 40 位 SHA 的 baseline: 行時判 BASELINE_STATE_UNREADABLE（附原因），且不呼叫 Codex', t => {
+  const absent = review(t, { baselineArg: repo => `state:${join(repo, 'no-such-state.md')}` });
+  assert.equal(error(absent.result), 'BASELINE_STATE_UNREADABLE'); assert.equal(absent.call, null);
+  assert.equal(JSON.parse(absent.result.stderr.trim()).reason, 'ENOENT');
+  // checkpoint fresh 的 state.md 寫的是 `baseline: x`：不是 SHA，不能當 fixed point
+  const malformed = review(t, { outDir: '.scratch/issue-run-1', checkpoint: 'fresh', baselineArg: () => 'state:repo/.scratch/issue-run-1/state.md' });
+  assert.equal(error(malformed.result), 'BASELINE_STATE_UNREADABLE'); assert.equal(malformed.call, null);
+  assert.match(JSON.parse(malformed.result.stderr.trim()).reason, /baseline:/);
 });
 test('worktree 不是 git repository 時判定 SNAPSHOT_FAILED，且不呼叫 Codex', t => {
   const temp = mkdtempSync(join(realTmpdir(), 'codex-review-'));

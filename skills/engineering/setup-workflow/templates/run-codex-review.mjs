@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // issue-run adapter 的 Review：以固定模型／effort 執行 Codex code-review，並以確定性規則判定結果。
-// 用法：node scripts/run-codex-review.mjs <baseline> <spec> <worktree> <out-dir> [rulings]
+// 用法：node scripts/run-codex-review.mjs <baseline|state:<path>> <spec> <worktree> <out-dir> [rulings]
+// baseline 寫成 `state:<path>` 時讀該檔（相對路徑以 runner cwd 解析）的 `baseline:` 行（40 位 SHA）當 fixed point，讓 sync 與 review 串在同一個命令時
+// review 拿到 sync 剛寫回的值（spay2 retro 5e2b0c21#2：寫死的舊 baseline 回 BASELINE_STALE，多跑一輪）。檔案讀不到或沒有 40 位 SHA 的 `baseline:` 行時
+// 判 BASELINE_STATE_UNREADABLE（actionable，JSON 帶 state 與 reason：檢查路徑，或先跑 sync 寫入 baseline:），不呼叫 Codex。
 //       node scripts/run-codex-review.mjs --quota（唯讀：不呼叫 Codex，讀 $CODEX_HOME（預設 ~/.codex）/sessions 最新 rollout 的 rate_limits）
 // --quota 印一行 `CODEX_QUOTA used_percent=<n|?> window_minutes=<n|?> resets_at=<ISO|?> reached=<rate_limit_reached_type|none>`（not actionable：
 // reached 不是 none 或 used_percent 達 100 時本輪改用 code-review skill），找不到任何 rollout 時印 `CODEX_QUOTA_UNKNOWN`；皆 exit 0。
@@ -128,7 +131,18 @@ function expectedBaseline(dir, wt) {
 
 if (process.argv[2] === '--quota') { process.stdout.write(quotaLine(codexQuota()) + '\n'); process.exit(0); }
 const [baseline, specArg, worktree, outDir, rulingsArg] = process.argv.slice(2);
-if (!baseline || !specArg || !worktree || !outDir) fail('USAGE', { usage: 'run-codex-review.mjs <baseline> <spec> <worktree> <out-dir> [rulings]' });
+if (!baseline || !specArg || !worktree || !outDir) fail('USAGE', { usage: 'run-codex-review.mjs <baseline|state:<path>> <spec> <worktree> <out-dir> [rulings]' });
+/** `state:<path>` → 該檔 `baseline:` 行的 40 位 SHA；其他值原樣傳回。 */
+function baselineFrom(arg) {
+  if (!arg.startsWith('state:')) return arg;
+  const state = resolve(arg.slice('state:'.length));
+  let text;
+  try { text = readFileSync(state, 'utf8'); } catch (error) { fail('BASELINE_STATE_UNREADABLE', { state, reason: error.code ?? error.message }); }
+  const recorded = /^baseline:[ \t]*([0-9a-f]{40})\b/m.exec(text)?.[1];
+  if (!recorded) fail('BASELINE_STATE_UNREADABLE', { state, reason: '沒有 40 位 SHA 的 baseline: 行' });
+  return recorded;
+}
+const fixedArg = baselineFrom(baseline);
 // 額度預檢排在 spec／rulings 等參數檢查之前（retro spay2 710b8f4e#2：空 rulings 先回 RULINGS_EMPTY，補好再跑才撞 CODEX_NO_CREDITS，多跑一輪）。
 // 只讀本機 rollout（與 --quota 同源，不呼叫 Codex、不連網）：reached 不是 none 或週額度達 100%，且週額度重置時間未知或還沒到時才判定；
 // 重置時間已過的舊紀錄不擋，交給執行後的 log 判定；重置時間未知而 reached 紀錄已超過 24 小時也不擋（spay2 retro 1124c tooling-881）。
@@ -156,8 +170,8 @@ rmSync(report, { force: true });
 const args = model => ['exec', '-s', 'workspace-write', '--ignore-user-config', '-m', model, '-c', `model_reasoning_effort=${EFFORT}`,
   '-c', 'sandbox_workspace_write.network_access=true', '-C', worktree, '-o', report, '-'];
 const before = snapshot(worktree, own);
-const resolved = spawnSync('git', ['-C', worktree, 'rev-parse', '--verify', '--quiet', `${baseline}^{commit}`], { encoding: 'utf8' });
-if (resolved.status !== 0) fail('BASELINE_INVALID', { baseline, worktree });
+const resolved = spawnSync('git', ['-C', worktree, 'rev-parse', '--verify', '--quiet', `${fixedArg}^{commit}`], { encoding: 'utf8' });
+if (resolved.status !== 0) fail('BASELINE_INVALID', { baseline: fixedArg, worktree });
 const fixedPoint = resolved.stdout.trim();
 const expected = expectedBaseline(outDir, worktree);
 if (expected && expected !== fixedPoint) fail('BASELINE_STALE', { baseline: fixedPoint, mergeBase: expected, hint: '先把 state.md 的 baseline: 更新為 HEAD 與整合分支的 merge-base，再以它重跑' });

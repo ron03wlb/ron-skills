@@ -11,6 +11,8 @@
 // 所以 wrapper 判定全過時 failed 與 code 兩個條件都必要。
 // `finished` 記 <root> 是否收到 end 事件：只有該檔的測試全部跑完才會發。子行程在測試之間結束（force-exit 截斷、中途 exit）時
 // 開始數等於結束數、紀錄與父行程輸出一起少，只有這個欄位看得出沒收齊（spay2 #1099）。
+// `durations` 逐項記 [名稱, 毫秒, 種類]（種類是 test 或 suite，不含 <root>）：start 到 end 的牆鐘時間，end 在 async 測試的 promise 結束後才發，
+// 所以含 await；suite 是整組總時長，不受 `--test-timeout` 約束，跟單一測試分開看（spay2 retro 1850e43e#1：describe 總耗時被誤當成接近上限的測試）。
 import { tracingChannel } from 'node:diagnostics_channel';
 import { appendFileSync } from 'node:fs';
 
@@ -22,12 +24,18 @@ if (file && root && context && counted !== root) {
   let started = 0;
   let failed = 0;
   let finished = false;
+  const durations = [];
+  const startedAt = new WeakMap();
   const isUserTest = ctx => ctx.type === 'test' && ctx.name !== '<root>';
   tracingChannel('node.test').subscribe({
-    start(ctx) { if (isUserTest(ctx)) started++; },
+    start(ctx) { startedAt.set(ctx, performance.now()); if (isUserTest(ctx)) started++; },
     asyncStart() {}, asyncEnd() {},
     error() { failed++; },
-    end(ctx) { traced = true; if (isUserTest(ctx)) names.push(ctx.name); else if (ctx.type === 'test') finished = true; },
+    end(ctx) {
+      traced = true;
+      if (ctx.name !== '<root>' && startedAt.has(ctx)) durations.push([ctx.name, Math.round(performance.now() - startedAt.get(ctx)), ctx.type]);
+      if (isUserTest(ctx)) names.push(ctx.name); else if (ctx.type === 'test') finished = true;
+    },
   });
-  process.on('exit', code => appendFileSync(file, `${JSON.stringify({ file: process.argv[1], names, traced, started, failed, finished, code })}\n`));
+  process.on('exit', code => appendFileSync(file, `${JSON.stringify({ file: process.argv[1], names, traced, started, failed, finished, code, durations })}\n`));
 }
