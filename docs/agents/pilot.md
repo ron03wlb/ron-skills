@@ -82,7 +82,7 @@
 
 - **Project tick hooks.** 預設：沒有。
 
-- **Coordinator model.** `Coordinator model: claude-sonnet-5-5`：pilot-handoff 開的後繼 coordinator 用它，worker 照全域模型。
+- **Coordinator model.** `Coordinator model: claude-opus-5-5`：handoff 後繼 coordinator 用；11-25 改回 Opus 求判斷一致（CoS 134）。
 
 - **Memory audit.** `Memory audit days: 7`。Probe 印 `MEMORY_AUDIT_DUE` 時，當輪在主 checkout 跑它箭頭後的指令，處理照 issue-pilot 的 PILOT-STORE.md `memory-audit.md` 段（#347）。
 

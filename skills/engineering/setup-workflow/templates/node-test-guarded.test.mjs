@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { failedFiles, hasTestChannel, lostFiles, missingFiles, parseRan, recordedPass, reportedTotal, saveFlakeOutput, soloOptions, untraced } from './node-test-guarded.mjs';
+import { failedFiles, hasTestChannel, lostFiles, missingFiles, parseRan, recordedPass, reportedTotal, saveFlakeOutput, soloOptions, untraced, withConcurrency } from './node-test-guarded.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./node-test-guarded.mjs', import.meta.url));
@@ -16,12 +16,14 @@ function fixture(t, files, extraEnv = {}) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
   const env = { ...process.env };
-  for (const key of ['NODE_TEST_CONTEXT', 'NODE_TEST_COUNT_FILE', 'NODE_TEST_COUNT_ROOT', 'NODE_TEST_COUNTED', 'NODE_OPTIONS', 'NODE_TEST_GUARD_WAIT_MS', 'NODE_TEST_RERUN_TIMEOUT_MS', 'NODE_TEST_FLAKE_MAX_FILES']) delete env[key];
+  for (const key of ['NODE_TEST_CONTEXT', 'NODE_TEST_COUNT_FILE', 'NODE_TEST_COUNT_ROOT', 'NODE_TEST_COUNTED', 'NODE_OPTIONS', 'NODE_TEST_GUARD_WAIT_MS', 'NODE_TEST_RERUN_TIMEOUT_MS', 'NODE_TEST_FLAKE_MAX_FILES', 'NODE_TEST_CONCURRENCY']) delete env[key];
   // flake 首輪輸出在不在 git repo 時放 tmpdir()：每個 fixture 用自己的 TMPDIR，並行跑多份（或別的 worktree 同時跑）時才不共用 /tmp/node-test-flake-output 互相覆寫、清除
   mkdirSync(join(dir, '.tmp'));
   env.TMPDIR = join(dir, '.tmp');
   Object.assign(env, extraEnv);
-  return (...args) => spawnSync(process.execPath, [SCRIPT, '--test-force-exit', ...args], { cwd: dir, encoding: 'utf8', env });
+  const run = (...args) => spawnSync(process.execPath, [SCRIPT, '--test-force-exit', ...args], { cwd: dir, encoding: 'utf8', env });
+  run.dir = dir;
+  return run;
 }
 
 // Node 22 沒有 node.test tracing channel：wrapper 放行、不偵測遺失，偵測遺失的測試只在有 channel 時跑
@@ -379,4 +381,41 @@ test('子行程失敗時，另一個沒收齊的檔也要列出，不被失敗�
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stderr, /^NODE_TEST_RERUN broken\.test\.mjs FAIL$/m);
   assert.match(result.stderr, /^MISSING_RESULTS half\.test\.mjs not-finished /m);
+});
+
+test('withConcurrency：沒帶時附加 NODE_TEST_CONCURRENCY（預設 6）；不合法時 WARN 並用 6；呼叫端帶了就以呼叫端為準', () => {
+  const warns = [];
+  const warn = line => warns.push(line);
+  assert.deepEqual(withConcurrency(['--test-force-exit'], {}, warn), ['--test-force-exit', '--test-concurrency=6']);
+  assert.deepEqual(withConcurrency([], { NODE_TEST_CONCURRENCY: '' }, warn), ['--test-concurrency=6']);
+  assert.deepEqual(withConcurrency([], { NODE_TEST_CONCURRENCY: ' 3 ' }, warn), ['--test-concurrency=3']);
+  assert.deepEqual(warns, []);
+  for (const bad of ['0', '-2', 'abc', '2.5', '07']) {
+    assert.deepEqual(withConcurrency([], { NODE_TEST_CONCURRENCY: bad }, warn), ['--test-concurrency=6']);
+    assert.equal(warns.pop(), `WARN NODE_TEST_CONCURRENCY ${bad} 不是正整數，改用 6`);
+  }
+  assert.deepEqual(withConcurrency(['--test-concurrency=12'], { NODE_TEST_CONCURRENCY: '2' }, warn), ['--test-concurrency=12']);
+  assert.deepEqual(withConcurrency(['--test-concurrency'], { NODE_TEST_CONCURRENCY: '2' }, warn), ['--test-concurrency']);
+  assert.deepEqual(warns, []);
+});
+
+// 每個檔開始時在 live/ 放自己的標記、記下當下同時在跑的檔數，停一下再拿掉：同時在跑的最大值不會超過上限。
+const CONCURRENT = "import { test } from 'node:test';\nimport { appendFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';\n"
+  + "test('c', async () => { mkdirSync('live', { recursive: true }); const me = `live/${process.pid}`; writeFileSync(me, '');\n"
+  + "  appendFileSync('seen', `${readdirSync('live').length}\\n`); await new Promise(done => setTimeout(done, 400));\n"
+  + "  appendFileSync('seen', `${readdirSync('live').length}\\n`); rmSync(me); });\n";
+
+test('NODE_TEST_CONCURRENCY=2：同時跑的測試檔不超過 2 個；不合法的值 stderr 印 WARN 並照常跑完', t => {
+  const files = Object.fromEntries([1, 2, 3, 4, 5].map(n => [`c${n}.test.mjs`, CONCURRENT]));
+  const names = Object.keys(files);
+  const capped = fixture(t, files, { NODE_TEST_CONCURRENCY: '2' });
+  const result = capped(...names);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const seen = readFileSync(join(capped.dir, 'seen'), 'utf8').trim().split('\n').map(Number);
+  assert.equal(seen.length, 10, seen.join(','));
+  assert.ok(Math.max(...seen) <= 2, `同時在跑的檔數 ${seen.join(',')}`);
+  const bad = fixture(t, { 'b.test.mjs': "import { test } from 'node:test';\ntest('b', () => {});\n" }, { NODE_TEST_CONCURRENCY: 'many' });
+  const warned = bad('b.test.mjs');
+  assert.equal(warned.status, 0, warned.stdout + warned.stderr);
+  assert.match(warned.stderr, /^WARN NODE_TEST_CONCURRENCY many 不是正整數，改用 6$/m);
 });
