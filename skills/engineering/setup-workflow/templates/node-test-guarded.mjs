@@ -32,6 +32,9 @@
 //   每列 `<檔（相對 cwd）>\t<名稱>\t<毫秒>\t<test|suite>`，沒有標題列；suite 是整組總時長，不受 `--test-timeout` 約束（spay2 retro 1850e43e#1：
 //   多檔並行時 spec 輸出的頂層行不帶檔名、describe 總耗時與單一測試同格式，量測只能手寫解析器）。不影響 exit code、不寫 stdout；
 //   單獨重跑的結果不另寫入；寫不成時在 stderr 印 `NODE_TEST_DURATIONS_FAILED <path> <原因>`（不 actionable，只是沒有表）。Node 22 沒有 channel 時表是空的。
+// 併發上限（CoS item 67／138）：node --test 沒帶 --test-concurrency 時預設開 availableParallelism()-1 個測試行程，heavy-slot 只限同時幾支、不限每支用多少 CPU，
+//   16 核機器上 2 個 slot 持有者就占滿整台（load 67–86）。所以呼叫端沒帶 `--test-concurrency` 時，帶入環境變數 NODE_TEST_CONCURRENCY（正整數，預設 6）；
+//   值不合法（空字串除外）時 stderr 印 `WARN NODE_TEST_CONCURRENCY <值> 不是正整數，改用 6`。呼叫端自己帶了（`--test-concurrency=<n>`）就以呼叫端為準。建議值見 setup-workflow SKILL 的 Concurrency。
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -216,6 +219,21 @@ export function takeDurations(args, env = process.env) {
   return { path, rest };
 }
 
+export const DEFAULT_TEST_CONCURRENCY = 6;
+
+/**
+ * 加上併發上限的選項：呼叫端已帶 `--test-concurrency`（`=<n>` 形式）就原樣回傳，否則附加 `--test-concurrency=<NODE_TEST_CONCURRENCY 或 6>`。
+ * `warn` 收到值不合法時的警告行（沒設或空字串不算不合法）。
+ */
+export function withConcurrency(options, env = process.env, warn = line => console.error(line)) {
+  if (options.some(option => option === '--test-concurrency' || option.startsWith('--test-concurrency='))) return options;
+  const raw = env.NODE_TEST_CONCURRENCY?.trim() ?? '';
+  let value = DEFAULT_TEST_CONCURRENCY;
+  if (/^[1-9]\d*$/.test(raw)) value = Number(raw);
+  else if (raw !== '') warn(`WARN NODE_TEST_CONCURRENCY ${raw} 不是正整數，改用 ${DEFAULT_TEST_CONCURRENCY}`);
+  return [...options, `--test-concurrency=${value}`];
+}
+
 /** 單獨重跑的選項：拿掉 force-exit，父行程才會等子行程把結果送完。 */
 export const soloOptions = options => options.filter(option => option !== '--test-force-exit');
 
@@ -260,7 +278,7 @@ async function rerun(options, path) {
 
 export async function main(argv) {
   const { path: durationsPath, rest: args } = takeDurations(argv);
-  const options = args.filter(arg => arg.startsWith('-'));
+  const options = withConcurrency(args.filter(arg => arg.startsWith('-')));
   if (!options.some(arg => arg.startsWith('--test-reporter='))) options.unshift('--test-reporter=spec');
   const files = args.filter(arg => !arg.startsWith('-'));
   const first = await runOnce(options, files);

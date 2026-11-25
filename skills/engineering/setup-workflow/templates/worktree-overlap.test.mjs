@@ -186,6 +186,28 @@ test('TEMPLATE_COPY：給的檔是 workflow-templates.json 列出的副本時，
   assert.doesNotMatch(run(b, 'scripts/run-codex-review.mjs').stdout, /TEMPLATE_COPY/);
 });
 
+// #553（investing#679 第 9 項）：git-bypass 移出 copies、改列 localExceptions 後，改這支暫留的舊 hook 沒有 TEMPLATE_COPY 提示，
+// 本地修補在拿掉例外重新複製時無聲消失。
+test('TEMPLATE_COPY：localExceptions 內的檔也印 TEMPLATE_COPY 與來源行；只在 copies 內的檔輸出不變', t => {
+  const { main } = fixture(t);
+  const template = name => `skills/engineering/setup-workflow/templates/${name}`;
+  const entry = name => ({ template: template(name), commit: '0'.repeat(40), sha256: '0'.repeat(64) });
+  const copies = { 'scripts/run-codex-review.mjs': entry('run-codex-review.mjs') };
+  const manifestFile = join(main, 'docs/agents/workflow-templates.json');
+  writeFileSync(manifestFile, `${JSON.stringify({ source: 'ron03wlb/ron-skills', copies }, null, 2)}\n`);
+  const copiesOnly = run(main, 'scripts/run-codex-review.mjs').stdout;
+  writeFileSync(manifestFile, `${JSON.stringify({ source: 'ron03wlb/ron-skills', localExceptions: ['scripts/claude-hook-git-bypass.mjs', 'test/fixtures/orca'], copies }, null, 2)}\n`);
+  assert.equal(run(main, 'scripts/run-codex-review.mjs').stdout, copiesOnly);
+  const result = run(main, 'scripts/claude-hook-git-bypass.mjs', 'scripts/test/fixtures/orca/a.json', 'scripts/test/fixtures/orcax.json');
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trim().split('\n').filter(line => !line.startsWith('OVERLAP_WT'));
+  assert.equal(lines.length, 4, lines.join('\n'));
+  assert.equal(lines[0], `TEMPLATE_COPY scripts/claude-hook-git-bypass.mjs ${template('claude-hook-git-bypass.mjs')}`);
+  assert.match(lines[1], /^  來源：skills\/engineering\/setup-workflow\/templates\/claude-hook-git-bypass\.mjs（workflow-templates\.json 的 localExceptions 列了 scripts\/claude-hook-git-bypass\.mjs.*重新複製.*正本/);
+  assert.equal(lines[2], `TEMPLATE_COPY scripts/test/fixtures/orca/a.json ${template('test/fixtures/orca/a.json')}`);
+  assert.match(lines[3], /^  來源：.*localExceptions 列了 test\/fixtures\/orca，/);
+});
+
 // #503：consumer 為副本開上游單前沒比對副本與範本，兩次開出早已修好的單；#498 真正擋住那條指令的是另一支 PreToolUse hook（bash-pitfalls）。
 test('TEMPLATE_COPY：PreToolUse Bash hook 的副本多一行 hook 類比對；正本就在本 repo（ron-skills）時不印開上游單前', t => {
   const { main } = fixture(t);
