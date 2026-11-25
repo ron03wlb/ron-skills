@@ -2336,7 +2336,7 @@ function contextFixture(t, { tokens, adapter } = {}) {
     mkdirSync(join(f.repo, 'docs', 'agents'), { recursive: true });
     writeFileSync(join(f.repo, 'docs', 'agents', 'issue-run.md'), adapter);
     f.git('add', 'docs');
-    f.git('commit', '-qm', 'adapter');
+    f.git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'adapter');
   }
   const extraEnv = { CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_SESSION_ID: 'sess-1' };
   return { ...f, extraEnv };
