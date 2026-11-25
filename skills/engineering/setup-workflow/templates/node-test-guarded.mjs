@@ -13,7 +13,7 @@
 //   缺的檔每檔印 `MISSING_RESULTS <path> <原因>` 到 stderr，單獨重跑，重跑也要收齊才算 PASS（印 `NODE_TEST_RERUN <path> PASS|FAIL`），否則 exit 1。
 //   唯一的例外是 Node 沒有 node.test tracing channel（22）：所有紀錄都沒有事件，且探測確認 channel 不存在時，記不到名稱與是否跑完，
 //   只能逐檔核對有紀錄、exit 0，印 `NODE_TEST_UNTRACED`。channel 存在時沒有事件的檔一律算缺（測試檔在第一個測試前就結束、或根本沒有測試）。
-// 用法：node scripts/node-test-guarded.mjs <node --test 的選項（--name=value 形式）…> <測試檔…>
+// 用法：node scripts/node-test-guarded.mjs [--durations <path>] <node --test 的選項（--name=value 形式）…> <測試檔…>
 //   node --test 失敗時，依子行程紀錄（failed、code）找出失敗的檔（沒有紀錄的檔也算），各單獨重跑一次（高負載下才失敗的測試，retro spay2 92fa93fe#3）：
 //   全過時每檔印 `NODE_TEST_FLAKE_SUSPECT <path>` 到 stderr、不算失敗；cwd 有 scripts/followups.mjs 時另寫一行 followups [tooling]，每個呼叫端都記到（followups 264：
 //   原本只有 push gate 會寫，batch-merge verify 與 fix-land 的 check-contracts 只留在 log）。內容相同的未處理行已存在時它不重複寫；寫不成不影響結果。重跑仍失敗印 `NODE_TEST_RERUN <path> FAIL`，回傳第一次的 exit code。
@@ -28,6 +28,10 @@
 //   遺失的是回報而不是執行時（Linux CI 上單獨重跑也會遺失，#256）：子行程紀錄完整（每個開始的測試都有結束紀錄）、
 //   沒有失敗、子行程 exit 0，就印 `NODE_TEST_RECORDED <path> PASS：<說明>` 判定通過、不重跑；其餘照舊單獨重跑，重跑也以同樣規則判定。
 //   總數不等卻找不到是哪個檔時印 `NODE_TEST_COUNT_MISMATCH`，exit 1。
+// `--durations <path>`（或 `--durations=<path>`、環境變數 NODE_TEST_DURATIONS）：第一輪結束後把子行程紀錄的耗時寫成 TSV，
+//   每列 `<檔（相對 cwd）>\t<名稱>\t<毫秒>\t<test|suite>`，沒有標題列；suite 是整組總時長，不受 `--test-timeout` 約束（spay2 retro 1850e43e#1：
+//   多檔並行時 spec 輸出的頂層行不帶檔名、describe 總耗時與單一測試同格式，量測只能手寫解析器）。不影響 exit code、不寫 stdout；
+//   單獨重跑的結果不另寫入；寫不成時在 stderr 印 `NODE_TEST_DURATIONS_FAILED <path> <原因>`（不 actionable，只是沒有表）。Node 22 沒有 channel 時表是空的。
 // 併發上限（CoS item 67／138）：node --test 沒帶 --test-concurrency 時預設開 availableParallelism()-1 個測試行程，heavy-slot 只限同時幾支、不限每支用多少 CPU，
 //   16 核機器上 2 個 slot 持有者就占滿整台（load 67–86）。所以呼叫端沒帶 `--test-concurrency` 時，帶入環境變數 NODE_TEST_CONCURRENCY（正整數，預設 6）；
 //   值不合法（空字串除外）時 stderr 印 `WARN NODE_TEST_CONCURRENCY <值> 不是正整數，改用 6`。呼叫端自己帶了（`--test-concurrency=<n>`）就以呼叫端為準。建議值見 setup-workflow SKILL 的 Concurrency。
@@ -164,7 +168,7 @@ async function runOnce(options, files, { timeoutMs } = {}) {
     const status = await new Promise(done => child.on('close', (exit, signal) => done(exit ?? (signal ? 1 : 0))));
     clearTimeout(timer);
     const code = timedOut && status === 0 ? 1 : status;
-    if (timedOut) return { code, lost: [], missing: [], passed: () => false, failed: [], timedOut };
+    if (timedOut) return { code, lost: [], missing: [], passed: () => false, failed: [], timedOut, text: '' };
     const wanted = files.map(file => resolve(file));
     const readText = () => existsSync(ranFile) ? readFileSync(ranFile, 'utf8') : '';
     let text = readText();
@@ -173,7 +177,7 @@ async function runOnce(options, files, { timeoutMs } = {}) {
     // 總數相等還不夠：中途 process.exit(0) 的檔被父行程算成 1 個測試，跑完數恰好相等時會放過（#517），所以逐檔名稱也要對得上；
     // 名稱都對得上也不夠：在測試之間結束的檔，紀錄與輸出一起少（#1099），所以每個檔都要收齊。
     if (code === 0 && !missingFiles(text, wanted).length && total() === reportedTotal(output) && !lostFiles(ran, output).length) {
-      return { code, lost: [], missing: [], passed: () => false, failed: [] };
+      return { code, lost: [], missing: [], passed: () => false, failed: [], text };
     }
     // 父行程先結束：還在跑的子行程結束時才寫記錄，等它們寫完再比對。沒有 force-exit 時父行程會等子行程，沒有記錄就是不會有了。
     const orphans = options.includes('--test-force-exit');
@@ -189,11 +193,30 @@ async function runOnce(options, files, { timeoutMs } = {}) {
     const missing = missingFiles(text, wanted, { parentCode: code, traced }).filter(({ file }) => !failed.includes(file));
     const skip = file => failed.includes(file) || missing.some(entry => entry.file === file);
     const lost = lostFiles(ran, output).filter(({ file }) => !skip(file));
-    return { code, lost, missing, failed, output, passed: file => recordedPass(text, file),
+    return { code, lost, missing, failed, output, text, passed: file => recordedPass(text, file),
       mismatch: traced && code === 0 && !lost.length && !missing.length && total() !== reportedTotal(output) ? `ran=${total()} reported=${reportedTotal(output)}` : null };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/** preload 的 JSON lines → TSV 列（每列結尾換行）；名稱裡的 tab／換行換成空白，免得拆欄。舊格式沒有 durations 的紀錄略過。 */
+export function durationRows(text, cwd = process.cwd()) {
+  const clean = value => String(value).replace(/[\t\r\n]+/g, ' ');
+  return text.split('\n').filter(Boolean).map(line => JSON.parse(line))
+    .flatMap(({ file, durations = [] }) => durations.map(([name, ms, kind]) => `${clean(relative(cwd, file))}\t${clean(name)}\t${ms}\t${kind}\n`));
+}
+
+/** 從參數拿出 `--durations <path>`／`--durations=<path>`；沒有時用 NODE_TEST_DURATIONS → { path, rest }。 */
+export function takeDurations(args, env = process.env) {
+  const rest = [];
+  let path = env.NODE_TEST_DURATIONS || null;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--durations') path = args[++i] ?? null;
+    else if (args[i].startsWith('--durations=')) path = args[i].slice('--durations='.length);
+    else rest.push(args[i]);
+  }
+  return { path, rest };
 }
 
 export const DEFAULT_TEST_CONCURRENCY = 6;
@@ -253,11 +276,19 @@ async function rerun(options, path) {
   return solo.code === 0 && !solo.mismatch && !solo.missing.length && solo.lost.every(({ file }) => solo.passed(file));
 }
 
-export async function main(args) {
+export async function main(argv) {
+  const { path: durationsPath, rest: args } = takeDurations(argv);
   const options = withConcurrency(args.filter(arg => arg.startsWith('-')));
   if (!options.some(arg => arg.startsWith('--test-reporter='))) options.unshift('--test-reporter=spec');
   const files = args.filter(arg => !arg.startsWith('-'));
   const first = await runOnce(options, files);
+  if (durationsPath) {
+    try {
+      writeFileSync(durationsPath, durationRows(first.text).join(''));
+    } catch (error) {
+      console.error(`NODE_TEST_DURATIONS_FAILED ${durationsPath} ${error.message}`);
+    }
+  }
   if (first.code !== 0 && !first.failed.length) return first.code;
   if (first.failed.length > FLAKE_MAX_FILES) {
     console.error(`NODE_TEST_FLAKE_SKIPPED ${first.failed.length} 個檔失敗，超過單獨重跑上限 ${FLAKE_MAX_FILES}，視為真實失敗`);
