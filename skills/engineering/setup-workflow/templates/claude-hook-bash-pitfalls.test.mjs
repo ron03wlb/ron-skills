@@ -3,7 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { checkPiped, ghViewCommentsWithoutJson, truncatedDocGrep, unquotedHeredocs } from './claude-hook-bash-pitfalls.mjs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { realTmpdir } from './test/real-tmpdir.mjs';
+import { join } from 'node:path';
+import { checkPiped, ghViewCommentsWithoutJson, hashSubjectCommits, truncatedDocGrep, unquotedHeredocs } from './claude-hook-bash-pitfalls.mjs';
 
 const HOOK = fileURLToPath(new URL('./claude-hook-bash-pitfalls.mjs', import.meta.url));
 const run = input => spawnSync('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8' });
@@ -129,6 +132,69 @@ test('欄位切、head -n、grep 程式碼、沒截斷、引號裡的字放行�
     'echo "grep -rn foo docs | cut -c1-160"',
     "node scripts/doc-excerpt.mjs 'local-checks' docs/agents/*.md | cut -c1-300",
   ]) assert.equal(bash(command).status, 0, command);
+});
+
+// #636 兩次真實再現：#395 worker（session 88d4ebfb jsonl 第 451 行）以 -F 讀訊息檔，#560 worker（session fbf1a134）以 -F - heredoc。
+// 兩次都是 pre-commit 跑完檢查子集後，commit-msg 才以 COMMIT_MSG_SECOND_LINE 擋下、提示加空行。
+const COMMIT_395 = 'git commit -q -F .scratch/issue-run-395/commit-msg.txt';
+const MSG_395 = '#395 Push gate 單一入口：x\n\n內文第一行\n內文第二行\n';
+const COMMIT_560 = [
+  "HEAVY_CHECK_TIMEOUT=0 git commit -q -F - <<'EOF'",
+  '#560 Stage conflict：integration 來源的 code/other 重派前先查例外',
+  '',
+  '一項命中就開 gate，都沒命中才照 Fresh redispatch 重派；測試斷言',
+  '',
+  'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>',
+  'EOF',
+].join('\n');
+
+/** 建一個暫存 cwd，放 #395 的訊息檔（與改好的版本）。 */
+function repo395(t) {
+  const cwd = mkdtempSync(join(realTmpdir(), 'bash-pitfalls-636-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  mkdirSync(join(cwd, '.scratch/issue-run-395'), { recursive: true });
+  writeFileSync(join(cwd, '.scratch/issue-run-395/commit-msg.txt'), MSG_395);
+  writeFileSync(join(cwd, '.scratch/issue-run-395/fixed.txt'), MSG_395.replace('#395 Push gate 單一入口', 'Push gate 單一入口（#395）'));
+  return cwd;
+}
+
+test('git commit 主旨以 # 開頭：#395 的 -F 訊息檔與 #560 的 -F - heredoc 都在 commit 前擋下（#636）', t => {
+  const cwd = repo395(t);
+  const r395 = run({ tool_name: 'Bash', cwd, tool_input: { command: COMMIT_395 } });
+  assert.equal(r395.status, 2, r395.stderr);
+  assert.match(r395.stderr, /#636/);
+  assert.match(r395.stderr, /`#395 Push gate 單一入口：x`/);
+  assert.match(r395.stderr, /Push gate（#395）/);
+  const r560 = bash(COMMIT_560);
+  assert.equal(r560.status, 2, r560.stderr);
+  assert.match(r560.stderr, /`#560 Stage conflict：/);
+  assert.deepEqual(hashSubjectCommits(COMMIT_560).map(hit => hit.subject), ['#560 Stage conflict：integration 來源的 code/other 重派前先查例外']);
+  for (const command of [
+    "git commit -m '#395 Push gate：x'",
+    'git commit -q -m "#395 Push gate：x" -m "內文"',
+    "git commit -am '#395 x'",
+    "git commit --message='#395 x'",
+    "git -C sub -c user.name=t commit -m '#395 x'",
+    `git commit -m "$(cat <<'EOF'\n#395 Push gate：x\n\n內文\nEOF\n)"`,
+    "cd x && git add . && git commit -F - <<'EOF'\n\n#395 x\nEOF",
+  ]) assert.equal(bash(command).status, 2, command);
+  assert.equal(run({ tool_name: 'Bash', cwd, tool_input: { command: 'git -C .scratch commit -F issue-run-395/commit-msg.txt' } }).status, 2, 'git -C 下的相對路徑');
+});
+
+test('主旨不以 # 開頭、只有內文行以 # 開頭、讀不到訊息檔或不是 git commit 放行（#636 反例）', t => {
+  const cwd = repo395(t);
+  for (const command of [
+    "git commit -m 'Push gate（#395）：x'",
+    COMMIT_560.replace('#560 Stage conflict：integration 來源的 code/other 重派前先查例外', 'Stage conflict：重派前先查例外（#560）'),
+    "git commit -F - <<'EOF'\nPush gate（#395）：x\n\n#395 內文行以 # 開頭\n# 這行也是\nEOF",
+    "git commit -m 'Push gate（#395）：x' -m '#395 內文段落'",
+    'git commit -q -F .scratch/issue-run-395/fixed.txt',
+    'git commit -q -F .scratch/missing.txt',
+    "git commit -C HEAD -m 'x'",
+    "git log --grep '#395'",
+    "echo \"git commit -m '#395 x'\"",
+    "git commit -m \"$(printf '#395 x')\"",
+  ]) assert.equal(run({ tool_name: 'Bash', cwd, tool_input: { command } }).status, 0, command);
 });
 
 test('非 Bash 工具、輸入不合法、沒有 command 時 exit 0 不輸出', () => {

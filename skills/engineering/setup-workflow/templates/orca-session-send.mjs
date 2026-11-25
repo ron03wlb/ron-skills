@@ -11,12 +11,14 @@
 // 忙碌畫面本來就有 `esc to interrupt`，也可能留著開頭相同的上一則提醒（還會捲出畫面），所以不看畫面，只看 composer：
 // 先只打字、等 `draft` 出現 prompt，再只補 Enter、等 `draft` 清空；整段文字最多送一次，只有 Enter 會重送。
 // 送出前 composer 不是空的（例如上一次 STOP 留下的舊提醒）就 STOP draft-not-empty，不把舊草稿當成這一則送出；
-// 任何一次讀不到 `draft` 欄位（`orca terminal read --help`：may be absent）都無從確認，STOP draft-unavailable，不重送。
+// `draft` 欄位在 composer 為空時真實輸出就不帶（`orca terminal read --help`：may be absent；實測 Claude TUI 輸入框空著時沒有這個欄位，
+// 工作中、跑 pre-commit 的 worker 也一樣），所以缺省或 null 一律視為空字串，不另 STOP（曾因此對 pre-commit 中的 worker 三次 STOP draft-unavailable，#643）；
+// 沒打進去的文字仍由「`draft` 要出現 prompt 開頭才補 Enter」擋下（STOP send），不會盲送 Enter。
 // 忙碌中 session 的真實 `terminal read` 樣本：test/fixtures/orca/read-working.json（WSL、Orca 1.4.271 錄，#507；spinner 行與未送出的 `draft` 都在）；
 // macOS 那份尚未錄，macos/ 下是同形狀的副本。
 //
 // 用法：node scripts/orca-session-send.mjs --terminal <handle> --prompt <text> [--queue]
-// stdout 最後一行：SENT <handle>、QUEUED <handle>（--queue），或 STOP <原因>（tui-timeout <handle>、send <handle>、draft-not-empty <handle>、draft-unavailable <handle>（後兩者只在 --queue）、orca <錯誤碼>）。
+// stdout 最後一行：SENT <handle>、QUEUED <handle>（--queue），或 STOP <原因>（tui-timeout <handle>、send <handle>、draft-not-empty <handle>（只在 --queue）、orca <錯誤碼>）。
 //   步驟逾時的 orca 原因帶出步驟與已花時間：`orca timeout <terminal 子指令> <毫秒>ms`（#535）。
 // stderr：不帶 --queue 時，第一次送出因 composer 已有該 prompt 而只補 Enter 時印 `DRAFT_SUBMIT <handle>`（不含 prompt 文字）。
 //   `tui-timeout` 時先讀該分頁的畫面再回 STOP（呼叫者之後可能關掉分頁，畫面就跟著消失，#536）：印 `SCREEN_TAIL <handle>` 加最後 15 行（每行前面兩個空白），
@@ -181,25 +183,23 @@ export async function sendPrompt(ctx, handle, text) {
 /**
  * 把 prompt 排進忙碌中 session 的下一輪：`draft` 是空的才只打字，讀到 `draft` 含 prompt 開頭才補 Enter，`draft` 清空才算排進佇列；
  * Enter 依 SEND_DELAYS 重送，整段文字只送一次。
- * @returns {Promise<string | null>} 排進佇列回 null，否則回 STOP 原因：`draft-not-empty`、`draft-unavailable` 或 `send`。
+ * @returns {Promise<string | null>} 排進佇列回 null，否則回 STOP 原因：`draft-not-empty` 或 `send`。
  */
 export async function queuePrompt(ctx, handle, text) {
-  // 欄位缺省或不是字串（如 null）都算讀不到。
+  // composer 為空時真實輸出不帶 `draft`：欄位缺省或不是字串（如 null）都當空字串。
   const readDraft = async () => {
     const draft = (await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal?.draft;
-    return typeof draft === 'string' ? draft : undefined;
+    return typeof draft === 'string' ? draft : '';
   };
   const poll = async done => {
     for (let i = 0; i < CONFIRM_POLLS; i++) {
       await sleep(CONFIRM_MS, undefined, { signal: ctx.signal });
       const draft = await readDraft();
-      if (draft === undefined) return 'draft-unavailable';
       if (done(draft)) return null;
     }
     return 'send';
   };
   const draft = await readDraft();
-  if (draft === undefined) return 'draft-unavailable';
   if (draft.trim()) return 'draft-not-empty';
   if (!(await orca(ctx, 'terminal', 'send', '--terminal', handle, '--text', text)).send?.accepted) return 'send';
   const typed = await poll(draft => draft.includes(promptHead(text)));

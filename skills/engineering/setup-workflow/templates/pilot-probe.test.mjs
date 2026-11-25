@@ -63,7 +63,7 @@ if (process.argv[3] === 'wait') reply('wait', { wait: { satisfied: true } });
 else if (process.argv[3] === 'send') { fs.appendFileSync(sentFile, arg('--text') + '\\n'); reply('send'); }
 else if (screen.raw !== undefined) process.stdout.write(screen.raw);
 // 不帶 --screen 的讀取（累積輸出，#537）：有 scrollback 時回它，沒有時同畫面。
-else if (!process.argv.includes('--screen') && scrollback) reply('read', { terminal: { ...screen, tail: scrollback } });
+else if (!process.argv.includes('--screen') && scrollback) reply('read', { terminal: { ...screen, tail: [...scrollback, ...sent.map(text => '> ' + text)] } });
 else reply('read', { terminal: { ...screen, tail: [...(screen.tail ?? []), ...sent.map(text => '> ' + text)] } });
 `);
   chmodSync(cli, 0o755);
@@ -108,7 +108,8 @@ else process.exit(1);
 `);
   chmodSync(join(bin, 'gh'), 0o755);
   if (world) writeFileSync(join(temp, 'world.json'), JSON.stringify(world));
-  const probeEnv = { ...env, PATH: `${bin}:${env.PATH}` };
+  // HEAVY_CHECK_DIR：heavy-slot 的 slot 目錄指到暫存目錄，Probe 判 STUCK 前讀的排隊者與持有者（#644 第 3 項）不受這台機器真的 slot 影響。
+  const probeEnv = { ...env, PATH: `${bin}:${env.PATH}`, HEAVY_CHECK_DIR: join(temp, 'heavy-slot'), HEAVY_CHECK_SLOTS: '2' };
 
   const batch = (key, current, members) => writeFileSync(join(pilot, `batch-${key}.md`), `# batch ${key}
 current: ${current}
@@ -2242,6 +2243,90 @@ test('pilot-batch resume 之後：started 是現在，Probe 印 RUNNING 不印 S
   assert.equal(result.status, 0, result.stderr);
   assert.ok(lines(result).includes('WORKER 385 RUNNING 0'), result.stdout);
   assert.equal(readFileSync(file, 'utf8'), before);
+});
+
+// #643 第 1 項（batch-395）：resume 時 STOP 已捲出畫面，resumed 行記成 `-`；worker 之後在背景等 pre-commit、畫面閒置，Probe 往回讀累積輸出（#537），
+// 那裡的舊 STOP 尾巴還黏著 Orca 側欄（`│…s/pilot-after-merge.md[ ask ]`），被當成新結果、--apply 寫回 stop，pilot-watch 也立刻結束。
+const SIDEBAR_STOP = 'STOP 395 permission settings.json 缺 pilot-land.mjs push 規則';
+const filler = Array.from({ length: 60 }, (_, i) => `  報告第 ${i + 1} 行`);
+
+test('resume 時結果行只在累積輸出裡（帶側欄尾巴）：resumed 行記下它（不是 -），之後 Probe --apply 不寫回 stop（#643）', t => {
+  const idle = ['● commit 在背景跑 pre-commit 檢查', '❯'];
+  const { batch, pilot, probe, pilotBatch } = fixture(t, { screens: { term_395: {
+    status: 'running', tail: idle, scrollback: [`  ${SIDEBAR_STOP} │…s/pilot-after-merge.md[ ask ]`, ...filler, ...idle],
+  } } });
+  batch('395', 'dispatched 2026-11-25T11:00:00+08:00', [{ n: 395, started: ago(60), state: 'stop' }]);
+  const resumed = pilotBatch('resume', '395', '395', '--note', '範圍補充後請繼續');
+  assert.equal(resumed.stdout, 'RESUMED 395 395\n', resumed.stderr);
+  const file = join(pilot, 'batch-395.md');
+  assert.match(readFileSync(file, 'utf8'), new RegExp(`\\nresumed: #395 \\S+ ${SIDEBAR_STOP}\\n$`));
+  const before = readFileSync(file, 'utf8');
+  const result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(lines(result).includes('WORKER 395 RUNNING 0'), result.stdout);
+  assert.equal(readFileSync(file, 'utf8'), before);
+});
+
+test('resumed 行與畫面、累積輸出裡的同一個結果行側欄尾巴不同：比對前去掉 `│` 之後的側欄，仍當舊結果（#643）', t => {
+  const { batch, pilot, probe } = fixture(t, { screens: {
+    term_395: { status: 'running', tail: ['● 等 pre-commit', '❯'], scrollback: [`${SIDEBAR_STOP} │…s/pilot-after-merge.md[ ask ]`, ...filler, '❯'] },
+    term_396: { status: 'running', tail: [`│ STOP 396 decision 舊的 │ docs/a.md[ ask ]`, '❯'] },
+    term_397: { status: 'running', tail: [`DONE 397 ${SHA}   │ 側欄`, '❯'] },
+  } });
+  batch('395-396-397', 'dispatched 2026-11-25T11:00:00+08:00', [{ n: 395, started: ago(3) }, { n: 396, started: ago(3) }, { n: 397, started: ago(3) }]);
+  const file = join(pilot, 'batch-395-396-397.md');
+  // 舊檔的 resumed 行可能帶著 resume 當下的側欄尾巴。
+  writeFileSync(file, readFileSync(file, 'utf8') + resumedLine(395, `${SIDEBAR_STOP} │ 別的側欄`) + resumedLine(396, 'STOP 396 decision 舊的'));
+  const before = readFileSync(file, 'utf8');
+  const result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  const out = lines(result);
+  assert.ok(out.some(line => /^WORKER 395 RUNNING [34]$/.test(line)), result.stdout);
+  assert.ok(out.some(line => /^WORKER 396 RUNNING [34]$/.test(line)), result.stdout);
+  // 側欄尾巴不再讓 DONE 對不到 `^DONE <n> <sha>$`。
+  assert.ok(out.includes(`WORKER 397 DONE ${SHA}`), result.stdout);
+  assert.notEqual(readFileSync(file, 'utf8'), before);
+  assert.match(readFileSync(file, 'utf8'), /\| 395 \|.*\| running \|/);
+  assert.match(readFileSync(file, 'utf8'), /\| 396 \|.*\| running \|/);
+});
+
+// #644 第 3 項：worker 的 pre-commit 在等全機 heavy-slot（WAITER waited=5981s cwd=<成員 worktree>），Probe 印 STUCK stuck-after 121，
+// coordinator 要手動比對 heavy-slot status 才知道不是卡住。
+test('超過 stuck-after、heavy-slot 有排隊者的 cwd 在成員 worktree：印 SLOT_WAIT <秒>，不印 STUCK；別的 worktree 照舊 STUCK', t => {
+  const { batch, probe, temp, probeEnv } = fixture(t, { screens: {
+    term_560: { status: 'running', tail: ['● commit 與 pre-commit 在背景跑', '❯'] },
+    term_56: { status: 'running', tail: ['❯'] },
+  } });
+  const worktree = n => join(temp, 'w', `issue-${n}`);
+  batch('56-560', 'dispatched 2026-11-25T21:00:00+08:00', [{ n: 560, started: ago(121), worktree: worktree(560) }, { n: 56, started: ago(121), worktree: worktree(56) }]);
+  mkdirSync(probeEnv.HEAVY_CHECK_DIR, { recursive: true });
+  // 排隊者要是活著的行程（heavy-slot 會清掉 pid 已不在的 wait 檔）：用這支測試行程的 pid。
+  const since = new Date(Date.now() - 5981 * 1000).toISOString();
+  writeFileSync(join(probeEnv.HEAVY_CHECK_DIR, `wait-${process.pid}.json`), JSON.stringify({ label: 'demo:pre-commit', pid: process.pid, cwd: join(worktree(560), 'sub'), since, priority: 'low' }));
+  const result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  const out = lines(result);
+  assert.ok(out.some(line => /^WORKER 560 SLOT_WAIT 598[1-9]$/.test(line)), result.stdout);
+  // `issue-56` 是 `issue-560` 的字首，不能算在裡面。
+  assert.ok(out.some(line => /^WORKER 56 STUCK stuck-after 12[12]$/.test(line)), result.stdout);
+});
+
+test('超過 stuck-after、成員 worktree 的檢查正持有 heavy-slot：印 SLOT_HELD <秒>（#644）', async t => {
+  const { batch, probe, temp, probeEnv } = fixture(t, { screens: { term_561: { status: 'running', tail: ['❯'] } } });
+  const worktree = join(temp, 'w', 'issue-561');
+  mkdirSync(worktree, { recursive: true });
+  batch('561', 'dispatched 2026-11-25T21:00:00+08:00', [{ n: 561, started: ago(121), worktree }]);
+  const holder = spawn('node', [new URL('./heavy-slot.mjs', import.meta.url).pathname, 'run', '--label', 'demo:bin-check', '--', 'node', '-e', 'setTimeout(() => {}, 30000)'],
+    { cwd: worktree, env: probeEnv, stdio: ['ignore', 'ignore', 'pipe'] });
+  t.after(() => holder.kill('SIGTERM'));
+  let stderr = '';
+  await new Promise((done, fail) => {
+    holder.stderr.on('data', chunk => { stderr += chunk; if (stderr.includes('SLOT_ACQUIRED')) done(); });
+    holder.on('exit', code => fail(new Error(`heavy-slot exited ${code}: ${stderr}`)));
+  });
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(lines(result).some(line => /^WORKER 561 SLOT_HELD \d+$/.test(line)), result.stdout);
 });
 
 // #368：交接門檻（合入 2 批）原本由 coordinator 自己數；investing 66e552ea 把前任派的 381、383 算進來，誤判已達門檻。

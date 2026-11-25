@@ -112,6 +112,25 @@ test('batch 成員的結果行已捲出畫面：往回讀累積輸出回報 RESU
   assert.equal(result.stdout, `RESULT 526 term_526 DONE 526 ${SHA}\n`);
 });
 
+// #643 第 1 項（batch-395）：resume 後 worker 在背景等 pre-commit、畫面閒置，watcher 往回讀累積輸出（#537），那裡的舊 STOP 尾巴黏著 Orca 側欄，
+// 與 resumed 行字串不同，watcher 一啟動就印 RESULT 結束。比對前去掉 `│` 之後的側欄：舊 STOP 不報，之後的新結果照報。
+test('累積輸出裡的舊 STOP 帶側欄尾巴、resumed 行記的是去掉側欄的那一行：不當新結果，等到新的 DONE 才結束（#643）', t => {
+  const old = 'STOP 395 permission settings.json 缺 pilot-land.mjs push 規則';
+  const idle = ['● commit 在背景跑 pre-commit 檢查', '❯'];
+  const scrollback = [`  ${old} │…s/pilot-after-merge.md[ ask ]`, '  報告', ...idle];
+  const { batch, run, reads } = fixture(t, { term_395: [
+    { status: 'running', tail: idle, scrollback },
+    { status: 'running', tail: idle, scrollback },
+    { status: 'running', tail: [`DONE 395 ${SHA}`, '❯'] },
+  ] });
+  batch('395', [{ n: 395, handle: 'term_395' }], `resumed: #395 2026-11-25T12:07:35+08:00 ${old}\n`);
+  const result = run(['--batch', '395', '--checkout', 'checkout', ...fast]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `RESULT 395 term_395 DONE 395 ${SHA}\n`);
+  // 三次 --screen 讀取加兩次累積輸出：前兩輪沒有結束。
+  assert.ok(reads('term_395') >= 5, String(reads('term_395')));
+});
+
 test('batch 成員沒有 resumed 行、啟動時畫面已有自己的結果行：第一輪就回報（與 Probe 的 WORKER 同一判斷）', t => {
   const { batch, run } = fixture(t, { term_436: [{ status: 'running', tail: [`DONE 436 ${SHA}`, '❯'] }] });
   batch('436', [{ n: 436, handle: 'term_436' }]);

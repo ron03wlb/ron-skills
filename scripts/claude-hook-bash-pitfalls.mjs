@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
-// Claude Code Bash PreToolUse hook：擋下四種 agent 反覆踩、錯誤訊息又不指向原因的 Bash 寫法（#444、#428、#479、#571）。
+// Claude Code Bash PreToolUse hook：擋下五種 agent 反覆踩、錯誤訊息又不指向原因的 Bash 寫法（#444、#428、#479、#571、#636）。
 // 1. heredoc 分隔字沒加引號（#444）：`cat > f.md <<EOF` 的內文 bash 與 zsh 都照命令替換處理，內文裡 Markdown 的 `` `git cherry-pick 84554ca` ``
 //    會被當命令執行，輸出換進檔案、命令本身也真的跑了（retro-418.md 的內文被吃掉三段）。分隔字有任何引號（`'EOF'`、`"EOF"`、`\EOF`、`E"OF"`）內文就不展開。
 //    命中：`<<WORD`／`<<-WORD`（不是 `<<<` here-string，不在引號、註解或 `$(( … ))` 裡）的分隔字沒引號，且內文含沒跳脫的反引號或 `$(`。
@@ -14,8 +14,14 @@
 //    命中的詞常在截斷處之後，印出來的那行看不到它，agent 誤判沒有殘留。命中：同一條管線裡 grep（egrep／fgrep／rg）的搜尋目標
 //    有文件類路徑（`docs`、`…/docs/…`、`*.md`、`GLOSSARY`，或 `--include=*.md`），後面接 `cut -c`／`cut -b`、`head -c` 或 awk 的 `substr(`。
 //    `cut -d… -f…`（欄位切）、`head -n`、grep 程式碼目錄都不擋。
+// 5. `git commit` 的訊息主旨以 `#` 開頭（`#395 Push gate：…`，#636）：commit-msg 的 check-commit-message.mjs（與 git 的 strip cleanup）
+//    把 `#` 開頭的行當註解刪掉，內文第一行頂上來當主旨，於是報 `COMMIT_MSG_SECOND_LINE`、提示加空行，指錯方向；
+//    而且要等 pre-commit 跑完檢查子集才擋。這裡在 commit 之前就擋。命中：簡單指令（去掉 `VAR=…` 與前綴、git 的 `-C`／`-c` 等全域選項後）
+//    是 `git commit`，訊息第一個非空行以 `#` 開頭：`-m`／`--message` 的值（含 `"$(cat <<'EOF' … EOF)"`）、`-F -` 時該指令的 heredoc、
+//    `-F <檔>` 時讀該檔（相對路徑依 hook 輸入的 cwd 與 `git -C`；讀不到就放行）。只看主旨，內文行以 `#` 開頭不擋。
 // 命中時 exit 2，stderr 用繁體中文說明原因與改法；輸入不合法或不是 Bash 時 exit 0 不輸出。
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { doubleQuoteEnd, substitutionEnd } from './lib/shell-quote.mjs';
 
@@ -53,7 +59,8 @@ function scan(command) {
           if ((doc.strip ? line.replace(/^\t+/, '') : line) === doc.tag) break;
           lines.push(line);
         }
-        heredocs.push({ tag: doc.tag, quoted: doc.quoted, body: lines.join('\n') });
+        doc.body = lines.join('\n');
+        heredocs.push(doc);
       }
       continue;
     }
@@ -109,7 +116,8 @@ function scan(command) {
           j = k + 1;
         } else { tag += d; j++; }
       }
-      if (tag) pending.push({ tag, quoted, strip });
+      // heredoc 也記在所屬的簡單指令上（`git commit -F -` 要讀它的內文）；內文讀到換行之後才填。
+      if (tag) { const doc = { tag, quoted, strip, body: '' }; pending.push(doc); (words.heredocs ??= []).push(doc); }
       i = Math.max(j, i + 2);
       continue;
     }
@@ -221,6 +229,71 @@ export function truncatedDocGrep(command) {
   return hits;
 }
 
+/** git 帶值、值另成一個字的全域選項（`git -C dir commit`）。 */
+const GIT_VALUED = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env']);
+/** git commit 帶值的短選項：m、F 是訊息，c、C、t 取別的來源，值都可以黏著寫（`-qm msg`、`-Ffile`）。 */
+const COMMIT_SHORT_VALUED = new Set(['m', 'F', 'c', 'C', 't']);
+const COMMIT_LONG_VALUED = new Set(['--message', '--file', '--reuse-message', '--reedit-message', '--template', '--author', '--date',
+  '--fixup', '--squash', '--cleanup', '--trailer', '--pathspec-from-file']);
+
+/** `"$(cat <<'EOF' … EOF)"` 形狀的 -m 值 → heredoc 內文；其他含命令替換的值無從得知，回傳 undefined。 */
+function messageValue(value) {
+  if (!/`|\$\(/.test(value)) return value;
+  const match = /^\$\(\s*cat\s+<<-?\s*(['"]?)([\w-]+)\1\s*\n([\s\S]*?)\n\s*\2\s*\n?\s*\)\s*$/.exec(value);
+  return match ? match[3] : undefined;
+}
+
+/** 訊息的第一個非空行（git 會去掉開頭空行）。 */
+const subjectOf = message => String(message).split('\n').find(line => line.trim() !== '') ?? '';
+
+/**
+ * 主旨以 `#` 開頭的 `git commit`（回傳 { command, subject }，command 為該簡單指令、字以空白相接）。
+ * @param {string} command
+ * @param {{cwd?: string, readFile?: (path: string) => string}} [options] `-F <檔>` 的相對路徑依 cwd 解析；讀不到就放行
+ */
+export function hashSubjectCommits(command, { cwd = process.cwd(), readFile = path => readFileSync(path, 'utf8') } = {}) {
+  const hits = [];
+  for (const words of scan(command).simple) {
+    let i = commandIndex(words);
+    if (words[i] !== 'git') continue;
+    let dir = cwd;
+    for (i++; i < words.length && words[i].startsWith('-'); i++) {
+      if (words[i] === '-C') dir = resolve(dir, words[i + 1] ?? '');
+      if (GIT_VALUED.has(words[i])) i++;
+    }
+    if (words[i] !== 'commit') continue;
+    /** 第一個訊息來源：{ kind: 'm', value } 或 { kind: 'F', value } */
+    let source;
+    for (i++; i < words.length && !source; i++) {
+      const w = words[i];
+      if (w === '--') break;
+      const long = /^(--[\w-]+)(?:=([\s\S]*))?$/.exec(w);
+      if (long) {
+        const value = long[2] ?? (COMMIT_LONG_VALUED.has(long[1]) ? words[++i] : undefined);
+        if (long[1] === '--message') source = { kind: 'm', value };
+        else if (long[1] === '--file') source = { kind: 'F', value };
+        continue;
+      }
+      if (!/^-[^-]/.test(w)) continue;
+      for (let k = 1; k < w.length; k++) {
+        if (!COMMIT_SHORT_VALUED.has(w[k])) continue;
+        const value = k + 1 < w.length ? w.slice(k + 1) : words[++i];
+        if (w[k] === 'm' || w[k] === 'F') source = { kind: w[k], value };
+        break;
+      }
+    }
+    if (source?.value === undefined) continue;
+    let message;
+    if (source.kind === 'm') message = messageValue(source.value);
+    else if (source.value === '-') message = words.heredocs?.at(-1)?.body;
+    else { try { message = readFile(resolve(dir, source.value)); } catch { message = undefined; } }
+    if (message === undefined) continue;
+    const subject = subjectOf(message);
+    if (subject.startsWith('#')) hits.push({ command: words.join(' '), subject });
+  }
+  return hits;
+}
+
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
   let input;
@@ -232,7 +305,8 @@ if (isMain) {
   const views = ghViewCommentsWithoutJson(command);
   const piped = checkPiped(command);
   const truncated = truncatedDocGrep(command);
-  if (!heredocs.length && !views.length && !piped.length && !truncated.length) process.exit(0);
+  const hashed = hashSubjectCommits(command, typeof input.cwd === 'string' ? { cwd: input.cwd } : {});
+  if (!heredocs.length && !views.length && !piped.length && !truncated.length && !hashed.length) process.exit(0);
   const lines = [];
   if (heredocs.length) lines.push(
     `heredoc 的分隔字沒加引號（${heredocs.map(d => `<<${d.tag}`).join('、')}），內文又含反引號或 $(：bash 會把內文裡 Markdown 的行內碼當命令替換執行，`,
@@ -250,6 +324,11 @@ if (isMain) {
   if (truncated.length) lines.push(
     `\`${truncated[0]}\` 的結果接了截斷（cut -c／head -c／substr）：文件的條目是單行長條目，命中的詞可能剛好在截斷處之後被切掉，看起來像沒有殘留（#571）。`,
     "改用 `node scripts/doc-excerpt.mjs '<regex>' <檔案或目錄>...`，它以命中處為中心截取前後文。",
+  );
+  if (hashed.length) lines.push(
+    `\`git commit\` 的訊息主旨以 # 開頭（\`${[...hashed[0].subject].slice(0, 40).join('')}\`）：commit-msg 檢查（與 git 的 strip cleanup）把 # 開頭的行當註解刪掉，`,
+    '內文第一行頂上來當主旨，要等 pre-commit 跑完檢查子集才報 COMMIT_MSG_SECOND_LINE，提示的「加空行」也指錯方向（#636）。',
+    '把 Issue 編號放在括號裡，例如 `Push gate（#395）：…`，主旨不要以 # 開頭。',
   );
   console.error(lines.join('\n'));
   process.exit(2);

@@ -99,10 +99,14 @@ test('#281：L3 的 pilot.md 從 PILOT-TEMPLATE.md 複製填值，範本的每�
 });
 
 // #344：填好的 pilot.md 是 14000 bytes 的必讀核心；骨架本文本身就要在預算內留 2 KB 給填值與專案條目，最長的步驟條目在 PILOT-ROUND-TEMPLATE.md。
+// #647：本文上限（14000 - 2000）改由 scripts/adapter-size-budget.json 的 `<範本>#after:-->` 條目訂，`check-adapter-size.mjs --headroom` 印得出剩餘；這裡讀同一個數字。
 // #567：這支只讀文件、秒級，列在 bin/check 的 docs_rules，改 PILOT-TEMPLATE 超預算時在整條測試之前就報（#420：前幾次要等整條 tests 才報）。
 test('#344：PILOT-TEMPLATE 本文在核心預算內留 2 KB，搬出的條目在 PILOT-ROUND-TEMPLATE 有整條、在 PILOT-TEMPLATE 留 pointer', () => {
   const [comment, body] = read('skills/engineering/issue-run/PILOT-TEMPLATE.md').split('-->');
-  const [size, cap] = [Buffer.byteLength(body), 14000 - 2000];
+  const budget = JSON.parse(read('scripts/adapter-size-budget.json'));
+  const cap = budget['skills/engineering/issue-run/PILOT-TEMPLATE.md#after:-->'];
+  assert.ok(Number.isInteger(cap) && cap <= 14000 - 2000, `預算表的 PILOT-TEMPLATE 本文上限 ${cap} 要在 12000 以內`);
+  const size = Buffer.byteLength(body);
   assert.ok(size <= cap, `PILOT-TEMPLATE 本文 ${size}/${cap} bytes，超 ${size - cap}`);
   const round = read('skills/engineering/issue-run/PILOT-ROUND-TEMPLATE.md').split('-->')[1];
   for (const name of new Set([...round.matchAll(/\{\{([^}]+)\}\}/g)].map(match => match[1]))) assert.ok(comment.includes(`{{${name}}}`), `PILOT-TEMPLATE 註解沒說明 {{${name}}}`);

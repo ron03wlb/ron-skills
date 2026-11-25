@@ -28,6 +28,25 @@ test('第二行非空就擋（46134ee）；空行分隔的訊息通過；註解�
   assert.deepEqual(checkMessage('chore: x\n# 註解\nbody\n').errors, ['COMMIT_MSG_SECOND_LINE body']);
 });
 
+// #636：#395 worker 的訊息檔（主旨 `#395 Push gate 單一入口：…`、第二行空行）。`#` 開頭的主旨被當註解刪掉，內文第一行頂上來當主旨。
+const MSG_395 = '#395 Push gate 單一入口：x\n\n內文第一行\n內文第二行\n';
+// 同一則訊息刪掉 `#` 行之後（`git stripspace --strip-comments` 的輸出）。
+const MSG_395_STRIPPED = '內文第一行\n內文第二行\n';
+
+test('主旨以 # 開頭被刪掉後擋下時，修正提示點出 # 主旨與括號寫法（#636）', t => {
+  const temp = mkdtempSync(join(realTmpdir(), 'commit-msg-hash-'));
+  t.after(() => rmSync(temp, { recursive: true, force: true }));
+  for (const [name, raw] of [['raw', MSG_395], ['stripped', MSG_395_STRIPPED]]) {
+    assert.deepEqual(checkMessage(raw).errors, ['COMMIT_MSG_SECOND_LINE 內文第二行'], name);
+    write(temp, { [name]: raw });
+    const result = spawnSync('node', [script, join(temp, name)], { encoding: 'utf8', env });
+    assert.equal(result.status, 1, name);
+    assert.match(result.stderr, /主旨以 `#` 開頭時會被當成註解刪掉/, name);
+    assert.match(result.stderr, /Issue 編號放在括號裡，例如 `Push gate（#395）：…`/, name);
+  }
+  assert.deepEqual(checkMessage('Push gate（#395）：x\n\n內文第一行\n內文第二行\n').errors, [], '主旨改成括號後通過');
+});
+
 test('主旨描述超過 50 字只印 advisory，不擋', () => {
   const long = `chore: ${'字'.repeat(51)}\n\nbody\n`;
   assert.deepEqual(checkMessage(long), { errors: [], advisories: ['SUBJECT_TOO_LONG 51 字（advisory，上限 50）'] });
