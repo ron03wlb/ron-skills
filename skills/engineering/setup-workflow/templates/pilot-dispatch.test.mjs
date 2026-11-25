@@ -380,7 +380,7 @@ test('create 回 ok:false 但 worktree 已建好：以目錄與 git worktree lis
   const result = dispatch(['46', '46:pilot-dispatch']);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(lines(result).pop(), 'DISPATCHED 46 term_46');
-  assert.match(calls(), /^worktree create --name issue-46 --base-branch pilot\/integration --branch issue\/46-pilot-dispatch --issue 46 --json$/m);
+  assert.match(calls(), /^worktree create --name issue-46 --base-branch pilot\/integration --branch issue\/46-pilot-dispatch --issue 46 --parent-worktree path:\S+ --json$/m);
   assert.match(calls(), new RegExp(`^terminal create --worktree path:${root}/issue-46 --title 處理中｜#46 --command claude --json$`, 'm'));
   assert.equal(sent().trim(), `/issue-run 46 --worker ${repo}/.scratch/pilot/batch-46.md`);
   // Orca 讀不回 create 設的標題：worker 的 tab-state 要靠這份記錄（scripts/tab-state.mjs）。
@@ -699,7 +699,7 @@ test('--integration 換掉 worktree 的 base 與表頭的整合分支，--stuck-
   git(repo, 'branch', 'feature-int');
   const result = dispatch(['46', '46:pilot-dispatch', '--integration', 'feature-int', '--stuck-after', '45m']);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(calls(), /^worktree create --name issue-46 --base-branch feature-int --branch issue\/46-pilot-dispatch --issue 46 --json$/m);
+  assert.match(calls(), /^worktree create --name issue-46 --base-branch feature-int --branch issue\/46-pilot-dispatch --issue 46 --parent-worktree path:\S+ --json$/m);
   assert.match(checkpoint('46'), new RegExp(`^integration: feature-int @ ${git(repo, 'rev-parse', '--short', 'feature-int')}$`, 'm'));
   assert.match(checkpoint('46'), /^\| 46 \| .* \| 45m \| running \| \|$/m);
 });

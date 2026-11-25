@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { source, run, git, repoFixture } from './test/repo-fixture.mjs';
 
@@ -30,10 +30,11 @@ function fixture(t, mode) {
   const f = repoFixture(t);
   const bin = join(f.temp, 'orca'); writeFileSync(bin, FAKE_ORCA); chmodSync(bin, 0o755);
   const log = join(f.temp, 'orca.log');
-  const create = (extra = {}, name = NAME, args = []) => {
-    const result = run(f.repo, ['node', script, '--name', name, '--base-branch', 'main', '--no-parent', ...args], { timeout: 60000, env: {
+  // parent 預設帶 --no-parent，讓其他測試的呼叫紀錄不受預設 parent 影響；parent 測試傳 noParent: false 與 cwd。
+  const create = (extra = {}, name = NAME, args = [], { noParent = true, cwd = f.repo } = {}) => {
+    const result = run(cwd, ['node', script, '--name', name, '--base-branch', 'main', ...(noParent ? ['--no-parent'] : []), ...args], { timeout: 60000, env: {
       ORCA_BIN: bin, ORCA_CLI_COMMAND: '', FAKE_ORCA_MODE: mode, FAKE_ORCA_LOG: log, FAKE_ORCA_REPO: f.repo,
-      FAKE_ORCA_ROOT: join(f.temp, 'workspaces'), ORCA_POLL_SECONDS: '5', ...extra } });
+      FAKE_ORCA_ROOT: join(f.temp, 'workspaces'), ORCA_POLL_SECONDS: '5', ORCA_WORKTREE_PARENT: '', ...extra } });
     return { ...result, json: result.stdout.trim() ? JSON.parse(result.stdout) : null };
   };
   const calls = () => readFileSync(log, 'utf8').trim().split('\n');
@@ -152,4 +153,43 @@ test('拿到的分支和 --branch 相同，或沒帶 --branch：輸出不變', t
   assert.equal(same.status, 0, same.stderr);
   assert.equal(same.json.requestedBranch, undefined);
   assert.doesNotMatch(same.stderr, /BRANCH_RENAMED/);
+});
+
+// CoS item 158：spay2 子 worktree 沒有 parent lineage，Orca 裡 bot 是空的，一直提示「未掛 bot 的工作區」。子 worktree 要透過主 checkout 繼承 bot。
+test('沒帶 parent：補上 --parent-worktree path:<主 checkout>', t => {
+  const f = fixture(t, 'ok');
+  const r = f.create({}, NAME, [], { noParent: false });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(f.calls(), [`worktree create --name ${NAME} --base-branch main --parent-worktree path:${realpathSync(f.repo)} --json`]);
+});
+
+test('從子 worktree 呼叫：parent 仍是主 checkout，不是呼叫端所在的 worktree', t => {
+  const f = fixture(t, 'ok');
+  const child = join(f.temp, 'workspaces', 'coordinator');
+  git(f.repo, 'worktree', 'add', '-q', '-b', 'coordinator', child);
+  const r = f.create({}, NAME, [], { noParent: false, cwd: child });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(f.calls(), [`worktree create --name ${NAME} --base-branch main --parent-worktree path:${realpathSync(f.repo)} --json`]);
+});
+
+test('帶 --no-parent：照樣傳給 Orca，不補 parent', t => {
+  const f = fixture(t, 'ok');
+  assert.equal(f.create().status, 0);
+  assert.doesNotMatch(f.calls()[0], /--parent-worktree/);
+  assert.match(f.calls()[0], /--no-parent/);
+});
+
+test('明確的 --parent-worktree（含 = 寫法）不覆寫，ORCA_WORKTREE_PARENT 也不蓋過它', t => {
+  const f = fixture(t, 'ok');
+  assert.equal(f.create({ ORCA_WORKTREE_PARENT: 'worktree:env' }, NAME, ['--parent-worktree', 'branch:main'], { noParent: false }).status, 0);
+  assert.equal(f.calls()[0], `worktree create --name ${NAME} --base-branch main --parent-worktree branch:main --json`);
+  const g = fixture(t, 'ok');
+  assert.equal(g.create({}, NAME, ['--parent-worktree=issue:7'], { noParent: false }).status, 0);
+  assert.equal(g.calls()[0], `worktree create --name ${NAME} --base-branch main --parent-worktree=issue:7 --json`);
+});
+
+test('ORCA_WORKTREE_PARENT 覆寫預設 parent', t => {
+  const f = fixture(t, 'ok');
+  assert.equal(f.create({ ORCA_WORKTREE_PARENT: 'worktree:repo::/bot' }, NAME, [], { noParent: false }).status, 0);
+  assert.equal(f.calls()[0], `worktree create --name ${NAME} --base-branch main --parent-worktree worktree:repo::/bot --json`);
 });
