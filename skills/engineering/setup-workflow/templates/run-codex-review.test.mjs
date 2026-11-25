@@ -7,10 +7,16 @@ import { source, run, git } from './test/repo-fixture.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 // 假 codex：記錄 argv／stdin（每次的 -m 另附加到 FAKE_ARGV.models），-m 屬於 FAKE_CAPACITY 時印容量不足並 exit 1；否則輸出 FAKE_LOG，依 FAKE_WRITES 寫檔（相對路徑落在 -C worktree），必要時寫 -o 報告，以 FAKE_EXIT 結束。
+// `login status`：FAKE_LOGIN 為 fail 時印 Not logged in 並 exit 1；其餘 exit 0，且不記 argv。FAKE_SLEEP_MS：review 呼叫先睡這麼久（測 timeout）。
 // FAKE_CHECK_SPEC：像真 Codex 一樣以 -C worktree 解析 prompt 的 Spec 路徑，找不到時改寫 retro fc336d0c#1 的真實報告句。
 const FAKE = `#!/usr/bin/env node
 const fs = require('node:fs'); const path = require('node:path');
 const argv = process.argv.slice(2);
+if (argv[0] === 'login') {
+  if (process.env.FAKE_LOGIN === 'fail') { process.stdout.write('Not logged in\\n'); process.exit(1); }
+  process.stdout.write('Logged in using ChatGPT\\n'); process.exit(0);
+}
+if (process.env.FAKE_SLEEP_MS) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_SLEEP_MS));
 const stdin = fs.readFileSync(0, 'utf8'); fs.writeFileSync(process.env.FAKE_ARGV, JSON.stringify({ argv, stdin }));
 const model = argv[argv.indexOf('-m') + 1]; fs.appendFileSync(process.env.FAKE_ARGV + '.models', model + '\\n');
 if ((process.env.FAKE_CAPACITY || '').split(',').includes(model)) {
@@ -40,7 +46,7 @@ function worktree(temp) {
   return repo;
 }
 
-function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit = 0, staleReport = false, rulings, writes = [], outDir = '.scratch/issue-run-1', baseline, checkpoint, capacity = '', spec = 'spec.md', specContent = '# spec\n', checkSpec = false, codexHome } = {}) {
+function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit = 0, staleReport = false, rulings, writes = [], outDir = '.scratch/issue-run-1', baseline, checkpoint, capacity = '', spec = 'spec.md', specContent = '# spec\n', checkSpec = false, codexHome, login = '', sleepMs = '', timeoutMs = '', bin: binOverride } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'codex-review-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const bin = join(temp, 'codex'); writeFileSync(bin, FAKE); chmodSync(bin, 0o755);
@@ -80,7 +86,7 @@ function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit 
   if (specContent !== null) { mkdirSync(dirname(join(temp, spec)), { recursive: true }); writeFileSync(join(temp, spec), specContent); }
   const fixedPoint = baseline ?? git(repo, 'rev-parse', '--short', 'HEAD');
   const result = run(temp, [process.execPath, join(source, 'run-codex-review.mjs'), fixedPoint, spec, repo, out, ...extra],
-    { env: { CODEX_BIN: bin, FAKE_ARGV: argvFile, FAKE_LOG: log, FAKE_REPORT: report, FAKE_EXIT: String(exit), FAKE_WRITES: JSON.stringify(writes), FAKE_CAPACITY: capacity, FAKE_CHECK_SPEC: checkSpec ? '1' : '', CODEX_HOME: codexHome ?? join(temp, 'codex-home') } });
+    { env: { CODEX_BIN: binOverride ?? bin, FAKE_LOGIN: login, FAKE_SLEEP_MS: String(sleepMs), CODEX_REVIEW_TIMEOUT_MS: String(timeoutMs), FAKE_ARGV: argvFile, FAKE_LOG: log, FAKE_REPORT: report, FAKE_EXIT: String(exit), FAKE_WRITES: JSON.stringify(writes), FAKE_CAPACITY: capacity, FAKE_CHECK_SPEC: checkSpec ? '1' : '', CODEX_HOME: codexHome ?? join(temp, 'codex-home') } });
   const models = existsSync(`${argvFile}.models`) ? readFileSync(`${argvFile}.models`, 'utf8').trim().split('\n') : [];
   return { result, repo, temp, out, models, call: existsSync(argvFile) ? JSON.parse(readFileSync(argvFile, 'utf8')) : null };
 }
@@ -90,7 +96,7 @@ test('主模型容量不足時改用 gpt-6.2-astra 重跑一次並以其比對 M
   const { result, out, models } = review(t, { capacity: 'gpt-6.2-sol', log: header('gpt-6.2-astra'), outDir: 'reviews/r1' });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(models, ['gpt-6.2-sol', 'gpt-6.2-astra']);
-  const json = JSON.parse(result.stdout.trim());
+  const json = JSON.parse(result.stdout.trim().split('\n').at(-1));
   assert.equal(json.model, 'gpt-6.2-astra'); assert.equal(json.fallbackFrom, 'gpt-6.2-sol');
   assert.match(readFileSync(join(out, 'codex.gpt-6.2-sol.log'), 'utf8'), /at capacity/);
   assert.equal(error(review(t, { capacity: 'gpt-6.2-sol' }).result), 'MODEL_MISMATCH');
@@ -108,7 +114,9 @@ test('以固定模型、effort、workspace-write（開放網路）與持久 sess
   assert.match(call.stdin, new RegExp(`^Use the code-review skill\\. Fixed point: ${git(repo, 'rev-parse', 'HEAD')}\\. Spec: ${join(temp, 'spec.md').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.`));
   assert.match(call.stdin, /You may run fixture tests that create temporary files, but write nothing to the repository\./);
   assert.match(call.stdin, /The controller has already run the verification suites; run only the focused tests that confirm or refute a suspected finding\./);
-  assert.equal(JSON.parse(result.stdout).status, 'OK');
+  const [line, json] = result.stdout.trim().split('\n');
+  assert.equal(line, 'REVIEWER=codex model=gpt-6.2-sol');
+  assert.equal(JSON.parse(json).status, 'OK'); assert.equal(JSON.parse(json).reviewer, 'codex');
   assert.match(readFileSync(join(out, 'codex.log'), 'utf8'), /^OpenAI Codex/);
 });
 test('Codex 修改已追蹤檔、intent-to-add 檔或新增未追蹤檔判定 REVIEW_WROTE_REPO 並列出路徑', t => {
@@ -263,9 +271,10 @@ test('額度用完：判定 CODEX_NO_CREDITS，附改用 code-review skill 的�
   const json = JSON.parse(result.stderr.trim());
   assert.equal(json.error, 'CODEX_NO_CREDITS');
   assert.match(json.hint, /code-review/);
-  assert.match(json.hint, /等週額度重置/);
-  assert.doesNotMatch(json.hint, /補額度/);
+  assert.match(json.hint, /下一輪照樣先跑本 runner/);
+  assert.doesNotMatch(json.hint, /補額度|不會補充/);
   assert.equal(json.quota, 'CODEX_QUOTA_UNKNOWN');
+  assert.equal(result.stdout.trim(), 'REVIEWER=claude reason=quota');
   assert.match(json.log, /codex\.log$/);
 });
 
@@ -276,7 +285,8 @@ function rolloutHome(t, files) {
   files.forEach(([name, limits, mtime], index) => {
     const dir = join(home, 'sessions', '2026', '11', String(12 + index)); mkdirSync(dir, { recursive: true });
     const file = join(dir, name);
-    writeFileSync(file, JSON.stringify({ type: 'session_meta' }) + '\n' + JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', rate_limits: limits } }) + '\n');
+    const records = (Array.isArray(limits) ? limits : [limits]).map(rate_limits => JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', rate_limits } }));
+    writeFileSync(file, [JSON.stringify({ type: 'session_meta' }), ...records].join('\n') + '\n');
     utimesSync(file, mtime, mtime);
   });
   return home;
@@ -287,10 +297,16 @@ function quota(t, files) {
 }
 const WEEKLY = { primary: null, secondary: { used_percent: 26.0, window_minutes: 10080, resets_at: 1795054725 } };
 const DEPLETED = { primary: null, secondary: null, rate_limit_reached_type: 'workspace_member_credits_depleted' };
-test('--quota：印最新週額度與最新 reached，不呼叫 Codex', t => {
+// CoS item 124：舊版 reached 取最新 rollout、resets_at 往回取舊 rollout，拼出「12/1 重置」這種不存在的時間。兩者要來自同一份 rollout，否則印 ?（未知）。
+test('--quota：新 rollout 的 reached 不配舊 rollout 的 resets_at，週額度欄位印 ?', t => {
   const result = quota(t, [['rollout-a.jsonl', WEEKLY, 1000], ['rollout-b.jsonl', DEPLETED, 2000]]);
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout.trim(), 'CODEX_QUOTA used_percent=26 window_minutes=10080 resets_at=2026-11-19T02:18:45.000Z reached=workspace_member_credits_depleted');
+  assert.equal(result.stdout.trim(), 'CODEX_QUOTA used_percent=? window_minutes=? resets_at=? reached=workspace_member_credits_depleted');
+  assert.doesNotMatch(result.stdout, /2026-11-19/);
+});
+test('--quota：同一份 rollout 先有週額度、後來 reached 時，兩者一起印', t => {
+  assert.equal(quota(t, [['rollout-a.jsonl', [WEEKLY, DEPLETED], 1000]]).stdout.trim(),
+    'CODEX_QUOTA used_percent=26 window_minutes=10080 resets_at=2026-11-19T02:18:45.000Z reached=workspace_member_credits_depleted');
 });
 test('--quota：只有週額度時 reached=none；沒有 rollout 時 CODEX_QUOTA_UNKNOWN', t => {
   assert.equal(quota(t, [['rollout-a.jsonl', WEEKLY, 1000]]).stdout.trim(), 'CODEX_QUOTA used_percent=26 window_minutes=10080 resets_at=2026-11-19T02:18:45.000Z reached=none');
@@ -301,41 +317,57 @@ test('額度字句只是被引用（非行首）或 Codex 成功結束：不判 
   assert.equal(review(t, { log: header() + NO_CREDITS }).result.status, 0);
 });
 
-// retro spay2 710b8f4e#2：額度用完時，空 rulings 先回 RULINGS_EMPTY，補好再跑才撞 CODEX_NO_CREDITS。預檢與 --quota 同源，排在參數檢查之前。
-const FUTURE_WEEKLY = { primary: null, secondary: { used_percent: 100.0, window_minutes: 10080, resets_at: 4102444800 } };
-test('額度預檢：rollout 顯示額度用完時，空 rulings 也先判 CODEX_NO_CREDITS（precheck），且不呼叫 Codex', t => {
-  const recent = Date.now() / 1000 - 3600; // 只有 reached、沒有 resets_at 的紀錄要在 24 小時內才擋（tooling-881）
-  for (const files of [[['rollout-a.jsonl', FUTURE_WEEKLY, 1000], ['rollout-b.jsonl', DEPLETED, 2000]], [['rollout-b.jsonl', DEPLETED, recent]]]) {
-    const { result, call } = review(t, { rulings: '', codexHome: rolloutHome(t, files) });
-    const json = JSON.parse(result.stderr.trim());
-    assert.equal(json.error, 'CODEX_NO_CREDITS');
-    assert.equal(json.precheck, true);
-    assert.match(json.hint, /code-review/);
-    assert.match(json.quota, /^CODEX_QUOTA .*reached=workspace_member_credits_depleted$/);
-    assert.equal(call, null);
-  }
-});
-// spay2 retro 1124c tooling-881：真實形狀（2026-11-21 rollout：secondary null、無 resets_at、行內 timestamp），預檢不呼叫 Codex 就不會有新紀錄。
-function depletedHome(t, hoursAgo) {
-  const home = mkdtempSync(join(realTmpdir(), 'codex-quota-')); t.after(() => rmSync(home, { recursive: true, force: true }));
+// CoS item 124：舊預檢只讀本機 rollout，判定用完就不呼叫 Codex，於是不再產生新 rollout，擋了 spay2 約三天。
+// fixture 取自 2026-11-21 20:51 那份 rollout 的最後兩行（去識別化：拿掉 session／turn id 與時間戳以外的欄位），當時額度其實已在恢復途中。
+const REAL_DEPLETED_ROLLOUT = [
+  { timestamp: '2026-11-21T12:51:43.372Z', type: 'event_msg', payload: { type: 'token_count', info: null, rate_limits: { limit_id: 'premium', limit_name: null, primary: null, secondary: null, credits: { has_credits: false, unlimited: false, balance: null }, individual_limit: null, spend_control_reached: null, plan_type: null, rate_limit_reached_type: 'workspace_member_credits_depleted' } } },
+  { timestamp: '2026-11-21T12:51:43.396Z', type: 'event_msg', payload: { type: 'task_complete', last_agent_message: null, error: { message: 'Your workspace is out of credits. Ask your workspace owner to refill in order to continue.', codex_error_info: 'usage_limit_exceeded' } } },
+];
+function depletedHome(t) {
+  const home = mkdtempSync(join(realTmpdir(), 'codex-depleted-')); t.after(() => rmSync(home, { recursive: true, force: true }));
   const dir = join(home, 'sessions', '2026', '11', '21'); mkdirSync(dir, { recursive: true });
-  const at = new Date(Date.now() - hoursAgo * 3600 * 1000); const file = join(dir, 'rollout-2026-11-21T20-51-40-x.jsonl');
-  const limits = { limit_id: 'premium', limit_name: null, primary: null, secondary: null, credits: { has_credits: false, unlimited: false, balance: null }, individual_limit: null, spend_control_reached: null, plan_type: null, rate_limit_reached_type: 'workspace_member_credits_depleted' };
-  writeFileSync(file, JSON.stringify({ timestamp: at.toISOString(), ordinal: 13, type: 'event_msg', payload: { type: 'token_count', info: null, rate_limits: limits } }) + '\n');
-  utimesSync(file, at, at);
+  writeFileSync(join(dir, 'rollout-2026-11-21T20-51-40-fixture.jsonl'), REAL_DEPLETED_ROLLOUT.map(line => JSON.stringify(line)).join('\n') + '\n');
   return home;
 }
-test('額度預檢：reached 紀錄沒有 resets_at 時，24 小時內仍擋，超過 24 小時放行實跑', t => {
-  const blocked = JSON.parse(review(t, { rulings: '', codexHome: depletedHome(t, 1) }).result.stderr.trim());
-  assert.equal(blocked.error, 'CODEX_NO_CREDITS');
-  assert.equal(blocked.precheck, true);
-  assert.equal(error(review(t, { rulings: '', codexHome: depletedHome(t, 48) }).result), 'RULINGS_EMPTY');
-  const ok = review(t, { codexHome: depletedHome(t, 48) });
-  assert.equal(ok.result.status, 0, ok.result.stderr);
-  assert.notEqual(ok.call, null);
+const reviewerOf = result => result.stdout.trim().split('\n')[0];
+test('不做額度預檢：最新 rollout 是 depleted（真實 fixture）時仍呼叫 Codex，成功印 REVIEWER=codex；空 rulings 照常先判 RULINGS_EMPTY', t => {
+  const home = depletedHome(t);
+  assert.equal(run(home, [process.execPath, join(source, 'run-codex-review.mjs'), '--quota'], { env: { CODEX_HOME: home } }).stdout.trim(),
+    'CODEX_QUOTA used_percent=? window_minutes=? resets_at=? reached=workspace_member_credits_depleted');
+  const { result, call } = review(t, { codexHome: home });
+  assert.equal(result.status, 0, result.stderr);
+  assert.notEqual(call, null);
+  assert.equal(reviewerOf(result), 'REVIEWER=codex model=gpt-6.2-sol');
+  assert.equal(error(review(t, { rulings: '', codexHome: home }).result), 'RULINGS_EMPTY');
 });
-test('額度預檢：週額度重置時間已過或額度未用完時不擋，照常回 RULINGS_EMPTY／呼叫 Codex', t => {
-  assert.equal(error(review(t, { rulings: '', codexHome: rolloutHome(t, [['rollout-a.jsonl', WEEKLY, 1000], ['rollout-b.jsonl', DEPLETED, 2000]]) }).result), 'RULINGS_EMPTY');
-  const ok = review(t, { codexHome: rolloutHome(t, [['rollout-a.jsonl', WEEKLY, 1000]]) });
-  assert.equal(ok.result.status, 0, ok.result.stderr);
+test('額度不足（真實 log 字句）、未安裝、未登入、review 逾時、其他失敗都印 REVIEWER=claude reason=…', t => {
+  const quota = review(t, { log: header() + `ERROR: ${REAL_DEPLETED_ROLLOUT[1].payload.error.message}\n`, exit: 1 });
+  assert.equal(reviewerOf(quota.result), 'REVIEWER=claude reason=quota'); assert.equal(error(quota.result), 'CODEX_NO_CREDITS');
+  const missingBin = review(t, { bin: '/nonexistent/codex-review-fixture/codex' });
+  assert.equal(reviewerOf(missingBin.result), 'REVIEWER=claude reason=not-installed'); assert.equal(error(missingBin.result), 'CODEX_NOT_INSTALLED');
+  const loggedOut = review(t, { login: 'fail' });
+  assert.equal(reviewerOf(loggedOut.result), 'REVIEWER=claude reason=not-logged-in'); assert.equal(error(loggedOut.result), 'CODEX_NOT_LOGGED_IN');
+  assert.equal(loggedOut.call, null);
+  const slow = review(t, { sleepMs: 8000, timeoutMs: 1500 });
+  assert.equal(reviewerOf(slow.result), 'REVIEWER=claude reason=timeout'); assert.equal(error(slow.result), 'CODEX_TIMEOUT');
+  const exit = review(t, { exit: 3 });
+  assert.equal(reviewerOf(exit.result), 'REVIEWER=claude reason=error:CODEX_EXIT');
+});
+test('REVIEWER 結論寫進 <out-dir>/reviewer.json 與主 checkout 的 .scratch/review-log.jsonl；參數錯誤不印 REVIEWER 也不記', t => {
+  const ok = review(t);
+  const okEntry = JSON.parse(readFileSync(join(ok.out, 'reviewer.json'), 'utf8'));
+  assert.equal(okEntry.reviewer, 'codex'); assert.equal(okEntry.model, 'gpt-6.2-sol'); assert.equal(okEntry.branch, 'main');
+  assert.deepEqual(readFileSync(join(ok.repo, '.scratch', 'review-log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line).reviewer), ['codex']);
+  const out = review(t, { login: 'fail' });
+  const entry = JSON.parse(readFileSync(join(out.repo, '.scratch', 'review-log.jsonl'), 'utf8').trim());
+  assert.equal(entry.reviewer, 'claude'); assert.equal(entry.reason, 'not-logged-in'); assert.equal(entry.error, 'CODEX_NOT_LOGGED_IN');
+  const bad = review(t, { specContent: null });
+  assert.equal(error(bad.result), 'SPEC_MISSING'); assert.equal(bad.result.stdout, '');
+  assert.equal(existsSync(join(bad.repo, '.scratch', 'review-log.jsonl')), false);
+});
+test('用量上限字句（直撇號或彎撇號 ’）也判額度不足：REVIEWER=claude reason=quota', t => {
+  for (const apostrophe of ["'", '’']) {
+    const hit = review(t, { log: header() + `ERROR: You${apostrophe}ve hit your usage limit. Try again later.\n`, exit: 1 });
+    assert.equal(reviewerOf(hit.result), 'REVIEWER=claude reason=quota'); assert.equal(error(hit.result), 'CODEX_NO_CREDITS');
+  }
 });

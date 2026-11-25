@@ -3,13 +3,18 @@
 // issue-run adapter 的 Review：以固定模型／effort 執行 Codex code-review，並以確定性規則判定結果。
 // 用法：node scripts/run-codex-review.mjs <baseline> <spec> <worktree> <out-dir> [rulings]
 //       node scripts/run-codex-review.mjs --quota（唯讀：不呼叫 Codex，讀 $CODEX_HOME（預設 ~/.codex）/sessions 最新 rollout 的 rate_limits）
-// --quota 印一行 `CODEX_QUOTA used_percent=<n|?> window_minutes=<n|?> resets_at=<ISO|?> reached=<rate_limit_reached_type|none>`（not actionable：
-// reached 不是 none 或 used_percent 達 100 時本輪改用 code-review skill），找不到任何 rollout 時印 `CODEX_QUOTA_UNKNOWN`；皆 exit 0。
-// used_percent／window_minutes／resets_at 取最新一筆帶 secondary（週額度）的 rate_limits，reached 取最新一筆 rate_limits（額度用完時 secondary 為 null）。
-// 週額度不會補充（retro spay2 a903a2bb#2：舊提示「請使用者補額度」產生使用者永遠不會做的 HUMAN_TODO 511），CODEX_NO_CREDITS 的 hint 改為等週額度重置並附同一份額度資訊。
-// 同一份額度資訊在 USAGE 之後、spec／rulings 檢查之前先判一次：判定額度用完時 CODEX_NO_CREDITS 帶 precheck: true，不呼叫 Codex。
-// reached 不是 none 但沒有 resets_at 時，該筆紀錄（行內 timestamp，沒有時用 rollout 檔的修改時間）超過 24 小時就放行實跑、交給執行後的 log 判定：
-// 預檢不呼叫 Codex 就不會有新紀錄，舊紀錄會永遠擋下（spay2 retro 1124c tooling-881：11-21 起所有 worker 退回 code-review，有額度後仍擋到 11-24）。
+// --quota 印一行 `CODEX_QUOTA used_percent=<n|?> window_minutes=<n|?> resets_at=<ISO|?> reached=<rate_limit_reached_type|none>`（not actionable，只供參考：
+// 是上一次 Codex 呼叫留下的舊紀錄，不能拿來決定跳過 runner），找不到任何 rollout 時印 `CODEX_QUOTA_UNKNOWN`；皆 exit 0。
+// 欄位都取自最新一份帶 rate_limits 的 rollout：reached 取該檔最新一筆，used_percent／window_minutes／resets_at 取同一檔最新一筆帶 secondary（週額度）的；
+// 同一檔沒有 secondary（額度用完時為 null）就印 ?，不拿更舊 rollout 的 resets_at 拼湊（CoS item 124）。resets_at 不用來擋人，也不寫進 hint。
+// 不做額度預檢、一律真的呼叫 Codex（CoS item 124）：舊的預檢只讀本機 rollout，判定用完就不呼叫，於是不會產生新 rollout，
+// 11-21 20:51 一筆 workspace_member_credits_depleted 之後擋了 spay2 約三天、25 次 review，期間 credits 早已恢復。額度不足改由執行後的 log 判定。
+// 每次結束在 stdout 印一行 reviewer 結論（actionable）：`REVIEWER=codex model=<model>`（成功，JSON 在下一行），
+// 或 `REVIEWER=claude reason=<quota|not-installed|not-logged-in|timeout|error:<CODE>>`（Codex 不可用，本輪改用 code-review skill，JSON 在 stderr）；
+// 參數或 baseline 錯誤（USAGE、SPEC_MISSING、SPEC_NOT_REVIEWED、RULINGS_*、BASELINE_*、SNAPSHOT_FAILED）不印 REVIEWER：修正後重跑 runner，不是退回 Claude 的理由。
+// 印 REVIEWER 時另寫 <out-dir>/reviewer.json，並在主 checkout（git common dir 的上層）的 .scratch/review-log.jsonl 附加一筆，worktree 刪掉後仍查得到。
+// 呼叫前先跑 `codex login status`（20 秒上限）：找不到執行檔判 not-installed，exit 非 0 判 not-logged-in，逾時判 error:login-status。
+// Codex 本身以 CODEX_REVIEW_TIMEOUT_MS（預設 40 分鐘）為上限，逾時判 timeout。
 // rulings：已裁決項目（接受為已知限制或不修，各附理由）；重新審查時帶入，避免重提已裁決的 finding。
 // spec 與 rulings 以 runner 自己的 cwd 解析成絕對路徑再放進 prompt：Codex 的 cwd 是 worktree，相對路徑會對 worktree 解析而找不到
 // （retro fc336d0c#1：主 checkout 傳 `.scratch/retro/plan-1106a.md`，Spec 段整段沒審卻回 OK）。spec 不存在或為空時判 SPEC_MISSING；rulings 不存在判 RULINGS_MISSING，存在但為空判 RULINGS_EMPTY（actionable，JSON 帶 next：寫入裁定或刪檔後不帶 rulings 重跑），皆不呼叫 Codex
@@ -28,15 +33,20 @@
 // 沙箱開放網路（sandbox_workspace_write.network_access=true）：網路關閉時 seccomp 擋下 Node 建 stdio pipe，reviewer 的 spawnSync 回 EPERM、無法跑 fixture 測試。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 const MODEL = 'gpt-6.2-sol';
 const FALLBACK_MODEL = 'gpt-6.2-astra';
 const AT_CAPACITY = /^ERROR: Selected model is at capacity/m;
 // 帳務問題，重跑無用（retro spay2 86eda4c4#2：只回 CODEX_EXIT 時要讀 log 才知道）。比對行首，diff 引用這句時不算。
-const NO_CREDITS = /^ERROR: Your workspace is out of credits/m;
+// workspace credits 會由 workspace owner 補充或重置（CoS item 124），不是永久用完：hint 只說本輪退回，下一輪照樣先試 Codex。
+// Codex CLI 0.166.0 的用量上限另印 `You've hit your usage limit`，撇號可能是彎撇號 ’（spay2 CoS item 124 review）。
+const NO_CREDITS = /^ERROR: (?:Your workspace is out of credits|You['’]ve hit your usage limit)/m;
+const NO_CREDITS_HINT = 'Codex 額度不足：本輪改用 code-review skill 審查；下一輪照樣先跑本 runner，不要沿用這次的結論';
+const LOGIN_TIMEOUT_MS = 20000;
+const TIMEOUT_MS = Number(process.env.CODEX_REVIEW_TIMEOUT_MS) || 40 * 60 * 1000;
 const EFFORT = 'medium';
 // 只認帶時間戳的 log 行；review diff 或 Codex 讀取的檔案引用這句時不會以時間戳開頭。
 const SPAWN_FAILED = /^[0-9TZ:.-]+ ERROR codex_core::tools::router: error=collab spawn failed/m;
@@ -50,24 +60,25 @@ function rollouts(limit = 20) {
   walk(root);
   return files.sort((a, b) => b[0] - a[0]).slice(0, limit).map(([, path]) => path);
 }
-/** 讀 rollout 的 rate_limits：reached 取最新一筆，週額度（secondary）取最新一筆非 null；沒有 rollout 時回 null。 */
+/** 讀最新一份帶 rate_limits 的 rollout：reached 取該檔最新一筆，週額度（secondary）只取同一檔最新一筆非 null；沒有 rollout 時回 null。
+ *  不往更舊的 rollout 找週額度：新 rollout 的 reached 配舊 rollout 的 resets_at 會拼出一個不存在的重置時間（CoS item 124：印出「12/1 重置」，
+ *  其實是 11-21 depleted 紀錄配上更早一份的週額度 resets_at，和 GitHub 帳單的重置日也對不上）。同一檔找不到週額度時 used_percent／window_minutes／resets_at 印 ?（未知）。 */
 function codexQuota() {
   const files = rollouts(); if (!files.length) return null;
-  let reached; let reachedAt; let weekly;
   for (const file of files) {
-    const lines = readFileSync(file, 'utf8').split('\n').reverse();
-    for (const line of lines) {
+    let reached; let weekly;
+    for (const line of readFileSync(file, 'utf8').split('\n').reverse()) {
       if (!line.includes('"rate_limits"')) continue;
-      let record; let limits; try { record = JSON.parse(line); limits = findLimits(record); } catch { continue; }
+      let limits; try { limits = findLimits(JSON.parse(line)); } catch { continue; }
       if (!limits) continue;
-      if (reached === undefined) { reached = limits.rate_limit_reached_type ?? 'none'; reachedAt = Date.parse(record.timestamp) || statSync(file).mtimeMs; }
-      if (!weekly && limits.secondary) weekly = limits.secondary;
-      if (weekly) break;
+      if (reached === undefined) reached = limits.rate_limit_reached_type ?? 'none';
+      if (limits.secondary) { weekly = limits.secondary; break; }
     }
-    if (reached !== undefined && weekly) break;
+    if (reached === undefined) continue;
+    const iso = weekly?.resets_at ? new Date(weekly.resets_at * 1000).toISOString() : '?';
+    return { used_percent: weekly?.used_percent ?? '?', window_minutes: weekly?.window_minutes ?? '?', resets_at: iso, reached };
   }
-  const iso = weekly?.resets_at ? new Date(weekly.resets_at * 1000).toISOString() : '?';
-  return { used_percent: weekly?.used_percent ?? '?', window_minutes: weekly?.window_minutes ?? '?', resets_at: iso, reached: reached ?? 'none', reachedAt };
+  return { used_percent: '?', window_minutes: '?', resets_at: '?', reached: 'none' };
 }
 function findLimits(node) {
   if (!node || typeof node !== 'object') return null;
@@ -80,6 +91,27 @@ const quotaLine = quota => quota ? `CODEX_QUOTA used_percent=${quota.used_percen
 function fail(error, detail = {}) {
   process.stderr.write(JSON.stringify({ error, ...detail }) + '\n');
   process.exit(1);
+}
+/** 主 checkout 的 .scratch/review-log.jsonl：git common dir 是 `<main>/.git` 時取其上層，否則（或不是 git repo）用 runner 的 cwd。 */
+function reviewLogPath(wt) {
+  const common = spawnSync('git', ['-C', wt, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' });
+  const dir = common.status === 0 && basename(common.stdout.trim()) === '.git' ? dirname(common.stdout.trim()) : process.cwd();
+  return join(dir, '.scratch', 'review-log.jsonl');
+}
+/** 印 REVIEWER 行並寫紀錄；紀錄寫不進去只在 stderr 提醒，不改變結論。 */
+function announce(record) {
+  process.stdout.write(record.reviewer === 'codex' ? `REVIEWER=codex model=${record.model}\n` : `REVIEWER=claude reason=${record.reason}\n`);
+  const entry = { ts: new Date().toISOString(), ...record, worktree: resolve(worktree), outDir: resolve(outDir), baseline,
+    branch: spawnSync('git', ['-C', worktree, 'branch', '--show-current'], { encoding: 'utf8' }).stdout?.trim() || null };
+  try {
+    mkdirSync(outDir, { recursive: true }); writeFileSync(join(outDir, 'reviewer.json'), JSON.stringify(entry, null, 2) + '\n');
+    const logFile = reviewLogPath(worktree); mkdirSync(dirname(logFile), { recursive: true }); appendFileSync(logFile, JSON.stringify(entry) + '\n');
+  } catch (error) { process.stderr.write(`REVIEWER_LOG_FAILED ${error.message}\n`); }
+}
+/** Codex 不可用：印 `REVIEWER=claude reason=<reason>`、寫紀錄，再以 error 結束。 */
+function fallback(reason, error, detail = {}) {
+  announce({ reviewer: 'claude', reason, error });
+  fail(error, { reviewer: 'claude', reason, ...detail });
 }
 // Codex log 開頭兩條 `--------` 之間是 session 設定；只讀這段，避免後續 diff 內容冒充。
 function header(log) {
@@ -129,16 +161,6 @@ function expectedBaseline(dir, wt) {
 if (process.argv[2] === '--quota') { process.stdout.write(quotaLine(codexQuota()) + '\n'); process.exit(0); }
 const [baseline, specArg, worktree, outDir, rulingsArg] = process.argv.slice(2);
 if (!baseline || !specArg || !worktree || !outDir) fail('USAGE', { usage: 'run-codex-review.mjs <baseline> <spec> <worktree> <out-dir> [rulings]' });
-// 額度預檢排在 spec／rulings 等參數檢查之前（retro spay2 710b8f4e#2：空 rulings 先回 RULINGS_EMPTY，補好再跑才撞 CODEX_NO_CREDITS，多跑一輪）。
-// 只讀本機 rollout（與 --quota 同源，不呼叫 Codex、不連網）：reached 不是 none 或週額度達 100%，且週額度重置時間未知或還沒到時才判定；
-// 重置時間已過的舊紀錄不擋，交給執行後的 log 判定；重置時間未知而 reached 紀錄已超過 24 小時也不擋（spay2 retro 1124c tooling-881）。
-const STALE_REACHED_MS = 24 * 3600 * 1000;
-const preQuota = codexQuota();
-const resetPassed = preQuota && preQuota.resets_at !== '?' && Date.parse(preQuota.resets_at) <= Date.now();
-const staleReached = preQuota && preQuota.reached !== 'none' && preQuota.resets_at === '?' && Date.now() - preQuota.reachedAt > STALE_REACHED_MS;
-if (preQuota && (preQuota.reached !== 'none' || Number(preQuota.used_percent) >= 100) && !resetPassed && !staleReached) {
-  fail('CODEX_NO_CREDITS', { precheck: true, hint: 'Codex 週額度用完，重跑無用：改用 code-review skill 審查，等週額度重置（不會補充）', quota: quotaLine(preQuota) });
-}
 const spec = resolve(specArg); const rulings = rulingsArg && resolve(rulingsArg);
 const missing = file => !existsSync(file) || statSync(file).size === 0;
 if (missing(spec)) fail('SPEC_MISSING', { spec });
@@ -149,8 +171,8 @@ const SPEC_NOT_REVIEWED = /未完成(?:需求|Spec)(?:符合性)?審查|(?:無�
 const specNotReviewed = text => text.split('\n').some(line => SPEC_NOT_REVIEWED.test(line.replace(/`[^`]*`|「[^」]*」|"[^"]*"|“[^”]*”/g, '')));
 mkdirSync(outDir, { recursive: true });
 const report = join(outDir, 'review.md'); const logPath = join(outDir, 'codex.log');
-const own = new Set([resolve(report), resolve(logPath)]);
-rmSync(report, { force: true });
+const own = new Set([resolve(report), resolve(logPath), resolve(outDir, 'reviewer.json')]);
+rmSync(report, { force: true }); rmSync(join(outDir, 'reviewer.json'), { force: true });
 
 // 不加 --ephemeral：reviewer 以 fork_turns 載入父 rollout，ephemeral session 沒有 rollout。
 const args = model => ['exec', '-s', 'workspace-write', '--ignore-user-config', '-m', model, '-c', `model_reasoning_effort=${EFFORT}`,
@@ -163,9 +185,14 @@ const expected = expectedBaseline(outDir, worktree);
 if (expected && expected !== fixedPoint) fail('BASELINE_STALE', { baseline: fixedPoint, mergeBase: expected, hint: '先把 state.md 的 baseline: 更新為 HEAD 與整合分支的 merge-base，再以它重跑' });
 const ruled = rulings ? ` Rulings: ${rulings}. These findings were already arbitrated; re-raise a ruled finding only when this diff changes the premise of its ruling, and say which change.` : '';
 const prompt = `Use the code-review skill. Fixed point: ${fixedPoint}. Spec: ${spec}.${ruled} Diff against the fixed point including uncommitted worktree changes (git diff <fixed-point>). You may run fixture tests that create temporary files, but write nothing to the repository. The controller has already run the verification suites; run only the focused tests that confirm or refute a suspected finding. Report in Traditional Chinese.\n`;
+const bin = process.env.CODEX_BIN || 'codex';
+const login = spawnSync(bin, ['login', 'status'], { encoding: 'utf8', timeout: LOGIN_TIMEOUT_MS });
+if (login.error?.code === 'ENOENT') fallback('not-installed', 'CODEX_NOT_INSTALLED', { bin });
+if (login.error) fallback('error:login-status', 'CODEX_LOGIN_STATUS_FAILED', { message: login.error.message });
+if (login.status !== 0) fallback('not-logged-in', 'CODEX_NOT_LOGGED_IN', { status: login.status });
 const exec = model => {
   const logFd = openSync(logPath, 'w');
-  const run = spawnSync(process.env.CODEX_BIN || 'codex', args(model), { input: prompt, stdio: ['pipe', logFd, logFd] });
+  const run = spawnSync(bin, args(model), { input: prompt, stdio: ['pipe', logFd, logFd], timeout: TIMEOUT_MS });
   closeSync(logFd);
   return run;
 };
@@ -176,15 +203,18 @@ if (!result.error && result.status !== 0 && AT_CAPACITY.test(readFileSync(logPat
 }
 // 先於其他判定：即使 Codex 失敗，寫入 repo 也必須回報，避免改動混入交付。
 const wrote = changedPaths(before, snapshot(worktree, own));
-if (wrote.length) fail('REVIEW_WROTE_REPO', { paths: wrote, log: logPath });
+if (wrote.length) fallback('error:REVIEW_WROTE_REPO', 'REVIEW_WROTE_REPO', { paths: wrote, log: logPath });
 
-if (result.error) fail('CODEX_START_FAILED', { message: result.error.message, log: logPath });
-if (result.status !== 0 && NO_CREDITS.test(readFileSync(logPath, 'utf8'))) fail('CODEX_NO_CREDITS', { status: result.status, log: logPath, hint: 'Codex 週額度用完，重跑無用：改用 code-review skill 審查，等週額度重置（不會補充）', quota: quotaLine(codexQuota()) });
-if (result.status !== 0) fail('CODEX_EXIT', { status: result.status, signal: result.signal, log: logPath });
+if (result.error?.code === 'ETIMEDOUT') fallback('timeout', 'CODEX_TIMEOUT', { timeoutMs: TIMEOUT_MS, log: logPath });
+if (result.error?.code === 'ENOENT') fallback('not-installed', 'CODEX_NOT_INSTALLED', { bin });
+if (result.error) fallback('error:CODEX_START_FAILED', 'CODEX_START_FAILED', { message: result.error.message, log: logPath });
+if (result.status !== 0 && NO_CREDITS.test(readFileSync(logPath, 'utf8'))) fallback('quota', 'CODEX_NO_CREDITS', { status: result.status, log: logPath, hint: NO_CREDITS_HINT, quota: quotaLine(codexQuota()) });
+if (result.status !== 0) fallback('error:CODEX_EXIT', 'CODEX_EXIT', { status: result.status, signal: result.signal, log: logPath });
 const log = readFileSync(logPath, 'utf8');
 const { model, 'reasoning effort': effort } = header(log);
-if (model !== expectedModel || effort !== EFFORT) fail('MODEL_MISMATCH', { expected: { model: expectedModel, effort: EFFORT }, actual: { model, effort }, log: logPath });
-if (SPAWN_FAILED.test(log)) fail('SPAWN_FAILED', { log: logPath });
-if (missing(report)) fail('NO_REPORT', { log: logPath });
+if (model !== expectedModel || effort !== EFFORT) fallback('error:MODEL_MISMATCH', 'MODEL_MISMATCH', { expected: { model: expectedModel, effort: EFFORT }, actual: { model, effort }, log: logPath });
+if (SPAWN_FAILED.test(log)) fallback('error:SPAWN_FAILED', 'SPAWN_FAILED', { log: logPath });
+if (missing(report)) fallback('error:NO_REPORT', 'NO_REPORT', { log: logPath });
 if (specNotReviewed(readFileSync(report, 'utf8'))) fail('SPEC_NOT_REVIEWED', { spec, report, hint: '確認 spec 路徑在 worktree 可讀後重跑' });
-process.stdout.write(JSON.stringify({ status: 'OK', model, ...(fallbackFrom && { fallbackFrom }), effort, report, log: logPath }) + '\n');
+announce({ reviewer: 'codex', model, ...(fallbackFrom && { fallbackFrom }) });
+process.stdout.write(JSON.stringify({ status: 'OK', reviewer: 'codex', model, ...(fallbackFrom && { fallbackFrom }), effort, report, log: logPath }) + '\n');
