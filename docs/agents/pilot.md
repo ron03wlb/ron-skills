@@ -90,4 +90,6 @@
 
 - **Retro trigger.** 見 [pilot-retro-collect.md](pilot-retro-collect.md)：每輪第 4 步讀那裡的同名條目。
 
+- **Tab sweep.** 見 [pilot-retro-collect.md](pilot-retro-collect.md)：每輪第 4 步 Retro trigger 之後讀。
+
 - **Orca orchestration.** 見 [pilot-round.md](pilot-round.md)：用 orchestration 向 bot 提問、回報，或收到 skills bot 的答案時讀。

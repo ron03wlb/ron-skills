@@ -50,7 +50,10 @@ test('Retro trigger 是 Project hooks 之後獨立的一步，不受 Project tic
   assert.match(hooks, /skip these scripts and go on to step 4/);
   const trigger = steps.find(line => line.startsWith('4. **Retro trigger.**'));
   assert.ok(trigger, 'Retro trigger 要是第 4 步');
-  assert.ok(steps.indexOf(trigger) === steps.indexOf(hooks) + 1 && steps[steps.indexOf(trigger) + 1].startsWith('5. **Pick.**'), '在 Project hooks 之後、Pick 之前');
+  // 第 4 步可帶縮排的續段（CoS item 91 D：Tab sweep），續段之後才是 Pick。
+  const next = steps.findIndex((line, i) => i > steps.indexOf(trigger) && !line.startsWith('   '));
+  assert.ok(steps.indexOf(trigger) === steps.indexOf(hooks) + 1 && steps[next].startsWith('5. **Pick.**'), '在 Project hooks 之後、Pick 之前');
+  assert.ok(steps.slice(steps.indexOf(trigger) + 1, next).every(line => line.startsWith('   **Tab sweep.**')), '第 4 步的續段只有 Tab sweep');
   assert.match(trigger, /Run this step on every tick, whether or not the adapter has \*\*Project tick hooks\*\*; skip it only when the adapter's Pilot section has no \*\*Retro trigger\*\* entry/);
   assert.match(trigger, /When the adapter's probe printed a `RETRO_` line in Reconcile, act on that line/);
   assert.match(trigger, /`\.scratch\/retro\/triggers\.log`/);
