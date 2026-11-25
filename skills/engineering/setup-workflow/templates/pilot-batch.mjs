@@ -20,10 +20,11 @@
 //          印 `PARKED_MEMBER <n> after #<m> (was #<k>)`；after 與 fresh 都沒變時當作重跑，不寫檔。
 //   unpark 把 batch-<n>.md 裡 `parked after #<m>` 的成員 #n 改回 done（probe 印 UNPARK <n> 之後），candidate 不動。
 //   resume 請停下的 worker 繼續（#356）：batch-<key> 的成員 #n 要是 stop 或 done。先讀該列 handle 的畫面，記下最後一個結果行（`DONE <n> <sha>`／`STOP <n> <cause>`，
-//          pilot-probe 的 resultMatch），再以 orca-session-send 的 sendToSession 送 --note（等 tui-idle、讀畫面確認送達；不用 --wait-submit，WSL 上它常不送出）。
+//          pilot-probe 的 resultMatch；畫面上沒有時往回讀累積輸出，同 pilot-probe 的 scrollbackMatch，#643 第 1 項），再以 orca-session-send 的 sendToSession 送 --note（等 tui-idle、讀畫面確認送達；不用 --wait-submit，WSL 上它常不送出）。
 //          送達後才在鎖內改列：state running、candidate 清空、started 設為現在，表格下方加 `resumed: #<n> <time> <那一行|->`；
 //          送達後鎖內重檢失敗（`STOP <n> delivered …`）或等鎖逾時（CHECKPOINT_LOCKED，resume 只在送達後才拿鎖）時檔案不動，但 note 已送到：不要重跑（會再送一次），手動改列。
-//          Probe 讀到最後一個結果行就是它時不算結果（畫面殘留的舊 STOP／DONE 不再被 --apply 寫回），之後出現的新結果行照常寫回。
+//          記下的那一行與比對時都經 pilot-probe 的 resultText 去掉 `│` 之後的側欄（同一行在畫面與累積輸出裡側欄尾巴不同）。
+//          Probe 與 pilot-watch 讀到最後一個結果行就是它時不算結果（畫面或累積輸出殘留的舊 STOP／DONE 不再被 --apply 寫回），之後出現的新結果行照常寫回。
 //   accept 採用 worker 已回報的 candidate（#338 第 1 項：coordinator 代決 STOP decision、選了候選的做法）：成員要是 running 或 stop，
 //          <sha> 要等於成員分支（branch 欄）在 checkout 的 HEAD；寫 state done、candidate 完整 SHA，Probe 下一輪照常印 STAGEABLE。
 //   搬完舊 batch 的成員全是 moved 時，把 `current:` 寫成 `closed moved`（重跑已做完的 move 也補寫，pilot-dispatch --fresh 共用同一個函式，#205）。
@@ -42,7 +43,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { closeIfAllMoved, exitIfLocked, isField, now, storeDir, tableCells, usage, withCheckpointLock, writeCheckpoint } from './lib/pilot-store.mjs';
 import { orca, sendToSession } from './orca-session-send.mjs';
-import { resultMatch } from './pilot-probe.mjs';
+import { resultMatch, resultText, scrollbackMatch } from './pilot-probe.mjs';
 
 const USAGE = '用法：node scripts/pilot-batch.mjs <checkout> move <key> <n> [--state stop] | <checkout> park <key> <n> --after <m> [--fresh] --reason <原因> | <checkout> unpark <n>'
   + ' | <checkout> resume <key> <n> --note <text> | <checkout> accept <key> <n> <sha>';
@@ -102,7 +103,7 @@ async function screenResult(pilot, key, n) {
   }
   const resumed = source.lines.map(line => line.match(new RegExp(`^resumed: #${n} \\S+ (.*)$`))?.[1]).filter(Boolean).at(-1);
   const match = resultMatch(tail, n);
-  return match && match.line !== resumed ? match : undefined;
+  return match && match.line !== (resumed && resultText(resumed)) ? match : undefined;
 }
 
 /**
@@ -216,10 +217,16 @@ async function resume(file, key, n, note, ctx) {
   let last;
   try {
     const { terminal } = await orca(ctx, 'terminal', 'read', '--terminal', handle, '--screen');
-    last = resultMatch(terminal?.tail ?? [], n)?.line ?? '-';
+    last = resultMatch(terminal?.tail ?? [], n)?.line;
   } catch (error) {
     throw new Stop(`${n} orca ${error.message}`);
   }
+  // 畫面上沒有時往回讀累積輸出（#643 第 1 項）：結果行已捲出畫面時記 `-`，之後 Probe 與 pilot-watch 在畫面閒置時讀累積輸出（#537），
+  // 舊結果行沒有可略過的記錄就被當成新結果。讀不到累積輸出時照舊記 `-`。
+  if (!last) {
+    try { last = (await scrollbackMatch(ctx, handle, n))?.line; } catch { /* 照舊記 - */ }
+  }
+  last ??= '-';
   const sent = await sendToSession(ctx, handle, note);
   if (sent.stop) throw new Stop(`${n} ${sent.stop}`);
   return withCheckpointLock(file, () => {

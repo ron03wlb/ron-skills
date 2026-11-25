@@ -16,7 +16,8 @@
 // retro-candidates（`retro-candidates` label：retro 的候選清單，等 `/retro-collect`；被 `/retro-collect` 認領、指派之後也歸這裡，不混進 claimed、stale，#270）、
 // `--skip-labels` 帶的每個 label（逗號分隔，adapter 宣告的「不進分級的 label」，例如 investing 的 `ci-report` 報告單）：歸到以該 label 命名的桶，與 retro-candidates 同樣處理，排在它之後，
 // 多個時取 --skip-labels 裡第一個掛著的（#326；沒帶時沒有這些桶）、
-// landed（只在帶 --integration 時：已指派，且最近一則認領留言之後有 `DONE <n> <sha>` 結果行，或已落地在整合分支（landedOn）；已做完、等合入 main，不算進行中，#352）、
+// landed（只在帶 --integration 時：已指派，且最近一則認領留言之後有 `DONE <n> <sha>` 結果行而且那個 sha 是整合分支的祖先，或已落地在整合分支（landedOn）；已做完、等合入 main，不算進行中，#352；
+// DONE 的 sha 不在整合分支（stage 衝突沒合進去）不算落地，照 claimed／stale 分，#644）、
 // stale（已指派，超過 --stale-hours（預設 24）沒有新留言或新指派）、claimed（已指派）、
 // in-review（有開著的 PR 以 closing reference 指向這張單：單獨跑的 /issue-run 做完、沒留指派也沒留認領的單，不能再派一次，#284；只看 GitHub，GitLab 沒有這個桶）、blocked（有開著的 blocked_by）、
 // needs-info、needs-triage、ready（`ready-for-agent`）、unlabeled。所以 ready 桶就是池子。過期的認領只歸到 stale，不自動釋放。
@@ -50,8 +51,9 @@
 //   STOP 之前先印 `STALE_CLAIM <n> <機器>／<session> <最後寫入的 ISO 時間>`；帶 `--take-stale` 時改以這個 session 認領，成功印 `CLAIMED <n> stale <session>`。
 //   transcript 沒寫入不代表 session 結束（可能在等人回覆），所以只有不等人的流程（/retro-collect）才帶 --take-stale（#212：#201 的認領者認領一分鐘後被中斷）。
 // 被擋時印 `STOP <n> claimed <機器>／<session>`（沒有認領留言、或最近一則認領的作者已不在指派名單時，是指派者登入名），exit 4。
-// 帶 --integration 時先看是否已落地：整合分支有這張的落地 commit（landedOn），或已指派且最近一則認領留言之後有 `DONE <n> <sha>`，就印 `LANDED <n> <sha>`、
+// 帶 --integration 時先看是否已落地：整合分支有這張的落地 commit（landedOn），或已指派且最近一則認領留言之後有 `DONE <n> <sha>` 而且那個 sha 是整合分支的祖先，就印 `LANDED <n> <sha>`、
 // exit 4，不留言也不指派（#352：#145 的 commit 早已在 develop，claim 照樣認領，worker 白跑），交給收尾。
+// 只有 DONE、sha 不在整合分支（#644：stage 衝突沒合進去，不能當落地漏派）時先印 `DONE_NOT_LANDED <n> <sha>`，再照常認領。
 // --integration 的分支查不到時同 gh 失敗，exit 1。
 // children 是母單（Map）視圖，只支援 GitHub（tracker 是 GitLab 時 exit 2）：一次 `gh api graphql` 取回母單的 subIssues（GitHub 每張母單最多 100 張子單），
 // 依 GitHub 的子單順序每張印一行 `<ask|child> #<n> <open|closed> labels:<a,b|-> blocked-by:<#m|<owner>/<repo>#m,...|-> <標題>`，blocked-by 只列開著的。
@@ -245,16 +247,31 @@ function integrationLog(integration) {
   return result.stdout.split('\n').filter(Boolean).map(line => line.split('\t'));
 }
 
-/** 「這張單是否已落地在整合分支」，pool 的 landed 桶與 blocked 行、claim 的 LANDED 共用，Probe 也可以引用（#352）：回傳 n => 落地的 sha｜undefined。
- * 落地是整合分支的歷史裡（新的先）有主旨含 `(#<n>)` 的 commit，或有 merge commit 的主旨把最後一段以 `<n>-` 開頭的分支合進來。
- * 只看主旨、不看分支 tip 是不是整合分支的祖先：剛開、還沒有 commit 的分支 tip 本來就是祖先。`log` 可注入，測試或別的來源用。 */
-export function landedOn(integration, log = integrationLog) {
-  const commits = log(integration);
-  return n => commits.find(([, subject]) => subject.includes(`(#${n})`) || mergedBranches(subject).some(branch => branchOfIssue(branch, n)))?.[0];
+/** sha 是否為整合分支的祖先（`git merge-base --is-ancestor`）；查不到的 sha 當不是。 */
+function isAncestorOf(integration, sha) {
+  return spawnSync('git', ['merge-base', '--is-ancestor', sha, integration], { stdio: 'ignore' }).status === 0;
 }
 
-/** 已落地的 sha：整合分支上的落地（landed 是 landedOn 的結果），或已指派且最近一則認領之後有 `DONE` 結果行；pool 的 landed 桶與 claim 的 LANDED 共用。 */
-const landedSha = (n, { assigned, comments }, landed) => landed(n) ?? (assigned ? doneSha(comments, n) : undefined);
+/** 「這張單是否已落地在整合分支」，pool 的 landed 桶與 blocked 行、claim 的 LANDED 共用，Probe 也可以引用（#352）：回傳 n => 落地的 sha｜undefined。
+ * 落地是整合分支的歷史裡（新的先）有主旨含 `(#<n>)` 的 commit，或有 merge commit 的主旨把最後一段以 `<n>-` 開頭的分支合進來。
+ * 只看主旨、不看分支 tip 是不是整合分支的祖先：剛開、還沒有 commit 的分支 tip 本來就是祖先。`log` 可注入，測試或別的來源用。
+ * 回傳的函式另帶 `contains(sha)`：sha 是否為整合分支的祖先（#644，DONE 留言的 sha 要靠它才算落地）；`isAncestor` 可注入，風格同 `log`。 */
+export function landedOn(integration, log = integrationLog, isAncestor = isAncestorOf) {
+  const commits = log(integration);
+  const landed = n => commits.find(([, subject]) => subject.includes(`(#${n})`) || mergedBranches(subject).some(branch => branchOfIssue(branch, n)))?.[0];
+  landed.contains = sha => isAncestor(integration, sha);
+  return landed;
+}
+
+/** 已指派且最近一則認領之後有 `DONE` 結果行、但那個 sha 不在整合分支時的 sha（#644）；其餘 undefined。 */
+const doneNotLanded = (n, { assigned, comments }, landed) => {
+  const sha = assigned ? doneSha(comments, n) : undefined;
+  return sha && !landed.contains?.(sha) ? sha : undefined;
+};
+
+/** 已落地的 sha：整合分支上的落地（landed 是 landedOn 的結果），或已指派且最近一則認領之後有 `DONE` 結果行、而且那個 sha 是整合分支的祖先（#644）；pool 的 landed 桶與 claim 的 LANDED 共用。
+ * landed 沒有 contains（Probe 自己組的）時，DONE 的 sha 照舊當落地。 */
+const landedSha = (n, { assigned, comments }, landed) => landed(n) ?? (assigned && !doneNotLanded(n, { assigned, comments }, landed) ? doneSha(comments, n) : undefined);
 
 /** 每張 Issue 歸到一個桶，優先序見檔頭；landed 是 landedOn 的結果，沒給時沒有 landed 桶。 */
 export function bucketOf(issue, { staleHours = 24, now = Date.now(), landed, skipLabels = [] } = {}) {
@@ -489,6 +506,8 @@ function claim(n, tracker, session, takeStale, landed) {
   const before = read();
   const sha = landed && landedSha(n, { assigned: before.assignees.length > 0, comments: before.comments }, landed);
   if (sha) { console.log(`LANDED ${n} ${sha}`); return 4; }
+  const unlanded = landed && doneNotLanded(n, { assigned: before.assignees.length > 0, comments: before.comments }, landed);
+  if (unlanded) console.log(`DONE_NOT_LANDED ${n} ${unlanded}`);
   const last = before.comments.filter(claimerOf).at(-1);
   let blocker;
   if (before.assignees.length) {

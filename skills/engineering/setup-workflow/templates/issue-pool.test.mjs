@@ -91,7 +91,9 @@ else if (args[0] === 'issue' && args[1] === 'view') {
   // 不帶 --repo：tracker 專案由 script 自己判定。
   const runBare = (...args) => spawnSync('node', [SCRIPT, ...args], { cwd: repo, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, 'claude'), PATH: `${dir}:${process.env.PATH}` } });
   const calls = () => { try { return readFileSync(join(dir, 'calls.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line)); } catch { return []; } };
-  return { run, runAt, runBare, calls, repo };
+  // DONE 留言的 sha 要是整合分支的祖先才算落地（#644）：fixture 先用 DONE_SHA 佔位，整合分支建好後換成真的 commit。
+  const fillSha = sha => { for (const file of ['page.json', 'views.json']) writeFileSync(join(dir, file), readFileSync(join(dir, file), 'utf8').replaceAll('@DONE_SHA@', sha)); };
+  return { run, runAt, runBare, calls, repo, fillSha };
 }
 
 // #284：#278、#281 都有開著的 PR，卻沒有指派、沒有認領留言，Probe 印 POOL_READY，只靠 coordinator 剛好多看一眼才沒重複派工。
@@ -366,7 +368,7 @@ test('--integration：blocker 在整合分支有 (#<m>) commit 時標 (landed <�
 const LANDED_ISSUES = [
   // 最近一則認領之後有 DONE 結果行。
   issue(229, { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(30),
-    comments: [['認領：box／s1', hoursAgo(30)], ['**worker 結果**\n\nDONE 229 1a4726f', hoursAgo(29)]] }),
+    comments: [['認領：box／s1', hoursAgo(30)], ['**worker 結果**\n\nDONE 229 @DONE_SHA@', hoursAgo(29)]] }),
   // DONE 在最近一則認領之前：之後又被認領重做，不算。
   issue(230, { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(1),
     comments: [['DONE 230 aaf0927', hoursAgo(40)], ['認領：box／s2', hoursAgo(1)]] }),
@@ -379,7 +381,8 @@ const LANDED_ISSUES = [
 ];
 const landedFixture = () => {
   const f = fakeGh({ issues: LANDED_ISSUES });
-  integrationBranch(f.repo, { merged: ['issue/231-landed'], fresh: ['issue/232-fresh'], unmerged: ['issue/233-wip'] });
+  const sha = integrationBranch(f.repo, { merged: ['issue/231-landed'], fresh: ['issue/232-fresh'], unmerged: ['issue/233-wip'] });
+  f.fillSha(sha('pilot/integration'));
   return f;
 };
 
@@ -409,7 +412,8 @@ test('--integration 且 main 暫停旗標有效：landed 桶收成 LANDED_COUNT 
 
 test('沒帶 --integration 時不判斷落地：沒有 landed 桶、blocked 行不標 landed，其餘逐行同以前', () => {
   const f = fakeGh({ issues: [...LANDED_ISSUES, issue(247, { labels: ['enhancement', 'needs-triage'], blockedBy: [151] })] });
-  integrationBranch(f.repo, { subjects: ['加報價來源 (#151)'], merged: ['issue/231-landed'] });
+  const sha = integrationBranch(f.repo, { subjects: ['加報價來源 (#151)'], merged: ['issue/231-landed'] });
+  f.fillSha(sha('pilot/integration'));
   const result = f.run('--stale');
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'stale #229 標題 229\nstale #233 標題 233\nclaimed #230 標題 230\nclaimed #231 標題 231\nclaimed #232 標題 232\n'
@@ -699,12 +703,37 @@ test('claim --integration：分支已合入整合分支時印 LANDED <n> <合入
 });
 
 test('claim --integration：已指派、最近認領之後有 DONE 結果行時印 LANDED <n> <DONE 的 sha>，不改 Issue', () => {
-  const f = fakeGh({ views: [view({ assignees: ['ron'], comments: [['ron', `認領：${HOST}／sess-1`], ['ron', '**worker 結果**\n\nDONE 7 10aee61']] })] });
-  integrationBranch(f.repo);
+  const f = fakeGh({ views: [view({ assignees: ['ron'], comments: [['ron', `認領：${HOST}／sess-1`], ['ron', '**worker 結果**\n\nDONE 7 @DONE_SHA@']] })] });
+  const sha = integrationBranch(f.repo, { subjects: ['做 X'] });
+  f.fillSha(sha('pilot/integration'));
   const result = f.run('claim', '7', '--session', 'sess-1', '--integration', 'pilot/integration');
   assert.equal(result.status, 4);
-  assert.equal(result.stdout, 'LANDED 7 10aee61\n');
+  assert.equal(result.stdout, `LANDED 7 ${sha('pilot/integration')}\n`);
   assert.deepEqual(writes(f.calls()), []);
+});
+
+// #644（#1 項）：stage 衝突沒合進去的單，DONE 留言的 sha 不是整合分支的祖先，不能當落地漏派。
+test('claim --integration：DONE 留言的 sha 不在整合分支時印 DONE_NOT_LANDED <n> <sha> 後照常認領，不印 LANDED', () => {
+  const mine = `認領：${HOST}／sess-1`;
+  const f = fakeGh({ views: [
+    view({ assignees: ['ron'], comments: [['ron', mine], ['ron', 'DONE 7 @DONE_SHA@']] }),
+    view({ assignees: ['ron'], comments: [['ron', mine], ['ron', 'DONE 7 @DONE_SHA@'], ['ron', mine]] }),
+  ] });
+  const sha = integrationBranch(f.repo, { unmerged: ['issue/7-wip'] });
+  f.fillSha(sha('issue/7-wip'));
+  const result = f.run('claim', '7', '--session', 'sess-1', '--integration', 'pilot/integration');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `DONE_NOT_LANDED 7 ${sha('issue/7-wip')}\nCLAIMED 7\n`);
+});
+
+test('--integration：DONE 留言的 sha 不在整合分支的單不歸 landed', () => {
+  const f = fakeGh({ issues: [issue(229, { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(2),
+    comments: [['認領：box／s1', hoursAgo(2)], ['DONE 229 @DONE_SHA@', hoursAgo(1)]] })] });
+  const sha = integrationBranch(f.repo, { unmerged: ['issue/229-wip'] });
+  f.fillSha(sha('issue/229-wip'));
+  const result = f.run('--integration', 'pilot/integration', '--stale');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'claimed #229 標題 229\n');
 });
 
 test('claim 沒帶 --integration 時不查落地：整合分支有 (#<n>) commit、留言有 DONE 也照常認領', () => {

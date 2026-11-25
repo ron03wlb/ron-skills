@@ -5,7 +5,8 @@
 // 結果行的判斷與 Probe 的 WORKER 共用 pilot-probe.mjs 的 resultMatch（容忍縮排、TUI 框線與 bullet、略過提示列），不另寫一份
 // （#325：自寫的 `^(DONE|STOP) [0-9]+` 漏抓兩格縮排的結果行，漏掉 STOP 約 1 小時）。
 // 直接給的 handle：啟動時先記下畫面上已有的結果行當基準，不報（#323：resume 後畫面還留著舊 STOP）；之後最後一個結果行不在基準裡才算新結果。
-// batch 成員照 Probe 的 WORKER 判斷：最後一個結果行就是結果，只略過成員 `resumed:` 行記下的 resume 前舊結果（pilot-batch resume，#356），
+// batch 成員照 Probe 的 WORKER 判斷：最後一個結果行就是結果，只略過成員 `resumed:` 行記下的 resume 前舊結果（pilot-batch resume，#356；
+// 兩邊都經 pilot-probe.mjs 的 resultText 去掉 `│` 之後的 Orca 側欄再比對，#643 第 1 項：累積輸出裡的舊 STOP 尾巴黏著側欄，watcher 一啟動就結束），
 // 啟動時已在畫面上的新結果行第一輪就報（#406：resume 後、watcher 啟動前印的 DONE 被畫面基準吞掉，watcher 一直不通知）。
 // 有一個 handle 出現新結果或 terminal 已結束（`status: exited`）就印出這一輪的事件並結束：coordinator 以背景執行它，結束即被叫醒，處理後再起一次。
 // 兩輪之間不只睡 interval（CoS item 67）：上一次讀到工作中畫面（`esc to interrupt` 或 spinner，pilot-probe.mjs 的 workingScreen）的 handle
