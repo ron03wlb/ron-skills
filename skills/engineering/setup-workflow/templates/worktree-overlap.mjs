@@ -65,6 +65,9 @@
 //   正本不在本 repo（consumer）時，TEMPLATE_COPY 之後再印一行 `  開上游單前：<copy-templates --dry-run 指令>…`（SAME 才用範本重現、可能開上游
 //   ron-skills 單；UPDATE 副本落後、DIFF 被手改，先同步副本），其中有 PreToolUse Bash hook 時多一行 `  hook 類：…`（把 fixture 送過範本每支
 //   PreToolUse Bash hook，有一支已 exit 2 就同步那支）。#503：兩次開出範本早已修好的單，另一次真正擋住的是另一支 hook 範本。
+//   清單 `localExceptions`（copy-templates 不覆蓋的本地例外）涵蓋的 scripts/ 下檔案也印 `TEMPLATE_COPY <檔案> <正本路徑>`（scripts/<x> ↔ templates/<x>，
+//   同 copy-templates 的對應），緊接一行 `  來源：<正本路徑>（…localExceptions 列了 <例外>…）`，不列入開上游單前（例外不能 copy）。copies 有的檔照 copies，
+//   輸出不變；localExceptions 讀不懂時當作沒有（#553：git-bypass 移到 localExceptions 後改暫留舊檔沒有提示，本地修補在重新複製時無聲消失）。
 //   LANDED_SINCE <檔案> <commit7> <subject>
 //   帶 `--since <ISO 時間>`（要給檔案，不能和 --mine 併用）時，<主分支> 第一父線上 committer 時間不早於它、改到這個檔的 commit
 //   各印一行，依輸入的檔案順序、同一檔新的在前，排在 TEMPLATE_COPY 之後、OVERLAP_WT 之前。以落地時間算：側分支較早的 commit
@@ -111,20 +114,43 @@ export function parseWorktrees(porcelain) {
 }
 
 const MANIFEST = 'docs/agents/workflow-templates.json';
+const TEMPLATES = 'skills/engineering/setup-workflow/templates/';
 
-/** `files` 裡是 cwd 所在 worktree 副本清單（MANIFEST）列出的副本 → TEMPLATE_COPY 行；沒有清單或讀不懂時為空。 */
+/** localExceptions 的路徑以 templates/ 為根（同 copy-templates.mjs 的 templatePath）：去掉 ./ 與 scripts/ 前綴及結尾的 /。 */
+const templatePath = path => path.replace(/^(\.\/)?(scripts\/)?/, '').replace(/\/+$/, '');
+
+/** 副本路徑 scripts/<x> 被哪一條 localExceptions 涵蓋（檔案本身或其上層目錄）；沒有時 undefined（#553）。 */
+function exceptionFor(file, localExceptions) {
+  if (!file.startsWith('scripts/') || !Array.isArray(localExceptions)) return undefined;
+  const name = file.slice('scripts/'.length);
+  return localExceptions.find(entry => typeof entry === 'string' && templatePath(entry)
+    && (name === templatePath(entry) || name.startsWith(`${templatePath(entry)}/`)));
+}
+
+/** `files` 裡是 cwd 所在 worktree 副本清單（MANIFEST）列出的副本或 localExceptions 涵蓋的檔 → TEMPLATE_COPY 行；沒有清單或讀不懂時為空。 */
 export function templateCopies(cwd, files) {
   const top = git(cwd, 'rev-parse', '--show-toplevel').trim();
-  let copies;
+  let manifest;
   try {
-    copies = JSON.parse(readFileSync(join(top, MANIFEST), 'utf8')).copies ?? {};
+    manifest = JSON.parse(readFileSync(join(top, MANIFEST), 'utf8'));
   } catch {
     return [];
   }
+  const copies = manifest?.copies ?? {};
+  const localExceptions = manifest?.localExceptions;
   const hits = files.filter(file => copies[file]?.template);
   const upstream = hits.map(file => copies[file].template).filter(template => !existsSync(join(top, template)));
+  // 依輸入順序；localExceptions 內的檔（copies 沒有）緊接一行來源（#553）。
+  const lines = files.flatMap(file => {
+    if (copies[file]?.template) return [`TEMPLATE_COPY ${file} ${copies[file].template}`];
+    const entry = exceptionFor(file, localExceptions);
+    if (entry === undefined) return [];
+    const template = `${TEMPLATES}${file.slice('scripts/'.length)}`;
+    return [`TEMPLATE_COPY ${file} ${template}`, `  來源：${template}（workflow-templates.json 的 localExceptions 列了 ${entry}，copy-templates 不覆蓋這個檔；`
+      + '拿掉例外重新複製時本地修補會被正本蓋掉，要留的修補先改正本）'];
+  });
   return [
-    ...hits.map(file => `TEMPLATE_COPY ${file} ${copies[file].template}`),
+    ...lines,
     ...(upstream.length ? upstreamCheckLines(upstream.map(template => template.replace(/^.*\/setup-workflow\/templates\//, ''))) : []),
   ];
 }

@@ -12,6 +12,10 @@
 //   正本不在本 repo（consumer）時再印 `  開上游單前：<copy-templates --dry-run 指令>…`：SAME 才用範本重現、可能開上游 ron-skills 單，
 //   UPDATE（副本落後）、DIFF（被手改）先同步副本；範本是 PreToolUse Bash hook 時多一行 `  hook 類：…`，把 fixture 送過範本每支 PreToolUse Bash hook，
 //   有一支已 exit 2 就同步那支（#503：兩次開出範本早已修好的單，另一次真正擋住的是另一支 hook 範本）。
+//   清單 `localExceptions`（copy-templates 不覆蓋的本地例外）涵蓋的 scripts/ 下檔案，也印 `TEMPLATE_COPY <file> <template>`（<template> 依 copy-templates 的
+//   對應：scripts/<x> ↔ templates/<x>），接一行 `  來源：<template>（…localExceptions 列了 <例外>…）`，不印下一步與開上游單前（例外不能 copy，
+//   copy-templates 明列被排除的正本會報錯）；--json 的這筆多帶 `localException: <例外>`。copies 有的檔照 copies，輸出不變（#553：git-bypass
+//   移到 localExceptions 後，改這支暫留舊檔沒有提示，本地修補在拿掉例外重新複製時無聲消失）。localExceptions 讀不懂時當作沒有。
 // exit code：0 無命中、3 有命中、2 用法錯誤、1 git 失敗。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -56,9 +60,27 @@ export function findHits({ files, self, integration, worktrees, integrationCommi
 const MANIFEST = 'docs/agents/workflow-templates.json';
 const TEMPLATES = 'skills/engineering/setup-workflow/templates/';
 
-/** `files`（相對 repo 根）中是副本清單 `copies` 列出的副本 → [{ file, template }]，依輸入順序。 */
-export function findTemplateCopies(files, copies) {
-  return files.filter(file => copies?.[file]?.template).map(file => ({ file, template: copies[file].template }));
+/** localExceptions 的路徑以 templates/ 為根（同 copy-templates.mjs 的 templatePath）：去掉 ./ 與 scripts/ 前綴及結尾的 /。 */
+const templatePath = path => path.replace(/^(\.\/)?(scripts\/)?/, '').replace(/\/+$/, '');
+
+/** 副本路徑 scripts/<x> 被哪一條 localExceptions 涵蓋（檔案本身或其上層目錄）；沒有時 undefined。 */
+function exceptionFor(file, localExceptions) {
+  if (!file.startsWith('scripts/') || !Array.isArray(localExceptions)) return undefined;
+  const name = file.slice('scripts/'.length);
+  return localExceptions.find(entry => typeof entry === 'string' && templatePath(entry)
+    && (name === templatePath(entry) || name.startsWith(`${templatePath(entry)}/`)));
+}
+
+/**
+ * `files`（相對 repo 根）中是副本清單 `copies` 列出的副本 → [{ file, template }]，依輸入順序；
+ * copies 沒有、但在 `localExceptions` 涵蓋內的 scripts/ 檔 → [{ file, template, localException }]（#553）。
+ */
+export function findTemplateCopies(files, copies, localExceptions) {
+  return files.flatMap(file => {
+    if (copies?.[file]?.template) return [{ file, template: copies[file].template }];
+    const localException = exceptionFor(file, localExceptions);
+    return localException === undefined ? [] : [{ file, template: `${TEMPLATES}${file.slice('scripts/'.length)}`, localException }];
+  });
 }
 
 /** 範本裡掛在 `PreToolUse` matcher `Bash` 的 hook（setup-workflow SKILL.md 的表）；hook 類問題要把 fixture 送過每一支。 */
@@ -84,7 +106,8 @@ function upstreamCheckLines(names) {
  * TEMPLATE_COPY 行與下一步；<x> 是 copy-templates.mjs 接受的範本名（templates/ 下的路徑）。
  * 給了 repo 根目錄 `top` 而正本就在 top 裡（本 repo 是 ron-skills）時，不印開上游單前的比對。
  */
-export function templateCopyLines({ file, template }, top) {
+export function templateCopyLines({ file, template, localException }, top) {
+  if (localException !== undefined) return [`TEMPLATE_COPY ${file} ${template}`, localExceptionLine(template, localException)];
   const name = template.startsWith(TEMPLATES) ? template.slice(TEMPLATES.length) : template;
   return [
     `TEMPLATE_COPY ${file} ${template}`,
@@ -94,8 +117,14 @@ export function templateCopyLines({ file, template }, top) {
   ];
 }
 
-function readCopies(top) {
-  try { return JSON.parse(readFileSync(join(top, MANIFEST), 'utf8')).copies ?? {}; } catch { return {}; }
+/** localExceptions 內的檔沒有來源行、copy-templates 也不覆蓋：指出正本，提醒本地修補在拿掉例外重新複製時會被蓋掉（#553）。 */
+function localExceptionLine(template, localException) {
+  return `  來源：${template}（workflow-templates.json 的 localExceptions 列了 ${localException}，copy-templates 不覆蓋這個檔；`
+    + '拿掉例外重新複製時本地修補會被正本蓋掉，要留的修補先改正本）';
+}
+
+function readManifest(top) {
+  try { return JSON.parse(readFileSync(join(top, MANIFEST), 'utf8')) ?? {}; } catch { return {}; }
 }
 
 export function parseArgs(args) {
@@ -111,6 +140,7 @@ export function parseArgs(args) {
 
 export function collect(cwd, options) {
   const top = git(cwd, 'rev-parse', '--show-toplevel');
+  const manifest = readManifest(top);
   const files = options.files.map(file => relative(top, resolve(cwd, file)).replaceAll('\\', '/'));
   const worktrees = parseWorktrees(git(cwd, 'worktree', 'list', '--porcelain'));
   const integration = worktrees[0].branch;
@@ -127,7 +157,7 @@ export function collect(cwd, options) {
       if (line.includes('\0')) { const [sha, subject] = line.split('\0'); commits.push({ sha, subject, files: [] }); } else commits.at(-1)?.files.push(line);
       return commits;
     }, []);
-  return { files, self: top, integration, base, worktrees: trees, integrationCommits, templateCopies: findTemplateCopies(files, readCopies(top)) };
+  return { files, self: top, integration, base, worktrees: trees, integrationCommits, templateCopies: findTemplateCopies(files, manifest.copies, manifest.localExceptions) };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
