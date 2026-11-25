@@ -461,7 +461,7 @@ test('stage 前同步失敗（sync-main 衝突）：STOP conflict sync-main、�
   const before = f.read();
   const result = f.land(f.key);
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.equal(result.last, 'STOP conflict sync-main same.txt');
+  assert.equal(result.last, 'STOP conflict sync-main same.txt=main:other');
   assert.ok(!result.stdout.includes('STAGED'), result.stdout);
   assert.equal(f.checks(), '');
   assert.equal(f.read(), before);
@@ -659,7 +659,7 @@ test('push：sync-main 衝突時 STOP conflict sync-main，不 land、不開 PR�
   const tip = git(f.repo, 'rev-parse', 'pilot/integration');
   const result = gh.push();
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.equal(result.last, 'STOP conflict sync-main same.txt');
+  assert.equal(result.last, 'STOP conflict sync-main same.txt=main:other');
   assert.doesNotMatch(gh.calls(), /pr create|pr merge/);
   assert.equal(git(f.repo, 'rev-parse', 'pilot/integration'), tip);
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');

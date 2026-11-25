@@ -778,6 +778,87 @@ test('workflow-doc-sync.json 和可自己解的檔一起衝突：先解那些檔
   assert.equal(f.checks(), 1, '解完在新的 staged SHA 跑 Regression');
 });
 
+// #589：兩邊改了 05-level3.md 不同段、各自重產站台與 restamp，md 自己合得起來，衝突只剩站台 html 與戳記檔（G10 等了約 7.5 小時）。
+const LEVEL3 = 'docs/workflow/05-level3.md';
+const LEVEL3_SITE = 'docs/workflow/site/05-level3.html';
+const LEVEL3_MD = 'a1\nx\ny\nz\nb1\n';
+/** 假的站台產生器的輸出：整份 md 擠成一行，兩邊改不同段時 html 也一定衝突。 */
+const siteOf = md => `<p>${md.trim().split('\n').join('<br>')}</p>\n`;
+/** 假的 scripts/build-workflow-site.mjs：照 siteOf 把 docs/workflow/*.md 產成 site/*.html。 */
+const SITE_BUILD = `import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+mkdirSync('docs/workflow/site', { recursive: true });
+for (const name of readdirSync('docs/workflow').filter(name => name.endsWith('.md'))) {
+  const md = readFileSync(\`docs/workflow/\${name}\`, 'utf8');
+  writeFileSync(\`docs/workflow/site/\${name.replace(/\\.md$/, '.html')}\`, \`<p>\${md.trim().split('\\n').join('<br>')}</p>\\n\`);
+}
+`;
+const siteBase = (build = SITE_BUILD) => ({ 'scripts/build-workflow-site.mjs': build, [LEVEL3]: LEVEL3_MD, [LEVEL3_SITE]: siteOf(LEVEL3_MD) });
+const siteChange = md => ({ [LEVEL3]: md, [LEVEL3_SITE]: siteOf(md) });
+
+test('只有站台 html 與戳記檔衝突：重產站台、restamp 後合入，印 RESOLVED restamp', t => {
+  const f = syncFixture(t, syncMembers({ a: siteChange(LEVEL3_MD.replace('a1', 'a2')), b: siteChange(LEVEL3_MD.replace('b1', 'b2')) }), siteBase());
+  const result = f.land();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.lines.includes(`RESOLVED 2 restamp ${LEVEL3_SITE} scripts/workflow-doc-sync.json`), result.stdout);
+  assert.equal(git(f.repo, 'show', `${f.tip()}:${LEVEL3}`), 'a2\nx\ny\nz\nb2');
+  assert.equal(git(f.repo, 'show', `${f.tip()}:${LEVEL3_SITE}`), '<p>a2<br>x<br>y<br>z<br>b2</p>');
+  const check = spawnSync('node', [join(f.stageTree, 'scripts/check-workflow-sync.mjs')], { cwd: f.stageTree, encoding: 'utf8' });
+  assert.equal(check.status, 0, check.stdout + check.stderr);
+  assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
+});
+
+test('站台 html、戳記檔與兩邊改同一段的 05-level3.md 一起衝突：STOP conflict 列出三個檔，stage worktree 乾淨', t => {
+  const f = syncFixture(t, syncMembers({ a: siteChange(LEVEL3_MD.replace('a1', 'A')), b: siteChange(LEVEL3_MD.replace('a1', 'B')) }), siteBase());
+  const before = f.tip();
+  const result = f.land();
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(result.last, `STOP conflict 2 ${LEVEL3}=member 1:other ${LEVEL3_SITE}=member 1:other scripts/workflow-doc-sync.json=member 1:other`);
+  assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
+  assert.equal(f.tip(), before);
+  assert.equal(f.checks(), 0);
+});
+
+test('重產站台失敗：abort，STOP conflict，stage worktree 乾淨', t => {
+  const f = syncFixture(t, syncMembers({ a: siteChange(LEVEL3_MD.replace('a1', 'a2')), b: siteChange(LEVEL3_MD.replace('b1', 'b2')) }), siteBase('process.exit(1);\n'));
+  const result = f.land();
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(result.last, `STOP conflict 2 ${LEVEL3_SITE}=member 1:other scripts/workflow-doc-sync.json=member 1:other`);
+  assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
+  assert.equal(f.checks(), 0);
+});
+
+test('重產站台寫了一部分檔才失敗：abort 後 stage worktree 沒有留下未追蹤的產物，重跑還是 STOP conflict 而不是 STOP dirty', t => {
+  const partial = "import { writeFileSync } from 'node:fs';\nwriteFileSync('docs/workflow/site/partial.html', 'x\\n');\nprocess.exit(1);\n";
+  const f = syncFixture(t, syncMembers({ a: siteChange(LEVEL3_MD.replace('a1', 'a2')), b: siteChange(LEVEL3_MD.replace('b1', 'b2')) }), siteBase(partial));
+  const stop = `STOP conflict 2 ${LEVEL3_SITE}=member 1:other scripts/workflow-doc-sync.json=member 1:other`;
+  assert.equal(f.land().last, stop);
+  assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
+  assert.equal(f.land().last, stop);
+});
+
+test('重產站台成功、git add 產物失敗：清掉建置新寫的未追蹤產物，重跑還是 STOP conflict', t => {
+  // 建置多寫一個讀不到的檔，git add -A 讀不了它而失敗（root 讀得到，測不出來）。
+  if (process.getuid?.() === 0) return t.skip('root 讀得到 chmod 000 的檔');
+  const build = `${SITE_BUILD}import { chmodSync } from 'node:fs';\nwriteFileSync('docs/workflow/site/new.html', 'new\\n');\nchmodSync('docs/workflow/site/new.html', 0);\n`;
+  const f = syncFixture(t, syncMembers({ a: siteChange(LEVEL3_MD.replace('a1', 'a2')), b: siteChange(LEVEL3_MD.replace('b1', 'b2')) }), siteBase(build));
+  const stop = `STOP conflict 2 ${LEVEL3_SITE}=member 1:other scripts/workflow-doc-sync.json=member 1:other`;
+  assert.equal(f.land().last, stop);
+  assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
+  assert.equal(f.land().last, stop);
+});
+
+test('非 ASCII 檔名的站台檔衝突：照樣認得是產物，重產後合入', t => {
+  const site = 'docs/workflow/site/05-環境.html';
+  const md = 'docs/workflow/05-環境.md';
+  const change = text => ({ [md]: text, [site]: siteOf(text) });
+  const f = syncFixture(t, syncMembers({ a: change(LEVEL3_MD.replace('a1', 'a2')), b: change(LEVEL3_MD.replace('b1', 'b2')) }),
+    { 'scripts/build-workflow-site.mjs': SITE_BUILD, [md]: LEVEL3_MD, [site]: siteOf(LEVEL3_MD) });
+  const result = f.land();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.lines.includes(`RESOLVED 2 restamp ${site} scripts/workflow-doc-sync.json`), result.stdout);
+  assert.equal(git(f.repo, 'show', `${f.tip()}:${site}`), '<p>a2<br>x<br>y<br>z<br>b2</p>');
+});
+
 /** 戳記檔與 check-workflow-sync.mjs 都在 base：從 repo 複製腳本，對 base 的來源先 restamp 一次。 */
 function syncFixture(t, members, extraBase = {}) {
   return fixture(t, {
@@ -1043,16 +1124,33 @@ test('sync-main：整合分支與 origin/main 各改了戳記，一行指令 res
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
 });
 
-test('sync-main：解不了的衝突印 STOP conflict sync-main <檔案>，merge --abort、stage worktree 乾淨、整合分支不動、沒跑 Regression', t => {
+test('sync-main：只有站台 html 與戳記檔衝突，重產站台、restamp 後合入，印 RESOLVED sync-main restamp 與 SYNCED', t => {
   const f = syncMainFixture(t, {
-    base: { 'x.txt': 'x\n' },
-    integration: tree => write(tree, { 'x.txt': 'integration\n' }),
-    upstream: tree => write(tree, { 'x.txt': 'upstream\n' }),
+    base: { ...SYNC_BASE(), ...siteBase() },
+    integration: restampedChange(SYNC_SOURCES[0], '# integration\n', siteChange(LEVEL3_MD.replace('a1', 'a2'))),
+    upstream: restampedChange(SYNC_SOURCES[1], '# upstream\n', siteChange(LEVEL3_MD.replace('b1', 'b2'))),
+  });
+  const result = f.sync();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.lines.includes(`RESOLVED sync-main restamp ${LEVEL3_SITE} scripts/workflow-doc-sync.json`), result.stdout);
+  const sha = f.tip();
+  assert.equal(result.last, `SYNCED ${sha} CHECK_PASS tests 3+4+5`);
+  assert.equal(git(f.repo, 'show', `${sha}:${LEVEL3_SITE}`), '<p>a2<br>x<br>y<br>z<br>b2</p>');
+  const check = spawnSync('node', [join(f.stageTree, 'scripts/check-workflow-sync.mjs')], { cwd: f.stageTree, encoding: 'utf8' });
+  assert.equal(check.status, 0, check.stdout + check.stderr);
+  assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
+});
+
+test('sync-main：解不了的衝突印 STOP conflict sync-main <檔>=main:<種類>，merge --abort、stage worktree 乾淨、整合分支不動、沒跑 Regression', t => {
+  const f = syncMainFixture(t, {
+    base: { 'x.txt': 'x\n', 'scripts/驗證.mjs': 'y\n', 'pilot.md': ENTRIES },
+    integration: tree => write(tree, { 'x.txt': 'integration\n', 'scripts/驗證.mjs': 'integration\n', 'pilot.md': ENTRIES.replace('close v1', 'close i') }),
+    upstream: tree => write(tree, { 'x.txt': 'upstream\n', 'scripts/驗證.mjs': 'upstream\n', 'pilot.md': ENTRIES.replace('close v1', 'close u') }),
   });
   const before = f.tip();
   const result = f.sync();
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.equal(result.last, 'STOP conflict sync-main x.txt');
+  assert.equal(result.last, 'STOP conflict sync-main pilot.md=main:entry Close scripts/驗證.mjs=main:code x.txt=main:other');
   assert.equal(f.tip(), before);
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
   assert.equal(f.checks(), 0);
