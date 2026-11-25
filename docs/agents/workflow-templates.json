@@ -32,8 +32,8 @@
     },
     "scripts/check-coordinator-permissions.mjs": {
       "template": "skills/engineering/setup-workflow/templates/check-coordinator-permissions.mjs",
-      "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
-      "sha256": "e9dfd0b34af6fee265221b2567c47faa9b546b7946e8b449f1a0a9b006ca747e"
+      "commit": "9975c5a9b0570b4330bd0b2fdbd8d73a90e90979",
+      "sha256": "fc4a768abe063e8ef2eb82d7dc6cdf5da80da445688c1fa76e6d900752b23582"
     },
     "scripts/check-node-version.mjs": {
       "template": "skills/engineering/setup-workflow/templates/check-node-version.mjs",
@@ -82,8 +82,8 @@
     },
     "scripts/claude-hook-tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-tab-state.mjs",
-      "commit": "2ed35c541db8331b995fb8433830bb54673a3b87",
-      "sha256": "6f21a4403ca411e8ef6af4dff1f665caaae1491a5420bf162706c895f246113f"
+      "commit": "9975c5a9b0570b4330bd0b2fdbd8d73a90e90979",
+      "sha256": "5924b759a038e3459d9da032bcb13e1adcfe617800c2454f000842a3a23cd508"
     },
     "scripts/claude-hook-unbare.sh": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-unbare.sh",
@@ -237,8 +237,8 @@
     },
     "scripts/pilot-land.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-land.mjs",
-      "commit": "307969a47d2a9605e84b537d16726e79092f35a8",
-      "sha256": "62293a5fccd2ad6f7f1426f90a17f688c3f61a0ed7cc72d486b68f1146d8ef29"
+      "commit": "9975c5a9b0570b4330bd0b2fdbd8d73a90e90979",
+      "sha256": "22bba3937f5214f9e32668a6112d71e5c00c96a32a6754e2d90ed415fe87d010"
     },
     "scripts/pilot-pr-body.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-pr-body.mjs",

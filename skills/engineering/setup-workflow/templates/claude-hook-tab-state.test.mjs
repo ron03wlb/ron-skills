@@ -248,6 +248,14 @@ test('landed：帶 --keep-branch 的 land.mjs（pilot coordinator 落地）不�
   assert.equal(calls(), '');
 });
 
+test('landed：Push gate 入口 pilot-land.mjs push（內部以 --keep-branch 落地）不觸發', t => {
+  const { record, hook, calls } = fixture(t);
+  record('處理中｜[維運] issue-pilot coordinator');
+  const result = hook(bash("node scripts/pilot-land.mjs push --title 'batch 1：x' --check-command 'bin/check --upstream'", `LANDED 140 ${SHA}\n`));
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(calls(), '');
+});
+
 test('PostToolUse：標題在引號裡含 & ; | 時照樣記下完整標題', t => {
   const { recorded, hook } = fixture(t);
   for (const title of ['處理中｜[研究] A & B', '處理中｜#21 x; y', '處理中｜#21 a | b']) {

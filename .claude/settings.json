@@ -4,6 +4,7 @@
       "Bash(node scripts/gh-tracker.mjs:*)",
       "Bash(node scripts/land.mjs:*)",
       "Bash(node scripts/pilot-close.mjs:*)",
+      "Bash(node scripts/pilot-land.mjs push:*)",
       "Bash(node scripts/project-sync.mjs:*)",
       "Bash(node scripts/run-codex-review.mjs:*)"
     ]

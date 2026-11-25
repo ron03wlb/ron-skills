@@ -7,7 +7,8 @@ import { dirname, join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { orcaReplySource } from './test/fake-orca.mjs';
+import { mergeSample, orcaReplySource } from './test/fake-orca.mjs';
+import { GH_SAMPLES } from './test/gh-samples.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 import { gateIssues } from './lib/pilot-store.mjs';
 
@@ -32,10 +33,11 @@ function write(root, files) {
   }
 }
 
-// 假 regression 指令：每次呼叫在 $FAKE_CHECK_LOG 記下參數，通過時印 CHECK_PASS。
+// 假 regression 指令：每次呼叫在 $FAKE_CHECK_LOG 記下參數，以 $FAKE_CHECK_EXIT 結束（預設 0），通過時印 CHECK_PASS。
 const FAKE_CHECK = `#!/bin/sh
 echo "check $*" >> "$FAKE_CHECK_LOG"
-echo "CHECK_PASS tests 1+2"
+[ "\${FAKE_CHECK_EXIT:-0}" = 0 ] && echo "CHECK_PASS tests 1+2"
+exit "\${FAKE_CHECK_EXIT:-0}"
 `;
 
 /**
@@ -512,4 +514,182 @@ test('checkpoint 有 postland 行：MERGED 之前對每個 done 成員的每條�
   assert.match(result.last, /^MERGED 601-602 [0-9a-f]{40}$/);
   const again = f.land(f.key);
   assert.deepEqual(again.lines, [...tail, result.last]);
+});
+
+// #395（batch 342：stage onto 1eff6e7 之後 origin/main 才前進，Push gate 的 land.mjs 印 STOP behind-main，coordinator 再手動跑
+// sync-main → pilot-pr-body → land，多兩次背景等待與三次喚醒）：`push` 一個入口串起 pr-body 與 land，behind-main 時自己 sync-main、重產 body、再 land。
+/**
+ * PATH 上的假 gh（輸出從 test/gh-samples.mjs 的真實樣本長出來），讓真的 land.mjs 跑完 push → 開 PR → CI → 合併；
+ * `pr merge` 在 origin 的另一個 clone 真的做 --no-ff 合併。呼叫記在 calls()。
+ */
+function fakeGh(f) {
+  const bin = join(f.temp, 'bin');
+  const merger = join(f.temp, 'merger');
+  const state = join(f.temp, 'gh-state.json');
+  const log = join(f.temp, 'gh.log');
+  mkdirSync(bin);
+  git(f.temp, 'clone', '-q', join(f.temp, 'origin.git'), merger);
+  writeFileSync(state, JSON.stringify({ prs: [] }));
+  writeFileSync(log, '');
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('fs'); const { execFileSync } = require('child_process');
+const SAMPLES = ${JSON.stringify(GH_SAMPLES)};
+const mergeSample = ${mergeSample.toString()};
+const args = process.argv.slice(2); const arg = k => args[args.indexOf(k) + 1];
+fs.appendFileSync(${JSON.stringify(log)}, 'gh ' + args.join(' ') + '\\n');
+const s = JSON.parse(fs.readFileSync(${JSON.stringify(state)}, 'utf8'));
+const save = () => fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
+const git = (...a) => execFileSync('git', ['-C', ${JSON.stringify(merger)}, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' }).trim();
+const out = ({ head, ...fields }) => mergeSample(SAMPLES['pr-view'], fields, 'pr');
+const find = ref => {
+  const pr = s.prs.find(pr => pr.number === Number(String(ref).split('/').pop()));
+  if (pr.state === 'OPEN') { git('fetch', '-q', 'origin'); pr.headRefOid = git('rev-parse', 'origin/' + pr.head); save(); }
+  return pr;
+};
+const sub = args[1];
+if (sub === 'list') console.log(JSON.stringify(s.prs.filter(pr => pr.head === arg('--head')).map(out)));
+else if (sub === 'create') {
+  git('fetch', '-q', 'origin');
+  const pr = { head: arg('--head'), number: 40 + s.prs.length, state: 'OPEN', url: 'https://github.com/o/r/pull/' + (40 + s.prs.length), headRefOid: git('rev-parse', 'origin/' + arg('--head')), mergeCommit: null };
+  s.prs.push(pr); save(); console.log(pr.url);
+}
+else if (sub === 'edit') console.log(find(args[2]).url);
+else if (sub === 'view' && arg('--json').includes('statusCheckRollup')) {
+  const pr = find(args[2]);
+  console.log(JSON.stringify(mergeSample(SAMPLES['pr-view-checks'], { headRefOid: pr.headRefOid, statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }] }, 'pr')));
+}
+else if (sub === 'view') console.log(JSON.stringify(out(find(args[2]))));
+else if (sub === 'merge') {
+  const pr = find(args[2]);
+  git('fetch', '-q', 'origin'); git('checkout', '-q', '-B', 'main', 'origin/main');
+  git('merge', '-q', '--no-ff', '-m', 'Merge pull request #' + pr.number, 'origin/' + pr.head);
+  git('push', '-q', 'origin', 'main');
+  Object.assign(pr, { state: 'MERGED', mergeCommit: { oid: git('rev-parse', 'HEAD') } }); save();
+}
+else { console.error('fake gh：未支援 ' + args.join(' ')); process.exit(1); }
+`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const push = (extra = {}, ...args) => {
+    const result = spawnSync('node', [script, 'push', '--title', 'batch 1：a', ...args], {
+      cwd: f.repo, encoding: 'utf8', timeout: 120000,
+      env: { ...env, FAKE_CHECK_LOG: join(f.temp, 'check.log'), PATH: `${bin}:${env.PATH}`, LAND_CHECKS_POLL_MS: '1', LAND_CHECKS_TIMEOUT_MS: '10000', ...extra },
+    });
+    const lines = result.stdout.trim().split('\n');
+    return { ...result, lines, last: lines.at(-1) };
+  };
+  return { push, calls: () => readFileSync(log, 'utf8'), origin: () => git(merger, 'ls-remote', 'origin', 'refs/heads/main').split('\t')[0] };
+}
+
+/** origin/main 在 stage 之後前進一個 commit（別的 PR 先合入）：從另一個 clone push。 */
+function advanceOrigin(f) {
+  const other = join(f.temp, 'other');
+  git(f.temp, 'clone', '-q', join(f.temp, 'origin.git'), other);
+  write(other, { 'later.txt': 'later\n' });
+  git(other, 'add', 'later.txt');
+  git(other, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'main moves on');
+  git(other, 'push', '-q', 'origin', 'main');
+  return git(other, 'rev-parse', 'HEAD');
+}
+
+/** batch 1 已 MERGED 進整合分支（stage 時已包含 origin/main），之後 origin/main 前進一個 commit。 */
+function mergedThenBehind(t) {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
+  withOrigin(f);
+  const staged = f.land(f.key);
+  assert.equal(staged.status, 0, staged.stdout + staged.stderr);
+  const later = advanceOrigin(f);
+  return { f, later };
+}
+
+test('push：stage 後 origin/main 前進，舊流程的 land.mjs 印 STOP behind-main；新入口一次 sync-main、重產 body、land，印 LANDED', t => {
+  const { f, later } = mergedThenBehind(t);
+  const gh = fakeGh(f);
+  const old = spawnSync('node', [join(dirname(script), 'land.mjs'), 'pilot/integration', '--keep-branch', '--title', 't', '--body-file', join(f.temp, 'x.md')],
+    { cwd: f.repo, encoding: 'utf8', env: { ...env, PATH: `${join(f.temp, 'bin')}:${env.PATH}` } });
+  assert.equal(old.status, 4, old.stdout + old.stderr);
+  assert.match(old.stdout.trim().split('\n').at(-1), /^STOP behind-main pilot\/integration /);
+
+  const result = gh.push({}, '--check-command', 'bin/check --upstream');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  // land.mjs 的 STOP behind-main 換成 PUSH_BEHIND_MAIN，緊接著是 sync-main 的輸出。
+  const behind = result.lines.indexOf('PUSH_BEHIND_MAIN pilot/integration');
+  assert.ok(behind > 0, result.stdout);
+  assert.equal(result.lines[behind + 1], 'RECORDED 1', result.stdout);
+  const synced = result.lines.find(line => line.startsWith('SYNCED '));
+  assert.match(synced ?? '', /^SYNCED [0-9a-f]{40} CHECK_PASS tests 1\+2$/, result.stdout);
+  assert.ok(result.lines.includes('RECORDED 1'), result.stdout);
+  assert.ok(!result.lines.some(line => line.startsWith('STOP ')), result.stdout);
+  // body 在 sync 之後重產：最後一份帶 sync-main 的 regression 行，land 用的就是它。
+  assert.equal(result.lines.filter(line => line.startsWith('PR_BODY ')).length, 2, result.stdout);
+  const body = readFileSync(join(f.repo, '.scratch/pilot/pr-body.md'), 'utf8');
+  assert.match(body, /Closes #1/);
+  assert.match(body, /sync-main CHECK_PASS tests 1\+2/);
+  const [, pr, sha] = result.last.match(/^LANDED (\d+) ([0-9a-f]{40})$/) ?? [];
+  assert.ok(pr, result.stdout);
+  assert.equal(gh.origin(), sha);
+  git(f.repo, 'merge-base', '--is-ancestor', later, sha);
+  assert.equal(git(f.repo, 'rev-parse', 'pilot/integration'), sha);
+  assert.match(gh.calls(), /gh pr create .*--title batch 1：a/);
+  assert.equal(f.checks(), 'check \ncheck --upstream\n');
+});
+
+test('push：sync-main 的 Regression 失敗時 STOP regression sync-main，不 land、不開 PR，整合分支不動', t => {
+  const { f } = mergedThenBehind(t);
+  const gh = fakeGh(f);
+  const tip = git(f.repo, 'rev-parse', 'pilot/integration');
+  const result = gh.push({ FAKE_CHECK_EXIT: '1' });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(result.last, 'STOP regression sync-main 1');
+  assert.ok(!result.lines.some(line => line.startsWith('LANDED ')), result.stdout);
+  assert.doesNotMatch(gh.calls(), /pr create|pr merge/);
+  assert.equal(git(f.repo, 'rev-parse', 'pilot/integration'), tip);
+});
+
+test('push：sync-main 衝突時 STOP conflict sync-main，不 land、不開 PR，整合分支不動', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'same.txt': 'int\n' } }] });
+  withOrigin(f);
+  assert.equal(f.land(f.key).status, 0);
+  const other = join(f.temp, 'other');
+  git(f.temp, 'clone', '-q', join(f.temp, 'origin.git'), other);
+  write(other, { 'same.txt': 'up\n' });
+  git(other, 'add', 'same.txt');
+  git(other, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'main moves on');
+  git(other, 'push', '-q', 'origin', 'main');
+  const gh = fakeGh(f);
+  const tip = git(f.repo, 'rev-parse', 'pilot/integration');
+  const result = gh.push();
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(result.last, 'STOP conflict sync-main same.txt');
+  assert.doesNotMatch(gh.calls(), /pr create|pr merge/);
+  assert.equal(git(f.repo, 'rev-parse', 'pilot/integration'), tip);
+  assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
+});
+
+test('push：已包含 origin/main 時不 sync，pr-body 後直接 land，印 LANDED', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
+  withOrigin(f);
+  assert.equal(f.land(f.key).status, 0);
+  const gh = fakeGh(f);
+  const result = gh.push();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(!result.lines.some(line => line.startsWith('SYNCED ')), result.stdout);
+  assert.equal(result.lines.filter(line => line.startsWith('PR_BODY ')).length, 1, result.stdout);
+  assert.match(result.last, /^LANDED \d+ [0-9a-f]{40}$/);
+  assert.equal(f.checks(), 'check \n');
+});
+
+test('push：沒有 merged batch 時印 pilot-pr-body 的 STOP no-merged-batch，不跑 land', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
+  withOrigin(f);
+  const gh = fakeGh(f);
+  const result = gh.push();
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(result.last, 'STOP no-merged-batch');
+  assert.equal(gh.calls(), '');
+});
+
+test('push：沒有 --title 是用法錯誤 exit 2', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
+  const result = spawnSync('node', [script, 'push'], { cwd: f.repo, encoding: 'utf8', env });
+  assert.equal(result.status, 2, result.stdout + result.stderr);
 });

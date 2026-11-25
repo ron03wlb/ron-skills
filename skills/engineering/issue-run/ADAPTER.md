@@ -130,7 +130,7 @@ Default: no Pilot section; `/issue-pilot` stops and says so.
 The `.claude/settings.json` allow rules an unattended `/issue-pilot` tick needs, and where git runs.
 Default: none; every git write prompts.
 
-Tracker writes and the push decision use the setup-workflow templates (its `gh-tracker.mjs` row): allow `Bash(node scripts/gh-tracker.mjs:*)` for the coordinator's comments, labels and closes, and allow `Bash(node scripts/land.mjs:*)` and `Bash(node scripts/pilot-close.mjs:*)` only when the human answered yes to `/setup-workflow`'s push question; `node scripts/check-coordinator-permissions.mjs [--push]` in the check entry keeps the rules matching that answer.
+Tracker writes and the push decision use the setup-workflow templates (its `gh-tracker.mjs` row): allow `Bash(node scripts/gh-tracker.mjs:*)` for the coordinator's comments, labels and closes, and allow `Bash(node scripts/land.mjs:*)` and `Bash(node scripts/pilot-close.mjs:*)`, plus `Bash(node scripts/pilot-land.mjs push:*)` when `scripts/pilot-land.mjs` is present (the Push gate entry; only that subcommand, never `pilot-land.mjs:*`), only when the human answered yes to `/setup-workflow`'s push question; `node scripts/check-coordinator-permissions.mjs [--push]` in the check entry keeps the rules matching that answer.
 
 When the pilot runs git in worktrees other than its cwd, do not write `Bash(git -C * <subcommand>)`. A `*` before the subcommand also matches extra git options, so `git -C <path> -c core.sshCommand=<cmd> fetch origin` passes, and Claude Code warns "allows any option at its `*`" on every session start; anchoring the path (`git -C /root/feature-ron-* …`) still warns. Keep each `*` at the end of a rule, after the arguments git parses as options:
 
