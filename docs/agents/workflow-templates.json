@@ -295,6 +295,11 @@
       "commit": "2ed35c541db8331b995fb8433830bb54673a3b87",
       "sha256": "d7a68571baa6d7eebf256af568f7e5d5adab61388ea6e96e1c9361eaa9aa7903"
     },
+    "scripts/tab-sweep.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/tab-sweep.mjs",
+      "commit": "a2e138169b6e7571dd950ddd5b2ba4223cc94db8",
+      "sha256": "8fe95e78d6da7927352183264e22d5c6083396a2b62824c7c4a122f08a0ccb1e"
+    },
     "scripts/token-usage.mjs": {
       "template": "skills/engineering/setup-workflow/templates/token-usage.mjs",
       "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
