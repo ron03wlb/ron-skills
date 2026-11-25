@@ -212,7 +212,7 @@ else if (b === 'read') reply('read', { terminal: { tail: ['● 先前的報告',
 
 // 忙碌中的 session 的假 Orca：wait 永遠不成立，畫面一直有 `esc to interrupt` 和開頭相同的上一則提醒（也會捲出畫面），
 // 所以排隊只能看 composer：不帶 `--enter` 的文字進 `draft`（前 `lostText` 次被吞），Enter 把 `draft` 清空排進佇列（前 `lostEnter` 次被吞）。
-// `draft` 是第一次 read 前 composer 已有的文字；`noDraft` 為 'always' 時 read 一律不帶 `draft` 欄位，'enter' 時第一次 Enter 之後才不帶，'null' 時一律回 `draft: null`。
+// `draft` 是第一次 read 前 composer 已有的文字；`noDraft` 為 'always' 時 read 一律不帶 `draft` 欄位，'enter' 時第一次 Enter 之後才不帶，'null' 時一律回 `draft: null`，'empty' 時只在 `draft` 為空字串時不帶（真實 Orca：composer 為空就沒有這個欄位）。
 function busySession(t, { lostText = 0, lostEnter = 0, draft = '', noDraft } = {}) {
   return fakeOrca(t, temp => {
     const state = join(temp, 'state.json');
@@ -228,7 +228,7 @@ else if (b === 'send') {
   s.reads++;
   const old = s.reads % 2 ? ['> ' + ${JSON.stringify(PROMPT)} + '（上一則）'] : [];
   const terminal = { tail: [...old, '✻ Working… (esc to interrupt)', '> ' + s.draft], draft: s.draft };
-  if (${JSON.stringify(noDraft)} === 'always' || (${JSON.stringify(noDraft)} === 'enter' && s.enters)) {
+  if (${JSON.stringify(noDraft)} === 'always' || (${JSON.stringify(noDraft)} === 'empty' && !s.draft) || (${JSON.stringify(noDraft)} === 'enter' && s.enters)) {
     const result = mergeSample(ORCA_SAMPLES.read, { terminal }, 'read');
     delete result.terminal.draft;
     console.log(JSON.stringify({ ok: true, result }));
@@ -286,21 +286,30 @@ test('--queue：送出前 draft 不是空的（不論是否與 prompt 同開頭�
   }
 });
 
-// `orca terminal read --help` 寫明 draft「may be absent」：讀不到就無從確認，一律不算排隊成功，也不重送整段。
-test('--queue：讀不到 draft 欄位時 STOP draft-unavailable；打字前就讀不到則什麼都不送', t => {
-  const never = busySession(t, { noDraft: 'always' });
-  const before = never.send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']);
-  assert.equal(before.status, 4);
-  assert.equal(before.stdout.trim(), 'STOP draft-unavailable term_w');
-  assert.deepEqual(never.sends(), []);
-  const gone = busySession(t, { noDraft: 'enter', lostEnter: 9 });
-  const after = gone.send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']);
-  assert.equal(after.status, 4);
-  assert.equal(after.stdout.trim(), 'STOP draft-unavailable term_w');
-  assert.deepEqual(gone.sends(), [QUEUE_TYPE, QUEUE_ENTER]);
-  const nulled = busySession(t, { noDraft: 'null' });
-  assert.equal(nulled.send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']).stdout.trim(), 'STOP draft-unavailable term_w');
-  assert.deepEqual(nulled.sends(), []);
+// `orca terminal read --help` 寫明 draft「may be absent」，實測 composer 為空時就不帶（#643：對跑 pre-commit 的 worker 三次 STOP draft-unavailable）：
+// 缺省或 null 視為空，不再 STOP；但文字沒進 draft 就沒有證據，仍不補 Enter、不重送整段，STOP send。
+test('--queue：composer 為空時 read 不帶 draft 欄位，照常打字、補 Enter 印 QUEUED', t => {
+  const { send, sends } = busySession(t, { noDraft: 'empty' });
+  const result = send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']);
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout.trim(), 'QUEUED term_w');
+  assert.deepEqual(sends(), [QUEUE_TYPE, QUEUE_ENTER]);
+});
+
+test('--queue：draft 一直不帶或為 null 時文字沒進輸入框的證據不在，STOP send，只送一次文字、不按 Enter', t => {
+  for (const noDraft of ['always', 'null']) {
+    const { send, sends } = busySession(t, { noDraft });
+    const result = send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']);
+    assert.equal(result.status, 4);
+    assert.equal(result.stdout.trim(), 'STOP send term_w');
+    assert.deepEqual(sends(), [QUEUE_TYPE]);
+  }
+});
+
+test('--queue：Enter 之後 draft 欄位消失視為已清空，印 QUEUED', t => {
+  const { send, sends } = busySession(t, { noDraft: 'enter' });
+  assert.equal(send(['--terminal', 'term_w', '--prompt', PROMPT, '--queue']).stdout.trim(), 'QUEUED term_w');
+  assert.deepEqual(sends(), [QUEUE_TYPE, QUEUE_ENTER]);
 });
 
 test('send 被拒：STOP send；handle 失效：STOP orca <錯誤碼>', t => {

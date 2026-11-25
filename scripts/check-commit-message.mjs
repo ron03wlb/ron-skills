@@ -4,7 +4,8 @@
 // 用法：node scripts/check-commit-message.mjs <訊息檔>   （.githooks/commit-msg 傳 git 給的 $1；`#` 註解行與 scissors 以下不算）
 //       node scripts/check-commit-message.mjs --rev <commit>   （讀已存在 commit 的 %B，查舊 commit 用）
 // 輸出：
-//   `COMMIT_MSG_SECOND_LINE <第二行前 60 字>` 到 stderr、exit 1（可動手：主旨後加一行空行再 commit；`-F -` 的 heredoc 第一行後要空一行）。
+//   `COMMIT_MSG_SECOND_LINE <第二行前 60 字>` 到 stderr、exit 1（可動手：主旨後加一行空行再 commit；`-F -` 的 heredoc 第一行後要空一行；
+//     主旨以 `#` 開頭時是被當註解刪掉、內文頂上來當主旨，要把 Issue 編號移進括號，#636）。
 //   `SUBJECT_TOO_LONG <n> 字（advisory，上限 50）` 到 stdout、不影響 exit code（不可動手的提醒，比照 spay2 2026-11-19 使用者裁定先 advisory；
 //     字數是 `<類型>(<範圍>): ` 之後的描述，全形半形各算 1）。
 //   用法錯誤或讀不到訊息 exit 2。
@@ -29,6 +30,13 @@ export function cleanMessage(raw) {
   while (lines.length && lines.at(-1) === '') lines.pop();
   return lines;
 }
+
+/** 擋下時的修正提示。第二句：`#` 開頭的主旨被 cleanMessage（與 git 的 strip cleanup）當註解刪掉，內文第一行頂上來當主旨，
+ *  第二行自然非空；只看第一句會去加空行，指錯方向（#636：#395、#560 worker 各撞一次）。 */
+export const FIX_HINT = [
+  '修正：主旨後加一行空行，內文從第三行開始（`git commit -F -` 的 heredoc 第一行後要空一行）。',
+  '主旨以 `#` 開頭時會被當成註解刪掉，內文第一行就變成主旨；Issue 編號放在括號裡，例如 `Push gate（#395）：…`。',
+].join('\n');
 
 /** 訊息 → { errors: string[], advisories: string[] } */
 export function checkMessage(raw) {
@@ -56,7 +64,7 @@ function main(args) {
   const { errors, advisories } = checkMessage(raw);
   for (const line of advisories) console.log(line);
   for (const line of errors) console.error(line);
-  if (errors.length) console.error('修正：主旨後加一行空行，內文從第三行開始（`git commit -F -` 的 heredoc 第一行後要空一行）。');
+  if (errors.length) console.error(FIX_HINT);
   return errors.length ? 1 : 0;
 }
 

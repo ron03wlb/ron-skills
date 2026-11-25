@@ -79,11 +79,16 @@
 //                 WORKER <n> DONE <sha> from-state（#466：terminal 已結束、畫面沒有結果行，worker checkpoint 最後一行 `State:` 是 `done, candidate <sha>`
 //                 而 sha 等於成員 worktree 的 HEAD；<sha> 是完整的 HEAD，--apply 與 DONE 一樣寫回）｜
 //                 WORKER <n> STUCK exited|stuck-after <分鐘>|orca <錯誤碼>|no-orca|checkpoint <欄位> <值>
-//                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）
+//                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）｜
+//                 WORKER <n> SLOT_WAIT <秒>｜WORKER <n> SLOT_HELD <秒>（#644 第 3 項：超過 stuck-after、但旁邊的 heavy-slot.mjs 有排隊者或持有者的 cwd
+//                 是成員 worktree（或它底下）：worker 的 pre-commit、bin/check 在等全機重型檢查 slot 或正在跑，不是卡住；秒數是已等或已持有的秒數，
+//                 都有時印 SLOT_HELD，多個時取最久的；算 running、--apply 不寫。heavy-slot.mjs 不在旁邊、沒有 perl 時照舊印 STUCK stuck-after）
 //                 畫面上沒有自己的結果行（捲走、terminal 已結束或讀不到）時，改用 pilot-watch.mjs 記下的 `.scratch/pilot/results/<handle>`
 //                 （`<ISO 時間> <結果行>`）：號碼相符、時間晚於成員列的 started 與最後一行 `resumed:` 的時間、不是 resumed 記下的舊結果行才算，
 //                 印成同一行 DONE／STOP，--apply 照常寫回（#413 第 1 項：watch 已印 DONE，畫面隨後捲走或 terminal 結束，Probe 只印 RUNNING／STUCK exited）；
 //                 也沒有時、畫面不是工作中（沒有 spinner、`esc to interrupt`），往回讀累積輸出（scrollbackMatch）的最後一個結果行，同樣印成 DONE／STOP（#537）
+//                 畫面與累積輸出的最後一個結果行就是成員最後一行 `resumed:` 記下的那一行（pilot-batch resume 時畫面或累積輸出的最後一個結果行）時不算；
+//                 比對前兩邊都經 resultText 去掉 `│` 之後的 Orca 側欄（#643 第 1 項：同一行在累積輸出裡帶側欄尾巴，被當成新的 STOP 寫回）
 //   batch：dispatched 的 batch 沒有 running 成員時（這一輪剛讀到 DONE／STOP 的照結果算；moved（含 `moved batch-<n>`）的成員已移到別的 batch，不算）：
 //          每個成員都 done 印 STAGEABLE <key>；有 done 也有 stop、parked 印 MOVE <key> <不是 done 的成員…>（先用 pilot-batch 移走）；
 //          STAGEABLE 之後緊接 CONFLICT <key> <n> <m|integration> <檔…>（#376：done 成員的本機分支兩兩、再各自對整合分支（沒有時主分支）的 tip
@@ -143,7 +148,7 @@
 import { spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
 import { mergeConflicts } from './lib/merge-tree.mjs';
@@ -676,7 +681,7 @@ export function parseBatch(text) {
   for (const [, n, time, line] of text.matchAll(/^resumed: #(\d+) (\S+) (.*)$/gm)) {
     for (const member of members) {
       if (member.n !== n) continue;
-      member.resumed = line === '-' ? undefined : line;
+      member.resumed = line === '-' ? undefined : resultText(line);
       member.resumedAt = time;
     }
   }
@@ -690,9 +695,17 @@ const PROMPT_CHROME = /^[\s│]*(?:✻|❯|⏵⏵)/;
 export const screenLines = tail => (tail === undefined || tail === null ? [] : Array.isArray(tail) ? tail : [tail]).flatMap(line => String(line).split('\n'));
 
 /**
+ * 畫面上一行 → 比對結果行用的文字：行內的控制字元換成空白；TUI 畫框線時行首、行尾會帶 `│` 與空白，行首也可能是縮排或 Claude Code 的 bullet
+ * （`●`、`⏺`、`⎿`），先去掉；行首框線之後再出現的 `│` 起是 Orca 分頁的側欄（`│…s/pilot-after-merge.md[ ask ]`），連同前面的空白一起去掉。
+ * 同一個結果行在 `--screen` 與累積輸出（scrollbackMatch）裡側欄尾巴不同，不去掉時 resume 記下的舊結果行比對不到（#643 第 1 項）。
+ * pilot-batch 記 `resumed:` 行與讀它時也經這裡，舊檔裡帶側欄尾巴的 resumed 行照樣認得。
+ */
+export const resultText = raw => String(raw).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/^[\s│●⏺⎿]+/, '').replace(/\s*│.*$/, '').trimEnd();
+
+/**
  * terminal 畫面裡最後一個結果行 `DONE <n> <sha>` 或 `STOP <n> <cause>`（Probe 的 WORKER 與 pilot-watch.mjs 共用這一份，#355）。
- * `n` 缺省時任何號碼都算。TUI 畫框線時行首、行尾會帶 `│` 與空白，行首也可能是縮排或 Claude Code 的 bullet（`●`、`⏺`、`⎿`），比對前先去掉；
- * 提示列略過，tail 先經 screenLines 攤平，行內的控制字元換成空白。傳回 { line（去掉框線後的整行）, kind（DONE｜STOP）, n, value（sha 或 cause） }，沒有時 null。
+ * `n` 缺省時任何號碼都算。畫面行先經 resultText 去掉框線、bullet 與側欄；提示列略過，tail 先經 screenLines 攤平。
+ * 傳回 { line（resultText 後的整行）, kind（DONE｜STOP）, n, value（sha 或 cause） }，沒有時 null。
  */
 export function resultMatch(tail, n) {
   const number = n === undefined ? '(\\d+)' : `(${n})`;
@@ -700,7 +713,7 @@ export function resultMatch(tail, n) {
   const stop = new RegExp(`^STOP ${number} (.+)$`);
   for (const raw of screenLines(tail).reverse()) {
     if (PROMPT_CHROME.test(raw)) continue;
-    const line = raw.replace(/^[\s│●⏺⎿]+|[\s│]+$/g, '').replace(/[\u0000-\u001f\u007f]/g, ' ');
+    const line = resultText(raw);
     const match = line.match(done) ?? line.match(stop);
     if (match) return { line, kind: line.startsWith('DONE') ? 'DONE' : 'STOP', n: match[1], value: match[2] };
   }
@@ -722,7 +735,7 @@ export function postlandCommands(tail, n) {
       if (result.kind === 'DONE' && !done) { done = true; continue; }
       break;
     }
-    const line = raw.replace(/^[\s│●⏺⎿]+|[\s│]+$/g, '').replace(/[\u0000-\u001f\u007f]/g, ' ');
+    const line = resultText(raw);
     const command = line.match(new RegExp(`^POSTLAND ${n} (.*\\S)$`))?.[1].trim();
     if (command && !commands.includes(command)) commands.unshift(command);
   }
@@ -838,7 +851,35 @@ export async function workerState(ctx, member, now = Date.now(), saved = null) {
   const limit = member.stuckAfter.match(/^(\d+)m$/)?.[1];
   if (!limit) return `STUCK checkpoint stuck-after ${member.stuckAfter}`;
   const minutes = Math.floor((now - started) / 60000);
-  return minutes > Number(limit) ? `STUCK stuck-after ${minutes}` : `RUNNING ${minutes}`;
+  if (minutes <= Number(limit)) return `RUNNING ${minutes}`;
+  // 超過 stuck-after 時先看全機重型檢查 slot（#644 第 3 項）：worker 的 pre-commit、bin/check 在排隊或正在跑時不是卡住。
+  const slot = await heavySlotState(member.worktree, now);
+  return slot ?? `STUCK stuck-after ${minutes}`;
+}
+
+/**
+ * 成員 worktree 在 heavy-slot.mjs 的持有者或排隊者裡時（cwd 是 worktree 或它底下的目錄）傳回 `SLOT_HELD <已持有秒數>` 或 `SLOT_WAIT <已等秒數>`，
+ * 都有時以持有者為準，多個時取最久的；沒有時 undefined。heavy-slot.mjs 不在旁邊（它跟 pilot-land.mjs、land.mjs 一起複製，probe 不帶它）、
+ * 沒有 perl、讀不到時也是 undefined，照舊判 STUCK。slot 目錄與 slot 數照 heavy-slot.mjs 的規則（$HEAVY_CHECK_DIR、$HEAVY_CHECK_SLOTS）。
+ */
+export async function heavySlotState(worktree, now = Date.now()) {
+  if (!worktree || !isAbsolute(worktree)) return undefined;
+  const slotScript = new URL('./heavy-slot.mjs', import.meta.url);
+  if (!existsSync(slotScript)) return undefined;
+  let slots;
+  try {
+    const { readSlots, slotCount, slotDir } = await import(slotScript.href);
+    slots = readSlots({ dir: slotDir(), slots: slotCount() ?? 2 });
+  } catch {
+    return undefined;
+  }
+  const root = resolve(worktree);
+  const inside = cwd => typeof cwd === 'string' && (resolve(cwd) === root || resolve(cwd).startsWith(`${root}${sep}`));
+  const seconds = entries => Math.max(...entries.map(entry => Math.max(0, Math.floor((now - Date.parse(entry.since)) / 1000)) || 0));
+  const holders = slots.holders.filter(holder => inside(holder.cwd));
+  if (holders.length) return `SLOT_HELD ${seconds(holders)}`;
+  const waiters = slots.waiters.filter(waiter => inside(waiter.cwd));
+  return waiters.length ? `SLOT_WAIT ${seconds(waiters)}` : undefined;
 }
 
 /**
