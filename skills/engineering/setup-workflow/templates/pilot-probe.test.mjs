@@ -12,7 +12,8 @@ import { ALWAYS_LINES, applyResults, changedUnits } from './pilot-probe.mjs';
 
 const script = new URL('./pilot-probe.mjs', import.meta.url).pathname;
 // pre-commit hook 匯出的 GIT_DIR 等會讓暫存 repo 的 git 指令寫到本 repo。
-const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+// CLAUDE_CODE_SESSION_ID 等：在 Claude Code 裡跑測試時 probe 會讀到這個 session 的 transcript（HANDOFF_CONTEXT），測試自己給。
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_') && !['CLAUDE_CODE_SESSION_ID', 'CLAUDE_CONFIG_DIR', 'PILOT_TRANSCRIPT'].includes(key)));
 
 const ago = minutes => new Date(Date.now() - minutes * 60000).toISOString();
 const SHA = 'a'.repeat(40);
@@ -2245,7 +2246,7 @@ test('pilot-batch resume 之後：started 是現在，Probe 印 RUNNING 不印 S
 
 // #368：交接門檻（合入 2 批）原本由 coordinator 自己數；investing 66e552ea 把前任派的 381、383 算進來，誤判已達門檻。
 // probe 以 coordinator 檔的 pid 在 sessions.md 找本 session 的 start 行，只數成員 started 不早於它、已合入的 batch。
-const handoffOutput = result => result.stdout.split('\n').filter(line => /^HANDOFF_/.test(line));
+const handoffOutput = result => result.stdout.split('\n').filter(line => /^HANDOFF_/.test(line) && !line.startsWith('HANDOFF_CONTEXT '));
 const PRIOR_START = '2026-11-20T08:00:00+08:00';
 const SESSION_START = '2026-11-20T12:00:00+08:00';
 function handoffFixture(t, { sessions = true, coordinator = true } = {}) {
@@ -2315,6 +2316,68 @@ test('--handoff-after <n> 帶入門檻；不是正整數時是用法錯誤', t =
   assert.deepEqual(handoffOutput(probe({ args: ['--handoff-after', '3'] })), ['HANDOFF_COUNT 2/3']);
   assert.deepEqual(handoffOutput(probe({ args: ['--handoff-after', '1'] })), ['HANDOFF_COUNT 2/1', 'HANDOFF_DUE']);
   for (const bad of ['0', 'x', '1.5']) assert.equal(probe({ args: ['--handoff-after', bad] }).status, 2, bad);
+});
+
+// CoS item 88：coordinator 的 context 到門檻（預設 200000，adapter 的 `Handoff context: <n>`）也交接；transcript 從
+// ${CLAUDE_CONFIG_DIR}/projects/*/$CLAUDE_CODE_SESSION_ID.jsonl 找，讀最後一則主線 assistant 的 usage；找不到時印 WARN、不觸發。
+function contextFixture(t, { tokens, adapter } = {}) {
+  const f = handoffFixture(t);
+  const config = join(f.temp, 'claude-config');
+  mkdirSync(join(config, 'projects', '-home-coord'), { recursive: true });
+  const usage = (input, write, read) => ({ input_tokens: input, cache_creation_input_tokens: write, cache_read_input_tokens: read, output_tokens: 50 });
+  writeFileSync(join(config, 'projects', '-home-coord', 'sess-1.jsonl'), [
+    { type: 'user', message: { role: 'user', content: '/loop /issue-pilot' } },
+    { type: 'assistant', message: { role: 'assistant', usage: usage(1, 1000, 5000) } },
+    { type: 'assistant', message: { role: 'assistant', usage: usage(2, tokens - 100002, 100000) } },
+    { type: 'assistant', isSidechain: true, message: { role: 'assistant', usage: usage(1, 1, 999999) } },
+    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'ok' }] } },
+  ].map(record => JSON.stringify(record)).join('\n') + '\n');
+  if (adapter) {
+    mkdirSync(join(f.repo, 'docs', 'agents'), { recursive: true });
+    writeFileSync(join(f.repo, 'docs', 'agents', 'issue-run.md'), adapter);
+    f.git('add', 'docs');
+    f.git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'adapter');
+  }
+  const extraEnv = { CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_SESSION_ID: 'sess-1' };
+  return { ...f, extraEnv };
+}
+const contextOutput = result => result.stdout.split('\n').filter(line => /^HANDOFF_/.test(line));
+
+test('context 達門檻（預設 200000）印 HANDOFF_DUE context=<n>；sidechain 的 usage 不算', t => {
+  const { probe, extraEnv } = contextFixture(t, { tokens: 200000 });
+  const result = probe({ extraEnv });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(contextOutput(result), ['HANDOFF_COUNT 0/2', 'HANDOFF_CONTEXT 200000/200000', 'HANDOFF_DUE context=200000']);
+});
+
+test('context 在門檻以下時只印 HANDOFF_CONTEXT，不印 HANDOFF_DUE', t => {
+  const { probe, extraEnv } = contextFixture(t, { tokens: 199999 });
+  assert.deepEqual(contextOutput(probe({ extraEnv })), ['HANDOFF_COUNT 0/2', 'HANDOFF_CONTEXT 199999/200000']);
+});
+
+test('adapter 宣告的 `Handoff context: <n>` 改門檻；批數也到期時合成一行 HANDOFF_DUE', t => {
+  const { probe, extraEnv, landed } = contextFixture(t, { tokens: 160000, adapter: '## Pilot\n\n- **Defaults.** Handoff context: 150000\n' });
+  assert.deepEqual(contextOutput(probe({ extraEnv })), ['HANDOFF_COUNT 0/2', 'HANDOFF_CONTEXT 160000/150000', 'HANDOFF_DUE context=160000']);
+  landed('90', 'closed', '2026-11-20T12:30:00+08:00');
+  landed('91', `merged ${SHA}`, '2026-11-20T13:00:00+08:00');
+  assert.deepEqual(contextOutput(probe({ extraEnv })), ['HANDOFF_COUNT 2/2', 'HANDOFF_CONTEXT 160000/150000', 'HANDOFF_DUE context=160000']);
+});
+
+test('讀不到 transcript 時印 HANDOFF_CONTEXT ?/<門檻> WARN，不觸發交接', t => {
+  const { probe, extraEnv, temp } = contextFixture(t, { tokens: 300000 });
+  const cases = [
+    [{}, 'WARN no CLAUDE_CODE_SESSION_ID or PILOT_TRANSCRIPT'],
+    [{ ...extraEnv, CLAUDE_CODE_SESSION_ID: 'gone' }, `WARN no transcript gone.jsonl under ${join(extraEnv.CLAUDE_CONFIG_DIR, 'projects')}`],
+    [{ PILOT_TRANSCRIPT: join(temp, 'missing.jsonl') }, `WARN unreadable transcript ${join(temp, 'missing.jsonl')}: ENOENT`],
+  ];
+  for (const [env, warn] of cases) {
+    const result = probe({ extraEnv: env });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(contextOutput(result), ['HANDOFF_COUNT 0/2', `HANDOFF_CONTEXT ?/200000 ${warn}`], JSON.stringify(env));
+  }
+  writeFileSync(join(temp, 'empty.jsonl'), '{"type":"user"}\n');
+  assert.deepEqual(contextOutput(probe({ extraEnv: { PILOT_TRANSCRIPT: join(temp, 'empty.jsonl') } })),
+    ['HANDOFF_COUNT 0/2', `HANDOFF_CONTEXT ?/200000 WARN no assistant usage in ${join(temp, 'empty.jsonl')}`]);
 });
 
 // #413 第 1 項（investing#516 第 1 項、investing#533 第 2 項）：pilot-watch 已印 `RESULT … DONE 508 <sha>`，worker 隨後結束，

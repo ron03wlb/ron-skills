@@ -32,7 +32,7 @@
     { "id": "p6", "from": "regress", "to": "land", "label": "通過", "variant": "emphasis" }
   ],
   "cards": [
-    { "dot": "cyan", "title": "每一輪 tick", "items": ["對帳 → 收件 → tick hooks → 挑單 → 派工 → 落地，做完排下一輪", "有 worker 在跑時 1200 秒後醒來，閒置時 1800 到 3600 秒"] },
+    { "dot": "cyan", "title": "每一輪 tick", "items": ["對帳 → 收件 → tick hooks → 挑單 → 派工 → 落地，做完排下一輪", "有 worker 在跑時 2400 秒後醒來，閒置時 1800 到 3600 秒"] },
     { "dot": "amber", "title": "分工", "items": ["worker 只做到候選 commit，不回歸、不合入、不 push", "人只回覆 gate：產品決策、共用環境操作、push"] },
     { "dot": "rose", "title": "交棒", "items": ["合入幾批或遇到 compaction 後交棒", "在新的 session 接手 /loop /issue-pilot，舊 session 退役做 /retro"] }
   ]

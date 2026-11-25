@@ -31,7 +31,7 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 5. **Pick 挑單**：worker 數低於上限時，依 adapter 的 Pool 規則挑下一批；`needs-triage` 的單先照 Readiness 補齊，交給子代理補齊時 prompt 從 adapter 的 Triage brief 條目起頭。
 6. **Dispatch 派工**：每張開一個 worktree 與 terminal，執行 `/issue-run <n> --worker <batch checkpoint>`。
 7. **Land 落地**：整批成員都 `DONE` 或 `STOP` 後，在批次分支依號碼合入、在 staged SHA 跑回歸、通過才合進整合分支，然後照 Push gate 交出 push 指令；adapter 允許時自己 push、開 PR／MR、合併，接著結案。
-8. **Report and sleep**：重產 `status.md`，有需要人做的事才通知；這一輪還有可做的事（可 stage 的批次、可挑的單、待收的 worker 結果）時不用會阻塞的 `AskUserQuestion` 問 gate，交接也一樣：未回覆的 gate 寫在交接訊息第一行（`OPEN_GATES <G…> → <新 coordinator 分頁>`），由下一任通知、在它的 session 回答；排下一次喚醒（有 worker 在跑時 1200 秒，閒置時 1800 秒；連續閒置兩次以上時，adapter 有 **Idle wait** 就改在背景跑它、不排 `ScheduleWakeup`，probe、gate 檔或整合分支有變化或到上限時間才結束並喚醒，被它喚醒的那一輪照 `/loop` 一輪處理、需要定時喚醒時以同一個 `/loop` 指令排 `ScheduleWakeup`，它出錯時排 1800 秒；adapter 沒有這一條時排 3600 秒；交接時一起停掉）。
+8. **Report and sleep**：重產 `status.md`，有需要人做的事才通知；這一輪還有可做的事（可 stage 的批次、可挑的單、待收的 worker 結果）時不用會阻塞的 `AskUserQuestion` 問 gate，交接也一樣：未回覆的 gate 寫在交接訊息第一行（`OPEN_GATES <G…> → <新 coordinator 分頁>`），由下一任通知、在它的 session 回答；排下一次喚醒（有 worker 在跑時 2400 秒，閒置時 1800 秒；連續閒置兩次以上時，adapter 有 **Idle wait** 就改在背景跑它、不排 `ScheduleWakeup`，probe、gate 檔或整合分支有變化或到上限時間才結束並喚醒，被它喚醒的那一輪照 `/loop` 一輪處理、需要定時喚醒時以同一個 `/loop` 指令排 `ScheduleWakeup`，它出錯時排 1800 秒；adapter 沒有這一條時排 3600 秒；交接時一起停掉）。
 
 它的狀態全在磁碟上（`.scratch/pilot/` 與各批次 checkpoint），不靠對話記憶：
 
@@ -48,7 +48,7 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 
 在其他 session 輸入 `/issue-pilot <n>`、`/issue-pilot hold`、`/issue-pilot stop`，請求會轉給正在跑的 coordinator，不會多開一個。
 
-**交棒**：coordinator 刻意短命。合入幾批（ron-skills 是 2 批；批數讀 Probe 的 `HANDOFF_COUNT`，前任派的不算，印 `HANDOFF_DUE` 才到）或遇到 compaction 後，沒有前景工作（還在跑的前景指令、寫到一半的狀態檔、正在 inline 做的 stage、開著等人回答的問題）就在這一輪結束時交接；push gate、regression、land、worker 這些背景工作不算不安全點，不停也不等，把 task id、指令與預期結果寫進交接那筆 `decisions.md`，由下一任看完結果。有前景工作時最多延後一輪，延後時照常挑單、派工、stage，下一輪仍到期就一定交接（曾有 coordinator 為背景工作一再延後，ready 的單堆著卻沒有 worker）。交接時它停掉自己等待用的背景工作（watcher、regression waiter、idle wait）、在新的 session 接手 `/loop /issue-pilot`，舊 session 退役。退役的 session 收到合入請求（例如 retro-collector 送來的）時不合入，回覆現任 coordinator 的名稱（`coordinator` 檔的 `name`）。
+**交棒**：coordinator 刻意短命。合入幾批（ron-skills 是 2 批；批數讀 Probe 的 `HANDOFF_COUNT`，前任派的不算，印 `HANDOFF_DUE` 才到）、context 到 adapter 的門檻（預設 200000 token；Probe 每輪印 `HANDOFF_CONTEXT`，到了印 `HANDOFF_DUE context=<n>`，量不到時印 WARN，由 coordinator 自己判斷）或遇到 compaction 後，沒有前景工作（還在跑的前景指令、寫到一半的狀態檔、正在 inline 做的 stage、開著等人回答的問題）就在這一輪結束時交接；push gate、regression、land、worker 這些背景工作不算不安全點，不停也不等，把 task id、指令與預期結果寫進交接那筆 `decisions.md`，由下一任看完結果。有前景工作時最多延後一輪，延後時照常挑單、派工、stage，下一輪仍到期就一定交接（曾有 coordinator 為背景工作一再延後，ready 的單堆著卻沒有 worker）。交接時它停掉自己等待用的背景工作（watcher、regression waiter、idle wait）、在新的 session 接手 `/loop /issue-pilot`，舊 session 退役。退役的 session 收到合入請求（例如 retro-collector 送來的）時不合入，回覆現任 coordinator 的名稱（`coordinator` 檔的 `name`）。
 
 ## adapter 的 Pilot 段
 

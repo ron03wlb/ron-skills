@@ -134,10 +134,15 @@
 //   交接（#368，每次都印一行）：HANDOFF_COUNT <n>/<門檻>（本 coordinator session 派工、已合入的 batch 數：`coordinator` 檔的 pid 在 sessions.md 最後一筆
 //          start 行的時間是 session 開始（早於 coordinator 檔的 since 時取 since）；batch 成員列最早的 started 不早於它，current 是 merged／pushed，或 closed 而有 done 成員（`closed moved` 不算）；
 //          沒有 coordinator 檔、sessions.md 或這個 pid 的 start 行時是 0，前任派的 batch 不算），n 達門檻時下一行印 HANDOFF_DUE；在 MEMORY_AUDIT_DUE 之後
+//          接著每次印 HANDOFF_CONTEXT <tokens>/<門檻>（CoS item 88：本 coordinator session 的 context，transcript 最後一則主線 assistant 訊息的
+//          input＋cache_creation＋cache_read；transcript 是 $PILOT_TRANSCRIPT，沒有時是 ${CLAUDE_CONFIG_DIR:-~/.claude}/projects/*/$CLAUDE_CODE_SESSION_ID.jsonl；
+//          門檻取主分支的 adapter 與它 Pilot 段連到的檔裡的 `Handoff context: <n>`，沒宣告時 200000），達門檻時 HANDOFF_DUE 帶 ` context=<tokens>`
+//          （批數也到期時合成同一行）；讀不到 transcript 或沒有 usage 時印 HANDOFF_CONTEXT ?/<門檻> WARN <原因>，不觸發
 //   全機上限：CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP、OVER_CAP <合計> <上限>（帶 --capacity 時，見上）
 // exit：0 印完；2 用法錯誤；3 `--apply` 的 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，該 batch 沒寫、其他行照印，#345）；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS、PARENT_APPLY_FAILED 等）。
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
@@ -151,9 +156,9 @@ import { MEMORY_AUDIT_FILE, declaredDays, memoryAuditLine } from './memory-audit
 
 // 池子摘要要的欄位取 issue-pool 的 POOL_FIELDS（#240）；同名的 blockedBy 在 GraphQL 裡合併成一份選取。
 const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt lastEditedAt labelEvents: timelineItems(last:1,itemTypes:[LABELED_EVENT,UNLABELED_EVENT]){nodes{... on LabeledEvent{createdAt} ... on UnlabeledEvent{createdAt}}} blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
-// 每次都印的行：池子摘要（POOL_READY｜POOL_TRIAGE｜POOL_EMPTY｜POOL_FAILED，#240）與 HANDOFF_COUNT（#368）。
+// 每次都印的行：池子摘要（POOL_READY｜POOL_TRIAGE｜POOL_EMPTY｜POOL_FAILED，#240）、HANDOFF_COUNT（#368）與 HANDOFF_CONTEXT（CoS item 88）。
 // 只看自己那幾行的測試比對整份 stdout 前用它去掉，probe 再加常駐行時改這一處即可（#556）。
-export const ALWAYS_LINES = /^(POOL_|HANDOFF_COUNT )/;
+export const ALWAYS_LINES = /^(POOL_|HANDOFF_COUNT |HANDOFF_CONTEXT )/;
 
 const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>] [--worker-state <路徑>] [--retro-collect-in <checkout>]｜node scripts/pilot-probe.mjs --tail <handle> [--lines <n>]';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
@@ -1215,13 +1220,67 @@ export function sessionStart(coordinator, sessions) {
 /** 已合入整合分支的 batch：current 是 merged／pushed，或 closed 而有 done 成員（`closed moved` 什麼都沒合入）。 */
 const landedBatch = ({ current, members }) => /^(merged|pushed)\b/.test(current) || (/^closed\b/.test(current) && !/^closed moved\b/.test(current) && members.some(m => m.state === 'done'));
 
-/** `HANDOFF_COUNT <n>/<門檻>`，達門檻時再加 `HANDOFF_DUE`（#368）：只數成員列最早的 started 不早於本 session 開始的已合入 batch。 */
-export function handoffLines(batches, start, threshold = 2) {
+export const CONTEXT_THRESHOLD = 200000;
+/** adapter 宣告的 context 交接門檻 `Handoff context: <n>`（CoS item 88）；沒宣告或不是正整數時 200000。 */
+export function declaredContext(adapter) {
+  const tokens = Number((adapter ?? '').match(/\bHandoff context:\s*(\d+)\b/)?.[1]);
+  return Number.isInteger(tokens) && tokens > 0 ? tokens : CONTEXT_THRESHOLD;
+}
+
+// transcript 只讀尾端：coordinator 的 transcript 可能幾十 MB，最後一則 assistant 訊息一定在最後幾 MB 內。
+const TRANSCRIPT_TAIL = 4 * 1024 * 1024;
+
+/**
+ * 本 coordinator session 目前的 context（CoS item 88）：transcript 最後一則主線（非 sidechain）assistant 訊息的
+ * input＋cache_creation＋cache_read。回 { tokens } 或 { warn: <原因> }；找不到 transcript 時說明找過哪裡，不安靜地當成 0。
+ */
+export function sessionContext(env = process.env) {
+  let path = env.PILOT_TRANSCRIPT;
+  if (!path) {
+    const id = env.CLAUDE_CODE_SESSION_ID;
+    if (!id) return { warn: 'no CLAUDE_CODE_SESSION_ID or PILOT_TRANSCRIPT' };
+    const projects = join(env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), '.claude'), 'projects');
+    const found = (existsSync(projects) ? readdirSync(projects) : []).map(dir => join(projects, dir, `${id}.jsonl`)).filter(existsSync);
+    if (found.length !== 1) return { warn: `${found.length ? 'ambiguous' : 'no'} transcript ${id}.jsonl under ${projects}` };
+    [path] = found;
+  }
+  let text;
+  try {
+    const size = statSync(path).size;
+    const length = Math.min(size, TRANSCRIPT_TAIL);
+    const buffer = Buffer.alloc(length);
+    const fd = openSync(path, 'r');
+    try { readSync(fd, buffer, 0, length, size - length); } finally { closeSync(fd); }
+    text = buffer.toString('utf8');
+  } catch (error) {
+    return { warn: `unreadable transcript ${path}: ${error.code ?? error.message}` };
+  }
+  for (const line of text.split('\n').reverse()) {
+    if (!line.includes('"assistant"') || !line.includes('"usage"')) continue;
+    let record;
+    try { record = JSON.parse(line); } catch { continue; }
+    const usage = record.message?.usage;
+    if (record.type !== 'assistant' || record.isSidechain || !usage) continue;
+    return { tokens: (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) };
+  }
+  return { warn: `no assistant usage in ${path}` };
+}
+
+/**
+ * `HANDOFF_COUNT <n>/<門檻>`、`HANDOFF_CONTEXT <tokens|?>/<門檻>[ WARN <原因>]`，任一達門檻時再加一行 `HANDOFF_DUE[ context=<tokens>]`
+ * （#368：只數成員列最早的 started 不早於本 session 開始的已合入 batch；CoS item 88：context 到門檻也交接）。
+ */
+export function handoffLines(batches, start, threshold = 2, context = { warn: 'not measured' }, contextThreshold = CONTEXT_THRESHOLD) {
   const count = start === undefined ? 0 : batches.filter(batch => {
     const times = batch.members.map(m => Date.parse(m.started)).filter(time => !Number.isNaN(time));
     return landedBatch(batch) && times.length && Math.min(...times) >= start;
   }).length;
-  return [`HANDOFF_COUNT ${count}/${threshold}`, ...(count >= threshold ? ['HANDOFF_DUE'] : [])];
+  const full = context.tokens !== undefined && context.tokens >= contextThreshold;
+  return [
+    `HANDOFF_COUNT ${count}/${threshold}`,
+    context.tokens === undefined ? `HANDOFF_CONTEXT ?/${contextThreshold} WARN ${context.warn}` : `HANDOFF_CONTEXT ${context.tokens}/${contextThreshold}`,
+    ...(count >= threshold || full ? [`HANDOFF_DUE${full ? ` context=${context.tokens}` : ''}`] : []),
+  ];
 }
 
 /** `--tail`：worker 分頁畫面的最後 `lines` 行。 */
@@ -1318,14 +1377,15 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   out.push(...behindMain(checkout, { integration, main }));
   // Memory audit（#347）：間隔取主分支的 adapter 與它 Pilot 段連到的檔裡的 `Memory audit days: <n>`，沒宣告不印
   const adapter = show(checkout, `refs/heads/${main}`, ADAPTER);
-  const days = declaredDays([adapter, ...pilotFiles(adapter).map(path => show(checkout, `refs/heads/${main}`, path))].join('\n'));
+  const declared = [adapter, ...pilotFiles(adapter).map(path => show(checkout, `refs/heads/${main}`, path))].join('\n');
+  const days = declaredDays(declared);
   const record = join(checkout, MEMORY_AUDIT_FILE);
   const memoryAudit = memoryAuditLine(existsSync(record) ? readFileSync(record, 'utf8') : null, days);
   if (memoryAudit) out.push(memoryAudit);
   // tracker 查詢失敗（POOL_FAILED）時不給 issues，pilot-retro-due 自己查一次。
   const trackerOk = !tracker.lines.some(line => line.startsWith('POOL_FAILED '));
   out.push(...await retroLines(ctx, checkout, { collectIn: retroCollectIn, issues: trackerOk ? tracker.issues : undefined }));
-  out.push(...handoffLines(batches, sessionStart(readStore(pilot, 'coordinator'), readStore(pilot, 'sessions.md')), handoffAfter));
+  out.push(...handoffLines(batches, sessionStart(readStore(pilot, 'coordinator'), readStore(pilot, 'sessions.md')), handoffAfter, sessionContext(), declaredContext(declared)));
   if (capacity) {
     out.push(...envMissingLines());
     const { total, cap } = report(ledgerPath(), capacity, running);
