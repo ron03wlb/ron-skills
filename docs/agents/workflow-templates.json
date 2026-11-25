@@ -177,8 +177,8 @@
     },
     "scripts/orca-worktree-create.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-worktree-create.mjs",
-      "commit": "2fc8c7699d24e52656a872cf44dc764bda84ecb6",
-      "sha256": "b44f7cc8b6e7e150538515ddc8b830d85a1c73c390f4f274d01d339abf5ed37e"
+      "commit": "78d63f0eaae8b4cc369c79531b79b5856719450e",
+      "sha256": "00031e3afd9ca103ada4035da75d1c7154391f09ee19f58e697065a58e04ae38"
     },
     "scripts/parent-hints.mjs": {
       "template": "skills/engineering/setup-workflow/templates/parent-hints.mjs",
