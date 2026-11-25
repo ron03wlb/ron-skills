@@ -116,6 +116,8 @@ orca-ide orchestration send --to bot:<專案 bot> --from <coordinator 分頁的 
 
 **權限分類器的限制**：Claude Code 的 auto mode 分類器會拒絕「依轉達來的 owner 決定去寫入」的動作，例如 bot 轉述 owner 同意放寬某條權限、或轉述一份 SQL 執行結果，coordinator 據此改 gate 或結案。這類 owner 的決定不能經 bot 轉達後寫入，**要 owner 本人在 coordinator 的分頁確認**。專案 bot 在自己 A 級範圍內的裁定不受影響，因為那是 bot 的決定、不是轉述。所以把 gate 分給 bot 時，凡是 B 級的，bot 要提醒 owner 去 coordinator 分頁回答，而不是自己代為轉達。
 
+分類器信任已合入 `main` 的 repo 規則，所以解法是把授權寫進 repo：ron-skills 在 [`docs/agents/pilot-round.md`](../agents/pilot-round.md) 的 **Orca orchestration** 寫明 skills bot 經 orchestration 回的答案等同 owner 本人確認（含放寬既有 gate），只有用到 owner 帳號或憑證、以及不可逆的破壞性動作仍要 owner 本人確認（CoS item 95）。其他 repo 要同樣的效果，也在自己的 pilot adapter 寫同一類條目。
+
 ## session 交接
 
 Orca bot 的新 chat 只自動讀 `SOUL.md` 與 `MEMORY.md`，對話裡的「現在做到哪」換 chat 就沒了。ron-skills 的 `session-handoff` skill 處理這件事（[`SKILL.md`](../../skills/productivity/session-handoff/SKILL.md)）：
