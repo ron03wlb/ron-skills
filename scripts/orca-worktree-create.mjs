@@ -7,8 +7,12 @@
 // stdout 一行 JSON：{"status":"CREATED"|"CREATED_LATE","path","branch"}；失敗為 {"status":"NOT_FOUND"|"FAILED","error"}。
 // 帶 `--branch` 而 Orca 給了別的分支（遠端已有同名分支時會加 `-2`，#300）：JSON 多帶 `requestedBranch`，stderr 印 `BRANCH_RENAMED <拿到的> <要求的>`，仍是 exit 0。接手既有分支的做法見 adapter。
 // exit code：0 已建立、1 失敗、2 參數錯誤或沒有 Orca CLI。
+// Parent：沒帶 `--parent-worktree` 也沒帶 `--no-parent` 時補上 `--parent-worktree path:<主 checkout>`（`git rev-parse --git-common-dir` 的上一層），
+// 從主 checkout 或任何子 worktree 呼叫都一樣。子 worktree 透過主 checkout 繼承 bot：沒有 parent 的 worktree 在 Orca 裡 bot 是空的，
+// 會一直出現「未掛 bot 的工作區」提示（CoS item 158）。`ORCA_WORKTREE_PARENT` 以 Orca 的 selector 格式（例如 `worktree:<id>`）覆寫預設 parent；
+// 呼叫端帶的 `--parent-worktree` 或 `--no-parent`（Orca 本身支援，照樣傳過去）一律不覆寫。
 import { spawnSync } from 'node:child_process';
-import { basename } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 
 const ORCA = process.env.ORCA_BIN || process.env.ORCA_CLI_COMMAND || '';
 const POLL_SECONDS = Number(process.env.ORCA_POLL_SECONDS || 180);
@@ -39,6 +43,15 @@ const name = args[args.indexOf('--name') + 1];
 if (!ORCA || !args.includes('--name') || !name) { console.error(USAGE); process.exit(2); }
 // Orca 記的 repo 路徑是 Windows UNC 形式，--repo path:<WSL 路徑> 回 repo_not_found；id: 又可能對到同名的另一個 repo。省略時 Orca 從 cwd 推斷。
 if (args.includes('--repo')) { console.error(`不要帶 --repo：Orca 從目前目錄推斷 repo（path: 會 repo_not_found）。${USAGE}`); process.exit(2); }
+
+/** 主 checkout：git common dir 的上一層，子 worktree 裡也指向同一個。 */
+function mainCheckout() {
+  const result = spawnSync('git', ['rev-parse', '--git-common-dir'], { encoding: 'utf8' });
+  if (result.status !== 0) print({ status: 'FAILED', error: `git rev-parse --git-common-dir：${result.stderr.trim()}` }, 1);
+  return dirname(resolve(result.stdout.trim()));
+}
+const hasParent = args.some(arg => arg === '--no-parent' || arg === '--parent-worktree' || arg.startsWith('--parent-worktree='));
+if (!hasParent) args.push('--parent-worktree', process.env.ORCA_WORKTREE_PARENT || `path:${mainCheckout()}`);
 
 const requested = args.includes('--branch') ? args[args.indexOf('--branch') + 1] : undefined;
 const before = new Set(worktrees().map(w => w.path));
