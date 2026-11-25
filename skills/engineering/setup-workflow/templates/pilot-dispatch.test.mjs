@@ -870,7 +870,7 @@ test('--fresh 草稿：沒有未提交改動、沒有 wip patch 時不印「prio
   assert.doesNotMatch(readFileSync(join(fx.repo, '.scratch/pilot/fresh-46.md'), 'utf8'), /prior 未提交的改動/);
 });
 
-test('--fresh 草稿：整併注意在 scripts/entry-survival.mjs、port-entries.mjs 存在時才印對應指令（#618）', t => {
+test('--fresh 草稿：整併注意在 scripts/entry-survival.mjs、port-entries.mjs、merge-line-inserts.mjs 存在時才印對應指令（#618、#557）', t => {
   const fx = drafted(t);
   const notice = () => {
     assert.equal(fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch'], { ORCA_CLI_COMMAND: '' }).status, 0);
@@ -878,7 +878,7 @@ test('--fresh 草稿：整併注意在 scripts/entry-survival.mjs、port-entries
     return draft.slice(draft.indexOf('## 整併注意'), draft.indexOf('## 怎麼整併'));
   };
   const none = notice();
-  assert.doesNotMatch(none, /entry-survival|port-entries/);
+  assert.doesNotMatch(none, /entry-survival|port-entries|merge-line-inserts/);
   mkdirSync(join(fx.repo, 'scripts'), { recursive: true });
   writeFileSync(join(fx.repo, 'scripts/entry-survival.mjs'), '');
   const survival = notice();
@@ -890,6 +890,11 @@ test('--fresh 草稿：整併注意在 scripts/entry-survival.mjs、port-entries
   assert.ok(both.includes('node scripts/port-entries.mjs <base> <prior> <檔> [<目標檔>]'), both);
   assert.match(both, /git apply -3` 衝突/);
   assert.match(both, /NO_MATCH`／`AMBIGUOUS/);
+  assert.doesNotMatch(both, /merge-line-inserts/);
+  writeFileSync(join(fx.repo, 'scripts/merge-line-inserts.mjs'), '');
+  const lines = notice();
+  assert.ok(lines.includes('node scripts/merge-line-inserts.mjs <檔>...'), lines);
+  assert.match(lines, /LINE_CONFLICT/);
 });
 
 test('--fresh：重派過的 Issue 再衝突時 STOP refresh-twice、什麼都不動；--again 另存成 -prior2', t => {
