@@ -18,7 +18,7 @@
 //   Stage       stage worktree 要乾淨；`switch -C pilot/stage-<key> <integration tip>`，依號碼 `merge --no-ff` 每個 done 成員。
 //               衝突時，衝突檔先交給 resolver 的 resolveFile 解（沒有 resolver 就解不了），最後重算戳記檔：
 //                 docs/agents/workflow-templates.json（copy-templates.mjs 的副本清單，每個導入 repo 都有）由本檔的 restampManifest 重算，
-//                 resolver 的 STAMP_FILES 交給它的 restamp(tree, files)；解法名稱是 resolver 加進 kinds 的名稱，戳記檔加 `restamp`，以 + 相連。
+//                 resolver 的 STAMP_FILES 與 isGenerated 認得的產物交給它的 restamp(tree, files)；解法名稱是 resolver 加進 kinds 的名稱，戳記檔加 `restamp`，以 + 相連。
 //               有一個檔解不了就 `merge --abort`，印 STOP conflict。
 //               staged SHA 與 stage 時的 integration tip 寫成 checkpoint 的 `current: staged <sha> onto <tip>`，同一次寫入留 land 存活標記
 //               `regressing: <sha> pid <本行程 pid>`（#361：Probe 看到標記的 pid 還是 pilot-land 時印 REGRESSING，不印 RESTAGE … none）。
@@ -52,7 +52,8 @@
 //   已包含印 `SYNCED <tip> current`；整合分支是 origin/<主分支> 的祖先時 `merge --ff-only`，印 `SYNCED <sha> ff`（不跑 Regression）；
 //   分叉時先過 load 關卡（同 batch：超過門檻印 `STOP load <load> <門檻>`，stage worktree 與分支都不動），
 //   再 `switch -C pilot/stage-sync-main <tip>`、`merge --no-ff origin/<主分支>`，衝突照 Stage 的解法（`RESOLVED sync-main <解法> <檔案…>`），
-//   解不了 abort 後印 `STOP conflict sync-main <檔案…>`；在合併 SHA 跑 Regression（reg-sync-main.log），沒過印 `STOP regression sync-main <exit>`；
+//   解不了 abort 後印 `STOP conflict sync-main <檔>=main:<種類> …`（每個衝突檔一項，#589：來源欄固定是 `main`，合入的是 origin/<主分支>，
+//   衝突就是它與整合分支都改過這個檔；種類同 Stage 的 code／other／entry <名稱>）；在合併 SHA 跑 Regression（reg-sync-main.log），沒過印 `STOP regression sync-main <exit>`；
 //   通過且整合分支的 tip 沒變（變了 `STOP drift`）時，先對每個 `current: merged <sha>`（<sha> 在合併 SHA 裡，還沒推上 origin/<整合分支> 也不在 origin/<主分支>；已推的保留舊行，#523）的
 //   batch 追加 `regression: <sha> exit 0 sync-main <CHECK_PASS 行>`（印 `RECORDED <key>`；Probe 才認得新的 tip、印 RESUME_PUSH，pilot-pr-body.mjs
 //   認得 sync-main 標記、往前驗 staged SHA 那一行；寫不進去時 STOP checkpoint），再快轉整合分支、刪 stage 分支，
@@ -71,6 +72,8 @@
 //                                   用到的解法名稱加進 Set kinds，依加入順序出現在 RESOLVED 行。
 //   conflictKind(tree, path)        STOP conflict 的種類欄；傳回 undefined 時本檔照預設判斷 code／other。
 //   STAMP_FILES、restamp(tree, files)  專案自己的戳記檔：其他檔都解完、workflow-templates.json 重算之後呼叫，重算並 git add，解不了傳回 false。
+//   isGenerated(path)               可重產的產物（例如由來源產出的靜態站）傳回 true：衝突時不交 resolveFile，與 STAMP_FILES 一起交給 restamp 重產（#589）；
+//                                   省略時沒有任何檔算產物，restamp 只收到 STAMP_FILES。
 //
 // 用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [<選項>…] | sync-main [<選項>…]（在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）
 //   | push --title <標題> [<選項>…]
@@ -266,7 +269,7 @@ function conflictSource(tree, path, tip, branch, earlier) {
 
 /** STOP conflict 的種類欄：resolver 的 conflictKind 優先；沒有時程式檔是 `code`（副檔名不在清單裡時看 ours 那一版開頭是不是 shebang），其他是 `other`。 */
 function conflictKind(tree, path) {
-  const kind = path === MANIFEST || stampFiles().includes(path) ? undefined : config.resolver.conflictKind?.(tree, path);
+  const kind = path === MANIFEST || stampFiles().includes(path) || generated(path) ? undefined : config.resolver.conflictKind?.(tree, path);
   if (kind) return kind;
   if (CODE.test(path)) return 'code';
   return blob(tree, `:2:${path}`)?.startsWith('#!') ? 'code' : 'other';
@@ -274,6 +277,9 @@ function conflictKind(tree, path) {
 
 /** resolver 宣告的專案戳記檔。 */
 const stampFiles = () => config.resolver.STAMP_FILES ?? [];
+
+/** resolver 認得的可重產產物（isGenerated）；沒有這個 export 的 resolver 一個也不認（#589）。 */
+const generated = path => config.resolver.isGenerated?.(path) === true;
 
 /** 合併中途某一邊（2 ours、3 theirs）的副本清單；那一邊沒有這個檔或讀不懂時 copies 是空的。 */
 function manifestAt(tree, stage) {
@@ -313,13 +319,13 @@ export function restampManifest(tree) {
 }
 
 /**
- * 解掉進行中 merge 的衝突並 add：一般檔交給 resolver 的 resolveFile，之後重算 workflow-templates.json、再交 resolver 的戳記檔給它的 restamp。
+ * 解掉進行中 merge 的衝突並 add：一般檔交給 resolver 的 resolveFile，之後重算 workflow-templates.json、再交 resolver 的戳記檔與可重產產物給它的 restamp。
  * 傳回解法名稱（resolver 的 KINDS 有列時照它排序，否則照加入順序；restamp 最後），解不了傳回 undefined（呼叫端 abort）。
  */
 function resolveConflicts(tree, files) {
   const projectStamps = stampFiles();
-  const others = files.filter(path => path !== MANIFEST && !projectStamps.includes(path));
-  const stamps = files.filter(path => projectStamps.includes(path));
+  const stamps = files.filter(path => projectStamps.includes(path) || generated(path));
+  const others = files.filter(path => path !== MANIFEST && !stamps.includes(path));
   const kinds = new Set();
   const resolveFile = config.resolver.resolveFile ?? (() => undefined);
   const resolved = others.map(path => resolveFile(tree, path, kinds));
@@ -348,7 +354,9 @@ function resolveConflicts(tree, files) {
 function mergeResolving(tree, ref, label, describe) {
   const merge = gitIn(tree, 'merge', '--no-ff', '--no-edit', ref);
   if (merge.status === 0) return;
-  const conflicted = must(tree, 'diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean);
+  // core.quotePath=false：非 ASCII 路徑不加引號與跳脫，resolver 的路徑判斷與 STOP 行的種類欄才讀得到原檔名；
+  // 換行等控制字元照舊由 git 跳脫，結果行不會被拆開（#589 review）。
+  const conflicted = must(tree, '-c', 'core.quotePath=false', 'diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean);
   // 解的途中失敗（restamp、add、commit 被 hook 擋）也先 abort，stage worktree 不停在 merge 中途。
   try {
     const how = conflicted.length ? resolveConflicts(tree, conflicted) : undefined;
@@ -592,7 +600,7 @@ function syncMain(loadMax, main = mainCheckout(), getTree = () => stageWorktree(
   }
   must(tree, 'switch', '-q', '-C', SYNC_BRANCH, tip);
   // 合入先記下的 SHA，不是 ref：上面的祖先判斷用的是它，期間別處 fetch 讓 origin/main 前進也合同一個。
-  mergeResolving(tree, upstream, 'sync-main', conflicted => `conflict sync-main ${conflicted.join(' ')}`);
+  mergeResolving(tree, upstream, 'sync-main', conflicted => `conflict sync-main ${conflicted.map(path => `${path}=main:${conflictKind(tree, path)}`).join(' ')}`);
   const sha = must(tree, 'rev-parse', 'HEAD');
   const { code, pass, slotTimeout } = regression(main, tree, 'sync-main', sha);
   if (slotTimeout) throw slotStop(slotTimeout);

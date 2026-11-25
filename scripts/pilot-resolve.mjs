@@ -10,9 +10,11 @@
 //              （接上 hunk 前後各一行）、換上的行和插入的行相同（非空行或同名條目）、碰到檔尾沒換行的行照樣 abort（#175）。
 //   additions、entries、rows 與 adjacent 只解三個版本都是 UTF-8 文字的檔案，其他的照樣 abort。
 //   流程站戳記 scripts/workflow-doc-sync.json（STAMP_FILES）：其他衝突檔都解完之後由 restamp 重算；land.mjs 的 scripts/restamp.mjs 也用它（#72、#173）。
+//   流程站站台 docs/workflow/site/**（isGenerated）：build-workflow-site.mjs 從 docs/workflow/*.md 重產的產物，衝突時和戳記檔一起交給 restamp 重產，
+//              不必另開 gate（#589：只有站台 html 與戳記檔衝突時 G10 等了約 7.5 小時）；來源 md 本身解不了照樣 STOP conflict。
 //   STOP conflict 的種類：Markdown 檔解不了的 hunk 裡兩邊都改的 `- **<名稱>.**` 條目是 `entry <名稱>`（#192）；其他交回正本判斷（code／other）。
 // 契約（正本檔頭）：KINDS 是解法名稱的順序；resolveFile(tree, path, kinds) 傳回合併後的文字或 undefined；conflictKind(tree, path) 傳回種類或 undefined；
-//   STAMP_FILES 與 restamp(tree, files)。
+//   STAMP_FILES、isGenerated(path) 與 restamp(tree, files)。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -21,11 +23,15 @@ import { join } from 'node:path';
 const MARKER = 32;
 const MARKER_LINE = new RegExp(`^([<|=>])\\1{${MARKER - 1}}`, 'm');
 const DOC_SYNC = 'scripts/workflow-doc-sync.json';
+const SITE = 'docs/workflow/site/';
 // 從 pre-commit hook 或 worktree 呼叫時繼承的 GIT_DIR 等會讓 git -C 讀寫到別的 repo。
 const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'].includes(key)));
 
 /** 流程站戳記檔：正本在其他衝突檔都解完之後呼叫 restamp。 */
 export const STAMP_FILES = [DOC_SYNC];
+
+/** 可重產的產物：流程站站台 docs/workflow/site/**，正本把它的衝突和 STAMP_FILES 一起交給 restamp（#589）。 */
+export const isGenerated = path => path.startsWith(SITE);
 
 /** RESOLVED 行裡解法名稱的順序（正本照這個排，restamp 一律最後）。 */
 export const KINDS = ['additions', 'entries', 'rows', 'adjacent'];
@@ -34,19 +40,26 @@ export const KINDS = ['additions', 'entries', 'rows', 'adjacent'];
 const runIn = (cwd, command, args) => spawnSync(command, args, { cwd, encoding: 'utf8', env: childEnv });
 
 /**
- * 重算流程站戳記並 git add：取目標分支（--theirs）版本，有 build-workflow-site.mjs 就重產 docs/workflow/site/，
- * 再以 check-workflow-sync.mjs --restamp 依合併後的來源重寫（#72）；files 不是只有它、或任一步失敗時傳回 false。
+ * 重算流程站戳記並 git add：衝突的戳記檔與站台檔取目標分支（--theirs）版本，有 build-workflow-site.mjs 就重產 docs/workflow/site/，
+ * 再以 check-workflow-sync.mjs --restamp 依合併後的來源重寫（#72）。files 有戳記檔與站台以外的檔、站台檔衝突卻沒有 build-workflow-site.mjs、
+ * 某個檔取不到目標分支版本（一邊刪掉）或任一步失敗時傳回 false（#589）。
  */
 export function restamp(tree, files) {
-  if (!files.length || !files.every(file => file === DOC_SYNC)) return false;
-  if (runIn(tree, 'git', ['checkout', '--theirs', '--', DOC_SYNC]).status !== 0) return false;
+  if (!files.length || !files.every(file => file === DOC_SYNC || isGenerated(file))) return false;
+  if (runIn(tree, 'git', ['checkout', '--theirs', '--', ...files]).status !== 0) return false;
   const build = join(tree, 'scripts/build-workflow-site.mjs');
+  if (!existsSync(build) && files.some(isGenerated)) return false;
+  // 建置之後任一步失敗：建置新寫、還沒進 index 的站台檔 merge --abort 清不掉，stage worktree 會停在 STOP dirty（#589 review）。
+  const fail = () => {
+    runIn(tree, 'git', ['clean', '-fdq', '--', 'docs/workflow/site']);
+    return false;
+  };
   if (existsSync(build)) {
-    if (runIn(tree, 'node', [build]).status !== 0) return false;
-    if (runIn(tree, 'git', ['add', '-A', '--', 'docs/workflow/site']).status !== 0) return false;
+    if (runIn(tree, 'node', [build]).status !== 0) return fail();
+    if (runIn(tree, 'git', ['add', '-A', '--', 'docs/workflow/site']).status !== 0) return fail();
   }
-  if (runIn(tree, 'node', [join(tree, 'scripts/check-workflow-sync.mjs'), '--restamp']).status !== 0) return false;
-  return runIn(tree, 'git', ['add', DOC_SYNC]).status === 0;
+  if (runIn(tree, 'node', [join(tree, 'scripts/check-workflow-sync.mjs'), '--restamp']).status !== 0) return fail();
+  return runIn(tree, 'git', ['add', DOC_SYNC]).status === 0 || fail();
 }
 
 /** git merge-file 等子行程；stdin 接 /dev/null，stderr 不顯示（衝突是預期中的）。 */
