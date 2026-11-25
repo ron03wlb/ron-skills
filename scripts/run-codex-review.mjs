@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 // issue-run adapter 的 Review：以固定模型／effort 執行 Codex code-review，並以確定性規則判定結果。
-// 用法：node scripts/run-codex-review.mjs <baseline> <spec> <worktree> <out-dir> [rulings]
+// 用法：node scripts/run-codex-review.mjs <baseline|state:<path>> <spec> <worktree> <out-dir> [rulings]
+// baseline 寫成 `state:<path>` 時讀該檔（相對路徑以 runner cwd 解析）的 `baseline:` 行（40 位 SHA）當 fixed point，讓 sync 與 review 串在同一個命令時
+// review 拿到 sync 剛寫回的值（spay2 retro 5e2b0c21#2：寫死的舊 baseline 回 BASELINE_STALE，多跑一輪）。檔案讀不到或沒有 40 位 SHA 的 `baseline:` 行時
+// 判 BASELINE_STATE_UNREADABLE（actionable，JSON 帶 state 與 reason：檢查路徑，或先跑 sync 寫入 baseline:），不呼叫 Codex。
 //       node scripts/run-codex-review.mjs --quota（唯讀：不呼叫 Codex，讀 $CODEX_HOME（預設 ~/.codex）/sessions 最新 rollout 的 rate_limits）
 // --quota 印一行 `CODEX_QUOTA used_percent=<n|?> window_minutes=<n|?> resets_at=<ISO|?> reached=<rate_limit_reached_type|none>`（not actionable，只供參考：
 // 是上一次 Codex 呼叫留下的舊紀錄，不能拿來決定跳過 runner），找不到任何 rollout 時印 `CODEX_QUOTA_UNKNOWN`；皆 exit 0。
@@ -101,7 +104,7 @@ function reviewLogPath(wt) {
 /** 印 REVIEWER 行並寫紀錄；紀錄寫不進去只在 stderr 提醒，不改變結論。 */
 function announce(record) {
   process.stdout.write(record.reviewer === 'codex' ? `REVIEWER=codex model=${record.model}\n` : `REVIEWER=claude reason=${record.reason}\n`);
-  const entry = { ts: new Date().toISOString(), ...record, worktree: resolve(worktree), outDir: resolve(outDir), baseline,
+  const entry = { ts: new Date().toISOString(), ...record, worktree: resolve(worktree), outDir: resolve(outDir), baseline: fixedPoint,
     branch: spawnSync('git', ['-C', worktree, 'branch', '--show-current'], { encoding: 'utf8' }).stdout?.trim() || null };
   try {
     mkdirSync(outDir, { recursive: true }); writeFileSync(join(outDir, 'reviewer.json'), JSON.stringify(entry, null, 2) + '\n');
@@ -160,7 +163,18 @@ function expectedBaseline(dir, wt) {
 
 if (process.argv[2] === '--quota') { process.stdout.write(quotaLine(codexQuota()) + '\n'); process.exit(0); }
 const [baseline, specArg, worktree, outDir, rulingsArg] = process.argv.slice(2);
-if (!baseline || !specArg || !worktree || !outDir) fail('USAGE', { usage: 'run-codex-review.mjs <baseline> <spec> <worktree> <out-dir> [rulings]' });
+if (!baseline || !specArg || !worktree || !outDir) fail('USAGE', { usage: 'run-codex-review.mjs <baseline|state:<path>> <spec> <worktree> <out-dir> [rulings]' });
+/** `state:<path>` → 該檔 `baseline:` 行的 40 位 SHA；其他值原樣傳回。 */
+function baselineFrom(arg) {
+  if (!arg.startsWith('state:')) return arg;
+  const state = resolve(arg.slice('state:'.length));
+  let text;
+  try { text = readFileSync(state, 'utf8'); } catch (error) { fail('BASELINE_STATE_UNREADABLE', { state, reason: error.code ?? error.message }); }
+  const recorded = /^baseline:[ \t]*([0-9a-f]{40})\b/m.exec(text)?.[1];
+  if (!recorded) fail('BASELINE_STATE_UNREADABLE', { state, reason: '沒有 40 位 SHA 的 baseline: 行' });
+  return recorded;
+}
+const fixedArg = baselineFrom(baseline);
 const spec = resolve(specArg); const rulings = rulingsArg && resolve(rulingsArg);
 const missing = file => !existsSync(file) || statSync(file).size === 0;
 if (missing(spec)) fail('SPEC_MISSING', { spec });
@@ -178,8 +192,8 @@ rmSync(report, { force: true }); rmSync(join(outDir, 'reviewer.json'), { force: 
 const args = model => ['exec', '-s', 'workspace-write', '--ignore-user-config', '-m', model, '-c', `model_reasoning_effort=${EFFORT}`,
   '-c', 'sandbox_workspace_write.network_access=true', '-C', worktree, '-o', report, '-'];
 const before = snapshot(worktree, own);
-const resolved = spawnSync('git', ['-C', worktree, 'rev-parse', '--verify', '--quiet', `${baseline}^{commit}`], { encoding: 'utf8' });
-if (resolved.status !== 0) fail('BASELINE_INVALID', { baseline, worktree });
+const resolved = spawnSync('git', ['-C', worktree, 'rev-parse', '--verify', '--quiet', `${fixedArg}^{commit}`], { encoding: 'utf8' });
+if (resolved.status !== 0) fail('BASELINE_INVALID', { baseline: fixedArg, worktree });
 const fixedPoint = resolved.stdout.trim();
 const expected = expectedBaseline(outDir, worktree);
 if (expected && expected !== fixedPoint) fail('BASELINE_STALE', { baseline: fixedPoint, mergeBase: expected, hint: '先把 state.md 的 baseline: 更新為 HEAD 與整合分支的 merge-base，再以它重跑' });

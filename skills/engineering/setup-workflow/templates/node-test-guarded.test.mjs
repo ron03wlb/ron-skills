@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { failedFiles, hasTestChannel, lostFiles, missingFiles, parseRan, recordedPass, reportedTotal, saveFlakeOutput, soloOptions, untraced, withConcurrency } from './node-test-guarded.mjs';
+import { durationRows, failedFiles, hasTestChannel, lostFiles, missingFiles, parseRan, recordedPass, reportedTotal, saveFlakeOutput, soloOptions, takeDurations, untraced, withConcurrency } from './node-test-guarded.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./node-test-guarded.mjs', import.meta.url));
@@ -16,7 +16,7 @@ function fixture(t, files, extraEnv = {}) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
   const env = { ...process.env };
-  for (const key of ['NODE_TEST_CONTEXT', 'NODE_TEST_COUNT_FILE', 'NODE_TEST_COUNT_ROOT', 'NODE_TEST_COUNTED', 'NODE_OPTIONS', 'NODE_TEST_GUARD_WAIT_MS', 'NODE_TEST_RERUN_TIMEOUT_MS', 'NODE_TEST_FLAKE_MAX_FILES', 'NODE_TEST_CONCURRENCY']) delete env[key];
+  for (const key of ['NODE_TEST_CONTEXT', 'NODE_TEST_COUNT_FILE', 'NODE_TEST_COUNT_ROOT', 'NODE_TEST_COUNTED', 'NODE_OPTIONS', 'NODE_TEST_GUARD_WAIT_MS', 'NODE_TEST_RERUN_TIMEOUT_MS', 'NODE_TEST_FLAKE_MAX_FILES', 'NODE_TEST_DURATIONS', 'NODE_TEST_CONCURRENCY']) delete env[key];
   // flake 首輪輸出在不在 git repo 時放 tmpdir()：每個 fixture 用自己的 TMPDIR，並行跑多份（或別的 worktree 同時跑）時才不共用 /tmp/node-test-flake-output 互相覆寫、清除
   mkdirSync(join(dir, '.tmp'));
   env.TMPDIR = join(dir, '.tmp');
@@ -381,6 +381,45 @@ test('子行程失敗時，另一個沒收齊的檔也要列出，不被失敗�
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stderr, /^NODE_TEST_RERUN broken\.test\.mjs FAIL$/m);
   assert.match(result.stderr, /^MISSING_RESULTS half\.test\.mjs not-finished /m);
+});
+
+// spay2 retro 1850e43e#1：多檔並行時 spec 輸出的頂層行不帶檔名、describe 總耗時與單一測試同格式，量測只能手寫解析器
+const SLOW = "import { describe, test } from 'node:test';\ndescribe('組', () => { test('慢', async () => { await new Promise(r => setTimeout(r, 120)); }); test('快', () => {}); });\ntest('頂層', () => {});\n";
+
+test('--durations <path>：逐檔寫 file<TAB>name<TAB>ms<TAB>kind，suite 與 test 分開；exit 與 stdout 不受影響', { skip: NO_CHANNEL }, t => {
+  const run = fixture(t, { 'slow.test.mjs': SLOW, 'b.test.mjs': "import { test } from 'node:test';\ntest('b', () => {});\n" });
+  const result = run('--durations', 'out.tsv', 'slow.test.mjs', 'b.test.mjs');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^ℹ tests 4$/m);
+  const rows = readFileSync(join(run.dir, 'out.tsv'), 'utf8').trim().split('\n').map(line => line.split('\t'));
+  const byName = Object.fromEntries(rows.map(([file, name, ms, kind]) => [name, { file, ms: Number(ms), kind }]));
+  assert.deepEqual(Object.keys(byName).sort(), ['b', '快', '慢', '組', '頂層'].sort());
+  assert.deepEqual(byName['組'], { ...byName['組'], file: 'slow.test.mjs', kind: 'suite' });
+  assert.deepEqual(byName['慢'], { ...byName['慢'], file: 'slow.test.mjs', kind: 'test' });
+  assert.equal(byName.b.file, 'b.test.mjs');
+  assert.ok(byName['慢'].ms >= 100, `async 測試含 await：${byName['慢'].ms}`);
+  assert.ok(byName['組'].ms >= byName['慢'].ms, 'suite 是整組總時長');
+  assert.ok(rows.every(row => row.length === 4 && /^\d+$/.test(row[2])), JSON.stringify(rows));
+  assert.doesNotMatch(result.stdout, /out\.tsv/);
+});
+
+test('NODE_TEST_DURATIONS 與 --durations=<path> 同效；路徑不可寫時印 NODE_TEST_DURATIONS_FAILED、exit 不變', { skip: NO_CHANNEL }, t => {
+  const ok = fixture(t, { 'b.test.mjs': "import { test } from 'node:test';\ntest('b', () => {});\n" }, { NODE_TEST_DURATIONS: 'env.tsv' });
+  const viaEnv = ok('b.test.mjs');
+  assert.equal(viaEnv.status, 0, viaEnv.stdout + viaEnv.stderr);
+  assert.match(readFileSync(join(ok.dir, 'env.tsv'), 'utf8'), /^b\.test\.mjs\tb\t\d+\ttest\n$/);
+  const bad = fixture(t, { 'b.test.mjs': "import { test } from 'node:test';\ntest('b', () => {});\n" });
+  const unwritable = bad('--durations=no/such/dir/x.tsv', 'b.test.mjs');
+  assert.equal(unwritable.status, 0, unwritable.stdout + unwritable.stderr);
+  assert.match(unwritable.stderr, /^NODE_TEST_DURATIONS_FAILED no\/such\/dir\/x\.tsv /m);
+});
+
+test('takeDurations／durationRows：值不當成測試檔；名稱裡的 tab 與換行換成空白；舊格式紀錄略過', () => {
+  assert.deepEqual(takeDurations(['--test-force-exit', '--durations', 'd.tsv', 'a.test.mjs'], {}), { path: 'd.tsv', rest: ['--test-force-exit', 'a.test.mjs'] });
+  assert.deepEqual(takeDurations(['a.test.mjs'], { NODE_TEST_DURATIONS: 'e.tsv' }), { path: 'e.tsv', rest: ['a.test.mjs'] });
+  assert.deepEqual(takeDurations(['a.test.mjs'], {}), { path: null, rest: ['a.test.mjs'] });
+  const text = `${JSON.stringify({ file: '/r/a.test.mjs', names: ['x'], durations: [['x\ty\nz', 7, 'test']] })}\n${JSON.stringify({ file: '/r/old.test.mjs', names: ['o'] })}\n`;
+  assert.deepEqual(durationRows(text, '/r'), ['a.test.mjs\tx y z\t7\ttest\n']);
 });
 
 test('withConcurrency：沒帶時附加 NODE_TEST_CONCURRENCY（預設 6）；不合法時 WARN 並用 6；呼叫端帶了就以呼叫端為準', () => {

@@ -47,7 +47,7 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 
 在其他 session 輸入 `/issue-pilot <n>`、`/issue-pilot hold`、`/issue-pilot stop`，請求會轉給正在跑的 coordinator，不會多開一個。
 
-**交棒**：coordinator 刻意短命。合入幾批（ron-skills 是 2 批；批數讀 Probe 的 `HANDOFF_COUNT`，前任派的不算，印 `HANDOFF_DUE` 才到）或遇到 compaction 後，它在安全點停掉自己的背景工作、在新的 session 接手 `/loop /issue-pilot`，舊 session 退役。退役的 session 收到合入請求（例如 retro-collector 送來的）時不合入，回覆現任 coordinator 的名稱（`coordinator` 檔的 `name`）。
+**交棒**：coordinator 刻意短命。合入幾批（ron-skills 是 2 批；批數讀 Probe 的 `HANDOFF_COUNT`，前任派的不算，印 `HANDOFF_DUE` 才到）或遇到 compaction 後，它在安全點停掉自己等待用的背景工作（watcher、regression waiter、idle wait；正在合入或 push 的背景工作不停，等它結束才算安全點）、在新的 session 接手 `/loop /issue-pilot`，舊 session 退役。退役的 session 收到合入請求（例如 retro-collector 送來的）時不合入，回覆現任 coordinator 的名稱（`coordinator` 檔的 `name`）。
 
 ## adapter 的 Pilot 段
 

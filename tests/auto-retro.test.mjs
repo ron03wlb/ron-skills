@@ -17,7 +17,8 @@ test('worker 在寫 DONE 報告之前以 Skill tool 跑 retro（只在有 Retro 
   const worker = paragraph(read('skills/engineering/issue-run/SKILL.md'), '--worker <checkpoint>` runs one Issue');
   const retro = worker.indexOf('run `retro` with the Skill tool');
   assert.ok(retro > 0, 'worker 段沒有跑 retro');
-  assert.match(worker, /when the adapter has a \*\*Retro collect\*\* entry, run `retro`/);
+  // 判斷有沒有條目用 adapter-line.mjs，不整份 grep adapter（spay2 retro 6318f3c6#1）
+  assert.match(worker, /when the adapter has a \*\*Retro collect\*\* entry \(check with `node scripts\/adapter-line\.mjs "Retro collect"` when the repo has it\), run `retro`/);
   assert.ok(worker.indexOf('Before writing a `DONE` report') < retro, '跑 retro 要排在寫 DONE 報告之前');
   assert.ok(retro < worker.indexOf('still ending with the `DONE` line'), 'retro 之後的報告仍以 DONE 收尾');
   assert.match(worker, /A `STOP` waits on the human, so it runs no retro/);
