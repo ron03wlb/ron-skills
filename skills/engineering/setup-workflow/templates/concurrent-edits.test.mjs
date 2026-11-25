@@ -111,6 +111,40 @@ test('CLI：檔案是 workflow-templates.json 列出的副本時，在 CLEAR／�
   assert.deepEqual(JSON.parse(run(mine, '--json', 'scripts/claude-hook-language.mjs').stdout).templateCopies, [{ file: 'scripts/claude-hook-language.mjs', template }]);
 });
 
+// #553（investing#679 第 9 項）：git-bypass 移出 copies、改列 localExceptions 後，改這支暫留的舊 hook 沒有 TEMPLATE_COPY 提示，
+// 本地修補在拿掉例外重新複製時無聲消失。
+test('TEMPLATE_COPY：localExceptions 內的檔也印 TEMPLATE_COPY 與來源行；只在 copies 內的檔輸出不變', t => {
+  const { mine } = fixture(t);
+  const template = name => `skills/engineering/setup-workflow/templates/${name}`;
+  mkdirSync(join(mine, 'docs', 'agents'), { recursive: true });
+  writeFileSync(join(mine, 'docs', 'agents', 'workflow-templates.json'), JSON.stringify({
+    localExceptions: ['scripts/claude-hook-git-bypass.mjs', 'test/fixtures/orca/'],
+    copies: { 'scripts/claude-hook-language.mjs': { template: template('claude-hook-language.mjs') } },
+  }));
+  const result = run(mine, 'scripts/claude-hook-git-bypass.mjs', 'scripts/test/fixtures/orca/a.json', 'scripts/claude-hook-language.mjs', 'scripts/other.mjs');
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trimEnd().split('\n');
+  assert.deepEqual(lines.filter(line => !line.startsWith(' ')), [
+    `TEMPLATE_COPY scripts/claude-hook-git-bypass.mjs ${template('claude-hook-git-bypass.mjs')}`,
+    `TEMPLATE_COPY scripts/test/fixtures/orca/a.json ${template('test/fixtures/orca/a.json')}`,
+    `TEMPLATE_COPY scripts/claude-hook-language.mjs ${template('claude-hook-language.mjs')}`,
+    'CLEAR',
+  ]);
+  assert.match(lines[1], /^  來源：skills\/engineering\/setup-workflow\/templates\/claude-hook-git-bypass\.mjs（workflow-templates\.json 的 localExceptions 列了 scripts\/claude-hook-git-bypass\.mjs.*重新複製.*正本/);
+  assert.match(lines[3], /^  來源：.*localExceptions 列了 test\/fixtures\/orca\/，/);
+  // copies 內的檔：與沒有 localExceptions 時逐字相同。
+  const copiesOnly = run(mine, 'scripts/claude-hook-language.mjs').stdout;
+  writeFileSync(join(mine, 'docs', 'agents', 'workflow-templates.json'), JSON.stringify({ copies: { 'scripts/claude-hook-language.mjs': { template: template('claude-hook-language.mjs') } } }));
+  assert.equal(run(mine, 'scripts/claude-hook-language.mjs').stdout, copiesOnly);
+  assert.deepEqual(lines.slice(4, -1), copiesOnly.trimEnd().split('\n').slice(0, -1));
+  writeFileSync(join(mine, 'docs', 'agents', 'workflow-templates.json'), JSON.stringify({ localExceptions: ['claude-hook-git-bypass.mjs'], copies: {} }));
+  assert.deepEqual(JSON.parse(run(mine, '--json', 'scripts/claude-hook-git-bypass.mjs').stdout).templateCopies,
+    [{ file: 'scripts/claude-hook-git-bypass.mjs', template: template('claude-hook-git-bypass.mjs'), localException: 'claude-hook-git-bypass.mjs' }]);
+  // localExceptions 讀不懂時當作沒有，copies 照常。
+  writeFileSync(join(mine, 'docs', 'agents', 'workflow-templates.json'), JSON.stringify({ localExceptions: 'scripts/claude-hook-git-bypass.mjs', copies: {} }));
+  assert.equal(run(mine, 'scripts/claude-hook-git-bypass.mjs').stdout, 'CLEAR\n');
+});
+
 // #503：consumer 為副本開上游單前沒比對副本與範本，兩次開出早已修好的單；#498 真正擋住那條指令的是另一支 PreToolUse hook（bash-pitfalls）。
 test('TEMPLATE_COPY：PreToolUse Bash hook 的副本多一行，把 fixture 送過每支 PreToolUse Bash hook；正本在本 repo（ron-skills）時不印開上游單前', t => {
   const { mine } = fixture(t);
