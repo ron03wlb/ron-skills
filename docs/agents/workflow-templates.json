@@ -280,6 +280,11 @@
       "commit": "3568ca5b825edfcb87002953286aec1e2e8597fa",
       "sha256": "44240eb6b6773ee4ba532eeb8b570d90509381d8675f47f62c7813b758c30d87"
     },
+    "scripts/run-codex-review.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/run-codex-review.mjs",
+      "commit": "687d336a964c7f9bc06d9122d0b440c297074980",
+      "sha256": "4fda0ef68d9fb659071939a972bd3debcf937627fa886a1da85199833f5bd191"
+    },
     "scripts/session-log.mjs": {
       "template": "skills/engineering/setup-workflow/templates/session-log.mjs",
       "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
