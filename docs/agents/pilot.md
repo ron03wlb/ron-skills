@@ -40,7 +40,7 @@
 
 - **Resume.** 見 [pilot-round.md](pilot-round.md)：要請 `stop`／`done` 的 worker 繼續，或採用它已回報的 candidate 時讀（`pilot-batch.mjs resume`／`accept`，不用裸 `terminal send` 加手改列，#356）；整條用 `node scripts/adapter-line.mjs 'Resume'` 取。
 
-- **Brief check.** worker 的 brief 就是 `/issue-run <n> --worker <checkpoint>` 加上 Issue 本文，不跑這條（路徑由 triage 的 `--paths` 查過）。tooling fix unit 的 brief：先用 `node scripts/brief-check.mjs --skeleton` 印出帶標籤的骨架（`目標：`、`範圍：`、`驗收：`、`驗證：`、`TIMEBOX：<n> 分鐘`、`禁止：`、`回報：`、`Standing orders：` 已填主 checkout 的 `preferences.md`），寫進 `.scratch/pilot/briefs/<檔>` 填好內容，再跑 `node scripts/brief-check.mjs <brief> [--batch <key>] [--iid <n>]`：印 `BRIEF_OK <brief>`（exit 0）才派；`BRIEF_REJECTED … missing=<欄位,…>`（exit 1）時補 brief 再跑，不改 worker 的 prompt（#346）。
+- **Brief check.** 見 [pilot-round.md](pilot-round.md)：Dispatch 派 tooling fix unit 之前讀，用 `node scripts/adapter-line.mjs 'Brief check'` 只取這一條；worker 的 brief 不跑它。
 
 - **Dispatch.** 見 [pilot-round.md](pilot-round.md)：Dispatch 認領、開 worktree 與派 worker 時讀；整條用 `node scripts/adapter-line.mjs 'Dispatch'` 取。
 
@@ -52,7 +52,7 @@
 
 - **Scope supplement.** 見 [pilot-exceptions.md](pilot-exceptions.md)：Dispatch 之後要給 worker 補範圍時讀。
 
-- **Watch.** worker 在跑時以 `run_in_background` 起 `node scripts/pilot-watch.mjs --batch <key>`（每批一個）：成員的結果行照 Probe 的 `WORKER` 判斷，啟動時已在畫面上的也算，只略過 `pilot-batch.mjs resume` 記在 `resumed:` 行的舊結果（#406：resume 後、watcher 啟動前印的 DONE 不會叫醒），`DONE <n> <sha>`／`STOP <n> <cause>` 印 `RESULT <key> <handle> <行>`，terminal 結束而無新結果印 `EXITED <key> <handle>`（卡住），即結束；接著跑 Probe（`--apply`），還有 running 就再起。解析與 Probe 的 `WORKER` 共用，不另寫（#325、#355）。看畫面：`node scripts/pilot-probe.mjs --tail <handle>`。stuck-after 預設 90 分鐘，仍以 1200 秒排下次喚醒。
+- **Watch.** 見 [pilot-round.md](pilot-round.md)：派出 worker 之後、它們在跑時讀，用 `node scripts/adapter-line.mjs 'Watch'` 只取這一條。
 
 - **Idle wait.** 見 [pilot-round.md](pilot-round.md)：閒置次數達到 issue-pilot SKILL 的 Report and sleep 門檻時讀；整條用 `node scripts/adapter-line.mjs 'Idle wait'` 取。
 

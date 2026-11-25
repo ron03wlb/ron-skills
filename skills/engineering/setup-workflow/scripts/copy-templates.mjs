@@ -21,6 +21,8 @@
 //   `MODE <副本路徑> <舊>→<新>`：既有副本的權限位元（八進位，例如 755→644）和正本不同，複製時改成正本的（#526：
 //     scripts/check-node-version.mjs 手建時是 755、正本 644，重拷才在 diff 冒出 mode change）。正本權限才對就照常複製；副本該可執行時改正本的權限。
 //   `ALSO_TESTED tests/<名稱>.test.mjs`：目標 repo 另有測副本的測試（不是 SAME 才印）；改範本時它和正本旁的測試都要跑（#454：只跑正本旁的那份，bin/check 才紅）。
+// 明列的範本在 setup-workflow SKILL.md Templates 表那列的 brings 漏了它的相依時，stderr 每項一行 `SKILL_BRINGS_MISSING <範本> <相依>`
+//   （tests/skill-brings.test.mjs 同一套比對；只警告，exit code 不變）。actionable：把相依補進該列括號，或改掉範本的引用（#631）。
 // 最後一行：
 //   PLANNED <n>（--dry-run）、COPIED <n>、CONFIRM_OVERWRITE <路徑...>（exit 3：既有檔內容不同且與清單記錄不一致，人確認後加 --yes 重跑；不是明列的範本時路徑緊接來源，例如 `scripts/b.mjs（a、c 的相依）`）、
 //   VERIFIED <n>（--verify 全部一致；有 MISMATCH／MISSING／NO_ORIGIN／EXCEPTION_LISTED 或沒有清單時 exit 1；--all 複製後也印，不一致時 exit 1）。
@@ -210,6 +212,34 @@ for (const name of names) {
   visit(file, file);
   const testFile = file.replace(/\.(mjs|sh)$/, '.test.mjs');
   if (!flags.has('--no-tests') && existsSync(join(TEMPLATES, testFile))) visit(testFile, file);
+}
+
+// #631：明列的範本在 setup-workflow SKILL.md Templates 表那列的 brings 沒涵蓋它的相依時，stderr 每項印 `SKILL_BRINGS_MISSING <範本> <相依>`
+// （tests/skill-brings.test.mjs 同一套比對，在 pre-commit 排完 slot 才跑到）。只警告、不改 exit code：副本本身沒錯，缺的是 ron-skills 的文件，
+// consumer 的複製不該被它擋；ron-skills 的 commit 仍由那支測試擋。相依照 --no-tests 算、不看 --exclude／localExceptions，與那支測試一致。
+const SKILL_MD = join(TEMPLATES, '../SKILL.md');
+const BRINGS = fileURLToPath(new URL('./skill-brings.mjs', import.meta.url));
+if (existsSync(SKILL_MD) && existsSync(BRINGS)) {
+  const { bringsMissing, bringsRows, templatesTable } = await import(BRINGS);
+  const closures = new Map();
+  /** templates/ 下的檔 → 它不含測試的完整相依（含自己）；非腳本檔或不存在的檔只回傳自己。 */
+  const closure = name => {
+    if (!/\.(mjs|sh)$/.test(name) || !existsSync(join(TEMPLATES, name))) return [name];
+    if (!closures.has(name)) {
+      const seen = new Set();
+      const walk = file => {
+        if (seen.has(file) || !existsSync(join(TEMPLATES, file)) || isDir(file)) return;
+        seen.add(file);
+        if (/\.(mjs|sh)$/.test(file)) references(file).forEach(({ path }) => walk(path));
+      };
+      walk(name);
+      closures.set(name, [...seen]);
+    }
+    return closures.get(name);
+  };
+  const missing = bringsMissing(bringsRows(templatesTable(readFileSync(SKILL_MD, 'utf8'))).filter(({ template }) => named.has(template)), closure);
+  for (const line of missing) console.error(line);
+  if (missing.length) console.error(`copy-templates: ${relative(sourceRoot, SKILL_MD)} 的 Templates 表漏了上面的相依：補進該範本那列的括號 (brings …)，或改掉範本的引用；不補，ron-skills 的 tests/skill-brings.test.mjs 會擋 commit`);
 }
 const origin = file => (named.has(file) ? '' : `（${[...broughtBy.get(file)].map(root => root.replace(/\.mjs$/, '')).join('、')} 的相依）`);
 

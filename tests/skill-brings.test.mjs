@@ -1,15 +1,16 @@
 // setup-workflow SKILL.md 的 Templates 表每列用「(brings `<相依>`)」寫出範本會帶上的檔；這裡拿 copy-templates.mjs 實際算出的相依比對（#491）。
 // #376 讓 worktree-overlap.mjs 多 import ./lib/merge-tree.mjs，表上仍只寫 lib/changed-units.mjs，bin/check 全綠，到 Standards review 才抓到。
-// 相依由 copy-templates.mjs --dry-run --no-tests <範本> 算（同一套 references()，不另抄解析）：範本的完整相依扣掉自己，
-// 要被套用到它的括號裡的檔名涵蓋（列出的檔連同它自己帶的都算，所以「with what it brings, its row」不必展開）。
-// 同格明列的範本不算涵蓋：只拷其中一支時，人要從括號看出會多帶哪些檔（pilot-probe.mjs 靠同格的 pilot-dispatch.mjs 會漏掉 lib/merge-tree.mjs）。
-// 括號套用到它前面、上一個括號之後列的每個範本（`a.mjs`, `b.mjs` (bring `x`) 兩個都帶 x）。
+// 相依由 copy-templates.mjs --dry-run --no-tests <範本> 算（同一套 references()，不另抄解析）；表的解析與比對規則在
+// setup-workflow/scripts/skill-brings.mjs，copy-templates 複製明列範本時也對動到的列跑它（#631）。
 // 缺的每項一行 `SKILL_BRINGS_MISSING <範本> <相依>`：把相依補進該列括號，或改掉範本的 import。
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { git, env as gitEnv, write } from './helpers/git-fixture.mjs';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
+import { bringsMissing, bringsRows, templatesTable } from '../skills/engineering/setup-workflow/scripts/skill-brings.mjs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -17,35 +18,6 @@ import { promisify } from 'node:util';
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const COPY = fileURLToPath(new URL('../skills/engineering/setup-workflow/scripts/copy-templates.mjs', import.meta.url));
 const isScript = name => /\.(mjs|sh)$/.test(name);
-
-/** Templates 表的文字 → [{ template, brings }]：brings 是套用到該範本的括號裡所有反引號檔名。 */
-export function bringsRows(table) {
-  const rows = [];
-  for (const line of table.split('\n')) {
-    if (!line.startsWith('| `')) continue;
-    let pending = [];
-    for (const [, name, inner] of line.slice(2).split(' | ')[0].matchAll(/`([^`]+)`|\(([^)]*)\)/g)) {
-      if (name) {
-        if (isScript(name)) { pending.push({ template: name, brings: [] }); rows.push(pending.at(-1)); }
-        continue;
-      }
-      const names = [...inner.matchAll(/`([^`]+)`/g)].map(match => match[1]);
-      for (const row of pending) row.brings = names;
-      pending = [];
-    }
-  }
-  return rows;
-}
-
-/** 每列缺的相依 → `SKILL_BRINGS_MISSING <範本> <相依>` 行；closure(name) 是 copy-templates 算出的完整相依（含自己），非腳本檔回傳 [name]。 */
-export function bringsMissing(rows, closure) {
-  const lines = [];
-  for (const { template, brings } of rows) {
-    const covered = new Set(brings.flatMap(name => closure(name)));
-    for (const dep of closure(template)) if (dep !== template && !covered.has(dep)) lines.push(`SKILL_BRINGS_MISSING ${template} ${dep}`);
-  }
-  return lines;
-}
 
 const target = mkdtempSync(join(realTmpdir(), 'skill-brings-'));
 after(() => rmSync(target, { recursive: true, force: true }));
@@ -88,9 +60,76 @@ test('#491：括號套用到前面一串範本，括號裡的檔連同它帶的�
 });
 
 test('#491：SKILL.md Templates 表每列的 brings 涵蓋 copy-templates 實際帶上的相依', async () => {
-  const table = read('skills/engineering/setup-workflow/SKILL.md').split('\n## Templates\n')[1].split('\n## ')[0];
+  const table = templatesTable(read('skills/engineering/setup-workflow/SKILL.md'));
   const rows = bringsRows(table);
   assert.ok(rows.length > 50, `只讀到 ${rows.length} 個範本`);
   const missing = bringsMissing(rows, await closures(allNames(rows)));
   assert.deepEqual(missing, [], `Templates 表的 brings 漏了 copy-templates 會帶上的檔，補進該列括號：\n${missing.join('\n')}`);
+});
+
+// #631 的原錯：pilot-land.mjs 檔頭的 requires 多了 land.mjs、lib/protected-paths.mjs、pilot-pr-body.mjs，表上那列沒跟上；
+// `copy-templates.mjs . --staged --no-tests pilot-land …` 只印 COPIED，直到 pre-commit 的本測試排完 805 秒 slot 才抓到。
+// 假 ron-skills：真的 copy-templates.mjs 與 skill-brings.mjs、當時那列的 SKILL.md、照當時相依形狀寫的 stub 正本。
+const ROW_BEFORE = "| `pilot-land.mjs` (brings `heavy-slot.mjs`, `orca-worktree-create.mjs`, `pilot-unbare.sh`, and `pilot-probe.mjs` with what it brings, its row) | L3, with Orca | the adapter's Pilot line |";
+const ROW_FIXED = "| `pilot-land.mjs` (brings `heavy-slot.mjs`, `land.mjs`, `lib/protected-paths.mjs`, `orca-worktree-create.mjs`, `pilot-pr-body.mjs`, `pilot-unbare.sh`, and `pilot-probe.mjs` with what it brings, its row) | L3, with Orca | the adapter's Pilot line |";
+const SCRIPTS = new URL('../skills/engineering/setup-workflow/scripts/', import.meta.url);
+
+function bringsFixture(t, row) {
+  const temp = mkdtempSync(join(realTmpdir(), 'skill-brings-copy-'));
+  t.after(() => rmSync(temp, { recursive: true, force: true }));
+  const source = join(temp, 'ron-skills');
+  const skill = join(source, 'skills/engineering/setup-workflow');
+  mkdirSync(join(skill, 'scripts'), { recursive: true });
+  for (const name of ['copy-templates.mjs', 'skill-brings.mjs']) cpSync(fileURLToPath(new URL(name, SCRIPTS)), join(skill, 'scripts', name));
+  write(skill, {
+    'SKILL.md': `# setup-workflow\n\n## Templates\n\n| Template | Level | Wiring |\n|---|---|---|\n${row}\n\n## Health\n`,
+    'templates/pilot-land.mjs': "// copy-templates: requires orca-worktree-create.mjs pilot-unbare.sh land.mjs lib/protected-paths.mjs pilot-pr-body.mjs\nimport { slot } from './heavy-slot.mjs';\nimport { memberOverlaps } from './pilot-probe.mjs';\n",
+    'templates/pilot-land.test.mjs': "import './pilot-land.mjs';\n",
+    'templates/heavy-slot.mjs': 'export const slot = 1;\n',
+    'templates/pilot-probe.mjs': "import { mergeTree } from './lib/merge-tree.mjs';\nexport const memberOverlaps = 1;\n",
+    'templates/lib/merge-tree.mjs': 'export const mergeTree = 1;\n',
+    'templates/orca-worktree-create.mjs': '// stub\n',
+    'templates/pilot-unbare.sh': '# stub\n',
+    'templates/land.mjs': "import { protectedPaths } from './lib/protected-paths.mjs';\n",
+    'templates/lib/protected-paths.mjs': 'export const protectedPaths = [];\n',
+    'templates/pilot-pr-body.mjs': '// stub\n',
+  });
+  git(source, 'init', '-q', '-b', 'main');
+  git(source, 'add', '.');
+  git(source, 'commit', '-qm', 'templates');
+  const target = join(temp, 'target');
+  mkdirSync(target);
+  git(target, 'init', '-q', '-b', 'main');
+  return { target, copier: join(skill, 'scripts/copy-templates.mjs') };
+}
+const copy = (copier, ...args) => spawnSync(process.execPath, [copier, ...args], { encoding: 'utf8', env: gitEnv });
+const bringsLines = stderr => stderr.split('\n').filter(line => line.startsWith('SKILL_BRINGS_MISSING '));
+
+test('#631：pilot-land.mjs 列漏了 requires 新增的三個檔，copy-templates --staged --no-tests 在 stderr 印三行 SKILL_BRINGS_MISSING，照常複製', t => {
+  const { target, copier } = bringsFixture(t, ROW_BEFORE);
+  const result = copy(copier, target, '--staged', '--no-tests', 'pilot-land');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(bringsLines(result.stderr).sort(), [
+    'SKILL_BRINGS_MISSING pilot-land.mjs land.mjs',
+    'SKILL_BRINGS_MISSING pilot-land.mjs lib/protected-paths.mjs',
+    'SKILL_BRINGS_MISSING pilot-land.mjs pilot-pr-body.mjs',
+  ]);
+  assert.match(result.stderr, /Templates 表漏了上面的相依/);
+  assert.match(result.stdout, /^COPIED 9$/m);
+  assert.doesNotMatch(result.stdout, /SKILL_BRINGS_MISSING/);
+});
+
+test('#631：--dry-run 也印；只比對明列的範本，帶入的相依那列不查', t => {
+  const { target, copier } = bringsFixture(t, `${ROW_BEFORE}\n| \`land.mjs\` | L2 | x |`);
+  assert.deepEqual(bringsLines(copy(copier, target, '--dry-run', 'pilot-land').stderr).length, 3);
+  const land = copy(copier, target, '--dry-run', 'land');
+  assert.equal(land.status, 0, land.stderr);
+  assert.deepEqual(bringsLines(land.stderr), ['SKILL_BRINGS_MISSING land.mjs lib/protected-paths.mjs']);
+});
+
+test('#631：那列補齊後 copy-templates 不印 SKILL_BRINGS_MISSING', t => {
+  const { target, copier } = bringsFixture(t, ROW_FIXED);
+  const result = copy(copier, target, '--staged', '--no-tests', 'pilot-land');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, '');
 });
