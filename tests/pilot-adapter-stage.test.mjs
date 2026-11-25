@@ -119,14 +119,18 @@ test('Stage：來源只有 integration 的 code 衝突照 Fresh redispatch 重�
   assert.deepEqual(fields, [['integration', 'code']]);
   const rule = stage.split('。').find(sentence => /來源全是 `integration`/.test(sentence) && /`code`/.test(sentence)) ?? '';
   assert.ok(rule, 'Stage conflict 要有一句管「來源全是 `integration`」的 `code`／`other` 衝突');
-  assert.match(rule, /`code` 或 `other` 時也不等人，照 Fresh redispatch 重派/);
+  // 照順序讀不能先重派才讀到例外（#293 同類，#560 final review P2）：重派動作之前先指向例外清單與查詢，都沒命中才重派。
+  const redispatchAt = rule.indexOf('照 Fresh redispatch 重派');
+  const exceptionsFirst = rule.search(/先照下面「仍開 gate 等人」的例外清單逐項查[^。]*都沒命中才/);
+  assert.ok(exceptionsFirst >= 0 && exceptionsFirst < redispatchAt, '重派句要先寫「先查例外、都沒命中才重派」，再寫重派動作');
+  assert.match(rule, /`code` 或 `other` 時[^。]*都沒命中才不等人，照 Fresh redispatch 重派/);
   assert.match(rule, /照 Gates 先 `open` 再立刻 `resolve` 留紀錄、不通知/);
   // 同 batch 有 OVERLAP 時的順序寫在同一句：先 move、讓其餘成員合入，再重派。
   assert.match(rule, /印過 `OVERLAP <n> <m>` 時先 move、讓其餘成員合入再重派/);
   assert.doesNotMatch(stage, /來源含 `integration` 的 `code`、`other`，或 `unknown`）照舊變成 gate/, '舊規則把它們一律變成 gate');
   // 例外清單：設計取捨、整合分支那一邊有不是經 pilot 合入的改動（從 main 帶進來或人改的）、要暫緩或放棄；unknown 照舊開 gate。
-  const exceptions = stage.slice(stage.indexOf('仍開 gate 等人'));
-  assert.ok(stage.includes('仍開 gate 等人'), '例外清單要寫明');
+  const exceptions = stage.slice(stage.indexOf('下列情況仍開 gate 等人'));
+  assert.ok(stage.includes('下列情況仍開 gate 等人'), '例外清單要寫明');
   assert.match(exceptions, /設計取捨/);
   assert.match(exceptions, /git -C <主 checkout> log --first-parent --format='%H %s' <base>\.\.pilot\/integration -- <路徑…>/);
   // 經 pilot 合入的不只 issue/ 分支：retro 請求分支也 stage 進來（`Merge branch 'retro/fix-347-case' into pilot/stage-req-347`）；sync-main 帶進的 main 改動不算。
