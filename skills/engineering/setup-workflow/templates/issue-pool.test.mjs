@@ -323,6 +323,50 @@ test('ready 單本文的 Operator prerequisite 不是「無」時另印 PREREQ <
     + 'PREREQ 133 開跑前由 Operator 確認（保留期只能用一次）\n');
 });
 
+// #591（retro 1124a，#417 第 2 項）：#339、#340 都改 pilot-probe.mjs，Pick 時沒有工具看出，要到 worker 改完 Probe 才印 OVERLAP。
+test('PICK_OVERLAP：ready 前幾張的本文提到同一個檔（裸檔名對得上完整路徑）或同一個條目時印 PICK_OVERLAP <n> <m> <檔|條目>', () => {
+  const result = fakeGh({ issues: [
+    issue(339, { labels: ['enhancement', 'ready-for-agent'], body: '改 `scripts/pilot-probe.mjs` 的 OVERLAP，見 https://github.com/acme/app/blob/main/scripts/issue-pool.mjs 。' }),
+    issue(340, { labels: ['enhancement', 'ready-for-agent'], body: 'pilot-probe.mjs 也要印 BEHIND_MAIN，並改 `docs/agents/pilot.md` 的 **Dispatch.**' }),
+    issue(341, { labels: ['enhancement', 'ready-for-agent'], body: 'Pool 條目 **Dispatch.** 補一句；另改 scripts/issue-pool.mjs。' }),
+  ] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #339 標題 339\nready #340 標題 340\nready #341 標題 341\n'
+    + 'PICK_OVERLAP 339 340 scripts/pilot-probe.mjs\n'
+    + 'PICK_OVERLAP 340 341 **Dispatch.**\n');
+});
+
+// #591：#354 與在跑的 #352 都改 pilot.md 的 **Dispatch.**，到 stage 才 `STOP conflict 354 docs/agents/pilot.md=integration:entry Dispatch`。
+test('PICK_OVERLAP：ready 單本文提到的檔在別的 worktree 的改動裡時印 PICK_OVERLAP <n> <m> <檔> [**<條目>.**]；沒提到、沒改到的不印', () => {
+  const f = fakeGh({ issues: [
+    issue(354, { labels: ['enhancement', 'ready-for-agent'], body: '`pilot.md` 的 **Dispatch.** 與 **Pool.** 各補一句。' }),
+    issue(356, { labels: ['enhancement', 'ready-for-agent'], body: '改 `scripts/land.mjs`。' }),
+  ] });
+  const g = (cwd, ...args) => git(cwd, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args);
+  mkdirSync(join(f.repo, 'docs/agents'), { recursive: true });
+  writeFileSync(join(f.repo, 'docs/agents/pilot.md'), '# Pilot\n\n- **Pool.** 挑。\n\n- **Dispatch.** 派。\n');
+  g(f.repo, 'add', '.');
+  g(f.repo, 'commit', '-q', '-m', 'init');
+  const member = join(f.repo, '..', 'wt-352');
+  g(f.repo, 'worktree', 'add', '-q', '-b', 'issue/352-dispatch', member);
+  writeFileSync(join(member, 'docs/agents/pilot.md'), '# Pilot\n\n- **Pool.** 挑。\n\n- **Dispatch.** 派，先查 overlap。\n');
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #354 標題 354\nready #356 標題 356\nPICK_OVERLAP 354 352 docs/agents/pilot.md **Dispatch.**\n');
+});
+
+test('PICK_OVERLAP：查不了 worktree 改動（沒有 main 也沒帶 --integration）時 stderr 印 PICK_OVERLAP_SKIP，其餘照印、exit 0', () => {
+  const f = fakeGh({ issues: [issue(354, { labels: ['enhancement', 'ready-for-agent'], body: '改 `pilot.md`。' })] });
+  const g = (cwd, ...args) => git(cwd, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args);
+  g(f.repo, 'commit', '-q', '--allow-empty', '-m', 'init');
+  g(f.repo, 'branch', '-m', 'main', 'develop');
+  g(f.repo, 'worktree', 'add', '-q', '-b', 'issue/352-x', join(f.repo, '..', 'wt-352'));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #354 標題 354\n');
+  assert.match(result.stderr, /^PICK_OVERLAP_SKIP /m);
+});
+
 /** 在 fakeGh 的暫存 repo 做出整合分支 pilot/integration：main 一個起始 commit；subjects 依序 commit 在整合分支上；
  * merged 的分支各從 main 開、commit 一次再 `merge --no-ff` 進整合分支（git 預設主旨 `Merge branch '<分支>' into pilot/integration`）；
  * fresh 的分支開在整合分支的 tip、沒有自己的 commit；unmerged 的分支從 main 開、有自己的 commit、沒合入。回傳 rev-parse。 */
