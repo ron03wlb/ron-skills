@@ -287,8 +287,8 @@
     },
     "scripts/run-codex-review.mjs": {
       "template": "skills/engineering/setup-workflow/templates/run-codex-review.mjs",
-      "commit": "687d336a964c7f9bc06d9122d0b440c297074980",
-      "sha256": "4fda0ef68d9fb659071939a972bd3debcf937627fa886a1da85199833f5bd191"
+      "commit": "b15328a2580c180f8be8bae26d165b60402a909d",
+      "sha256": "0f79265041cd55383d7713f8b294828ab1f5cf128b1b8746d5d86a043073fcc0"
     },
     "scripts/session-log.mjs": {
       "template": "skills/engineering/setup-workflow/templates/session-log.mjs",

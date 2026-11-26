@@ -46,7 +46,7 @@ function worktree(temp) {
   return repo;
 }
 
-function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit = 0, staleReport = false, rulings, writes = [], outDir = '.scratch/issue-run-1', baseline, checkpoint, capacity = '', spec = 'spec.md', specContent = '# spec\n', checkSpec = false, codexHome, login = '', sleepMs = '', timeoutMs = '', bin: binOverride, baselineArg } = {}) {
+function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit = 0, staleReport = false, rulings, writes = [], outDir = '.scratch/issue-run-1', baseline, checkpoint, capacity = '', spec = 'spec.md', specContent = '# spec\n', checkSpec = false, codexHome, login = '', sleepMs = '', timeoutMs = '', bin: binOverride, baselineArg, reviewLog, env = {}, force = false } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'codex-review-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const bin = join(temp, 'codex'); writeFileSync(bin, FAKE); chmodSync(bin, 0o755);
@@ -85,8 +85,10 @@ function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit 
   // spec 以 runner 的 cwd（temp，模擬主 checkout）為準寫入，不在 worktree 內；specContent 為 null 時不建立。
   if (specContent !== null) { mkdirSync(dirname(join(temp, spec)), { recursive: true }); writeFileSync(join(temp, spec), specContent); }
   const fixedPoint = baselineArg?.(repo) ?? baseline ?? git(repo, 'rev-parse', '--short', 'HEAD');
-  const result = run(temp, [process.execPath, join(source, 'run-codex-review.mjs'), fixedPoint, spec, repo, out, ...extra],
-    { env: { CODEX_BIN: binOverride ?? bin, FAKE_LOGIN: login, FAKE_SLEEP_MS: String(sleepMs), CODEX_REVIEW_TIMEOUT_MS: String(timeoutMs), FAKE_ARGV: argvFile, FAKE_LOG: log, FAKE_REPORT: report, FAKE_EXIT: String(exit), FAKE_WRITES: JSON.stringify(writes), FAKE_CAPACITY: capacity, FAKE_CHECK_SPEC: checkSpec ? '1' : '', CODEX_HOME: codexHome ?? join(temp, 'codex-home') } });
+  // reviewLog：review 前已在主 checkout .scratch/review-log.jsonl 的紀錄（測等待規則）。
+  if (reviewLog) { mkdirSync(join(repo, '.scratch'), { recursive: true }); writeFileSync(join(repo, '.scratch', 'review-log.jsonl'), reviewLog.map(entry => JSON.stringify(entry)).join('\n') + '\n'); }
+  const result = run(temp, [process.execPath, join(source, 'run-codex-review.mjs'), ...(force ? ['--force-codex'] : []), fixedPoint, spec, repo, out, ...extra],
+    { env: { CODEX_BIN: binOverride ?? bin, FAKE_LOGIN: login, FAKE_SLEEP_MS: String(sleepMs), CODEX_REVIEW_TIMEOUT_MS: String(timeoutMs), FAKE_ARGV: argvFile, FAKE_LOG: log, FAKE_REPORT: report, FAKE_EXIT: String(exit), FAKE_WRITES: JSON.stringify(writes), FAKE_CAPACITY: capacity, FAKE_CHECK_SPEC: checkSpec ? '1' : '', CODEX_HOME: codexHome ?? join(temp, 'codex-home'), ...env } });
   const models = existsSync(`${argvFile}.models`) ? readFileSync(`${argvFile}.models`, 'utf8').trim().split('\n') : [];
   return { result, repo, temp, out, models, call: existsSync(argvFile) ? JSON.parse(readFileSync(argvFile, 'utf8')) : null };
 }
@@ -294,8 +296,9 @@ test('額度用完：判定 CODEX_NO_CREDITS，附改用 code-review skill 的�
   assert.match(json.hint, /code-review/);
   assert.match(json.hint, /下一輪照樣先跑本 runner/);
   assert.doesNotMatch(json.hint, /補額度|不會補充/);
-  assert.equal(json.quota, 'CODEX_QUOTA_UNKNOWN');
-  assert.equal(result.stdout.trim(), 'REVIEWER=claude reason=quota');
+  assert.equal(json.quota, undefined);
+  assert.equal(json.quotaKind, 'credits'); assert.equal(json.resetAtSource, 'estimated');
+  assert.equal(result.stdout.trim(), `REVIEWER=claude reason=quota quotaKind=credits resetAt=${json.resetAt}`);
   assert.match(json.log, /codex\.log$/);
 });
 
@@ -363,7 +366,7 @@ test('不做額度預檢：最新 rollout 是 depleted（真實 fixture）時仍
 });
 test('額度不足（真實 log 字句）、未安裝、未登入、review 逾時、其他失敗都印 REVIEWER=claude reason=…', t => {
   const quota = review(t, { log: header() + `ERROR: ${REAL_DEPLETED_ROLLOUT[1].payload.error.message}\n`, exit: 1 });
-  assert.equal(reviewerOf(quota.result), 'REVIEWER=claude reason=quota'); assert.equal(error(quota.result), 'CODEX_NO_CREDITS');
+  assert.match(reviewerOf(quota.result), /^REVIEWER=claude reason=quota quotaKind=credits resetAt=\S+$/); assert.equal(error(quota.result), 'CODEX_NO_CREDITS');
   const missingBin = review(t, { bin: '/nonexistent/codex-review-fixture/codex' });
   assert.equal(reviewerOf(missingBin.result), 'REVIEWER=claude reason=not-installed'); assert.equal(error(missingBin.result), 'CODEX_NOT_INSTALLED');
   const loggedOut = review(t, { login: 'fail' });
@@ -389,6 +392,107 @@ test('REVIEWER 結論寫進 <out-dir>/reviewer.json 與主 checkout 的 .scratch
 test('用量上限字句（直撇號或彎撇號 ’）也判額度不足：REVIEWER=claude reason=quota', t => {
   for (const apostrophe of ["'", '’']) {
     const hit = review(t, { log: header() + `ERROR: You${apostrophe}ve hit your usage limit. Try again later.\n`, exit: 1 });
-    assert.equal(reviewerOf(hit.result), 'REVIEWER=claude reason=quota'); assert.equal(error(hit.result), 'CODEX_NO_CREDITS');
+    assert.match(reviewerOf(hit.result), /^REVIEWER=claude reason=quota quotaKind=unknown resetAt=\S+$/); assert.equal(error(hit.result), 'CODEX_NO_CREDITS');
   }
+});
+
+// CoS item 67：NO_CREDITS 時分清 5h／weekly／credits／unknown 並記 resetAt；重置前改用 Claude，時間到自動改回 Codex。
+// rollout 只取這次呼叫的那份：codex.log 開頭 `session id: 01a1` 對應檔名結尾 -01a1.jsonl。primary／secondary 的形狀取自 2026-11 真實 rollout
+// （limit_id codex、primary window 300、secondary window 10080）。
+const QUOTA_LOG = header() + 'ERROR: You’ve hit your usage limit. Try again later.\n';
+const window = (used, minutes, resets) => ({ used_percent: used, window_minutes: minutes, resets_at: resets });
+const FIVE_HOUR_HIT = { limit_id: 'codex', primary: window(100.0, 300, 1795686819), secondary: window(16.0, 10080, 1796273619), credits: { has_credits: false }, rate_limit_reached_type: null };
+const WEEKLY_HIT = { limit_id: 'codex', primary: window(40.0, 300, 1795686819), secondary: window(100.0, 10080, 1796273619), credits: { has_credits: false }, rate_limit_reached_type: null };
+function sessionHome(t, sessions) {
+  const home = mkdtempSync(join(realTmpdir(), 'codex-session-')); t.after(() => rmSync(home, { recursive: true, force: true }));
+  sessions.forEach(([id, limits, mtime], index) => {
+    const dir = join(home, 'sessions', '2026', '11', String(20 + index)); mkdirSync(dir, { recursive: true });
+    const file = join(dir, `rollout-2026-11-${20 + index}T00-00-00-${id}.jsonl`);
+    const records = (Array.isArray(limits) ? limits : [limits]).map(rate_limits => JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', rate_limits } }));
+    writeFileSync(file, [JSON.stringify({ type: 'session_meta', payload: { id } }), ...records].join('\n') + '\n');
+    utimesSync(file, mtime, mtime);
+  });
+  return home;
+}
+const FIVE_RESET = new Date(1795686819e3).toISOString(); const WEEK_RESET = new Date(1796273619e3).toISOString();
+const hitFor = (t, sessions, log = QUOTA_LOG) => {
+  const hit = review(t, { log, exit: 1, codexHome: sessionHome(t, sessions) });
+  const json = JSON.parse(hit.result.stderr.trim()); assert.equal(json.error, 'CODEX_NO_CREDITS');
+  return { ...hit, json, entry: JSON.parse(readFileSync(join(hit.out, 'reviewer.json'), 'utf8')) };
+};
+test('5h 額度：從這次呼叫的 rollout 解析 quotaKind=5h、resetAt 取 primary，寫進 stdout、reviewer.json 與 review-log', t => {
+  const { result, entry, repo } = hitFor(t, [['01a1', FIVE_HOUR_HIT, 1000]]);
+  assert.equal(reviewerOf(result), `REVIEWER=claude reason=quota quotaKind=5h resetAt=${FIVE_RESET}`);
+  assert.equal(entry.quotaKind, '5h'); assert.equal(entry.resetAt, FIVE_RESET); assert.equal(entry.resetAtSource, 'parsed');
+  const logged = JSON.parse(readFileSync(join(repo, '.scratch', 'review-log.jsonl'), 'utf8').trim());
+  assert.equal(logged.quotaKind, '5h'); assert.equal(logged.resetAt, FIVE_RESET);
+});
+test('weekly 額度：quotaKind=weekly、resetAt 取 secondary', t => {
+  const { result, entry } = hitFor(t, [['01a1', WEEKLY_HIT, 1000]]);
+  assert.equal(reviewerOf(result), `REVIEWER=claude reason=quota quotaKind=weekly resetAt=${WEEK_RESET}`);
+  assert.equal(entry.resetAtSource, 'parsed');
+});
+test('credits 類（11-25 真實形狀：primary／secondary 皆 null、workspace_member_credits_depleted）：quotaKind=credits，resetAt 以撞到時間＋5 小時估計', t => {
+  const { entry } = hitFor(t, [['01a1', REAL_DEPLETED_ROLLOUT[0].payload.rate_limits, 1000]]);
+  assert.equal(entry.quotaKind, 'credits'); assert.equal(entry.resetAtSource, 'estimated');
+  assert.equal(Date.parse(entry.resetAt) - Date.parse(entry.ts) <= 5 * 3600e3 && Date.parse(entry.resetAt) - Date.parse(entry.ts) > 5 * 3600e3 - 60e3, true);
+});
+test('解析不到（沒有這次的 rollout、訊息沒寫種類與時間）：quotaKind=unknown，resetAt＝撞到時間＋5 小時（estimated）', t => {
+  const { entry } = hitFor(t, []);
+  assert.equal(entry.quotaKind, 'unknown'); assert.equal(entry.resetAtSource, 'estimated');
+  const gap = Date.parse(entry.resetAt) - Date.parse(entry.ts);
+  assert.ok(gap <= 5 * 3600e3 && gap > 5 * 3600e3 - 60e3, String(gap));
+});
+test('兩筆 rollout 不拼湊：別的 session 的 rollout 即使較新且 5h 用完，也不拿來判定這次的種類與 resetAt', t => {
+  const { entry } = hitFor(t, [['01a1', DEPLETED, 1000], ['ffff', FIVE_HOUR_HIT, 2000]]);
+  assert.equal(entry.quotaKind, 'credits'); assert.equal(entry.resetAtSource, 'estimated');
+  const other = hitFor(t, [['01a1', WEEKLY, 1000], ['ffff', FIVE_HOUR_HIT, 2000]]).entry;
+  assert.equal(other.quotaKind, 'unknown'); assert.notEqual(other.resetAt, FIVE_RESET);
+});
+test('錯誤訊息也能解析種類與重置時間：weekly／5-hour 字樣、try again at <時間>、try again in <時長>', t => {
+  const at = hitFor(t, [], header() + 'ERROR: You’ve hit your usage limit. Weekly limit reached; upgrade to Pro, or try again at Dec 2nd, 2026 5:33 PM.\n').entry;
+  assert.equal(at.quotaKind, 'weekly'); assert.equal(at.resetAtSource, 'parsed');
+  assert.equal(at.resetAt, new Date(2026, 11, 2, 17, 33).toISOString());
+  const inside = hitFor(t, [], header() + 'ERROR: You’ve hit your usage limit. 5-hour limit reached. Try again in 2 hours 30 minutes.\n').entry;
+  assert.equal(inside.quotaKind, '5h'); assert.equal(inside.resetAtSource, 'parsed');
+  const gap = Date.parse(inside.resetAt) - Date.parse(inside.ts);
+  assert.ok(Math.abs(gap - 2.5 * 3600e3) < 60e3, String(gap));
+});
+const quotaEntry = (quotaKind, resetAt, extra = {}) => ({ ts: new Date().toISOString(), reviewer: 'claude', reason: 'quota', error: 'CODEX_NO_CREDITS', quotaKind, resetAt, resetAtSource: 'parsed', ...extra });
+const inHours = hours => new Date(Date.now() + hours * 3600e3).toISOString();
+test('等待中：最近一筆 quota 紀錄的 resetAt 還沒到，直接印 quota-wait 用 Claude，不呼叫 Codex', t => {
+  for (const [kind, hours] of [['5h', 2], ['weekly', 72], ['unknown', 4], ['credits', 4]]) {
+    const resetAt = inHours(hours);
+    const { result, call, out } = review(t, { reviewLog: [quotaEntry(kind, resetAt)] });
+    assert.equal(reviewerOf(result), `REVIEWER=claude reason=quota-wait quotaKind=${kind} resetAt=${resetAt}`);
+    assert.equal(error(result), 'CODEX_QUOTA_WAIT'); assert.equal(call, null);
+    assert.equal(JSON.parse(readFileSync(join(out, 'reviewer.json'), 'utf8')).reason, 'quota-wait');
+  }
+  // quota-wait 紀錄本身不算 Codex 成功：仍依前一筆 quota 紀錄等待。
+  const resetAt = inHours(1);
+  const chained = review(t, { reviewLog: [quotaEntry('5h', resetAt), { reviewer: 'claude', reason: 'quota-wait', quotaKind: '5h', resetAt }] });
+  assert.equal(chained.call, null);
+});
+test('時間過了、超過上限、之後已有 Codex 成功或 resetAt 不明：照常先試 Codex', t => {
+  for (const log of [
+    [quotaEntry('5h', inHours(-0.1))],
+    [quotaEntry('5h', inHours(6))],
+    [quotaEntry('unknown', inHours(6))],
+    [quotaEntry('weekly', inHours(24 * 8))],
+    [quotaEntry('5h', inHours(2)), { ts: new Date().toISOString(), reviewer: 'codex', model: 'gpt-6.2-sol' }],
+    [quotaEntry('5h', '?')],
+    [quotaEntry('unknown', undefined)],
+  ]) {
+    const { result, call } = review(t, { reviewLog: log });
+    assert.equal(result.status, 0, result.stderr); assert.notEqual(call, null);
+    assert.equal(reviewerOf(result), 'REVIEWER=codex model=gpt-6.2-sol');
+  }
+});
+test('重置時間前後的切換：撞到後下一次 quota-wait，resetAt 過了改回 Codex；--force-codex 與 CODEX_REVIEW_FORCE=1 略過等待', t => {
+  const hit = hitFor(t, []).entry;
+  assert.equal(review(t, { reviewLog: [hit] }).call, null);
+  assert.notEqual(review(t, { reviewLog: [{ ...hit, resetAt: inHours(-0.01) }] }).call, null);
+  const forced = review(t, { reviewLog: [hit], force: true });
+  assert.equal(forced.result.status, 0, forced.result.stderr); assert.notEqual(forced.call, null);
+  assert.notEqual(review(t, { reviewLog: [hit], env: { CODEX_REVIEW_FORCE: '1' } }).call, null);
 });
