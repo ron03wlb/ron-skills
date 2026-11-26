@@ -7,6 +7,7 @@
 // 確認逾時後再送兩次，排成兩行 `❯ /issue-run …`）。
 // 送出前先讀 composer：先前裸 `terminal send` 留下未提交的同一段 prompt 時只補 Enter，不再黏成兩份。
 // session 仍在忙時 tui-idle 不成立，兩輪逾時即 STOP tui-timeout，不把 prompt 排進忙碌中的 turn。
+// 就緒只看 Orca 的 tui-idle，本 repo 不重判畫面（#593：#395 的分頁是空 `❯`、footer `← 1 agent`，仍連續 tui-timeout；重複時的下一步見 adapter 的 Resume）。
 // `--queue` 給忙碌中的 session 補送（例如 Dispatch 之後補範圍，#133）：不等 tui-idle，直接送出排到下一輪；
 // 忙碌畫面本來就有 `esc to interrupt`，也可能留著開頭相同的上一則提醒（還會捲出畫面），所以不看畫面，只看 composer：
 // 先只打字、等 `draft` 出現 prompt，再只補 Enter、等 `draft` 清空；整段文字最多送一次，只有 Enter 會重送。

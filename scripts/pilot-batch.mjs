@@ -35,7 +35,7 @@
 //   STOP（檔案不動）：`STOP <key> missing`（沒有 batch-<key>.md）、`STOP <n> rows <列數>`（成員列不是剛好一列）、`STOP <n> same-batch`（move 的 <key> 就是 <n>）、
 //   `STOP <n> members <數目>`（就地 park 的 batch 還有別的成員）、`STOP <n> state <state>`（park 的成員不是 done（就地 park 也收 parked）、unpark 的不是 parked、move／park 的成員已移到別處）、`STOP <n> target batch-<n>.md`（目標檔已存在卻沒有這個成員）、
 //   `STOP <n> unapplied-result <結果行>`（move 見上）、`STOP <n> state missing`（resume／accept 的成員不在 batch 裡）、resume 的成員不是 stop／done 或 accept 的不是 running／stop 時 `STOP <n> state <state>`、
-//   `STOP <n> orca <錯誤碼>`／`STOP <n> send <handle>`／`STOP <n> tui-timeout <handle>`（resume 讀不到畫面或沒送達）、`STOP <n> sha <分支 HEAD|missing>`（accept 的 SHA 不是分支 HEAD、分支不存在）、`STOP <n> delivered <原因>`（resume 送達 note 後鎖內重檢失敗，例如 `delivered state running`：note 已送到，不要重跑）。
+//   `STOP <n> orca <錯誤碼>`／`STOP <n> send <handle>`／`STOP <n> tui-timeout <handle>`（resume 讀不到畫面或沒送達；tui-timeout 的就緒由 Orca 的 tui-idle 判斷，本 repo 不重判，#593）、`STOP <n> sha <分支 HEAD|missing>`（accept 的 SHA 不是分支 HEAD、分支不存在）、`STOP <n> delivered <原因>`（resume 送達 note 後鎖內重檢失敗，例如 `delivered state running`：note 已送到，不要重跑）。
 //   讀改寫都在 batch-<key>.md 與 batch-<n>.md 的 checkpoint 鎖內（lib/pilot-store.mjs 的 withCheckpointLock，#345）：逾時印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，什麼都沒寫。
 // exit：0 成功；4 STOP；3 CHECKPOINT_LOCKED；2 用法錯誤（--reason 不能空白、含換行、三個連續空白或 `|`；--note 不能空白或含換行；resume 沒有 ORCA_CLI_COMMAND；accept 的 <sha> 不是 7–40 碼十六進位）。
 import { spawnSync } from 'node:child_process';
