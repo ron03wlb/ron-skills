@@ -250,6 +250,14 @@ test('out dir 位於 worktree 內且未被忽略時，改名的 review-r<n>.md �
   assert.equal(error(wrote.result), 'REVIEW_WROTE_REPO');
   assert.deepEqual(JSON.parse(wrote.result.stderr.trim()).paths, ['reviews/r1/review-r1.md.bak']);
 });
+test('out dir 位於 worktree 內且未被忽略時，Codex 改寫歷史 review-r<n>.md 或新增 review-r<n>.md 仍判定 REVIEW_WROTE_REPO（spay2 retro 1126b Codex review P2）', t => {
+  const rewrote = review(t, { outDir: 'reviews/r1', prior: [['review.md', 'old\n']], writes: [['reviews/r1/review-r1.md', 'rewritten\n']] });
+  assert.equal(error(rewrote.result), 'REVIEW_WROTE_REPO');
+  assert.deepEqual(JSON.parse(rewrote.result.stderr.trim()).paths, ['reviews/r1/review-r1.md']);
+  const added = review(t, { outDir: 'reviews/r1', prior: [['review-r1.md', 'r1\n']], writes: [['reviews/r1/review-r7.md', 'x\n']] });
+  assert.equal(error(added.result), 'REVIEW_WROTE_REPO');
+  assert.deepEqual(JSON.parse(added.result.stderr.trim()).paths, ['reviews/r1/review-r7.md']);
+});
 test('未給裁決檔時 prompt 不提已裁決項目', t => {
   const { result, call } = review(t);
   assert.equal(result.status, 0, result.stderr);
