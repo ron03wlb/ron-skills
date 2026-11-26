@@ -31,7 +31,7 @@ L1 必接的只有 zsh 這一個 hook（語言、分頁狀態 hook 看 repo 的�
 
 | 校驗 | 強度 | 檢查什麼 | 不能證明什麼 |
 | --- | --- | --- | --- |
-| pre-commit 跑單一檢查入口 | 本地強制 | 要 commit 的內容通過和變更路徑有關的檢查（ron-skills：`.githooks/pre-commit` 經 `scripts/heavy-slot.mjs` 的全機共用 slot 跑 `bin/check --changed`，依對應表只挑相關步驟與測試，拿不準時跑完整套件；排不到 slot 時印 `SLOT_TIMEOUT`，是負載關卡不是檢查失敗） | 子集不是完整套件：漏挑的測試要等 acceptance、Regression 或 CI 的完整套件才抓到；每個 worker 每次 commit 都跑完整套件時，多 worker 並行會把機器 load 推到跑不動 |
+| pre-commit 跑單一檢查入口 | 本地強制 | 要 commit 的內容通過和變更路徑有關的檢查（ron-skills：`.githooks/pre-commit` 經 `scripts/heavy-slot.mjs` 的全機共用 slot 跑 `bin/check --changed`，依對應表只挑相關步驟與測試，拿不準時跑完整套件；排不到 slot 時印 `SLOT_TIMEOUT`，是負載關卡不是檢查失敗；heavy-slot 給 ron-skills 的名額是 0 時，原本要經 slot 的大子集只跑靜態步驟（`bin/check --changed --light`，印 `CHECK_DELEGATED`），完整的部分由 PR 的 required checks 補位） | 子集不是完整套件：漏挑的測試要等 acceptance、Regression 或 CI 的完整套件才抓到；每個 worker 每次 commit 都跑完整套件時，多 worker 並行會把機器 load 推到跑不動 |
 
 沒有 pre-commit 的 repo，錯誤會留到 push 或 CI 才被抓到。
 
@@ -47,7 +47,7 @@ L1 必接的只有 zsh 這一個 hook（語言、分頁狀態 hook 看 repo 的�
 
 | 校驗 | 強度 | 檢查什麼 | 不能證明什麼 |
 | --- | --- | --- | --- |
-| 單一檢查入口 | 流程內 | 整個 repo 的檢查在 run 的分支上全過（ron-skills：完整的 `bin/check` 自己先排全機共用的 heavy-slot，node 測試併發限 `NODE_TEST_CONCURRENCY`，預設 6；建議值見 setup-workflow 的 `CONCURRENCY.md`） | 只在跑的那個 SHA 有效；之後合入別的東西要重跑 |
+| 單一檢查入口 | 流程內 | 整個 repo 的檢查在 run 的分支上全過（ron-skills：完整的 `bin/check` 自己先排全機共用的 heavy-slot（名額 0 時改交給 GitHub Actions：`scripts/ci-run.mjs` push 到 `ci/*` 分支、讀 `checks` job 的結論，Actions 不可用才回到本機排隊），node 測試併發限 `NODE_TEST_CONCURRENCY`，預設 6；建議值見 setup-workflow 的 `CONCURRENCY.md`） | 只在跑的那個 SHA 有效；之後合入別的東西要重跑 |
 | `code-review` 兩軸 | 流程內 | **Standards**：是否符合 repo 的規範；**Spec**：是否做了 Issue 要的事。兩軸分開列，最多兩輪修正與重審 | finding 只有在有失敗的執行、失敗的 gate、或這次改動讓文件某行變錯時才擋；「看起來怪」不擋，記成 follow-up |
 | 安全事實 | 流程內 | 動到 wire format、共用契約、會解析原始碼的工具時，review 要點名這個改動「因為哪一兩個事實而安全」，並各附一次證明它的執行 | 呼叫端搜尋只證明「找到的呼叫端」沒壞 |
 | 獨立情境驗證（L3） | 流程內 | 高風險 Issue 由沒寫程式的全新 verifier 在 candidate SHA 跑至少一個情境（見 [05](05-level3.md#codex-跨模型-review)） | candidate 自己加的測試不算獨立；只證明被跑的那幾個情境 |
