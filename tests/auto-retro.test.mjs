@@ -90,7 +90,7 @@ test('每一種喚醒（/loop、task notification、Entry 與交接後第一輪�
   assert.match(sweep, /MUST run on every tick, notification wakes and the first tick after a handoff included/);
   assert.match(sweep, /one `SUMMARY` row every run, even when every line is `TAB_SKIP`/);
   assert.match(sweep, /a tick with no Tab sweep row means the step did not run/);
-  assert.match(sweep, /`TAB_RECORD_FAILED <exit> <error>`.*record that run's `SUMMARY` row yourself with `pilot-decision\.mjs` in the same tick, and it too is retried next tick, never a gate/);
+  assert.match(sweep, /`TAB_RECORD_FAILED <exit> <error>`.*record that run's last result row \(`SUMMARY`, `TAB_SWEEP_OFF`, or `TAB_SWEEP_FAILED`\) yourself with `pilot-decision\.mjs` in the same tick, and it too is retried next tick, never a gate/);
   assert.match(read('docs/agents/pilot-retro-collect.md'), /^- \*\*Tab sweep\.\*\*.*每輪的 `SUMMARY`.*全是 `TAB_SKIP` 也記.*`TAB_RECORD_FAILED <exit> <錯誤>`.*由 coordinator 用 `pilot-decision\.mjs` 補記/m);
   assert.match(read('docs/workflow/05-level3.md'), /被 watcher、落地或 push gate 的通知叫醒的那一輪，與 Entry、交接後的第一輪，都要跑這一步/);
 });

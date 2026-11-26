@@ -27,7 +27,7 @@ L3 讓一個常駐的 **coordinator** 接手 L2 裡由你下指令的部分：�
 2. **Drain 收件**：每個做完的 worker 分成 `DONE`（記下 candidate SHA）、`STOP`（照停因處理）或問題（只依 adapter 或 skill 的規則回答，產品問題變成 gate）。
 3. **Project hooks**：跑 adapter 列的專案檢查（見下方 tick hooks）；沒列就略過這些腳本。
 4. **Retro trigger**：adapter 有 **Retro trigger** 條目時每輪都做，不論有沒有 tick hooks：照 Probe 印的 `RETRO_` 行（或自己跑 due 指令），到期就開分頁跑 `/retro-collect`（見下方 Retro）。被 watcher、落地或 push gate 的通知叫醒的那一輪，與 Entry、交接後的第一輪，都要跑這一步：先在所屬步驟處理通知，再在同一輪跑下去，不把被通知叫醒的一輪當成只處理那個事件（#646）。
-   接著，adapter 有 **Tab sweep** 條目時（選用，沒有就跳過）跑 `tab-sweep.mjs`：主 checkout 裡閒置 10 分鐘以上、畫面也閒置的分頁，`待 Retro｜` 送一次 `/retro`、`待關閉｜` 關掉；自己、現任 coordinator 與其他 worktree 的分頁不動，看不清楚就跳過並記進 `decisions.md`；每輪也記一列 `SUMMARY`（全是 `TAB_SKIP` 也記；`TAB_SWEEP_OFF`、`TAB_SWEEP_FAILED` 那一列也算該輪有跑），`decisions.md` 沒有 Tab sweep 列就表示那一輪沒跑；某一列寫不進去時腳本最後印 `TAB_RECORD_FAILED`，由 coordinator 當輪自己補記 `SUMMARY`。
+   接著，adapter 有 **Tab sweep** 條目時（選用，沒有就跳過）跑 `tab-sweep.mjs`：主 checkout 裡閒置 10 分鐘以上、畫面也閒置的分頁，`待 Retro｜` 送一次 `/retro`、`待關閉｜` 關掉；自己、現任 coordinator 與其他 worktree 的分頁不動，看不清楚就跳過並記進 `decisions.md`；每輪也記一列 `SUMMARY`（全是 `TAB_SKIP` 也記；`TAB_SWEEP_OFF`、`TAB_SWEEP_FAILED` 那一列也算該輪有跑），`decisions.md` 沒有 Tab sweep 列就表示那一輪沒跑；某一列寫不進去時腳本最後印 `TAB_RECORD_FAILED`，由 coordinator 當輪自己補記那一輪的結果列。
 5. **Pick 挑單**：worker 數低於上限時，依 adapter 的 Pool 規則挑下一批；`needs-triage` 的單先照 Readiness 補齊，交給子代理補齊時 prompt 從 adapter 的 Triage brief 條目起頭。
 6. **Dispatch 派工**：每張開一個 worktree 與 terminal，執行 `/issue-run <n> --worker <batch checkpoint>`。
 7. **Land 落地**：整批成員都 `DONE` 或 `STOP` 後，在批次分支依號碼合入、在 staged SHA 跑回歸、通過才合進整合分支，然後照 Push gate 交出 push 指令；adapter 允許時自己 push、開 PR／MR、合併，接著結案。

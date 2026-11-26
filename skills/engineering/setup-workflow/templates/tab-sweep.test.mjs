@@ -295,6 +295,12 @@ else fail('unknown');
     const unrecordedOff = cli({});
     assert.notEqual(unrecordedOff.status, 0);
     assert.match(unrecordedOff.stdout, /^TAB_SWEEP_FAILED no-orca\nTAB_RECORD_FAILED \d+ \S/);
+    // tab-sweep.json 也寫不進去時（拋錯中斷），先前已漏記的列仍要印 TAB_RECORD_FAILED。
+    rmSync(join(main, '.scratch/pilot/tab-sweep.json'), { force: true });
+    mkdirSync(join(main, '.scratch/pilot/tab-sweep.json'));
+    const stateFailed = cli({ ORCA_CLI_COMMAND: join(bin, 'orca'), ORCA_TERMINAL_HANDLE: 'term_me' });
+    assert.notEqual(stateFailed.status, 0);
+    assert.match(stateFailed.stdout, /^TAB_RECORD_FAILED \d+ \S/m, stateFailed.stderr);
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }

@@ -40,7 +40,7 @@
 //   `.scratch/pilot/tab-sweep.json`：`{ "enabled": true|false, "sent": { "<handle>": { "at", "title" } }, "noted": { "<handle>": "<原因>" } }`；
 //     不存在時當作 enabled；已不在 terminal list 的 handle 從 sent、noted 移除。
 // 環境變數：ORCA_CLI_COMMAND（沒有時 TAB_SWEEP_FAILED no-orca）、ORCA_TERMINAL_HANDLE（自己）、TAB_SWEEP_NOW（ISO，測試固定現在時刻）。
-// exit：0 完成（含只記錄的失敗）；2 用法錯誤。
+// exit：0 完成（含只記錄的失敗）；1 有一列沒記進 decisions.md（TAB_RECORD_FAILED）或寫 tab-sweep.json 失敗；2 用法錯誤。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -293,25 +293,30 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const now = process.env.TAB_SWEEP_NOW ? Date.parse(process.env.TAB_SWEEP_NOW) : Date.now();
   let recordFailed = null;
   const record = (line, reason) => { const failed = recordDecision(main, line, reason); recordFailed ??= failed; };
+  // 不用 process.exit：stdout 接管線時會截掉還沒寫完的 SUMMARY 與 TAB_RECORD_FAILED（#646 review）。
   const finish = () => {
-    if (!recordFailed) process.exit(0);
+    if (!recordFailed) return;
     console.log(`TAB_RECORD_FAILED ${recordFailed}`);
-    process.exit(1);
+    process.exitCode = 1;
   };
   if (!cli) {
     console.log('TAB_SWEEP_FAILED no-orca');
     if (!dryRun) record('TAB_SWEEP_FAILED no-orca', '沒有 ORCA_CLI_COMMAND，這輪不動任何分頁');
     finish();
+  } else {
+    const roster = rosterCommand ? () => {
+      const run = spawnSync('sh', ['-c', rosterCommand], { cwd: main, encoding: 'utf8', timeout: 300_000, maxBuffer: 64 * 1024 * 1024 });
+      if (run.status !== 0) throw new Error(`exit ${run.status ?? run.signal}：${(run.stderr || run.stdout || '').trim().split('\n').at(-1) ?? ''}`);
+      return run.stdout;
+    } : null;
+    try {
+      await sweep({
+        main, roster, record, now, dryRun, self: process.env.ORCA_TERMINAL_HANDLE || null,
+        orca: (...rest) => orcaCall({ cli, signal: AbortSignal.timeout(ORCA_MS) }, ...rest),
+        recorded: recordedTitle, log: line => console.log(line),
+      });
+    } finally {
+      finish(); // 寫 tab-sweep.json 拋錯時，先前漏記的列也要報
+    }
   }
-  const roster = rosterCommand ? () => {
-    const run = spawnSync('sh', ['-c', rosterCommand], { cwd: main, encoding: 'utf8', timeout: 300_000, maxBuffer: 64 * 1024 * 1024 });
-    if (run.status !== 0) throw new Error(`exit ${run.status ?? run.signal}：${(run.stderr || run.stdout || '').trim().split('\n').at(-1) ?? ''}`);
-    return run.stdout;
-  } : null;
-  await sweep({
-    main, roster, record, now, dryRun, self: process.env.ORCA_TERMINAL_HANDLE || null,
-    orca: (...rest) => orcaCall({ cli, signal: AbortSignal.timeout(ORCA_MS) }, ...rest),
-    recorded: recordedTitle, log: line => console.log(line),
-  });
-  finish();
 }
