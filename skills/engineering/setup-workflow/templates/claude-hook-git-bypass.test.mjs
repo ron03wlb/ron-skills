@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BUILTIN_BACKGROUND_ONLY, backgroundJobReason, bypassReason, chainedHandoff, chainedLongWaitReason, chainedNote, detachReason, exitGateReason, foregroundReason, probeFilterReason, selfMatchLoopReason, wideGrepReason, writesFile } from './claude-hook-git-bypass.mjs';
+import { BUILTIN_BACKGROUND_ONLY, backgroundJobReason, bypassReason, chainedHandoff, chainedLongWaitReason, chainedNote, detachReason, exitGateReason, exitGateRewrite, foregroundReason, pipeStatusReason, probeFilterReason, scratchpadDir, selfMatchLoopReason, wideGrepReason, writesFile } from './claude-hook-git-bypass.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-git-bypass.mjs', import.meta.url));
@@ -883,4 +883,88 @@ test('bypassReason：不插入替換內容的視圖不誤擋字串裡的字與�
     'git log -n 3 "$(git rev-parse HEAD)"',
     "git commit -m \"$(cat <<'EOF'\nfix: x -n --no-verify\nEOF\n)\"",
   ]) assert.equal(bypassReason(command), null, command);
+});
+
+// spay2 #1171（retro 7f7996ad#3、e8432b34#3）：拒絕訊息直接給可重送的整行改寫；`| tail …; echo … $?` 讀的是 tail 的結束碼。
+/** 在暫存目錄放一支會印兩行再以 code 結束的假 script，回傳 [目錄, 清掉的函式]。 */
+function fakeRepo(code) {
+  const dir = mkdtempSync(join(realTmpdir(), 'git-bypass-tail-'));
+  mkdirSync(join(dir, 'scripts'));
+  mkdirSync(join(dir, 'docs', 'spay4', 'tools'), { recursive: true });
+  const body = `console.log('line 1'); console.error('line 2'); process.exit(${code});\n`;
+  for (const file of ['scripts/batch-merge.mjs', 'scripts/followups.mjs', 'docs/spay4/tools/validate-site.mjs']) writeFileSync(join(dir, file), body);
+  return dir;
+}
+const bash = (command, cwd) => spawnSync('bash', ['-c', command], { cwd, encoding: 'utf8' });
+
+test('scratchpadDir：由 session_id 與 transcript_path 推得 scratchpad，不存在時退回系統暫存目錄', () => {
+  const root = mkdtempSync(join(realTmpdir(), 'git-bypass-pad-'));
+  try {
+    const uid = process.getuid();
+    const pad = join(root, `claude-${uid}`, '-home-u-repo', 'sid-1', 'scratchpad');
+    const input = { session_id: 'sid-1', transcript_path: '/home/u/.claude/projects/-home-u-repo/sid-1.jsonl' };
+    assert.notEqual(scratchpadDir(input, { CLAUDE_CODE_TMPDIR: root }), pad, '目錄還不存在');
+    mkdirSync(pad, { recursive: true });
+    assert.equal(scratchpadDir(input, { CLAUDE_CODE_TMPDIR: root }), pad);
+    assert.equal(scratchpadDir({}, { CLAUDE_CODE_TMPDIR: root }), scratchpadDir({}, {}), '缺欄位時退回系統暫存目錄');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('exitGateRewrite：頂層 gate 接過濾改寫成寫 log、保留 exit code 的整行', () => {
+  const log = '/pad/batch-merge.log';
+  assert.equal(exitGateRewrite('node scripts/batch-merge.mjs restage 1165 2>&1 | tail -n 25', 'batch-merge.mjs', '/pad'),
+    `node scripts/batch-merge.mjs restage 1165 > ${log} 2>&1; rc=$?; tail -n 25 < ${log}; exit $rc`);
+  assert.equal(exitGateRewrite('node scripts/fix-land.mjs b 2>&1 | tail -12 | cut -c1-260', 'fix-land.mjs', '/pad'),
+    'node scripts/fix-land.mjs b > /pad/fix-land.log 2>&1; rc=$?; tail -12 < /pad/fix-land.log | cut -c1-260; exit $rc');
+  assert.equal(exitGateRewrite('scripts/check-contracts.sh | tee /tmp/x | rg FAIL', 'check-contracts.sh', '/pad', {}),
+    'scripts/check-contracts.sh | tee /tmp/x > /pad/check-contracts.log 2>&1; rc=${PIPESTATUS[0]}; rg FAIL < /pad/check-contracts.log; exit $rc');
+  // 串接時只換那一段，以群組保留 &&／|| 的語意。
+  assert.equal(exitGateRewrite('cd /m && node scripts/followups.mjs add "a | b" |& tail -1; git status', 'followups.mjs', '/pad'),
+    'cd /m && { node scripts/followups.mjs add "a | b" > /pad/followups.log 2>&1; rc=$?; tail -1 < /pad/followups.log; (exit $rc); }; git status');
+  // 頂層找不到（迴圈、$(…)、bash -c、here-doc、註解）時不改寫，由泛用訊息處理。
+  for (const command of ['for k in a; do node scripts/followups.mjs add x | tail; done', 'X=$(node scripts/batch-land.mjs c | tail -1)',
+    "bash -c 'node scripts/land.mjs 12 | tail'", "cat > f <<'E'\nx\nE\nnode scripts/land.mjs 1 | tail", 'node scripts/land.mjs 1 | tail # x',
+  ]) assert.equal(exitGateRewrite(command, command.includes('followups') ? 'followups.mjs' : command.includes('batch') ? 'batch-land.mjs' : 'land.mjs', '/pad'), null, command);
+});
+
+test('pipeStatusReason：`| tail …; echo … $?` 改成 ${PIPESTATUS[0]}，near-miss 不攔', () => {
+  assert.deepEqual(pipeStatusReason('node docs/spay4/tools/validate-site.mjs 2>&1 | tail -2; echo "site $?"', { SHELL: '/bin/bash' }),
+    { filter: 'tail', rewrite: 'node docs/spay4/tools/validate-site.mjs 2>&1 | tail -2; echo "site ${PIPESTATUS[0]}"' });
+  assert.deepEqual(pipeStatusReason('make 2>&1 | head -5\nrc=$?; echo $rc', {}), { filter: 'head', rewrite: 'make 2>&1 | head -5\nrc=${PIPESTATUS[0]}; echo $rc' });
+  for (const command of ['git log | tail -3', 'node x.mjs | tail -2; echo done', 'node x.mjs | grep -q ok; echo $?', 'rg x src | head; echo $?x'.replace('$?x', "'$?'"),
+    'set -o pipefail; node x.mjs | tail -2; echo $?', 'node x.mjs | tail -2; echo ${PIPESTATUS[0]}', 'node x.mjs; echo $?', 'node x.mjs | tail -2 && echo ok',
+  ]) assert.equal(pipeStatusReason(command), null, command);
+  // zsh 沒有 PIPESTATUS（展開成空字串），改用 ${pipestatus[1]}。
+  assert.equal(pipeStatusReason('node x.mjs | tail -2; echo "x $?"', { SHELL: '/bin/zsh' }).rewrite, 'node x.mjs | tail -2; echo "x ${pipestatus[1]}"');
+  assert.match(exitGateRewrite('node scripts/land.mjs 1 | tee y | tail', 'land.mjs', '/pad', { SHELL: '/usr/bin/zsh' }), /rc=\$\{pipestatus\[1\]\}/);
+});
+
+test('hook：兩條真實指令的拒絕訊息給出可直接重送的改寫，重送保留真正的 exit code', () => {
+  const dir = fakeRepo(3);
+  const root = mkdtempSync(join(realTmpdir(), 'git-bypass-pad-'));
+  try {
+    const pad = join(root, `claude-${process.getuid()}`, '-r', 's1', 'scratchpad');
+    mkdirSync(pad, { recursive: true });
+    const env = { ...process.env, CLAUDE_CODE_TMPDIR: root, SHELL: '/bin/bash' };
+    const run = (command, args) => spawnSync('node', [script, ...args], {
+      input: JSON.stringify({ session_id: 's1', transcript_path: '/h/.claude/projects/-r/s1.jsonl', tool_input: { command } }), encoding: 'utf8', env });
+    const gates = ['--exit-gate', 'batch-merge.mjs', '--exit-gate', 'followups.mjs'];
+    for (const [command, args] of [['node scripts/batch-merge.mjs restage 1165 2>&1 | tail -n 25', gates],
+      ['node scripts/followups.mjs add x | tail', gates], ['node docs/spay4/tools/validate-site.mjs 2>&1 | tail -2; echo "site $?"', []]]) {
+      assert.equal(bash(command, dir).status === 0 && !/site 3/.test(bash(command, dir).stdout), true, `舊寫法假綠：${command}`);
+      const denied = run(command, args);
+      assert.equal(denied.status, 2, command);
+      const rewrite = /^改成以下這行重送[^\n]*\n(.+)$/m.exec(denied.stderr)?.[1];
+      assert.ok(rewrite, denied.stderr);
+      assert.equal(run(rewrite, args).status, 0, `改寫不再被拒：${rewrite}`);
+      const resent = bash(rewrite, dir);
+      if (command.includes('echo')) assert.match(resent.stdout, /site 3/);
+      else { assert.equal(resent.status, 3, rewrite); assert.match(resent.stdout, /line 1/); assert.ok(rewrite.includes(pad), rewrite); }
+    }
+    // near-miss：沒讀 $? 的 `| tail` 不受影響。
+    assert.equal(run('node scripts/x.mjs 2>&1 | tail -2', []).status, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -9,6 +9,11 @@
 // 拒絕訊息要說明改成單獨一個 Bash 呼叫執行：只拿掉管線仍會與其他指令串在同一呼叫而再被拒或逾時（retro spay2 5014f17f#1、91b73b4b#1）。
 // 另攔長跑 gate（`--exit-gate` 指定）以管線接 grep／head／tail／cut：Bash 回報的 exit code 是管線最後一支的，gate 失敗也通知 exit 0
 // （retro spay2 b949589b#1：`check-contracts.sh | tail -15` 與 `fix-land.mjs … | tail -12` 都假綠，靠讀輸出才發現）。同一指令有 pipefail 時 exit code 正確，不攔；同一支 script 只印資料的形式（EXIT_GATE_READ_ONLY）不攔。
+//   拒絕訊息直接印出可重送的整行改寫（exitGateRewrite，spay2 #1171、retro 7f7996ad#3：同一 session 被拒 4 次、每次手打 log 路徑）：
+//   頂層那段改成 `<gate…> > <log> 2>&1; rc=$?; <過濾…> < <log>`，log 放 session scratchpad（scratchpadDir），有串接時包成 `{ …; (exit $rc); }`；
+//   頂層找不到時（迴圈、`$(…)`、`bash -c`、here-doc、註解）維持泛用改法訊息。
+// 另攔 `<指令> | tail …; echo … $?`（內建規則，見 pipeStatusReason；spay2 #1171、retro e8432b34#3：`validate-site.mjs 2>&1 | tail -2; echo "site $?"`
+//   印 `site 0`，實際 exit 1）：管線最後是 head／tail／cut、下一段讀 `$?`；訊息印出把 `$?` 換成 `${PIPESTATUS[0]}`（zsh `${pipestatus[1]}`）的整行。
 // 另攔 pilot-handoff.mjs 與其他指令串接（`;`、`&&`、`||`、換行）：內建規則，不需要旗標，見 chainedHandoff。
 //   第一個參數是 `--review`／`--review-done`（唯讀列清單、記回顧點，不交接）的段落不算交接，可與其他指令串接（retro spay2 687eb996#4、a1d68426#4）。
 // 另攔要背景執行的指令（`--background-only` 指定）在前景執行：`tool_input.run_in_background` 不是 true 就拒絕（retro spay2 1677d177#1：前景 batch-land.mjs 擋住 session 10 分鐘）。
@@ -50,7 +55,8 @@
 //   spec 是「script 名稱[ 旗標]」，例如 `watch.mjs` 或 `queue.mjs --wait`：帶旗標時同段指令要有該旗標才算。不帶時只攔 git 繞過。
 // stdin 是 hook JSON（tool_input.command、tool_input.run_in_background）；命中時 exit 2，stderr 交回 agent；其他情況 exit 0 不輸出。
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // 引號內會被執行的情形：shell 的 -c、eval、ssh、watch；另一支直譯器的 -c／-e；管線或 here-string 餵給 shell。
@@ -432,6 +438,146 @@ export function exitGateReason(command, scripts = []) {
   return null;
 }
 
+/**
+ * 頂層切段（spay2 #1171 的改寫用）：各段 { start, end, sep, pipes }，sep 是段後的分隔（`;`、換行、`&&`、`||`、`&`，最後一段為空字串），
+ * pipes 是段內頂層管線（`|`、`|&`）的位置。引號、跳脫、`$(…)`／`(…)`、反引號內不切。
+ * 有 here-doc、註解、`;;` 或引號不成對時回傳 null：原位改寫不安全，交給泛用訊息。
+ */
+function topLevel(command) {
+  const parts = [];
+  let start = 0;
+  let depth = 0;
+  let pipes = [];
+  const cut = (end, sep, next) => { parts.push({ start, end, sep, pipes }); start = next; pipes = []; };
+  for (let i = 0; i < command.length;) {
+    const c = command[i];
+    if (c === '\\') { i += 2; continue; }
+    if (c === "'" || c === '"') {
+      const quoted = (c === "'" ? singleQuoted : doubleQuoted)(command, i);
+      if (!quoted) return null;
+      i = quoted.end;
+      continue;
+    }
+    if (c === '`') {
+      const end = command.indexOf('`', i + 1);
+      if (end < 0) return null;
+      i = end + 1;
+      continue;
+    }
+    if (c === '#' && /[\s;&|(]/.test(command[i - 1] ?? ' ')) return null;
+    if (command.startsWith('<<<', i)) { i += 3; continue; }
+    if (command.startsWith('<<', i)) return null;
+    if (c === '(' || c === ')') { depth += c === '(' ? 1 : -1; i++; continue; }
+    if (depth > 0) { i++; continue; }
+    if (command.startsWith('&&', i) || command.startsWith('||', i)) { cut(i, c + c, i + 2); i += 2; }
+    else if (c === '|') { pipes.push(i); i += command[i + 1] === '&' ? 2 : 1; }
+    else if (c === '&' && !/[<>]/.test(command[i - 1] ?? '') && command[i + 1] !== '>') { cut(i, '&', i + 1); i++; }
+    else if (c === ';') {
+      if (command[i + 1] === ';') return null;
+      cut(i, ';', i + 1);
+      i++;
+    } else if (c === '\n') { cut(i, '\n', i + 1); i++; }
+    else i++;
+  }
+  cut(command.length, '', command.length);
+  return depth === 0 ? parts : null;
+}
+
+// 複合指令的開頭或結尾：段落從這些字開始時不改寫（`for …; do gate | tail; done` 的內文不是獨立的一段）。
+const COMPOUND_WORD = /^(?:for|select|while|until|if|case|do|then|else|elif|done|fi|esac|function|\{|\}|!)(?![\w-])/;
+const FILTER_STAGE = /^\|&?\s*(?:\S*\/)?(?:e?grep|rg|head|tail|cut)\b/;
+// 管線第一支指令的結束碼：bash 是 `${PIPESTATUS[0]}`，zsh 是 `${pipestatus[1]}`（bash 的寫法在 zsh 展開成空字串，ron-skills #238、#301）。
+const firstStatus = (env = process.env) => (/(?:^|\/)zsh$/.test(env.SHELL ?? '') ? '${pipestatus[1]}' : '${PIPESTATUS[0]}');
+const shellWord = text => (/^[\w./:@%+=,-]+$/.test(text) ? text : `'${text.replace(/'/g, `'\\''`)}'`);
+
+/**
+ * `--exit-gate` 被拒的指令改寫成可直接重送的一整行（spay2 #1171，retro 7f7996ad#3：同一 session 被拒 4 次、每次手打 log 路徑）：
+ * 頂層那段 `<gate…> | <過濾…>` 改成 `<gate…> > <log> 2>&1; rc=$?; <過濾…> < <log>`；整個呼叫只有這一段時接 `; exit $rc`，
+ * 有串接時換成 `{ …; (exit $rc); }` 保留 `&&`／`||` 的語意（平鋪的 `A || gate | tail` 在 A 成功時會讀到舊 log）。
+ * gate 與過濾之間還有其他管線（`gate | tee x | rg`）時 rc 取管線第一支的結束碼（firstStatus：bash `${PIPESTATUS[0]}`、zsh `${pipestatus[1]}`）。gate 要在該段第一個指令、且不是唯讀形式（runsGate）。
+ * @param {string} command Bash tool 的完整指令
+ * @param {string} script 被拒的 gate（exitGateReason 的 script）
+ * @param {string} logDir log 目錄（scratchpadDir）
+ * @param {Record<string, string|undefined>} env 環境變數（看 SHELL）
+ * @returns {string|null} 改寫後的整個指令；頂層找不到（迴圈、群組、`$(…)`、`bash -c`、here-doc、註解）時為 null
+ */
+export function exitGateRewrite(command, script, logDir, env = process.env) {
+  const parts = topLevel(command);
+  if (!parts) return null;
+  const real = parts.filter(part => command.slice(part.start, part.end).trim());
+  for (const part of real) {
+    const k = part.pipes.findIndex(at => FILTER_STAGE.test(command.slice(at, part.end)));
+    if (k < 0) continue;
+    const first = command.slice(part.start, part.pipes[0] ?? part.end).trim();
+    if (COMPOUND_WORD.test(first) || !runsGate(gateView(first), script)) continue;
+    const log = shellWord(`${logDir.replace(/\/+$/, '')}/${script.replace(/\.[^.]+$/, '')}.log`);
+    const pre = command.slice(part.start, part.pipes[k]).trim().replace(/\s+2>&1$/, '');
+    const filterStart = part.pipes[k] + (command[part.pipes[k] + 1] === '&' ? 2 : 1);
+    const filter = command.slice(filterStart, part.pipes[k + 1] ?? part.end).trim();
+    const rest = part.pipes[k + 1] === undefined ? '' : ` ${command.slice(part.pipes[k + 1], part.end).trim()}`;
+    const body = `${pre} > ${log} 2>&1; rc=${k > 0 ? firstStatus(env) : '$?'}; ${filter} < ${log}${rest}`;
+    if (real.length === 1) return `${body}; exit $rc`;
+    const text = command.slice(part.start, part.end);
+    const from = part.start + text.length - text.trimStart().length;
+    const to = part.start + text.trimEnd().length;
+    return `${command.slice(0, from)}{ ${body}; (exit $rc); }${command.slice(to)}`;
+  }
+  return null;
+}
+
+/**
+ * `<指令> | tail …; echo … $?`（spay2 #1171，retro e8432b34#3：`validate-site.mjs 2>&1 | tail -2; echo "site $?"` 印 `site 0`，實際 exit 1）：
+ * 頂層一段管線最後是 head／tail／cut（結束碼幾乎都是 0；grep／rg 的結束碼本身有意義，`grep -q x; echo $?` 不算），
+ * 以 `;` 或換行接下一段，下一段讀了不在單引號內的 `$?`；整個指令有 pipefail 時不算。改寫把那個 `$?` 換成 firstStatus（bash `${PIPESTATUS[0]}`、zsh `${pipestatus[1]}`）。
+ * 只看頂層（topLevel），here-doc、註解等解析不了的指令放行。
+ * @param {string} command Bash tool 的完整指令
+ * @param {Record<string, string|undefined>} env 環境變數（看 SHELL）
+ * @returns {{ filter: string, rewrite: string }|null} 管線最後的過濾指令與改寫後的整個指令；未命中為 null
+ */
+export function pipeStatusReason(command, env = process.env) {
+  if (/\bpipefail\b/.test(command)) return null;
+  const parts = topLevel(command);
+  if (!parts) return null;
+  for (const [i, part] of parts.entries()) {
+    const last = part.pipes.at(-1);
+    if (last === undefined || !/^[;\n]$/.test(part.sep) || !parts[i + 1]) continue;
+    const filter = /^\|&?\s*(?:\S*\/)?(head|tail|cut)\b/.exec(command.slice(last, part.end))?.[1];
+    if (!filter) continue;
+    const at = statusRead(command, parts[i + 1].start, parts[i + 1].end);
+    if (at >= 0) return { filter, rewrite: `${command.slice(0, at)}${firstStatus(env)}${command.slice(at + 2)}` };
+  }
+  return null;
+}
+
+/** command[from, to) 內第一個不在單引號內、沒有跳脫的 `$?` 的位置；沒有為 -1。 */
+function statusRead(command, from, to) {
+  for (let i = from; i < to; i++) {
+    if (command[i] === '\\') i++;
+    else if (command[i] === "'") {
+      const end = command.indexOf("'", i + 1);
+      if (end < 0) return -1;
+      i = end;
+    } else if (command.startsWith('$?', i)) return i;
+  }
+  return -1;
+}
+
+/**
+ * 改寫用的 log 目錄：Claude Code 的 session scratchpad（`${CLAUDE_CODE_TMPDIR:-/tmp}/claude-<uid>/<專案目錄名>/<session_id>/scratchpad`，
+ * 專案目錄名取 hook 輸入 transcript_path 的上一層）；欄位缺、平台沒有 uid 或目錄不存在時退回系統暫存目錄。
+ * @param {{ session_id?: unknown, transcript_path?: unknown }} input hook 輸入 JSON
+ * @param {Record<string, string|undefined>} env 環境變數
+ * @returns {string} 目錄路徑
+ */
+export function scratchpadDir(input, env = process.env) {
+  const { session_id: id, transcript_path: transcript } = input ?? {};
+  if (typeof id === 'string' && /^[\w-]+$/.test(id) && typeof transcript === 'string' && process.getuid) {
+    const dir = join(env.CLAUDE_CODE_TMPDIR || '/tmp', `claude-${process.getuid()}`, basename(dirname(transcript)), id, 'scratchpad');
+    if (existsSync(dir)) return dir;
+  }
+  return tmpdir();
+}
+
 // 內建的 `--background-only`（不需要旗標；hook 的參數在 settings.json，只有使用者能改）：
 // `orca-session-send.mjs --when-idle` 等到 worker 閒置才送，前景呼叫會把 session 擋到上限（retro spay2 1a01bf03#8：前景跑滿 300 秒才被移到背景）。
 export const BUILTIN_BACKGROUND_ONLY = ['orca-session-send.mjs --when-idle'];
@@ -691,10 +837,11 @@ const values = (args, flag) => args.flatMap((arg, i) => (arg === flag && args[i 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   let command = '';
   let runInBackground;
+  let hookInput;
   try {
-    const input = JSON.parse(readFileSync(0, 'utf8'))?.tool_input;
-    command = input?.command ?? '';
-    runInBackground = input?.run_in_background;
+    hookInput = JSON.parse(readFileSync(0, 'utf8'));
+    command = hookInput?.tool_input?.command ?? '';
+    runInBackground = hookInput?.tool_input?.run_in_background;
   } catch { process.exit(0); }
   // 所有拒絕共用：指令含寫檔時補一句，寫檔也沒有執行（retro spay2 e9234021#4）。
   const deny = message => {
@@ -737,7 +884,15 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
   const gate = exitGateReason(command, values(args, '--exit-gate'));
   if (gate) {
-    deny(`拒絕：${gate.script} 接 ${gate.filter}，回報的 exit code 是 ${gate.filter} 的，gate 失敗也顯示成功。改成 \`<指令> > <log> 2>&1; rc=$?; tail -n 20 <log>; exit $rc\`。\n`);
+    const rewrite = exitGateRewrite(command, gate.script, scratchpadDir(hookInput));
+    deny(`拒絕：${gate.script} 接 ${gate.filter}，回報的 exit code 是 ${gate.filter} 的，gate 失敗也顯示成功。`
+      + (rewrite ? `\n改成以下這行重送（輸出寫進 scratchpad 的 log，回報的是 gate 的 exit code）：\n${rewrite}\n`
+        : '改成 `<指令> > <log> 2>&1; rc=$?; tail -n 20 <log>; exit $rc`。\n'));
+  }
+  const status = pipeStatusReason(command);
+  if (status) {
+    deny(`拒絕：管線最後一段是 ${status.filter}，之後讀的 \`$?\` 是 ${status.filter} 的結束碼（幾乎都是 0），不是前面指令的。`
+      + `\n改成以下這行重送（\`$?\` 換成管線第一支的結束碼；也可以先寫進 log：\`<指令> > <log> 2>&1; rc=$?; tail <log>\`）：\n${status.rewrite}\n`);
   }
   const foreground = foregroundReason(command, [...values(args, '--background-only'), ...BUILTIN_BACKGROUND_ONLY], runInBackground);
   if (foreground) {
