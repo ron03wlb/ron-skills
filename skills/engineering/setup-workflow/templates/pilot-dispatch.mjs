@@ -35,7 +35,7 @@
 // 都中止進行中的步驟，進行中與還沒派的成員都 STOP 並寫進 checkpoint。預設預算 510 秒，加上收尾的 git 與寫檔，在 540 秒內結束。
 //
 // --fresh（#124）把一個成員重派成 fresh worker（Stage 的同一條目衝突之後），worktree 與分支名稱不變，舊分支就地另存：
-//   工作樹有未提交改動（#625）→ 先備份：staged、未 staged、未追蹤的改動存成 `<主 checkout>/.scratch/pilot/backup/issue-<n>-dirty.patch`（已有時接 -2…）並 stash；停在半途 merge（有 MERGE_HEAD 或 unmerged paths，#633）時 patch（原始 bytes，只留 MERGE_HEAD 也寫；同一檔 staged 後又改的 staged 版本另存 `-dirty.staged.patch`；ignored 檔擋在 HEAD 路徑上時不 abort、直接 STOP backup）存好後先 `git merge --abort`（只有 unmerged paths 時 `git reset --merge`，被拒時 `git reset --hard`）回到 HEAD，還有改動才 stash；備份、abort 或 stash 失敗才 `STOP <n> backup <原因>`（patch 已存的照存）；關掉 worktree 裡每個 terminal（checkpoint 可能只記了其中一個）；
+//   工作樹有未提交改動（#625）→ 先備份：staged、未 staged、未追蹤的改動存成 `<主 checkout>/.scratch/pilot/backup/issue-<n>-dirty.patch`（已有時接 -2…）並 stash；停在半途 merge（有 MERGE_HEAD 或 unmerged paths，#633）時 patch（原始 bytes，只留 MERGE_HEAD 也寫；同一檔 staged 後又改的 staged 版本另存 `-dirty.staged.patch`；擋在 HEAD 路徑上（同路徑或上下層目錄）的 ignored 檔以新增檔併進 patch；任一份 diff 讀不完整就不寫、不 abort）存好後先 `git merge --abort`（只有 unmerged paths 時 `git reset --merge`，被拒時 `git reset --hard`）回到 HEAD，還有改動才 stash；備份、abort 或 stash 失敗才 `STOP <n> backup <原因>`（patch 已存的照存）；關掉 worktree 裡每個 terminal（checkpoint 可能只記了其中一個）；
 //   `branch -m <分支> <分支>-prior`；`switch -c <分支> <整合分支>`；worker 的 `.scratch/issue-run-<n>` 改名成 `issue-run-<n>-prior`（fresh worker 才不讀到舊 checkpoint）；
 //   在 Issue 留言 --note 的內容加一行 `prior: <prior 分支> @ <sha>`（gh）；把成員拆到自己的 batch（原 batch 那列記 `moved batch-<n>`，成員因此全是 moved 時原 batch 的 `current:` 寫成 `closed moved`，#205；batch-<n>.md 是表頭加一列；
 //   原 batch 就是 `<n>` 時就地改寫 `current:` 與 `integration:`）；最後照一般 Dispatch 開分頁、送出 `/issue-run <n> --worker <batch-<n>.md>`。
@@ -760,6 +760,7 @@ async function refresh(cli, main, key, integration, { n, branch }, note, again, 
  * （已有時接 -2、-3…，不覆寫），再 stash（含未追蹤）讓工作樹乾淨。傳回 `{ patch, files }`，沒有改動時 `{}`，備份或 stash 失敗時 `{ error }`（改動留在原處）。
  * 停在半途 merge（有 MERGE_HEAD，或有 unmerged paths）時 stash 會失敗（#633，#625 原始情況的 issue-395）：patch 第一行寫 MERGE_MARK 與 MERGE_HEAD，
  * 存好後 `git merge --abort`（沒有 MERGE_HEAD 只有 unmerged paths 時 `git reset --merge`）回到 HEAD，剩下的改動（未追蹤檔等）再照常 stash。
+ * abort 之後 patch 是唯一的一份：擋在 HEAD 路徑上的 ignored 檔也進 patch，任一份 git diff 失敗（含超過 maxBuffer）時傳回 `{ error }`、不寫也不 abort。
  */
 function backupDirty(main, worktree, n) {
   const git = (...args) => run('git', ['-C', worktree, ...args]);
@@ -774,26 +775,38 @@ function backupDirty(main, worktree, n) {
   // --no-textconv、--no-ext-diff 不讓 diff 設定換掉內容（review 2）。
   // 輸出留成 Buffer：utf8 解碼會把非 UTF-8 文字換成 U+FFFD（review 3）。
   const raw = ['--binary', '--no-textconv', '--no-ext-diff'];
-  const bytes = (...args) => run('git', ['-C', worktree, ...args], { encoding: 'buffer' });
-  const tracked = bytes('diff', ...raw, 'HEAD');
-  const untracked = git('ls-files', '-o', '--exclude-standard', '-z');
-  if (tracked.status !== 0 || untracked.status !== 0) return { error: `git diff ${(tracked.stderr.toString() + untracked.stderr).trim()}` };
-  const added = untracked.stdout.split('\0').filter(file => file && !file.startsWith('.scratch/')).map(file => bytes('diff', '--no-index', ...raw, '--', '/dev/null', file).stdout);
-  const data = Buffer.concat([tracked.stdout, ...added]);
-  const body = data.toString('utf8');
-  if (!body.trim() && !merge) return {};
-  // abort／reset 會清掉 index，也會蓋掉擋在 HEAD 路徑上的 ignored 檔（review 3）：同一檔 staged 後又改時 staged 版本另存，
-  // ignored 檔擋路時不 abort。
+  // abort 之後 patch 是改動唯一的一份，每一次讀取都要完整（review 4）：maxBuffer 放大（預設 1 MiB，超過時 stdout 截斷、status null），
+  // --literal-pathspecs 讓 `:(glob)x` 這類檔名照字面；失敗記進 failures，一份不完整就整個不寫、不 abort。
+  const failures = [];
+  const read = (ok, encoding, ...args) => {
+    const result = run('git', ['--literal-pathspecs', '-C', worktree, ...args], { encoding, maxBuffer: 1024 ** 3 });
+    if (result.error || !ok.includes(result.status)) failures.push(`git ${args.join(' ')}：${result.error?.code ?? result.stderr.toString().trim()}`);
+    return result.stdout ?? (encoding === 'buffer' ? Buffer.alloc(0) : '');
+  };
+  const names = (...args) => read([0], 'utf8', ...args).split('\0').filter(Boolean);
+  // --no-index 有差異時 exit 1。
+  const added = file => read([0, 1], 'buffer', 'diff', '--no-index', ...raw, '--', '/dev/null', file);
+  const tracked = read([0], 'buffer', 'diff', ...raw, 'HEAD');
+  const untracked = names('ls-files', '-o', '--exclude-standard', '-z').filter(file => !file.startsWith('.scratch/'));
+  // abort／reset 會清掉 index，也會蓋掉擋在 HEAD 路徑上的 ignored 檔（review 3）：同一檔 staged 後又改時 staged 版本另存；
+  // 擋路的 ignored 檔（同路徑，或一邊是另一邊的上層目錄，review 4）以新增檔進主 patch。
   let stagedOnly = [];
+  let blocking = [];
   if (merge) {
-    const names = (...args) => git(...args).stdout.split('\0').filter(Boolean);
     const conflicted = new Set(names('diff', '--name-only', '--diff-filter=U', '-z'));
     const unstaged = new Set(names('diff', '--name-only', '-z'));
     stagedOnly = names('diff', '--cached', '--name-only', '-z', 'HEAD').filter(file => unstaged.has(file) && !conflicted.has(file));
-    const head = new Set(names('ls-tree', '-r', '--name-only', '-z', 'HEAD'));
-    const blocking = names('ls-files', '-o', '-i', '--exclude-standard', '-z').filter(file => head.has(file));
-    if (blocking.length) return { error: `ignored 檔擋在 HEAD 追蹤的路徑上，abort 會蓋掉：${blocking.join(' ')}（工作樹沒動）` };
+    const head = names('ls-tree', '-r', '--name-only', '-z', 'HEAD');
+    const parents = file => file.split('/').slice(0, -1).map((_, k, parts) => parts.slice(0, k + 1).join('/'));
+    const paths = new Set(head);
+    const dirs = new Set(head.flatMap(parents));
+    blocking = names('ls-files', '-o', '-i', '--exclude-standard', '-z').filter(file => paths.has(file) || dirs.has(file) || parents(file).some(dir => paths.has(dir)));
   }
+  const data = Buffer.concat([tracked, ...[...untracked, ...blocking].map(added)]);
+  const stagedData = stagedOnly.length ? read([0], 'buffer', 'diff', '--cached', ...raw, 'HEAD', '--', ...stagedOnly) : undefined;
+  if (failures.length) return { error: `${failures.join('；')}（patch 沒寫，工作樹沒動）` };
+  const body = data.toString('utf8');
+  if (!body.trim() && !merge) return {};
   let patch;
   // 半途 merge 時即使沒有改動（只留 MERGE_HEAD）也寫：MERGE_MARK 行是草稿得知 prior 停在 merge 中的唯一來源（#633 review 1）。
   if (body.trim() || merge) {
@@ -804,7 +817,7 @@ function backupDirty(main, worktree, n) {
       mkdirSync(dir, { recursive: true });
       // git apply 略過第一個 diff 標頭之前的文字，MERGE_MARK 行不影響套用。
       writeFileSync(patch, merge ? Buffer.concat([Buffer.from(`${MERGE_MARK} ${merge}\n`), data]) : data);
-      if (stagedOnly.length) writeFileSync(patch.replace(/\.patch$/, '.staged.patch'), bytes('diff', '--cached', ...raw, 'HEAD', '--', ...stagedOnly).stdout);
+      if (stagedData) writeFileSync(stagedPatchOf(patch), stagedData);
     } catch (error) {
       return { error: `寫入 ${patch} 失敗：${error.message}` };
     }
@@ -828,6 +841,9 @@ function backupDirty(main, worktree, n) {
 
 /** prior 停在半途 merge 時 backup patch 的第一行（#633）：之後接 MERGE_HEAD 的 SHA，沒有 MERGE_HEAD 只有 unmerged paths 時接 `(none)`。 */
 const MERGE_MARK = 'pilot-dispatch: prior 停在半途 merge，已備份後 abort；MERGE_HEAD';
+
+/** 同一檔 staged 後又改過時，staged 版本另存的檔：`issue-<n>-dirty[-<k>].patch` 旁的 `.staged.patch`（#633 review 3）。 */
+const stagedPatchOf = patch => patch.replace(/\.patch$/, '.staged.patch');
 
 /** patch 文字裡 `diff --git a/<檔> b/<檔>` 標頭的檔名（依出現順序、去重）。 */
 function patchFiles(body) {
@@ -858,8 +874,11 @@ function dirtySection(main, worktree, n) {
     protectedFile ||= files.includes('.claude/settings.json');
     out.push(`- prior worktree 的 staged、未 staged 與未追蹤改動已存成 \`${patch}\`（${merged ? '已中止 merge 回到 HEAD，剩下的已 stash' : '已 stash'}，工作樹乾淨）${merged ? '' : `；套用：\`git apply -3 ${patch}\``}。改到的檔：${files.length ? files.map(f => `\`${f}\``).join('、') : merged ? '（沒有，只留 MERGE_HEAD）' : '（讀不到檔名）'}`);
     if (merged) out.push(`- prior worktree 當時停在半途 merge（MERGE_HEAD ${mark.slice(MERGE_MARK.length).trim()}）：上面的 patch 含那次 merge 帶進來的改動與衝突標記；要沿用時先重做那次 merge，再從 patch 取 merge 之外的改動，不要整份 \`git apply\`。`);
-    const staged = patch.replace(/\.patch$/, '.staged.patch');
-    if (existsSync(staged)) out.push(`- 同一檔 staged 後又改過的，staged 版本另存在 \`${staged}\`（abort 會清掉 index；上面的 patch 只有工作樹版本）。改到的檔：${patchFiles(readFileSync(staged, 'utf8')).map(f => `\`${f}\``).join('、')}`);
+    const staged = stagedPatchOf(patch);
+    if (!existsSync(staged)) continue;
+    const stagedFiles = patchFiles(readFileSync(staged, 'utf8'));
+    protectedFile ||= stagedFiles.includes('.claude/settings.json');
+    out.push(`- 同一檔 staged 後又改過的，staged 版本另存在 \`${staged}\`（abort 會清掉 index；上面的 patch 只有工作樹版本）。改到的檔：${stagedFiles.map(f => `\`${f}\``).join('、')}`);
   }
   for (const patch of wip) out.push(`- 舊 worker 的 wip patch：\`${patch}\`（prior 的 commit 不含它；由 worker 決定要不要套）`);
   if (protectedFile) out.push('- `.claude/settings.json` 是受保護、owner 手改的檔，prior 的未提交改動動到了它：fresh worker 不能自己改，缺的權限規則要請 owner 補，或停下回報。');
