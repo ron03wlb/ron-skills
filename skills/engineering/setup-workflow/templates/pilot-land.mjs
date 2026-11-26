@@ -411,16 +411,20 @@ function readLoad() {
 /**
  * load 關卡：1 分鐘 load 超過門檻時在腳本內每 config.loadPoll 秒重讀，降到門檻以下就繼續；等滿 config.loadWait 秒還高才 STOP load（印最後讀到的 load），什麼都還沒動
  * （#588：短暫尖峰就退出時，coordinator 要等下一次喚醒才重跑，batch 555-556 連三次 STOP load 多等約 40 分鐘）。
+ * 一次執行裡的各次關卡共用同一個期限（第一次呼叫時起算），合計最多等 config.loadWait 秒。傳回這次有沒有等過：等過的呼叫端要重讀等待前讀的狀態。
  */
+let loadDeadline;
 function loadGate(max) {
-  const deadline = Date.now() + config.loadWait * 1000;
+  loadDeadline ??= Date.now() + config.loadWait * 1000;
   let load = readLoad();
-  if (load > max && config.loadWait > 0) process.stderr.write(`pilot-land: load ${load} > ${max}，最多等 ${config.loadWait} 秒\n`);
+  if (load <= max) return false;
+  if (config.loadWait > 0) process.stderr.write(`pilot-land: load ${load} > ${max}，最多等 ${config.loadWait} 秒\n`);
   for (; load > max; load = readLoad()) {
-    const left = deadline - Date.now();
+    const left = loadDeadline - Date.now();
     if (left <= 0) throw new Stop(`load ${load} ${max}`);
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(config.loadPoll * 1000, left));
   }
+  return true;
 }
 
 /**
@@ -530,7 +534,8 @@ async function land(key, loadMax) {
     && sameMembers(main, checkpoint.members, staged, tip);
   const getTree = () => stageWorktree(main) ?? createStageWorktree(main, key);
   if (!resume) {
-    loadGate(loadMax);
+    // 等過 load 之後從頭再走一次（#588 review）：等待前讀的成員（期間被 move）、gates（期間開了 hold）與整合分支 tip 都可能已變。
+    if (loadGate(loadMax)) return land(key, loadMax);
     // #366：要 stage 時先讓整合分支包含 origin/<主分支>（同 sync-main），否則 Push gate 才 STOP behind-main、Regression 再跑一次（investing#313）。
     // RESUME 不同步：staged SHA 已驗過，落後時照舊交給 Push gate 的 sync-main。沒有 origin remote 時沒有可落後的對象。
     if (gitIn(main, 'remote', 'get-url', 'origin').status === 0) {

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { env, git, write } from './helpers/git-fixture.mjs';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
@@ -166,6 +166,27 @@ test('load 一直高：等滿上限才 STOP load（印最後一次讀到的 load
   assert.equal(existsSync(f.stageTree), false, '沒有建 stage worktree');
   const bad = f.land({ PILOT_LOAD_WAIT_SECONDS: 'abc' });
   assert.equal(bad.status, 2, bad.stdout + bad.stderr);
+});
+
+// #588 review：等待前讀的成員與 gate 不能沿用到等待之後。等待期間開了 hold gate，等完要 STOP held，不 stage。
+test('load 等待期間開了 hold gate：等完重讀 gates 與 checkpoint，STOP held，不 stage、不跑 Regression', async t => {
+  const f = fixture(t, { members: TWO });
+  const before = { tip: f.tip(), text: f.read() };
+  const child = spawn('node', [script, f.key, ...PROJECT], { cwd: f.repo, env: { ...landEnv, FAKE_CHECK_LOG: join(f.temp, 'check.log'),
+    PILOT_LOAD_NOW: `${Array(40).fill('59').join(',')},5`, PILOT_LOAD_MAX: '48', PILOT_LOAD_WAIT_SECONDS: '30', PILOT_LOAD_POLL_SECONDS: '0.05' } });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  const waiting = new Promise(done => child.stderr.on('data', chunk => { stderr += chunk; if (stderr.includes('最多等')) done(); }));
+  const exited = new Promise(done => child.on('close', done));
+  await Promise.race([waiting, exited]);
+  write(f.repo, { '.scratch/pilot/gates.md': '# Gates\n\n## G7 #2 等人決定\n- Issue：#2\n- hold：#2\n- opened：2026-11-26T09:00:00+08:00\n' });
+  const code = await exited;
+  assert.equal(code, 4, stdout + stderr);
+  assert.equal(stdout.trim().split('\n').at(-1), 'STOP held 2 G7');
+  assert.equal(f.tip(), before.tip);
+  assert.equal(f.read(), before.text);
+  assert.equal(f.checks(), 0);
 });
 
 // #582-2：`pilot-batch.mjs move 555-556 556` 之後 key 仍是 555-556，用成員號碼當 key 只印 STOP checkpoint 缺 …；同一行補上原 key。
