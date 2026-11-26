@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { FAST, orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 import { copyScripts } from './test/script-deps.mjs';
@@ -27,7 +27,12 @@ const git = (cwd, ...args) => {
 //   fail    回 ok:false、不建 worktree；
 //   bare    同 ok，另把主 checkout 設成 bare（Orca 從 WSL 建 worktree 的副作用）；
 //   selector     同 ok，但第一次 `terminal create` 回 selector_not_found（#394：Orca 還沒登記剛建好的 worktree）；
-//   unregistered 同 ok，但 create 之後前兩次 `worktree list` 不列它，列出之前 `terminal create` 都回 selector_not_found。
+//   unregistered 同 ok，但 create 之後前兩次 `worktree list` 不列它，列出之前 `terminal create` 都回 selector_not_found；
+//   shell   同 ok，但分頁只有 shell（G22：`--command claude` 沒啟動 claude），`terminal read` 一直只回 shell 提示；
+//   drops   第一次讀畫面是 Claude Code、之後都是 shell；
+//   exits   claude 先起來，等 tui-idle 時又退回 shell；hang 的 `terminal read` 永遠不回；
+//   stale-banner 同 shell，但 shell 提示上方殘留 Claude Code 的 banner 與含版本字串的錯誤訊息；slow 的 `terminal read` 300 毫秒後才回 Claude Code 的提示列。
+// `terminal read` 平常是 Claude Code 的開場 banner、最後一行是 `⏵⏵` 模式列（#590：--unit 看到最後一行是 Claude Code 的提示列才送 brief）。請求 unit 的 modes 鍵是 `req-<n>`。
 // `worktree list` 以真實樣本（worktree-list.json）列出 fixture 的每個 worktree，WSL 樣本時路徑寫成 Orca 在 WSL 回的 UNC 形式（`\\wsl.localhost\Ubuntu\…`）。
 // `orcaDown` 為真時 `worktree list` 在 stderr 印兩行訊息、exit 1，不印 JSON（#394：Orca CLI 整個不能用）。
 // `guard` 是 Bare guard（pilot-unbare.sh）的內容：有給時把 dispatch 與它的相依複製到暫存的 scripts/，guard 放在旁邊。
@@ -96,7 +101,7 @@ else if (a === 'worktree' && b === 'create') {
 else if (b === 'create') {
   // 同一個 Issue 第二個分頁起加上序號（term_46、term_46_2），關掉的 handle 不重用，--fresh 才分得出新舊分頁。
   const terms = fs.existsSync(terminals) ? JSON.parse(fs.readFileSync(terminals, 'utf8')) : [];
-  const base = 'term_' + arg('--title').replace(/^.*#/, '');
+  const base = 'term_' + arg('--title').replace(/^.*[#｜]/, '');
   const count = fs.readFileSync(${JSON.stringify(log)}, 'utf8').split('\\n').filter(line => line.startsWith('terminal create ') && line.includes('#' + base.slice(5) + ' ')).length;
   const n = base.slice(5);
   if ((modes[n] === 'selector' && count === 1) || !registered(n)) { fail('selector_not_found'); process.exit(0); }
@@ -114,12 +119,22 @@ else if (b === 'close') {
   reply('close', { close: { handle: arg('--terminal') } });
 }
 else if (b === 'wait' && ${waitHangs}) setInterval(() => {}, 1000);
-else if (b === 'wait') reply('wait', { wait: { satisfied: true } });
+else if (b === 'wait') {
+  // exits：claude 在等 tui-idle 時結束、分頁退回 shell（之後的 read 都是 shell 提示）。
+  if (modes[arg('--terminal').replace(/^term_/, '')] === 'exits') fs.writeFileSync(${JSON.stringify(log)} + '.exited', '');
+  reply('wait', { wait: { satisfied: true } });
+}
 else if (b === 'send') { fs.appendFileSync(${JSON.stringify(log)} + '.sent', arg('--text') + '\\n'); reply('send', { send: { accepted: true } }); }
 else if (b === 'read') {
   const sent = ${JSON.stringify(log)} + '.sent';
-  const lost = modes[arg('--terminal').replace(/^term_/, '')] === 'lost';
-  reply('read', { terminal: { tail: [fs.existsSync(sent) && !lost ? fs.readFileSync(sent, 'utf8').trim().split('\\n').pop() : '❯'], draft: '' } });
+  const mode = modes[arg('--terminal').replace(/^term_/, '')];
+  // drops：第一次讀畫面（claude 檢查）是 Claude Code，之後都是 shell（檢查通過、送出前 claude 結束）。
+  const reads = fs.readFileSync(${JSON.stringify(log)}, 'utf8').split('\\n').filter(line => line.startsWith('terminal read --terminal ' + arg('--terminal') + ' ')).length;
+  if (mode === 'hang') setInterval(() => {}, 1000);
+  else if (mode === 'shell' || (mode === 'drops' && reads > 1) || (mode === 'exits' && fs.existsSync(${JSON.stringify(log)} + '.exited'))) reply('read', { terminal: { tail: ['fixture@host:~/w$ '], draft: '' } });
+  else if (mode === 'stale-banner') reply('read', { terminal: { tail: [' ▐▛███▛█   Claude Code v2.1.331', 'bash: Claude Code v2: command not found', 'fixture@host:~/w$ '], draft: '' } });
+  else if (mode === 'slow') setTimeout(() => reply('read', { terminal: { tail: ['❯', '  ? for shortcuts'], draft: '' } }), 300);
+  else reply('read', { terminal: { tail: [' ▐▛███▛█   Claude Code v2.1.331', fs.existsSync(sent) && mode !== 'lost' ? fs.readFileSync(sent, 'utf8').trim().split('\\n').pop() : '❯', '  ⏵⏵ auto mode on (shift+tab to cycle)'], draft: '' } });
 }
 else fail('unknown');
 `);
@@ -163,11 +178,13 @@ else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
     dispatchScript = join(scripts, 'pilot-dispatch.mjs');
   }
   // 帳本一律指向暫存檔（#534：派工預設做容量檢查，不能碰到真的 ~/.local/state/pilot-workers.tsv）。
-  const dispatchRaw = (args, extra = {}) => spawnSync('node', [dispatchScript, ...args], {
+  // `[argv, options]`：非同步跑 dispatch 的測試（spawn）與 dispatchRaw 共用。
+  const dispatchScriptArgs = (args, extra = {}) => [[dispatchScript, ...args], {
     cwd: repo, encoding: 'utf8', input: 'leftover-line\nanother-line\n', timeout: 60000,
     env: { ...env, PATH: `${bin}:${env.PATH}`, CLAUDE_CODE_SESSION_ID: SESSION, ORCA_CLI_COMMAND: cli, ORCA_BIN: '', ...FAST, PILOT_DISPATCH_REGISTER_POLL_MS: '1', TAB_STATE_DIR: join(root, 'titles'),
       PILOT_WORKERS_LEDGER: join(temp, 'default-ledger.tsv'), ...extra },
-  });
+  }];
+  const dispatchRaw = (args, extra = {}) => spawnSync('node', ...dispatchScriptArgs(args, extra));
   // 不測容量的測試照舊只看成員行：派工路徑（不是草稿）沒帶任何容量旗標時補 --no-capacity；要測預設行為用 dispatchRaw。
   const capacityFlags = ['--capacity', '--repo-cap', '--no-capacity'];
   const draftArgs = args => args.includes('--fresh') && !args.includes('--note');
@@ -180,7 +197,7 @@ else { console.error('gh：沒有替身 ' + args.join(' ')); process.exit(1); }
   const ghCalls = () => (existsSync(join(temp, 'gh.log')) ? readFileSync(join(temp, 'gh.log'), 'utf8') : '');
   const comment = (issue, body) => writeFileSync(comments, JSON.stringify([...posted(), { issue, body }]));
   const assigned = n => (existsSync(join(temp, 'assignees.json')) ? JSON.parse(readFileSync(join(temp, 'assignees.json'), 'utf8'))[n] : undefined) ?? ['me'];
-  return { temp, repo, root, log, cli, dispatch, dispatchRaw, checkpoint, calls, sent, open, posted, ghCalls, comment, assigned };
+  return { temp, repo, root, log, cli, dispatch, dispatchRaw, dispatchScriptArgs, checkpoint, calls, sent, open, posted, ghCalls, comment, assigned };
 }
 
 const lines = result => result.stdout.trim().split('\n');
@@ -332,6 +349,238 @@ test('STOP capacity：放掉本 session 認領的成員並印 RELEASED，別人�
 });
 
 // #353（#323 第 2 項）：舊流程留下的 `<workspaces>/issue-<n>` 分支不同名，以分支名找不到，Orca 去重成 `issue-<n>-2`。
+// #590：非 Issue 的 fix unit（sync-main 衝突修正、修 CI 的 tooling fix）以前要手做六步以上，unit 也不在 batch checkpoint 裡。
+// --unit 一行做完：建 worktree（名稱 req-<n>）、Bare guard、開分頁、確認 claude 已啟動才送 brief，寫 batch-req-<n>.md 的 - 列（pilot-land／pilot-close 的請求分支列）。
+test('--unit：一行派完 unit，batch-req-<n>.md 有 - 成員列與 handle，送出的是 brief 路徑與結果行格式；不讀 Issue', t => {
+  const { repo, root, dispatch, sent, open, ghCalls } = fixture(t);
+  const brief = join(repo, '.scratch/pilot/unit-fix-ci.md');
+  mkdirSync(join(repo, '.scratch/pilot'), { recursive: true });
+  writeFileSync(brief, '修好 CI 的 lint\n');
+  const result = dispatch(['req-12', '--unit', '.scratch/pilot/unit-fix-ci.md', '--branch', 'retro/fix-ci']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['DISPATCHED req-12 term_req-12']);
+  const checkpoint = readFileSync(join(repo, '.scratch/pilot/batch-req-12.md'), 'utf8');
+  assert.match(checkpoint, /^# batch req-12$/m);
+  assert.match(checkpoint, new RegExp(`^\\| - \\| retro/fix-ci \\| ${root}/req-12 \\| term_req-12 \\| \\S+ \\| 90m \\| running \\| \\|$`, 'm'));
+  assert.equal(git(repo, 'rev-parse', '--abbrev-ref', 'retro/fix-ci'), 'retro/fix-ci');
+  assert.deepEqual(open().map(({ handle }) => handle), ['term_req-12']);
+  assert.match(sent(), new RegExp(`^${brief}.*DONE req-12 .*STOP req-12 `, 'm'));
+  assert.equal(ghCalls(), '', '--unit 沒有 Issue，不讀認領留言');
+});
+
+test('--unit：分頁只有 shell（claude 沒啟動）時 STOP claude-not-started，不送 brief，成員列記 stop', t => {
+  const { repo, dispatch, sent } = fixture(t, { modes: { 'req-12': 'shell' } });
+  writeFileSync(join(repo, 'brief.md'), 'x\n');
+  const result = dispatch(['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-ci'], { PILOT_DISPATCH_CLAUDE_MS: '50', PILOT_DISPATCH_CLAUDE_POLL_MS: '10' });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['STOP req-12 claude-not-started term_req-12 row=stop']);
+  assert.equal(sent(), '', 'shell 不能收到 brief（G22：brief 進了 bash）');
+  assert.match(readFileSync(join(repo, '.scratch/pilot/batch-req-12.md'), 'utf8'), /^\| - \| retro\/fix-ci \| .* \| term_req-12 \| .* \| stop \| \|$/m);
+});
+
+// #590 review：判準只看整個畫面時，shell 提示上方殘留的舊 banner 也算 claude 已啟動；讀取本身拖過上限時也照送。
+test('--unit：shell 提示上方殘留舊 banner、或讀到 Claude Code 時已過上限：都 STOP claude-not-started，不送', t => {
+  for (const mode of ['stale-banner', 'slow']) {
+    const { repo, dispatch, sent } = fixture(t, { modes: { 'req-12': mode } });
+    writeFileSync(join(repo, 'brief.md'), 'x\n');
+    const result = dispatch(['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-ci'], { PILOT_DISPATCH_CLAUDE_MS: '50', PILOT_DISPATCH_CLAUDE_POLL_MS: '10' });
+    assert.deepEqual(lines(result), ['STOP req-12 claude-not-started term_req-12 row=stop'], mode);
+    assert.equal(sent(), '', mode);
+  }
+});
+
+// #590 review：同一個 req key 帶錯分支重跑，成員列被改成新分支、worktree 與 handle 清空，原 unit 的分頁沒人追蹤（pilot-land 對此是 STOP checkpoint）。
+test('--unit：batch-req-<n>.md 已有別的分支的成員列時 STOP checkpoint，什麼都不動、列照舊', t => {
+  const { repo, dispatch, calls } = fixture(t);
+  writeFileSync(join(repo, 'brief.md'), 'x\n');
+  assert.equal(dispatch(['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-ci']).status, 0);
+  const file = join(repo, '.scratch/pilot/batch-req-12.md');
+  const before = readFileSync(file, 'utf8');
+  const logged = calls();
+  const result = dispatch(['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-typo']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), [`STOP req-12 checkpoint ${file} 的成員分支是 retro/fix-ci row=kept`]);
+  assert.equal(readFileSync(file, 'utf8'), before);
+  assert.equal(calls().slice(logged.length).split('\n').filter(line => line && !line.startsWith('worktree list ')).join('\n'), '');
+});
+
+// #590 review 第 2 輪：檢查通過後 sendToSession 還要等 tui-idle，claude 在這段時間結束時 brief 照樣送進 shell；讀畫面卡住時只剩整體預算的 STOP timeout。
+test('--unit：等 tui-idle 時 claude 退回 shell、或讀畫面卡住：STOP claude-not-started，不送', t => {
+  for (const mode of ['exits', 'hang', 'drops']) {
+    const { repo, dispatch, sent } = fixture(t, { modes: { 'req-12': mode } });
+    writeFileSync(join(repo, 'brief.md'), 'x\n');
+    const result = dispatch(['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-ci'], { PILOT_DISPATCH_CLAUDE_MS: '200', PILOT_DISPATCH_CLAUDE_POLL_MS: '10' });
+    assert.deepEqual(lines(result), ['STOP req-12 claude-not-started term_req-12 row=stop'], `${mode}\n${result.stderr}`);
+    assert.equal(sent(), '', mode);
+  }
+});
+
+// #590 review 第 2 輪：兩個 req key 派到同一個分支時，後一次重用同一個 worktree、關掉前一個 worker 的分頁；已 closed 的請求 batch 重派出 Probe 與 Land 都不接的 worker。
+test('--unit：分支已是別的開著的 batch 的成員、或 batch-req-<n>.md 已不是 dispatched：STOP，什麼都不動', t => {
+  const { repo, dispatch, calls, open } = fixture(t);
+  writeFileSync(join(repo, 'brief.md'), 'x\n');
+  assert.equal(dispatch(['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-ci']).status, 0);
+  let logged = calls().length;
+  let result = dispatch(['req-13', '--unit', 'brief.md', '--branch', 'retro/fix-ci']);
+  assert.deepEqual(lines(result), ['STOP req-13 branch-taken req-12 row=kept']);
+  assert.equal(existsSync(join(repo, '.scratch/pilot/batch-req-13.md')), false);
+  assert.deepEqual(open().map(({ handle }) => handle), ['term_req-12']);
+  const file = join(repo, '.scratch/pilot/batch-req-12.md');
+  writeFileSync(file, readFileSync(file, 'utf8').replace(/^current:.*$/m, 'current: closed'));
+  const before = readFileSync(file, 'utf8');
+  logged = calls().length;
+  result = dispatch(['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-ci']);
+  assert.deepEqual(lines(result), [`STOP req-12 checkpoint ${file} current: closed row=kept`]);
+  assert.equal(readFileSync(file, 'utf8'), before);
+  assert.equal(calls().slice(logged).split('\n').filter(line => line && !line.startsWith('worktree list ')).join('\n'), '');
+});
+
+// #590 review 第 3 輪：檢查只看已寫入的成員列，正在派工的 unit 還沒有列，同 key 或同分支的並行派工都看不到它。
+test('--unit：同 key 或同分支已有派工中的預留列（running、handle 空）時 STOP，什麼都不動', t => {
+  const { repo, dispatch, calls } = fixture(t);
+  writeFileSync(join(repo, 'brief.md'), 'x\n');
+  mkdirSync(join(repo, '.scratch/pilot'), { recursive: true });
+  const file = join(repo, '.scratch/pilot/batch-req-12.md');
+  const reserved = '# batch req-12\ncurrent: dispatched 2026-11-26T10:00:00+08:00\nintegration: pilot/integration @ 1234567\n\n'
+    + '| Issue | branch | worktree | handle | started | stuck-after | state | candidate |\n|---|---|---|---|---|---|---|---|\n'
+    + '| - | retro/fix-ci | | | 2026-11-26T10:00:00+08:00 | 90m | running | |\n';
+  writeFileSync(file, reserved);
+  let result = dispatch(['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-ci']);
+  assert.deepEqual(lines(result), ['STOP req-12 running dispatching row=kept']);
+  result = dispatch(['req-13', '--unit', 'brief.md', '--branch', 'retro/fix-ci']);
+  assert.deepEqual(lines(result), ['STOP req-13 branch-taken req-12 row=kept']);
+  assert.equal(readFileSync(file, 'utf8'), reserved);
+  assert.equal(calls().split('\n').filter(line => line && !line.startsWith('worktree list ')).join('\n'), '');
+});
+
+// #590 review4：預留列在 running 檢查之前就把 handle 清空，同 key 同分支重跑時原分頁沒被認出來，被 terminal close 後重派。
+test('--unit：同 key 同分支重派、原分頁還開著：STOP running <handle>，不關分頁、列照舊', t => {
+  const { repo, dispatch, calls, open } = fixture(t);
+  writeFileSync(join(repo, 'brief.md'), 'x\n');
+  assert.equal(dispatch(['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-ci']).status, 0);
+  const file = join(repo, '.scratch/pilot/batch-req-12.md');
+  const before = readFileSync(file, 'utf8');
+  const logged = calls().length;
+  const result = dispatch(['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-ci']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['STOP req-12 running term_req-12 row=kept']);
+  assert.equal(readFileSync(file, 'utf8'), before);
+  assert.deepEqual(open().map(({ handle }) => handle), ['term_req-12']);
+  assert.doesNotMatch(calls().slice(logged), /^terminal (close|create|send) /m);
+});
+
+// #590 review4：預留列寫在 overlap 檢查之前，overlap STOP 回報 row=kept 卻留下 running、handle 空的列，之後帶 --allow-overlap 也卡在 `running dispatching`。
+test('--unit：overlap STOP 不留預留列、列照舊；之後帶 --allow-overlap 照派', t => {
+  const fx = overlapped(t);
+  const { repo, root, dispatch, open } = fx;
+  writeFileSync(join(repo, 'brief.md'), 'x\n');
+  assert.equal(dispatch(['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-ci']).status, 0);
+  const tree = join(root, 'req-12');
+  writeFileSync(join(tree, 'docs/pilot.md'), readFileSync(join(tree, 'docs/pilot.md'), 'utf8').replace('舊的 Probe。', 'unit 的 Probe。'));
+  git(tree, 'commit', '-qam', 'unit');
+  const file = join(repo, '.scratch/pilot/batch-req-12.md');
+  writeFileSync(file, readFileSync(file, 'utf8').replace(/ running \| \|$/m, ' stop | |'));
+  const before = readFileSync(file, 'utf8');
+  const result = dispatch(['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-ci']);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), ['STOP req-12 overlap 23 docs/pilot.md:Probe row=kept']);
+  assert.equal(readFileSync(file, 'utf8'), before);
+  assert.ok(open().some(({ handle }) => handle === 'term_req-12'), '沒有關分頁');
+  const allowed = dispatch(['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-ci', '--allow-overlap']);
+  assert.equal(allowed.status, 0, allowed.stdout + allowed.stderr);
+  assert.deepEqual(lines(allowed), ['DISPATCHED req-12 term_req-12']);
+  assert.match(readFileSync(file, 'utf8'), /^\| - \| retro\/fix-ci \| \S+ \| term_req-12 \| .* \| running \| \|$/m);
+});
+
+// #590 review4：預留列在 units 鎖內讀 `-` 列、到寫入才拿 batch 檔的鎖，pilot-probe --apply 在兩步之間寫的 DONE 會被預留列蓋掉。
+// 測試先持有 batch 檔的鎖，等 dispatch 讀過列、確認過分頁之後才把列改成 done 並放鎖：讀改寫都在鎖內時，dispatch 看到列已改寫就 STOP、不覆寫。
+test('--unit：派工途中 batch 檔的 - 列被改寫（probe --apply 寫 DONE）：STOP checkpoint，DONE 不被預留列蓋掉、不重派', async t => {
+  const { temp, repo, dispatchScriptArgs, calls, open } = fixture(t);
+  writeFileSync(join(repo, 'brief.md'), 'x\n');
+  const first = spawnSync('node', ...dispatchScriptArgs(['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-ci', '--no-capacity']));
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  // worker 的分頁已經不在（running 列的 handle 已關），照規則可以重派。
+  writeFileSync(join(temp, 'terminals.json'), '[]');
+  const file = join(repo, '.scratch/pilot/batch-req-12.md');
+  writeFileSync(`${file}.lock`, `pid=${process.pid} at=${new Date().toISOString()} test\n`);
+  const logged = calls().length;
+  const [command, options] = dispatchScriptArgs(['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-ci', '--no-capacity'], { PILOT_STORE_LOCK_TIMEOUT_MS: '30000' });
+  const { input, encoding, ...spawnOptions } = options;
+  const child = spawn('node', command, { ...spawnOptions, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
+  child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+  const exited = new Promise(resolve => child.on('close', resolve));
+  // 等 dispatch 讀過列、確認過分頁（最多 10 秒；讀列之前就去搶鎖的實作在這裡等不到，照樣往下改列）。
+  for (let i = 0; i < 500 && !/^terminal list /m.test(calls().slice(logged)); i++) await new Promise(resolve => setTimeout(resolve, 20));
+  await new Promise(resolve => setTimeout(resolve, 300));
+  writeFileSync(file, readFileSync(file, 'utf8').replace(/ running \| \|$/m, ' done | abc1234 |'));
+  const done = readFileSync(file, 'utf8');
+  rmSync(`${file}.lock`);
+  const status = await exited;
+  assert.equal(status, 4, stdout + stderr);
+  assert.match(stdout, /^STOP req-12 checkpoint \S+ .*row=kept$/m);
+  assert.equal(readFileSync(file, 'utf8'), done);
+  assert.doesNotMatch(calls().slice(logged), /^terminal (close|create|send) /m);
+  assert.deepEqual(open(), []);
+});
+
+// #590 review（fresh 第 2 輪）：重疊檢查在鎖外時，兩個 unit 同時派到彼此重疊的分支，各自都還看不到對方的預留列，兩個都派出。
+// 測試先持有 units 鎖，讓兩個派工都等在鎖前，再放鎖：重疊檢查在鎖內時，後拿到鎖的那個看得到先寫的預留列，STOP overlap。
+test('--unit：兩個 unit 並行派到彼此重疊的分支：後拿到鎖的 STOP overlap，什麼都不動', async t => {
+  const { repo, dispatchScriptArgs } = fixture(t);
+  writeFileSync(join(repo, 'brief.md'), 'x\n');
+  writeFileSync(join(repo, '.gitignore'), '.scratch/\nbrief.md\n');
+  git(repo, 'add', '.gitignore');
+  git(repo, 'commit', '-qm', 'ignore');
+  git(repo, 'branch', '-f', 'pilot/integration', 'main');
+  for (const x of ['a', 'b']) {
+    git(repo, 'checkout', '-qb', `retro/${x}`, 'pilot/integration');
+    writeFileSync(join(repo, 'overlap.txt'), `${x}\n`);
+    git(repo, 'add', 'overlap.txt');
+    git(repo, 'commit', '-qm', x);
+  }
+  git(repo, 'checkout', '-q', 'main');
+  mkdirSync(join(repo, '.scratch/pilot'), { recursive: true });
+  const units = join(repo, '.scratch/pilot/units.lock');
+  writeFileSync(units, `pid=${process.pid} at=${new Date().toISOString()} test\n`);
+  const run = (key, x) => {
+    const [command, options] = dispatchScriptArgs([key, '--unit', 'brief.md', '--branch', `retro/${x}`, '--no-capacity'], { PILOT_STORE_LOCK_TIMEOUT_MS: '30000' });
+    const { input, encoding, ...spawnOptions } = options;
+    const child = spawn('node', command, { ...spawnOptions, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.setEncoding('utf8').on('data', chunk => { out += chunk; });
+    child.stderr.resume();
+    return new Promise(resolve => child.on('close', () => resolve(out)));
+  };
+  const both = Promise.all([run('req-12', 'a'), run('req-13', 'b')]);
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  rmSync(units);
+  const outs = (await both).join('');
+  assert.match(outs, /^STOP req-1[23] overlap req-1[23] overlap\.txt row=kept$/m, outs);
+});
+
+test('--unit 用法錯誤 exit 2，什麼都不動：key 不是 req-<n>、分支不是 retro/<x>、brief 不在、併用成員或 --fresh、缺 --branch', t => {
+  const { repo, dispatch, calls } = fixture(t);
+  writeFileSync(join(repo, 'brief.md'), 'x\n');
+  for (const args of [
+    ['12', '--unit', 'brief.md', '--branch', 'retro/fix-ci'],
+    ['req-12', '--unit', 'brief.md', '--branch', 'issue/12-x'],
+    ['req-12', '--unit', 'missing.md', '--branch', 'retro/fix-ci'],
+    ['req-12', '12:x', '--unit', 'brief.md', '--branch', 'retro/fix-ci'],
+    ['req-12', '--unit', 'brief.md', '--branch', 'retro/fix-ci', '--fresh', '12:x', '--note', 'brief.md'],
+    ['req-12', '--unit', 'brief.md'],
+    ['req-12', '--unit', '.', '--branch', 'retro/fix-ci'],
+    ['req-12', '12:x', '--branch', 'retro/fix-ci'],
+  ]) {
+    const result = dispatch(args);
+    assert.equal(result.status, 2, `${args.join(' ')}\n${result.stdout}${result.stderr}`);
+  }
+  assert.equal(calls(), '');
+  assert.equal(existsSync(join(repo, '.scratch/pilot/batch-req-12.md')), false);
+});
+
 test('<workspaces>/issue-<n> 已是別的分支的 worktree：STOP worktree-branch，不呼叫 create、不建 -2', t => {
   const { repo, root, dispatch, calls } = fixture(t);
   mkdirSync(root, { recursive: true });

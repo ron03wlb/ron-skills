@@ -75,7 +75,7 @@
 //               判斷是 issue-pool 的 blockerOpenScope，與 blocked 行同一份 blocker 資料；依 #n、blocker 順序，在 HUMAN_LANDED 之後；沒有整合分支或 gh 失敗時不印）
 //   母單（#164）：PARENT_LABEL <n>（開著、或已關閉卻有開著子單的母單，沒有 `parent` label 或還掛 triage label）｜
 //               PARENT_REOPEN <n>（開著的子單的母單 #n 在同一個 repo、已關閉）；各依號碼、每張一次
-//   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜
+//   running 成員：WORKER <n> DONE <sha>｜WORKER <n> STOP <cause>｜WORKER <n> RUNNING <分鐘>｜WORKER <n> dispatching（handle 空：--unit 正在派的預留列，不讀 terminal、算在跑，#590）｜
 //                 WORKER <n> DONE <sha> from-state（#466：terminal 已結束、畫面沒有結果行，worker checkpoint 最後一行 `State:` 是 `done, candidate <sha>`
 //                 而 sha 等於成員 worktree 的 HEAD；<sha> 是完整的 HEAD，--apply 與 DONE 一樣寫回）｜
 //                 WORKER <n> STUCK exited|stuck-after <分鐘>|orca <錯誤碼>|no-orca|checkpoint <欄位> <值>
@@ -152,7 +152,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
 import { mergeConflicts } from './lib/merge-tree.mjs';
-import { batchMembers, CheckpointLocked, gateLines, heldIssues, resolvedGateLines, resolvedGates, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
+import { batchMembers, CheckpointLocked, gateLines, heldIssues, resolvedGateLines, resolvedGates, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, requestBatchKey, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
 import { SPINNER, orca } from './orca-session-send.mjs';
 import { envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 import { POOL_FIELDS, blockerOpenScope, landedOn, mainPause, pool, prerequisiteOf } from './issue-pool.mjs';
@@ -670,8 +670,8 @@ export function parseBatch(text) {
   const regression = lastRegression?.[1];
   const regressionExit = lastRegression?.[2];
   const sha = current.match(/^(?:merged|pushed) ([0-9a-f]{7,40})\b/)?.[1] ?? regression;
-  // 成員列與 pilot-land 共用 lib/pilot-store.mjs 的解析，n 是字串（#453 第 1 項）。
-  const members = batchMembers(text);
+  // 成員列與 pilot-land 共用 lib/pilot-store.mjs 的解析，n 是字串（#453 第 1 項）；請求 batch 的 `-` 列以 key `req-<n>` 當號碼（#590）。
+  const members = batchMembers(text, { requestKey: requestBatchKey(text) });
   // pilot-batch resume 記下的那一行（#356）：每個成員取最後一行 `resumed: #<n> <time> <結果行|->`；時間給 watch 的記錄比對（#413）。
   for (const [, n, time, line] of text.matchAll(/^resumed: #(\d+) (\S+) (.*)$/gm)) {
     for (const member of members) {
@@ -703,7 +703,8 @@ export const resultText = raw => String(raw).replace(/[\u0000-\u001f\u007f]/g, '
  * 傳回 { line（resultText 後的整行）, kind（DONE｜STOP）, n, value（sha 或 cause） }，沒有時 null。
  */
 export function resultMatch(tail, n) {
-  const number = n === undefined ? '(\\d+)' : `(${n})`;
+  // 缺省時也認請求 unit 的 `req-<n>`（#590，pilot-dispatch --unit）。
+  const number = n === undefined ? '(\\d+|req-\\d+)' : `(${n})`;
   const done = new RegExp(`^DONE ${number} ([0-9a-f]{7,40})$`);
   const stop = new RegExp(`^STOP ${number} (.+)$`);
   for (const raw of screenLines(tail).reverse()) {
@@ -776,6 +777,8 @@ export function recordResult(pilot, handle, line, at = new Date()) {
  * 或時間不晚於成員列的 started 與最後一次 resumed（記的是前一次派工或 resume 前的結果）時 null。
  */
 export function savedResult(pilot, member) {
+  // handle 空是 --unit 正在派的預留列（#590）：resultFile 會解析成 results 目錄本身。
+  if (!member.handle) return null;
   const file = resultFile(pilot, member.handle);
   if (!existsSync(file)) return null;
   const [, time, line] = readFileSync(file, 'utf8').trim().match(/^(\S+) (.+)$/) ?? [];
@@ -820,6 +823,8 @@ export function workerResult(state) {
  * terminal 已結束、畫面與 saved 都沒有結果行時再讀 worker checkpoint（stateResult，路徑 `ctx.workerState`），讀到時是 `DONE <sha> from-state`（#466）。
  */
 export async function workerState(ctx, member, now = Date.now(), saved = null) {
+  // handle 空的 running 列是 --unit 正在派的預留列（#590）：還沒有分頁可讀，當作工作中。
+  if (!member.handle) return 'dispatching';
   if (!ctx.cli) return saved ?? 'STUCK no-orca';
   let terminal;
   try {
@@ -891,7 +896,7 @@ function mergedNotInMain(checkout, integration, key, regression, regressionExit)
 }
 
 /**
- * `--apply`：把這一輪讀到的結果寫回成員列。重讀檔案，只認號碼相同、state 還是 running 的那一列，
+ * `--apply`：把這一輪讀到的結果寫回成員列。重讀檔案，只認號碼相同、state 還是 running、結果帶 handle 時 handle 也相同的那一列（#590），
  * 以 `|` 切開後只換 state 與 candidate 兩格（其他格與其他行的 byte 都不動）；DONE 寫 `done` 與 SHA，STOP 寫 `stop`、candidate 不動。
  * 寫完再讀一次比對，傳回沒寫進去的 APPLY_MISS 行（手寫 sed 對不到列時沒有輸出也沒報錯，coordinator 的 retro）。
  * 讀改寫在 checkpoint 鎖內（#345）；等到逾時傳回 `CHECKPOINT_LOCKED …` 一行，不寫檔。
@@ -901,10 +906,14 @@ export function applyResults(file, key, results) {
   const written = [];
   const locked = lockedLine(() => updateCheckpoint(file, text => {
     const lines = text.split('\n');
-    for (const { n, state, sha } of results) {
+    // 請求 batch 的成員號碼是標題的 `req-<n>`，列上的 Issue 欄是 `-`（#590）；鎖內重讀的標題才算，別的 req key 不寫。
+    const requestKey = requestBatchKey(text);
+    for (const { n, state, sha, handle } of results) {
+      // 帶 handle 時列的 handle 要相同（#590：舊分頁的結果不寫進 --unit 重派的預留列或新分頁的列）。
       const rows = lines.flatMap((line, i) => {
         const cells = tableCells(line);
-        return cells.length >= 8 && cells[0] === n && cells[6] === 'running' ? [i] : [];
+        return cells.length >= 8 && (cells[0] === n || (cells[0] === '-' && requestKey !== undefined && n === requestKey)) && cells[6] === 'running'
+          && (handle === undefined || cells[3] === handle) ? [i] : [];
       });
       if (rows.length !== 1) { misses.push(`APPLY_MISS ${key} ${n} rows ${rows.length}`); continue; }
       // `split('|')` 的第 0 段是行首 `|` 之前的空字串，所以 tableCells 的第 6、7 格（state、candidate）在這裡是第 7、8 段。
@@ -1364,7 +1373,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     for (const member of /^closed\b/.test(current) ? [] : members.filter(m => m.state === 'running')) {
       const state = await workerState(ctx, member, Date.now(), savedResult(pilot, member));
       const { kind, sha } = workerResult(state);
-      if (kind) results.push({ n: member.n, state: kind === 'DONE' ? 'done' : 'stop', sha });
+      if (kind) results.push({ n: member.n, state: kind === 'DONE' ? 'done' : 'stop', sha, handle: member.handle });
       // terminal 已結束（STUCK exited）的成員不佔機器，不算容量（#408：investing 的 437 exited 仍被算進帳本，派工印 STOP capacity 4/3）。
       else if (state !== 'STUCK exited') running++;
       out.push(`WORKER ${member.n} ${state}`);

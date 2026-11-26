@@ -151,8 +151,9 @@ export async function reportScreenTail(ctx, handle) {
  * 畫面出現 prompt 開頭、`esc to interrupt` 或工作中的 spinner（SPINNER）才算送達；否則依 SEND_DELAYS 重送，重送前再讀一次畫面，已送達就不重送。
  * 送不出或三次都沒送達傳回 false。
  * 第一次送出前先讀一次 composer 的 `draft`（缺省視為空），已有同一段文字時只補 Enter，並在 stderr 印 `DRAFT_SUBMIT <handle>`。
+ * `guard`（選用，pilot-dispatch --unit，#590）：每次 `terminal send` 之前呼叫，傳回 false 時不送、丟出 code 為 `guard` 的錯誤（例如分頁已退回 shell）。
  */
-export async function sendPrompt(ctx, handle, text) {
+export async function sendPrompt(ctx, handle, text, { guard } = {}) {
   // 讀一次畫面：draft（缺省視為空）與是否已送達。文字還在輸入框（draft 含 prompt 開頭）時，畫面上那一行只是輸入框，不算送達。
   const readScreen = async () => {
     const { tail = [], draft = '' } = (await orca(ctx, 'terminal', 'read', '--terminal', handle)).terminal ?? {};
@@ -169,6 +170,7 @@ export async function sendPrompt(ctx, handle, text) {
       if (screen.landed) return true;
       draft = screen.draft;
     }
+    if (guard && !await guard()) throw Object.assign(new Error('guard'), { code: 'guard' });
     if (!(await orca(ctx, 'terminal', 'send', '--terminal', handle, ...resendInput(draft, text))).send?.accepted) return false;
     for (let poll = 0; poll < CONFIRM_POLLS; poll++) {
       await sleep(CONFIRM_MS, undefined, { signal: ctx.signal });

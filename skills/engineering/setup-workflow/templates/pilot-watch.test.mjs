@@ -175,6 +175,51 @@ test('batch 成員只認自己號碼的結果行', t => {
   assert.equal(result.stdout, 'RESULT 4 term_4 DONE 4 abcdef1\n');
 });
 
+// #590：pilot-dispatch --unit 派出的非 Issue fix unit，batch-req-<n>.md 的唯一成員列 Issue 欄是 `-`（pilot-land／pilot-close 的請求分支列），
+// worker 回報 `DONE req-<n> <sha>`；以前 watch 只看號碼列，這種 unit 完成了也不通知。
+test('請求 unit（batch-req-<n>.md 的 - 列）：認得 DONE req-<n> <sha>，別的 req 號碼與 Issue 號碼都不算', t => {
+  const { pilot, run } = fixture(t, { term_u: [
+    { status: 'running', tail: ['● 修 CI 中'] },
+    { status: 'running', tail: ['  DONE req-1 abcdef1', 'DONE 12 abcdef1', '❯'] },
+    { status: 'running', tail: ['● 報告', `  DONE req-12 ${SHA}`, '❯'] },
+  ] });
+  writeFileSync(join(pilot, 'batch-req-12.md'), `# batch req-12
+current: dispatched 2026-11-26T09:00:00+08:00
+integration: pilot/integration @ 1234567
+
+| Issue | branch | worktree | handle | started | stuck-after | state | candidate |
+|---|---|---|---|---|---|---|---|
+| - | retro/fix-ci | /w/req-12 | term_u | 2026-11-26T09:00:00+08:00 | 90m | running | |
+`);
+  const result = run(['--batch', 'req-12', '--checkout', 'checkout', ...fast]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `RESULT req-12 term_u DONE req-12 ${SHA}\n`);
+  assert.equal(readFileSync(join(pilot, 'results/term_u'), 'utf8').split(' ').slice(1).join(' '), `DONE req-12 ${SHA}\n`);
+});
+
+// #590 review：`postland:` 行的讀取端（pilot-land 的 POSTLAND_PENDING）只認 Issue 號碼，unit 的 POSTLAND 記成 `postland: #req-12 …` 也讀不到，重跑還重複記。
+test('請求 unit 的 DONE 前有 POSTLAND：照樣 RESULT，checkpoint 不記 postland 行', t => {
+  const { pilot, run } = fixture(t, { term_u: [{ status: 'running', tail: ['  POSTLAND req-12 node scripts/x.mjs', `  DONE req-12 ${SHA}`, '❯'] }] });
+  const text = `# batch req-12
+current: dispatched 2026-11-26T09:00:00+08:00
+integration: pilot/integration @ 1234567
+
+| Issue | branch | worktree | handle | started | stuck-after | state | candidate |
+|---|---|---|---|---|---|---|---|
+| - | retro/fix-ci | /w/req-12 | term_u | 2026-11-26T09:00:00+08:00 | 90m | running | |
+`;
+  writeFileSync(join(pilot, 'batch-req-12.md'), text);
+  const result = run(['--batch', 'req-12', '--checkout', 'checkout', ...fast]);
+  assert.equal(result.stdout, `RESULT req-12 term_u DONE req-12 ${SHA}\n`);
+  assert.equal(readFileSync(join(pilot, 'batch-req-12.md'), 'utf8'), text);
+});
+
+test('直接給 handle：unit 的 DONE req-<n> <sha> 也算結果', t => {
+  const { run } = fixture(t, { term_u: [{ status: 'running', tail: ['❯'] }, { status: 'running', tail: [`DONE req-12 ${SHA}`, '❯'] }] });
+  const result = run(['term_u', ...fast]);
+  assert.equal(result.stdout, `RESULT - term_u DONE req-12 ${SHA}\n`);
+});
+
 test('直接給 checkpoint 檔：照檔名標出 batch', t => {
   const { batch, pilot, run } = fixture(t, { term_5: [{ status: 'running', tail: [] }, { status: 'running', tail: ['DONE 5 abcdef1'] }] });
   batch('5-6', [{ n: 5, handle: 'term_5' }]);
