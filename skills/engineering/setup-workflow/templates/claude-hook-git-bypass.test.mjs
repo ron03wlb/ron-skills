@@ -1,16 +1,19 @@
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import './test/isolate-git-env.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BUILTIN_BACKGROUND_ONLY, backgroundJobReason, bypassReason, chainedHandoff, chainedLongWaitReason, chainedNote, detachReason, exitGateReason, exitGateRewrite, foregroundReason, pipeStatusReason, probeFilterReason, scratchpadDir, selfMatchLoopReason, wideGrepReason, writesFile } from './claude-hook-git-bypass.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-git-bypass.mjs', import.meta.url));
-const hook = (input, args = []) => spawnSync('node', [script, ...args], { input, encoding: 'utf8' });
+// hook 在不是 git repo 的目錄執行：detachReason 會讀所在工作樹的 HEAD（#548），測試不能隨跑測試的 checkout（CI 是 detached HEAD）而變。
+const outsideRepo = mkdtempSync(join(realTmpdir(), 'git-bypass-hook-'));
+const hook = (input, args = []) => spawnSync('node', [script, ...args], { input, encoding: 'utf8', cwd: outsideRepo });
+after(() => rmSync(outsideRepo, { recursive: true, force: true }));
 // 專案以參數指定的長等待指令與要整份讀的指令（spec 是「script 名稱[ 旗標]」）。
 const LONG_WAIT = ['job-watch.mjs', 'job-queue.mjs --wait'];
 const WHOLE_OUTPUT = ['job-status.mjs --probe'];
@@ -830,6 +833,70 @@ test('detachReason：帶路徑、切回分支、建分支與字串裡的字樣�
     'git checkout feature/ron/1 --', 'git checkout -', 'git checkout @{-1}', 'git checkout -b x 7da0a2eae', 'git switch -c x 7da0a2eae', 'git switch main',
     'git show 7da0a2eae:a.md', 'echo "git checkout 7da0a2eae"', 'grep -n "switch --detach" scripts/x.mjs', 'git worktree add --detach /tmp/x 7da0a2eae',
   ]) assert.equal(detachReason(command), null, command);
+});
+
+// #548：investing 的 collector-develop 是 develop 的 detached checkout，刷新用 `git checkout --detach develop`；HEAD 本來就不在分支上，不會離開任務分支。
+// 暫存 repo：main 與 develop 兩個本機分支、一個 origin/develop 遠端分支；detached 為 true 時 HEAD 停在 main 的 commit 上（不在分支）。
+function detachFixture(detached) {
+  const dir = mkdtempSync(join(realTmpdir(), 'git-bypass-detach-'));
+  const git = (...args) => {
+    const run = spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    return run.stdout.trim();
+  };
+  git('init', '-q', '-b', 'main');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+  git('branch', 'develop');
+  git('update-ref', 'refs/remotes/origin/develop', 'HEAD');
+  if (detached) git('checkout', '-q', '--detach', 'main');
+  return { dir, sha: git('rev-parse', 'HEAD') };
+}
+
+test('hook：已 detached 的工作樹上 checkout／switch --detach <本機分支> 放行，含 -C 與 fetch 串接（#548）', () => {
+  const { dir } = detachFixture(true);
+  const elsewhere = mkdtempSync(join(realTmpdir(), 'git-bypass-cwd-'));
+  try {
+    // hook 輸入的 cwd 是 Bash 所在的目錄；hook 行程本身跑在別處。
+    const call = (command, cwd) => spawnSync('node', [script], { input: JSON.stringify({ cwd, tool_input: { command } }), encoding: 'utf8', cwd: elsewhere });
+    for (const command of ['git checkout --detach develop', 'git switch --detach develop', 'git switch -d develop', 'git checkout -q --detach main',
+      'git fetch origin develop:develop && git checkout --detach develop']) {
+      const allowed = call(command, dir);
+      assert.equal(allowed.status, 0, `${command}\n${allowed.stderr}`);
+      assert.equal(detachReason(command, dir), null, command);
+    }
+    for (const command of [`git -C ${dir} checkout --detach develop`, `git -C ${dir} switch --detach develop`]) {
+      assert.equal(call(command, elsewhere).status, 0, command);
+      assert.equal(detachReason(command, elsewhere), null, command);
+    }
+    // -C 依序相對解析（git 的語意）。
+    assert.equal(detachReason(`git -C ${dirname(dir)} -C ${basename(dir)} checkout --detach develop`, elsewhere), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
+test('hook：attached HEAD、目標不是本機分支或取不到狀態時 --detach 照擋，訊息不變（#548）', () => {
+  const attached = detachFixture(false);
+  const detached = detachFixture(true);
+  const plain = mkdtempSync(join(realTmpdir(), 'git-bypass-norepo-'));
+  try {
+    const call = (command, cwd) => spawnSync('node', [script], { input: JSON.stringify({ cwd, tool_input: { command } }), encoding: 'utf8', cwd: plain });
+    const cases = [
+      ['git checkout --detach develop', attached.dir], ['git switch --detach develop', attached.dir], [`git -C ${attached.dir} checkout --detach develop`, detached.dir],
+      [`git checkout --detach ${detached.sha}`, detached.dir], ['git checkout --detach origin/develop', detached.dir], ['git switch -d origin/develop', detached.dir],
+      ['git checkout --detach nosuch', detached.dir], ['git checkout --detach', detached.dir], ['git checkout --detach develop -- a.md', detached.dir],
+      ['git checkout --detach develop', plain], ['cd x && git checkout --detach develop', plain],
+    ];
+    for (const [command, cwd] of cases) {
+      const denied = call(command, cwd);
+      assert.equal(denied.status, 2, `${command} @ ${cwd}`);
+      assert.match(denied.stderr, /^拒絕：`git (?:checkout|switch)[^`]*` 會讓 HEAD 離開分支（detached HEAD）/, command);
+      assert.notEqual(detachReason(command, cwd), null, command);
+    }
+  } finally {
+    for (const dir of [attached.dir, detached.dir, plain]) rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // 繞過語料（#412）：每條都是真實會用 --no-verify／commit -n 繞過 hook 的指令形狀，hook 必須全部擋下。

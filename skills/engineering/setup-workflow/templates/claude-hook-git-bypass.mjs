@@ -47,16 +47,17 @@
 //   actionable：改用 run_in_background 的完成通知，或取 pid 後 `while kill -0 <pid>`（retro spay2 1a01bf03#1：#961 worker 卡 2 小時）。
 // 另攔讓 HEAD 離開分支的 `git checkout <rev>`（不帶路徑，含 `git checkout <rev> --` 後面沒有路徑）與 `git switch --detach`／`-d`、`git checkout --detach`（內建規則，見 detachReason）：
 //   訊息「會讓 HEAD 離開分支（detached HEAD）」；actionable：讀舊版用 `git show <rev>:<path>`（retro spay2 db00b6a5#1：worktree 內 `git checkout -q 7da0a2eae -- 2>/dev/null`
-//   想讀舊檔，HEAD 離開任務分支）；暫存 clone 用 `git switch -c <tmp> <rev>`（spay2 retro c31287e9#1：scratchpad 內 clone 的 `git checkout --detach` 被擋，只加訊息、不放寬規則）。不看所在目錄：主 checkout 的 claude-hook-main-checkout.mjs 放行 `checkout … --` 與非本機分支的 rev，兩邊都會踩到。
+//   想讀舊檔，HEAD 離開任務分支）；工作樹本來就是 detached HEAD、`--detach` 的目標是本機分支時放行（#548：investing 的 collector-develop 以 `git checkout --detach develop` 刷新）；暫存 clone 用 `git switch -c <tmp> <rev>`（spay2 retro c31287e9#1：scratchpad 內 clone 的 `git checkout --detach` 被擋，只加訊息、不放寬規則）。不看所在目錄：主 checkout 的 claude-hook-main-checkout.mjs 放行 `checkout … --` 與非本機分支的 rev，兩邊都會踩到。
 //   本 hook 不呼叫 git，`<rev>` 以字面判斷：7–40 位十六進位、含 `~`／`^`／`@{`（`@{-N}` 同 `-`，不算）、`HEAD` 開頭帶後綴，或 `origin/`、`refs/remotes/`、`refs/tags/` 開頭；
 //   分支名稱、`-`、建分支（`-b`／`-B`／`--orphan`）與帶路徑的 `git checkout <rev> -- <path>`、`git checkout <rev> <path>` 放行。
 // `--background-only` 另有內建項目 BUILTIN_BACKGROUND_ONLY（`orca-session-send.mjs --when-idle`，retro spay2 1a01bf03#8），訊息同 `--background-only`。
 // 用法：node scripts/claude-hook-git-bypass.mjs [--long-wait <spec>]… [--whole-output <spec>]… [--exit-gate <script 名稱>]… [--background-only <spec>]…
 //   spec 是「script 名稱[ 旗標]」，例如 `watch.mjs` 或 `queue.mjs --wait`：帶旗標時同段指令要有該旗標才算。不帶時只攔 git 繞過。
 // stdin 是 hook JSON（tool_input.command、tool_input.run_in_background）；命中時 exit 2，stderr 交回 agent；其他情況 exit 0 不輸出。
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // 引號內會被執行的情形：shell 的 -c、eval、ssh、watch；另一支直譯器的 -c／-e；管線或 here-string 餵給 shell。
@@ -803,10 +804,15 @@ const REDIRECT_WORD = /^(?:\d+|&)?(?:>>?|<)(?:&?\S*)$/;
  * 讓 HEAD 離開分支的 git 指令（retro spay2 db00b6a5#1：worktree 內 `git checkout -q 7da0a2eae -- 2>/dev/null` 想讀舊檔，HEAD 離開任務分支）。
  * `git switch --detach`／`-d`、`git checkout --detach` 一律算；`git checkout` 不帶路徑（沒有 `--` 而只有一個位置參數，或 `--` 後面沒有東西）
  * 且 rev 字面上是 commit（DETACHING_REV）時算。分支名稱、`-`、建分支、帶路徑的形式放行。引號內文字不算（simpleCommands）。
+ * 例外（#548）：`--detach`／`-d` 只帶一個 rev、工作樹本來就是 detached HEAD、rev 是本機分支時放行：HEAD 本來就不在分支上
+ * （investing 的 collector-develop 以 `git checkout --detach develop` 刷新）。工作樹以 cwd 加上依序解析的 `-C` 判斷；
+ * 取不到狀態（不是 repo、同一指令前段 `cd` 過）時照擋。
  * @param {string} command Bash tool 的完整指令
+ * @param {string} [cwd] 指令執行的目錄（hook 輸入的 cwd）
  * @returns {string|null} 命中的指令摘要；未命中為 null
  */
-export function detachReason(command) {
+export function detachReason(command, cwd = process.cwd()) {
+  let moved = false;
   for (const raw of simpleCommands(command)) {
     const words = [];
     for (let i = 0; i < raw.length; i++) {
@@ -815,13 +821,25 @@ export function detachReason(command) {
     }
     let at = 0;
     while (at < words.length && (LEADING_WORD.test(words[at]) || /^\w+=/.test(words[at]))) at++;
+    if (['cd', 'pushd', 'popd'].includes(words[at])) moved = true;
     if (!/^(?:\S*\/)?git$/.test(words[at] ?? '')) continue;
     at++;
-    while (at < words.length && words[at].startsWith('-')) at += GIT_GLOBAL_WITH_ARG.has(words[at]) ? 2 : 1;
+    let dir = cwd;
+    while (at < words.length && words[at].startsWith('-')) {
+      if (words[at] === '-C' && words[at + 1] !== undefined) dir = resolve(dir, words[at + 1]);
+      at += GIT_GLOBAL_WITH_ARG.has(words[at]) ? 2 : 1;
+    }
     const [sub, ...rest] = words.slice(at);
-    if (sub === 'switch' && rest.some(arg => arg === '--detach' || arg === '-d')) return `git switch ${rest.includes('-d') ? '-d' : '--detach'}`;
+    const detachedToBranch = () => !moved && detachedOnBranch(dir, rest);
+    if (sub === 'switch' && rest.some(arg => arg === '--detach' || arg === '-d')) {
+      if (detachedToBranch()) continue;
+      return `git switch ${rest.includes('-d') ? '-d' : '--detach'}`;
+    }
     if (sub !== 'checkout') continue;
-    if (rest.includes('--detach')) return 'git checkout --detach';
+    if (rest.includes('--detach')) {
+      if (detachedToBranch()) continue;
+      return 'git checkout --detach';
+    }
     if (rest.some(arg => ['-b', '-B', '--orphan'].includes(arg) || arg.startsWith('--pathspec-from-file'))) continue;
     const dash = rest.indexOf('--');
     const before = (dash < 0 ? rest : rest.slice(0, dash)).filter(arg => !arg.startsWith('-'));
@@ -830,6 +848,21 @@ export function detachReason(command) {
     if (DETACHING_REV.test(before[0])) return `git checkout ${before[0]}${dash < 0 ? '' : ' --'}`;
   }
   return null;
+}
+
+/**
+ * `git <checkout|switch> --detach <rev>` 不會讓 HEAD 離開分支：dir 的工作樹已是 detached HEAD（`symbolic-ref -q HEAD` exit 1），
+ * 且唯一的位置參數 rev 是本機分支（#548）。git 失敗（不是 repo 等）一律算否。
+ * @param {string} dir 工作樹目錄
+ * @param {string[]} rest 子指令之後的參數
+ * @returns {boolean}
+ */
+function detachedOnBranch(dir, rest) {
+  if (rest.includes('--')) return false;
+  const revs = rest.filter(arg => !arg.startsWith('-'));
+  if (revs.length !== 1) return false;
+  const git = (...args) => spawnSync('git', ['-C', dir, ...args], { stdio: 'ignore' }).status;
+  return git('symbolic-ref', '-q', 'HEAD') === 1 && git('show-ref', '--verify', '--quiet', `refs/heads/${revs[0]}`) === 0;
 }
 
 /** argv 中所有 `<flag> <value>` 的 value；緊接的是另一個旗標時不算值。 */
@@ -859,7 +892,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       + (excerpt ? "改用 `node scripts/doc-excerpt.mjs '<詞>' <檔案>…`（前後各取 60 字，`--width <n>` 調整）。\n"
         : '改用 Python 讀檔，以 `re.finditer` 取比對處前後的字。\n'));
   }
-  const detach = detachReason(command);
+  const detach = detachReason(command, hookInput?.cwd || process.cwd());
   if (detach) {
     deny(`拒絕：\`${detach}\` 會讓 HEAD 離開分支（detached HEAD），之後的 commit 不在任務分支上。只要讀舊版內容用 \`git show <rev>:<path>\``
       + '（整棵樹用 `git archive <rev> | tar -x -C <暫存目錄>`）；要把檔案還原成舊版用 `git checkout <rev> -- <path>`（帶路徑，HEAD 不動）。'
