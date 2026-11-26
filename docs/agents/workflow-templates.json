@@ -82,8 +82,8 @@
     },
     "scripts/claude-hook-tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-tab-state.mjs",
-      "commit": "a142ebda9edf2a875e7518ac696f1fa57159991f",
-      "sha256": "a54e8aa8fdfd0895f2d9ee4a0d3ca763249ee84531459c941c104933800bcd7d"
+      "commit": "312d3ce965eac62dedcab42b84ec204c1e41a020",
+      "sha256": "1035a69644830fb8efa4764273c6c572279b054b3bd82cde89d91b1b1be5086f"
     },
     "scripts/claude-hook-unbare.sh": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-unbare.sh",
@@ -107,8 +107,8 @@
     },
     "scripts/heavy-slot.mjs": {
       "template": "skills/engineering/setup-workflow/templates/heavy-slot.mjs",
-      "commit": "a142ebda9edf2a875e7518ac696f1fa57159991f",
-      "sha256": "1afeb91e7dc9847c8c66342bee7d4440689f9bc7a265c4844c5939cb393fe6ed"
+      "commit": "312d3ce965eac62dedcab42b84ec204c1e41a020",
+      "sha256": "8392c323171badf4a415f4c58632b172636facf52d1d1224659662633dd95582"
     },
     "scripts/hook-acceptance.mjs": {
       "template": "skills/engineering/setup-workflow/templates/hook-acceptance.mjs",

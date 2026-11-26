@@ -599,11 +599,33 @@ test('同鍵兩支先後逾時：resume 紀錄保留較早的 since（spay2 #115
   await hold.done;
 });
 
-test('resume 紀錄清不掉（同名路徑是目錄）不影響檢查執行（spay2 #1159 Codex 發現）', async t => {
-  const { dir, env, start } = fixture(t, 1, { HEAVY_CHECK_RESUME_S: '0' });
-  const argv = ['sh', '-c', `echo ran >> ${dir}/order`];
-  mkdirSync(join(env.HEAVY_CHECK_DIR, `resume-${resumeKey('t:a', process.cwd(), argv)}.json`), { recursive: true });
-  const result = await start('t:a', argv[2]).done;
-  assert.equal(result.code, 0, result.stderr);
-  assert.equal(readFileSync(join(dir, 'order'), 'utf8').trim(), 'ran');
+test('resume 紀錄的同名路徑是目錄：檢查照常執行，目錄與裡面的檔案不被刪（spay2 #1159 Codex 發現）', async t => {
+  for (const limit of ['0', '7200']) {
+    const { dir, env, start } = fixture(t, 1, { HEAVY_CHECK_RESUME_S: limit });
+    const argv = ['sh', '-c', `echo ran >> ${dir}/order`];
+    const odd = join(env.HEAVY_CHECK_DIR, `resume-${resumeKey('t:a', process.cwd(), argv)}.json`);
+    mkdirSync(odd, { recursive: true });
+    writeFileSync(join(odd, 'sentinel'), 'x');
+    const result = await start('t:a', argv[2]).done;
+    assert.equal(result.code, 0, `${limit} ${result.stderr}`);
+    assert.equal(readFileSync(join(dir, 'order'), 'utf8').trim(), 'ran');
+    assert.ok(existsSync(join(odd, 'sentinel')), `${limit}：目錄裡的檔案還在`);
+  }
+});
+
+test('HEAVY_CHECK_RESUME_S=0 的一次 run 不消耗仍有效的 resume 紀錄（spay2 #1159 Codex 發現）', async t => {
+  const { dir, env, start, holdUntil } = fixture(t, 1);
+  const hold = await holdUntil('t:hold');
+  const command = `echo t:a >> ${dir}/order`;
+  assert.equal((await start('t:a', command, ['--timeout', '0.3']).done).code, SLOT_TIMEOUT_EXIT);
+  const [file] = resumeFiles(env);
+  const before = readFileSync(join(env.HEAVY_CHECK_DIR, file), 'utf8');
+  const disabled = spawn(process.execPath, [script, 'run', '--label', 't:a', '--interval', '0.1', '--timeout', '0.3', '--', 'sh', '-c', command], { env: { ...env, HEAVY_CHECK_RESUME_S: '0' }, stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = '';
+  disabled.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+  assert.equal(await new Promise(resolve => disabled.on('close', resolve)), SLOT_TIMEOUT_EXIT);
+  assert.doesNotMatch(stderr, /^SLOT_RESUMED/m);
+  assert.equal(readFileSync(join(env.HEAVY_CHECK_DIR, file), 'utf8'), before, '紀錄原封不動');
+  hold.release();
+  await hold.done;
 });

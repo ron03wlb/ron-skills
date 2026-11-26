@@ -259,9 +259,12 @@ test('landed：Push gate 入口 pilot-land.mjs push（內部以 --keep-branch �
 test('landed：一般 land.mjs 的標題或內文提到 pilot-land.mjs push 時照常觸發（spay2 #1159 Codex 發現）', t => {
   const { record, recorded, hook } = fixture(t);
   record('處理中｜#21 文件｜收尾｜land');
-  const result = hook(bash("node scripts/land.mjs issue/21-doc --title '補上 pilot-land.mjs push 文件' --body-file b.md", `LANDED 130 ${SHA}\n`));
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(recorded(), '待 Retro｜#21 文件｜收尾｜land');
+  for (const title of ["'補上 pilot-land.mjs push 文件'", "'補上文件 (node scripts/pilot-land.mjs push)'", '"x; node scripts/pilot-land.mjs push"', "'用 --keep-branch 的說明'"]) {
+    record('處理中｜#21 文件｜收尾｜land');
+    const result = hook(bash(`node scripts/land.mjs issue/21-doc --title ${title} --body-file b.md`, `LANDED 130 ${SHA}\n`));
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(recorded(), '待 Retro｜#21 文件｜收尾｜land', title);
+  }
 });
 
 test('PostToolUse：標題在引號裡含 & ; | 時照樣記下完整標題', t => {
