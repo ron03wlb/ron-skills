@@ -29,7 +29,7 @@
 //   TAB_SKIP <handle> <原因>：self、coordinator、working、no-state、split-pane、already-sent <ISO>、not-idle <分>m、idle-unknown、
 //     screen-busy、screen-no-prompt、screen-draft、screen-unreadable <錯誤>、retro-uncollected <DONE|PENDING> <session8>、roster-failed、shared-tab <handle,…>
 //   TAB_FAILED <handle> <retro-send|close> <原因>（沒記入 sent，下個 tick 再試）
-//   TAB_SWEEP_FAILED <原因>（no-orca、terminal-list、roster、coordinator-unknown；exit 0）
+//   TAB_SWEEP_FAILED <原因>（no-orca、terminal-list、roster、coordinator-unknown；exit 0。state <錯誤>：tab-sweep.json 寫不進去，印在 SUMMARY 前）
 //   TAB_SWEEP_OFF（tab-sweep.json 的 "enabled": false：用量吃緊時人暫停，每個 /retro 都花用量；不呼叫 Orca）
 //   SUMMARY sent=<n> closed=<n> skipped=<n> failed=<n> other=<其他 worktree 分頁數>
 //   TAB_RECORD_FAILED <exit> <stderr 首行>（有一列沒記進 decisions.md；印在最後、exit 1，其他行照印，#646）
@@ -40,7 +40,7 @@
 //   `.scratch/pilot/tab-sweep.json`：`{ "enabled": true|false, "sent": { "<handle>": { "at", "title" } }, "noted": { "<handle>": "<原因>" } }`；
 //     不存在時當作 enabled；已不在 terminal list 的 handle 從 sent、noted 移除。
 // 環境變數：ORCA_CLI_COMMAND（沒有時 TAB_SWEEP_FAILED no-orca）、ORCA_TERMINAL_HANDLE（自己）、TAB_SWEEP_NOW（ISO，測試固定現在時刻）。
-// exit：0 完成（含只記錄的失敗）；1 有一列沒記進 decisions.md（TAB_RECORD_FAILED）或寫 tab-sweep.json 失敗；2 用法錯誤。
+// exit：0 完成（含只記錄的失敗）；1 有一列沒記進 decisions.md（TAB_RECORD_FAILED）；2 用法錯誤。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -251,8 +251,13 @@ export async function sweep({ main, orca, roster = null, record = () => {}, self
   for (const handle of Object.keys(state.sent)) if (!open.has(handle)) delete state.sent[handle];
   state.noted = noted;
   if (!dryRun) {
-    mkdirSync(dirname(statePath), { recursive: true });
-    writeFileSync(statePath, `${JSON.stringify({ ...state, enabled: true }, null, 2)}\n`);
+    try {
+      mkdirSync(dirname(statePath), { recursive: true });
+      writeFileSync(statePath, `${JSON.stringify({ ...state, enabled: true }, null, 2)}\n`);
+    } catch (error) {
+      // 不拋錯：SUMMARY 仍要印、記（#646 review）；sent 沒存下，下個 tick 可能對同一分頁再送一次 /retro
+      emit(`TAB_SWEEP_FAILED state ${firstLine(error)}`, 'tab-sweep.json 寫不進去，這輪的 sent 沒存下');
+    }
   }
   emit(`SUMMARY sent=${counts.sent} closed=${counts.closed} skipped=${counts.skipped} failed=${counts.failed} other=${other}`,
     '每輪都記一列（全是 TAB_SKIP 也記），看守分得出跑了但沒事與沒跑（#646）');
@@ -316,7 +321,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         recorded: recordedTitle, log: line => console.log(line),
       });
     } finally {
-      finish(); // 寫 tab-sweep.json 拋錯時，先前漏記的列也要報
+      finish(); // sweep 意外拋錯時，先前漏記的列也要報
     }
   }
 }

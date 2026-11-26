@@ -295,12 +295,19 @@ else fail('unknown');
     const unrecordedOff = cli({});
     assert.notEqual(unrecordedOff.status, 0);
     assert.match(unrecordedOff.stdout, /^TAB_SWEEP_FAILED no-orca\nTAB_RECORD_FAILED \d+ \S/);
-    // tab-sweep.json 也寫不進去時（拋錯中斷），先前已漏記的列仍要印 TAB_RECORD_FAILED。
+    // tab-sweep.json 也寫不進去時不拋錯中斷：印 TAB_SWEEP_FAILED state、SUMMARY 照印，最後仍是 TAB_RECORD_FAILED。
     rmSync(join(main, '.scratch/pilot/tab-sweep.json'), { force: true });
     mkdirSync(join(main, '.scratch/pilot/tab-sweep.json'));
+    const bothFailed = cli({ ORCA_CLI_COMMAND: join(bin, 'orca'), ORCA_TERMINAL_HANDLE: 'term_me' });
+    assert.equal(bothFailed.status, 1, bothFailed.stderr);
+    assert.match(bothFailed.stdout, /(^|\n)TAB_SWEEP_FAILED state \S[^\n]*\nSUMMARY [^\n]*\nTAB_RECORD_FAILED \d+ \S[^\n]*\n$/);
+    // 只有 tab-sweep.json 寫不進去：TAB_SWEEP_FAILED state 與 SUMMARY 都記進 decisions.md，exit 0。
+    rmSync(join(main, '.scratch/pilot/decisions.md'), { recursive: true });
     const stateFailed = cli({ ORCA_CLI_COMMAND: join(bin, 'orca'), ORCA_TERMINAL_HANDLE: 'term_me' });
-    assert.notEqual(stateFailed.status, 0);
-    assert.match(stateFailed.stdout, /^TAB_RECORD_FAILED \d+ \S/m, stateFailed.stderr);
+    assert.equal(stateFailed.status, 0, stateFailed.stderr);
+    const rows = readFileSync(join(main, '.scratch/pilot/decisions.md'), 'utf8');
+    assert.match(rows, /\| Tab sweep：TAB_SWEEP_FAILED state \S/);
+    assert.match(rows, /\| Tab sweep：SUMMARY sent=/);
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
