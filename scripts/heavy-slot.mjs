@@ -419,11 +419,11 @@ export function holdersField(holders, now = Date.now()) {
 
 /**
  * 給呼叫端（pilot-land.mjs、land.mjs）組出經 slot 執行 argv 的 [command, args]：同目錄的本程式 `run --label <label> -- <argv>`。
- * timeoutSec 有給時帶 --timeout。一律帶 --fallback：land.mjs、pilot-land.mjs 還不處理 SLOT_DELEGATED（exit 76），名額 0 時照舊在本機排隊，
- * 不會把 76 當成檢查沒過（CoS item 67 的 PR 2 讓它們改交給 CI 後拿掉）。label 裡 --label 不收的字元（目錄名的空白、中文）換成 `_`，否則 run 以用法錯誤 exit 2、被當成檢查沒過。
+ * timeoutSec 有給時帶 --timeout，fallback 是 true 時帶 --fallback（CI 不可用時的本機退路）。不帶 --fallback 時名額 0 的 repo 得到 exit 76 與
+ * SLOT_DELEGATED 行（slotDelegatedLine），呼叫端改交給 CI（CoS item 67）。label 裡 --label 不收的字元（目錄名的空白、中文）換成 `_`，否則 run 以用法錯誤 exit 2、被當成檢查沒過。
  */
-export function slotCommand(label, argv, { timeoutSec } = {}) {
-  return [process.execPath, [SCRIPT, 'run', '--fallback', '--label', label.replace(/[^\w.:@/-]/g, '_'), ...(timeoutSec === undefined ? [] : ['--timeout', String(timeoutSec)]), '--', ...argv]];
+export function slotCommand(label, argv, { timeoutSec, fallback = false } = {}) {
+  return [process.execPath, [SCRIPT, 'run', ...(fallback ? ['--fallback'] : []), '--label', label.replace(/[^\w.:@/-]/g, '_'), ...(timeoutSec === undefined ? [] : ['--timeout', String(timeoutSec)]), '--', ...argv]];
 }
 
 /** 呼叫端的輸出是不是 slot 等待逾時（exit 75 而且有 SLOT_TIMEOUT 行）；是的話傳回那一行，否則 undefined。 */

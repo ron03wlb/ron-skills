@@ -19,13 +19,16 @@
 // PR 和 main 衝突時（#173；等 CI 之前以 git merge-tree 判斷，等 CI 期間 main 又前進而合併被拒時也一樣）：fetch、把 origin/main 合入分支（在分支的 worktree，沒有就開暫時 worktree）。repo 有
 // scripts/restamp.mjs、衝突檔全在它 export 的 STAMP_FILES 裡時，呼叫它的 restamp(tree, files)（在合併中途：取目標分支版本、重算並 git add，
 // 回傳 false 表示解不了），commit，在新 tip 以 sh 跑 `--check-command`（預設 bin/check），通過才 push、印 RESTAMPED，再等 CI、合併（`--local-checks` 時留言改附這次檢查的結果行）。
+// repo 的 heavy-slot 名額是 0（CoS item 67：完整檢查改走 GitHub Actions）而且沒帶 `--local-checks` 時，新 tip 不在本機檢查：印
+// `RESTAMP_CHECKS_DELEGATED <pr> <新 tip>`，push 後照常等 PR 的 checks（同一支 bin/check --upstream，改在 runner 跑）。`--local-checks` 是 CI 不可用時的退路，
+// 它的檢查（push 前與 restamp 後）一律帶 `--fallback` 在本機排隊，名額 0 也一樣。名額大於 0 或沒設名額的 repo 行為不變。
 // 其他衝突（或 repo 沒有 restamp.mjs）照舊 merge --abort，STOP merge <pr> conflict <檔案…>，分支停在原來的 tip。
 //
 // 用法：node scripts/land.mjs <branch> [--keep-branch] [--local-checks <sha>] [--check-command <command>] [--body-file <file>] [--title <title>] [--main <branch>]
 // 主分支（下文的 main）：`--main <branch>`；沒帶時讀 origin/HEAD（clone 時設定，`git remote set-head origin --auto` 可重設），都沒有才用 main（#281）。
 // push 遇到伺服器端暫時失敗（commit_refs、`[remote rejected] … (failure)`）時間隔 2 分鐘（LAND_PUSH_RETRY_MS）重試 2 次，每次印 PUSH_RETRY <n>/2 <原因>；STOP push 帶出 `remote:` 行的內容。
 // PR 已開著又帶 `--title`、`--body-file` 時以 `gh pr edit` 更新，印 PR_UPDATED <pr>；更新失敗 STOP pr-edit <pr> <原因>，不合併（#300）。
-// stdout：每步一行進度（PUSHED、PR、CHECKS_PASSED、RESTAMPED <pr> <新 tip>（合入 main 沒有衝突時是 MAIN_MERGED），`--local-checks` 時是 LOCAL_CHECKS <pr> <sha> <結果行>，收尾的 UNBARE、
+// stdout：每步一行進度（PUSHED、PR、CHECKS_PASSED、RESTAMPED <pr> <新 tip>（合入 main 沒有衝突時是 MAIN_MERGED；名額 0 時之前一行 RESTAMP_CHECKS_DELEGATED <pr> <新 tip>），`--local-checks` 時是 LOCAL_CHECKS <pr> <sha> <結果行>，收尾的 UNBARE、
 //   WORKTREE_RM_FALLBACK selector_not_found <路徑>（Orca 不認得的乾淨 worktree 改用 git worktree remove）、WORKTREE_REMOVED、BRANCH_DELETED，最後 MAIN、SKILL_CHANGED <名稱>（sync-skills 換掉內容的全域 skill，每個一行）、SYNC_SKILLS）；最後一行 LANDED <pr> <merge sha>，或 STOP <原因>
 //   （checked-out-in-main、dirty-worktree、no-branch、no-commits、behind-main、push、no-body、pr-create、pr-edit、ci-failed、ci-not-started、checks-timeout、local-checks-sha、local-checks-failed、local-checks-timeout、restamp-checks-failed、restamp-checks-timeout、slot-timeout、merge、not-merged、worktree-rm）。
 //   LANDED 行由 claude-hook-tab-state.mjs（旁邊的正本）的 DEFAULT_TRIGGERS.landed 以 regex 逐行比對，把分頁切成待 Retro；改這行的格式時一起改那裡的 regex 與 claude-hook-tab-state.test.mjs（#440）。
@@ -42,7 +45,7 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
-import { slotCommand, slotTimeoutLine } from './heavy-slot.mjs';
+import { slotCommand, slotDelegatedLine, slotTimeoutLine } from './heavy-slot.mjs';
 import { orca } from './orca-session-send.mjs';
 import { protectedReason, readDeclaredPaths, vanishingFiles } from './lib/protected-paths.mjs';
 
@@ -57,14 +60,18 @@ const LOCAL_CHECKS_TIMEOUT_MS = Number(process.env.LAND_LOCAL_CHECKS_TIMEOUT_MS 
 /** 檢查經全機 heavy-slot 執行，排隊算在上面的 420 秒裡：最多等 120 秒，其餘留給檢查本身；等不到 STOP slot-timeout（負載關卡，稍後重跑）。 */
 const LOCAL_CHECKS_SLOT_TIMEOUT_S = Number(process.env.LAND_SLOT_TIMEOUT_S || 120);
 
-/** 在 tree 以 sh 跑 command，經同目錄 heavy-slot.mjs 的全機 slot（label `<主 checkout 目錄名>:land-checks`）；等 slot 逾時時 Stop slot-timeout。 */
-function runCheckCommand(main, tree, command, sha) {
-  const [cmd, args] = slotCommand(`${basename(main)}:land-checks`, ['sh', '-c', command], { timeoutSec: LOCAL_CHECKS_SLOT_TIMEOUT_S });
+/**
+ * 在 tree 以 sh 跑 command，經同目錄 heavy-slot.mjs 的全機 slot（label `<主 checkout 目錄名>:land-checks`）；等 slot 逾時時 Stop slot-timeout。
+ * fallback 是 true 時帶 --fallback（`--local-checks`：CI 不可用時的退路，名額 0 也在本機排隊）；不帶時名額 0 的 repo 不執行，傳回 `delegated: true`，
+ * 由呼叫端交給 PR 的 checks（CoS item 67）。
+ */
+function runCheckCommand(main, tree, command, sha, { fallback = false } = {}) {
+  const [cmd, args] = slotCommand(`${basename(main)}:land-checks`, ['sh', '-c', command], { timeoutSec: LOCAL_CHECKS_SLOT_TIMEOUT_S, fallback });
   const result = spawnSync(cmd, args, { cwd: tree, encoding: 'utf8', env: childEnv, timeout: LOCAL_CHECKS_TIMEOUT_MS });
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
   const slotTimeout = slotTimeoutLine(result.status, output);
   if (slotTimeout) throw new Stop(`slot-timeout ${sha} ${slotTimeout.split(' ')[2]}`);
-  return { result, output };
+  return { result, output, delegated: Boolean(slotDelegatedLine(result.status, output)) };
 }
 /** 伺服器端暫時失敗才重試（retro spay2 86eda4c4#4：GitHub 回 commit_refs，手寫重試迴圈第 3 次成功）；規則拒絕（`pre-receive hook declined`、non-fast-forward）重試無用。 */
 const PUSH_TRANSIENT = /fatal error in commit_refs|\[remote rejected\][^\n]*\(failure\)/;
@@ -241,7 +248,7 @@ function runLocalChecks(main, branch, tip, expected, command) {
   try {
     const added = spawnSync('git', ['worktree', 'add', '--detach', '-q', tree, tip], { cwd: main, encoding: 'utf8', env: childEnv });
     if (added.status !== 0) throw new Error(`git worktree add 失敗：${added.stderr.trim()}`);
-    const { result, output } = runCheckCommand(main, tree, command, tip);
+    const { result, output } = runCheckCommand(main, tree, command, tip, { fallback: true });
     mkdirSync(join(main, '.scratch'), { recursive: true });
     const log = join(main, '.scratch', `land-local-checks-${tip}.log`);
     writeFileSync(log, output);
@@ -294,7 +301,7 @@ const gitIn = (cwd, ...args) => spawnSync('git', args, { cwd, encoding: 'utf8', 
  * PR 和 main 衝突：把 origin/main 合入分支，只有戳記檔衝突時 restamp、commit、在新 tip 跑檢查入口、push，回傳新 tip。
  * 其他衝突（或 restamp、commit 途中失敗）merge --abort 後 Stop，分支不留合併中途狀態；檢查失敗時合併 commit 留在本機分支、不 push。
  */
-async function mergeMainAndRestamp(main, branch, tree, number, command) {
+async function mergeMainAndRestamp(main, branch, tree, number, command, { local = false } = {}) {
   git(main, 'fetch', 'origin', BASE);
   const temp = tree ? null : mkdtempSync(join(tmpdir(), 'land-restamp-'));
   const path = tree?.path ?? join(temp, 'tree');
@@ -318,7 +325,14 @@ async function mergeMainAndRestamp(main, branch, tree, number, command) {
       }
     }
     const sha = gitIn(path, 'rev-parse', 'HEAD').stdout.trim();
-    const { result, output } = runCheckCommand(main, path, command, sha);
+    const { result, output, delegated } = runCheckCommand(main, path, command, sha, { fallback: local });
+    if (delegated) {
+      // repo 名額 0（CoS item 67）：不在本機檢查，push 之後由 PR 的 checks（呼叫端接著 waitChecks）驗這個 tip。
+      console.log(`RESTAMP_CHECKS_DELEGATED ${number} ${sha}`);
+      await pushOrStop(main, 'origin', branch);
+      console.log(`${restamped.length ? 'RESTAMPED' : 'MAIN_MERGED'} ${number} ${sha}`);
+      return { sha };
+    }
     mkdirSync(join(main, '.scratch'), { recursive: true });
     const log = join(main, '.scratch', `land-restamp-checks-${sha}.log`);
     writeFileSync(log, output);
@@ -449,7 +463,7 @@ export async function land({ branch, keepBranch = false, localChecksSha, checkCo
   if (pr.state === 'OPEN') {
     /** 合入 origin/main（只有戳記檔衝突時 restamp）後 tip 換成新的；`--local-checks` 時改用這次在新 tip 跑的檢查結果行。 */
     const absorbMain = async () => {
-      const restamped = await mergeMainAndRestamp(main, branch, tree, pr.number, checkCommand);
+      const restamped = await mergeMainAndRestamp(main, branch, tree, pr.number, checkCommand, { local: Boolean(checkPass) });
       tip = restamped.sha;
       if (checkPass) checkPass = restamped.pass;
     };

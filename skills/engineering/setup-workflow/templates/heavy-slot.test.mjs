@@ -148,9 +148,9 @@ test('參數：label、--、數值都要合法；環境變數給預設值', () =
 test('slotCommand、slotTimeoutLine、holdersField：給呼叫端的 helper', () => {
   const [command, args] = slotCommand('repo:regression', ['sh', '-c', 'bin/check'], { timeoutSec: 120 });
   assert.equal(command, process.execPath);
-  assert.deepEqual(args, [script, 'run', '--fallback', '--label', 'repo:regression', '--timeout', '120', '--', 'sh', '-c', 'bin/check']);
-  assert.deepEqual(slotCommand('r:x', ['true'])[1], [script, 'run', '--fallback', '--label', 'r:x', '--', 'true']);
-  assert.equal(slotCommand('個人 wiki:regression', ['true'])[1][4], '___wiki:regression', '目錄名的空白、中文換成 _');
+  assert.deepEqual(args, [script, 'run', '--label', 'repo:regression', '--timeout', '120', '--', 'sh', '-c', 'bin/check']);
+  assert.deepEqual(slotCommand('r:x', ['true'], { fallback: true })[1], [script, 'run', '--fallback', '--label', 'r:x', '--', 'true'], 'CI 不可用時的本機退路帶 --fallback');
+  assert.equal(slotCommand('個人 wiki:regression', ['true'])[1][3], '___wiki:regression', '目錄名的空白、中文換成 _');
   assert.equal(slotTimeoutLine(75, 'x\nSLOT_TIMEOUT r:x 9s holders=-\n'), 'SLOT_TIMEOUT r:x 9s holders=-');
   assert.equal(slotTimeoutLine(1, 'SLOT_TIMEOUT r:x 9s holders=-'), undefined, '不是 75 不算');
   assert.equal(slotTimeoutLine(75, 'CHECK_FAIL x'), undefined, '沒有 SLOT_TIMEOUT 行不算');

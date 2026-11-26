@@ -39,6 +39,15 @@
 //               checkpoint 追加 `regression: <sha> exit <code>`（通過、而且輸出最後一行以 `CHECK_PASS ` 開頭時附上那一行），同一次寫入拿掉 regressing 標記。
 //               指令經同目錄 heavy-slot.mjs 的全機共用 slot 執行（label `<主 checkout 目錄名>:regression`，排隊時 log 有 SLOT_WAIT 行）；
 //               等 slot 逾時（exit 75）時 regression 行照記 `exit 75`，印 `STOP load slot-timeout <已等秒數>s`：負載關卡，下一輪重跑同一行，不是 Regression 沒過。
+//               repo 的 heavy-slot 名額是 0（印 SLOT_DELEGATED、exit 76，CoS item 67）時不在本機跑，改交給同目錄的
+//               `ci-run.mjs <staged sha> --ref pilot/stage-<key> --timeout $PILOT_CI_TIMEOUT_S`（預設 1800；輸出接在 reg-<key>.log 後面）：
+//                 CI_PASS        regression 行記 `<sha> exit 0 CI_PASS <run url>`，照常往下；
+//                 CI_FAIL        記 `<sha> exit 1 CI_FAIL <run url> <step>`，印 `STOP regression 1`（job 有跑、沒過：不退回本機）；
+//                 CI_PENDING     記 `<sha> exit 75 CI_PENDING <run url>`，印 `STOP load ci-pending <run url>`：負載關卡；重跑時 tip、stage 分支與成員都沒變就
+//                                不重新 stage，印 `RESUME <key> <sha> ci-pending`，接著等同一個 SHA 的 run；
+//                 CI_UNAVAILABLE 以 `heavy-slot.mjs run --fallback` 在本機排隊重跑（結果照上面的本機 Regression 判讀）。
+//               名額大於 0 或沒設名額的 repo 行為不變。sync-main 的 Regression 也一樣（ref 是 pilot/stage-sync-main）；它 CI_PENDING 之後的重跑，
+//               本機 pilot/stage-sync-main 的 parent 還是同一對（整合分支 tip、origin/<主分支>）而且 reg-sync-main.log 最後一行是它的 CI_PENDING 時沿用那個合併 commit。
 //   hold        <主 checkout>/.scratch/pilot/hold 存在就停。
 //   Integrate   整合分支的 tip 要還是 stage 時記下的那個（不數 parent：ron-skills batch-40-51 用 `$SHA^1` 誤判兩個成員的 batch）；
 //               `switch <整合分支>`、`merge --ff-only`、`branch -d` stage 分支，`current:` 寫成 `merged <sha>`。
@@ -86,9 +95,9 @@
 //     依號碼先合入、自己的分支改過這個檔的成員）、`integration`（成員開分支之後整合分支改過），或以 + 相連的多個來源（`member 79+integration`、`member 1+member 3`），
 //     都看不出來（不該發生）時是 `unknown`；種類是 resolver 的 conflictKind，沒有時 `code`（程式檔）或 `other`。
 //     例：`STOP conflict 108 scripts/lib/hosts.mjs=member 79:code docs/notes.md=integration:other`。以及 `STOP checkpoint …`、`STOP member <n> <state>`、`STOP dirty <worktree>`、
-//   `STOP no-stage-worktree`、`STOP create …`、`STOP merge <n> …`、`STOP git …`、`STOP load <load> <門檻>`、`STOP load slot-timeout <秒數>s`，
+//   `STOP no-stage-worktree`、`STOP create …`、`STOP merge <n> …`、`STOP git …`、`STOP load <load> <門檻>`、`STOP load slot-timeout <秒數>s`、`STOP load ci-pending <run url>`，
 //   `STOP member <n> running (<WORKER 狀態>)，先跑 pilot-probe.mjs --apply`。之前的行：`WORKER <n> DONE <sha>`、`WORKER <n> STOP <cause>`（讀畫面寫回的 running 成員）、`STAGED <key> <sha> onto <tip>`、
-//   `RESUME <key> <sha>`、`RESOLVED <n> <解法> <檔案…>`，Bare guard 還原主 checkout 時的 `UNBARE <主 checkout>`；
+//   `RESUME <key> <sha>`、`RESUME <key> <sha> ci-pending`、`RESOLVED <n> <解法> <檔案…>`，Bare guard 還原主 checkout 時的 `UNBARE <主 checkout>`；
 //   MERGED 之前（已 merged 的重跑也印）對 checkpoint 每個 done 成員的每條 `postland: #<n> <command>` 印 `POSTLAND_PENDING <n> <command>`（#502，依成員號碼；沒有 postland 行時不印）。
 // exit：0 MERGED；4 STOP；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤；1 其他失敗（程式錯誤，不印 STOP）。
 import { spawnSync } from 'node:child_process';
@@ -97,7 +106,8 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { availableParallelism, loadavg } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { slotCommand, slotTimeoutLine } from './heavy-slot.mjs';
+import { CI_PENDING_EXIT, CI_UNAVAILABLE_EXIT } from './ci-run.mjs';
+import { slotCommand, slotDelegatedLine, slotTimeoutLine } from './heavy-slot.mjs';
 import { batchMembers, CheckpointLocked, dropRegressing, exitIfLocked, gateIssues, heldIssues, openGates, postlandEntries, runInStageWorktree, updateCheckpoint } from './lib/pilot-store.mjs';
 
 const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--check-command <指令>] [--integration <分支>] [--main <分支>] [--resolver <模組>] [--load-max <n>] | sync-main [同上選項，不含 --branch] | push --title <標題> [同 sync-main 的選項]（--branch 時 key 是 req-<n>；門檻預設 $PILOT_LOAD_MAX，再來 3 × 核心數；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
@@ -108,7 +118,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'].includes(key)));
 
 /** 專案值：命令列解析完填入。resolver 是載入後的模組（沒有時是空物件）；loadWait、loadPoll 是 load 關卡最多等幾秒、隔幾秒重讀（$PILOT_LOAD_WAIT_SECONDS、$PILOT_LOAD_POLL_SECONDS）。 */
-const config = { check: 'bin/check', integration: 'pilot/integration', main: 'main', resolver: {}, loadWait: 480, loadPoll: 15 };
+const config = { check: 'bin/check', integration: 'pilot/integration', main: 'main', resolver: {}, loadWait: 480, loadPoll: 15, ciTimeout: '1800' };
 
 /** 停下：訊息就是 `STOP ` 後面那段。 */
 class Stop extends Error {}
@@ -428,25 +438,65 @@ function loadGate(max) {
 }
 
 /**
- * Regression：在 stage worktree 以 sh 跑 Regression 指令（--check-command），輸出寫到 reg-<key>.log；傳回 exit code、CHECK_PASS 行與 regression 行的值 `line`。
+ * Regression：在 stage worktree 以 sh 跑 Regression 指令（--check-command），輸出寫到 reg-<key>.log；傳回 exit code、通過時的結果（`pass`）與 regression 行的值 `line`。
  * 指令經同目錄 heavy-slot.mjs 的全機 slot 執行（label `<主 checkout 目錄名>:regression`）；等 slot 逾時（exit 75 與 SLOT_TIMEOUT 行）時 `slotTimeout` 是那一行。
+ * repo 名額 0（heavy-slot 印 SLOT_DELEGATED、exit 76，CoS item 67）時改交給同目錄的 ci-run.mjs（`<sha> --ref pilot/stage-<key>`），見 ciRegression。
+ * ciOnly 是 CI_PENDING 之後的重跑：不經 slot，直接再呼叫 ci-run 接著等同一個 run。
  */
-function regression(main, tree, key, sha) {
+function regression(main, tree, key, sha, { ciOnly = false } = {}) {
   const log = join(main, `.scratch/pilot/reg-${key}.log`);
   mkdirSync(dirname(log), { recursive: true });
-  const fd = openSync(log, 'w');
-  const [command, args] = slotCommand(`${basename(main)}:regression`, ['sh', '-c', config.check]);
-  const result = spawnSync(command, args, { cwd: tree, env: childEnv, stdio: ['ignore', fd, fd] });
-  closeSync(fd);
-  const code = result.status ?? 1;
-  const output = readFileSync(log, 'utf8');
-  const last = output.trimEnd().split('\n').pop() ?? '';
-  const pass = code === 0 && last.startsWith('CHECK_PASS ') ? last : '';
-  return { code, pass, line: `${sha} exit ${code}${pass ? ` ${pass}` : ''}`, slotTimeout: slotTimeoutLine(code, output) };
+  const label = `${basename(main)}:regression`;
+  /** 跑一步、輸出接到 log 後面（第一步覆寫）；傳回 exit code。 */
+  const step = ([command, args], flags) => {
+    const fd = openSync(log, flags);
+    const result = spawnSync(command, args, { cwd: tree, env: childEnv, stdio: ['ignore', fd, fd] });
+    closeSync(fd);
+    return result.status ?? 1;
+  };
+  const local = code => {
+    const output = readFileSync(log, 'utf8');
+    const last = output.trimEnd().split('\n').pop() ?? '';
+    const pass = code === 0 && last.startsWith('CHECK_PASS ') ? last : '';
+    return { code, pass, line: `${sha} exit ${code}${pass ? ` ${pass}` : ''}`, slotTimeout: slotTimeoutLine(code, output) };
+  };
+  if (!ciOnly) {
+    const code = step(slotCommand(label, ['sh', '-c', config.check]), 'w');
+    if (!slotDelegatedLine(code, readFileSync(log, 'utf8'))) return local(code);
+  }
+  const ci = ciRegression(sha, () => step([process.execPath, [join(here, 'ci-run.mjs'), sha, '--ref', `pilot/stage-${key}`, '--timeout', config.ciTimeout]], 'a'), log);
+  // CI 不可用：以 --fallback 回到本機排隊（排在名額大於 0 的 repo 後面），結果照本機 Regression 判讀。
+  return ci ?? local(step(slotCommand(label, ['sh', '-c', config.check], { fallback: true }), 'a'));
+}
+
+/**
+ * Regression 交給 CI：跑 ci-run（輸出接在 log 後面），以它的 exit 與最後一行判讀；CI 不可用（CI_UNAVAILABLE）傳回 undefined，呼叫端退回本機。
+ *   CI_PASS     `<sha> exit 0 CI_PASS <run url>`；
+ *   CI_FAIL     `<sha> exit 1 CI_FAIL <run url> <失敗的 step>`（job 有跑、沒過：不退回本機重跑）；
+ *   CI_PENDING  `<sha> exit 75 CI_PENDING <run url>`，`ciPending` 是 run url：呼叫端 STOP load ci-pending，重跑時接著等同一個 run（land 的 ciResume）；
+ *   其他（ci-run 的用法錯誤、程式錯誤）照它的 exit 記，當成沒過。
+ */
+function ciRegression(sha, runCi, log) {
+  const code = runCi();
+  const [verdict, , ...rest] = (readFileSync(log, 'utf8').trimEnd().split('\n').pop() ?? '').split(' ');
+  const detail = rest.join(' ');
+  if (code === 0 && verdict === 'CI_PASS') return { code: 0, pass: `CI_PASS ${rest[0]}`, line: `${sha} exit 0 CI_PASS ${rest[0]}` };
+  if (code === CI_UNAVAILABLE_EXIT && verdict === 'CI_UNAVAILABLE') return undefined;
+  if (code === CI_PENDING_EXIT && verdict === 'CI_PENDING') return { code, ciPending: rest[0], line: `${sha} exit ${code} CI_PENDING ${rest[0]}` };
+  if (verdict === 'CI_FAIL') return { code: 1, line: `${sha} exit 1 CI_FAIL ${detail}` };
+  const failed = code === 0 ? 1 : code;
+  return { code: failed, line: `${sha} exit ${failed}` };
 }
 
 /** 等 slot 逾時是負載關卡，不是 Regression 沒過：`STOP load slot-timeout <已等秒數>s`。 */
 const slotStop = slotTimeout => new Stop(`load slot-timeout ${slotTimeout.split(' ')[2]}`);
+
+/** Regression 的負載關卡：等 slot 逾時、CI 在時限內沒跑完（`STOP load ci-pending <run url>`，重跑接著等同一個 run），都不是沒過。 */
+function regressionLoadStop({ slotTimeout, ciPending }) {
+  if (slotTimeout) return slotStop(slotTimeout);
+  if (ciPending) return new Stop(`load ci-pending ${ciPending}`);
+  return undefined;
+}
 
 /**
  * staged SHA 合的還是現在這組成員：每個 done 成員的分支都在裡面，其他成員（如 hold 期間 `moved` 的）的分支沒有被這次 stage 合進來。
@@ -529,11 +579,14 @@ async function land(key, loadMax) {
 
   let tip = must(main, 'rev-parse', config.integration);
   const [, staged, onto] = checkpoint.current.match(/^staged ([0-9a-f]{40}) onto ([0-9a-f]{40})\b/) ?? [];
-  const resume = staged && onto === tip && checkpoint.regression?.startsWith(`${staged} exit 0`)
+  const unchanged = staged && onto === tip
     && gitIn(main, 'rev-parse', '-q', '--verify', `refs/heads/${branch}`).stdout.trim() === staged
     && sameMembers(main, checkpoint.members, staged, tip);
+  const resume = unchanged && checkpoint.regression?.startsWith(`${staged} exit 0`);
+  // CoS item 67：上一輪 CI 在時限內沒跑完（STOP load ci-pending）時不重新 stage（新的合併 SHA 會是另一個 run），接著等同一個 SHA 的 run。
+  const ciResume = unchanged && checkpoint.regression?.startsWith(`${staged} exit ${CI_PENDING_EXIT} CI_PENDING `);
   const getTree = () => stageWorktree(main) ?? createStageWorktree(main, key);
-  if (!resume) {
+  if (!resume && !ciResume) {
     // 等過 load 之後從頭再走一次（#588 review）：等待前讀的成員（期間被 move）、gates（期間開了 hold）與整合分支 tip 都可能已變。
     if (loadGate(loadMax)) return land(key, loadMax);
     // #366：要 stage 時先讓整合分支包含 origin/<主分支>（同 sync-main），否則 Push gate 才 STOP behind-main、Regression 再跑一次（investing#313）。
@@ -553,13 +606,20 @@ async function land(key, loadMax) {
     sha = staged;
     console.log(`RESUME ${key} ${sha}`);
   } else {
-    sha = stage(tree, key, members, tip);
-    markStaged(file, sha, tip);
-    console.log(`STAGED ${key} ${sha} onto ${tip}`);
-    const { code, line, slotTimeout } = regression(main, tree, key, sha);
-    appendRegression(file, line);
-    if (slotTimeout) throw slotStop(slotTimeout);
-    if (code !== 0) throw new Stop(`regression ${code}`);
+    if (ciResume) {
+      sha = staged;
+      markStaged(file, sha, tip);
+      console.log(`RESUME ${key} ${sha} ci-pending`);
+    } else {
+      sha = stage(tree, key, members, tip);
+      markStaged(file, sha, tip);
+      console.log(`STAGED ${key} ${sha} onto ${tip}`);
+    }
+    const result = regression(main, tree, key, sha, { ciOnly: ciResume });
+    appendRegression(file, result.line);
+    const load = regressionLoadStop(result);
+    if (load) throw load;
+    if (result.code !== 0) throw new Stop(`regression ${result.code}`);
   }
 
   if (existsSync(join(main, '.scratch/pilot/hold'))) throw new Stop('hold');
@@ -636,12 +696,20 @@ function syncMain(loadMax, main = mainCheckout(), getTree = () => stageWorktree(
     must(tree, 'merge', '--ff-only', '-q', upstream);
     return { value: `${upstream} ff`, moved: true };
   }
-  must(tree, 'switch', '-q', '-C', SYNC_BRANCH, tip);
-  // 合入先記下的 SHA，不是 ref：上面的祖先判斷用的是它，期間別處 fetch 讓 origin/main 前進也合同一個。
-  mergeResolving(tree, upstream, 'sync-main', conflicted => `conflict sync-main ${conflicted.map(path => `${path}=main:${conflictKind(tree, path)}`).join(' ')}`);
+  const pending = pendingSync(main, tip, upstream);
+  if (pending) {
+    // CoS item 67：上一次 sync-main 的 CI 在時限內沒跑完：沿用同一個合併 commit，接著等同一個 run。
+    must(tree, 'switch', '-q', SYNC_BRANCH);
+  } else {
+    must(tree, 'switch', '-q', '-C', SYNC_BRANCH, tip);
+    // 合入先記下的 SHA，不是 ref：上面的祖先判斷用的是它，期間別處 fetch 讓 origin/main 前進也合同一個。
+    mergeResolving(tree, upstream, 'sync-main', conflicted => `conflict sync-main ${conflicted.map(path => `${path}=main:${conflictKind(tree, path)}`).join(' ')}`);
+  }
   const sha = must(tree, 'rev-parse', 'HEAD');
-  const { code, pass, slotTimeout } = regression(main, tree, 'sync-main', sha);
-  if (slotTimeout) throw slotStop(slotTimeout);
+  const result = regression(main, tree, 'sync-main', sha, { ciOnly: Boolean(pending) });
+  const load = regressionLoadStop(result);
+  if (load) throw load;
+  const { code, pass } = result;
   if (code !== 0) throw new Stop(`regression sync-main ${code}`);
   if (must(main, 'rev-parse', config.integration) !== tip) throw new Stop('drift');
   // 先寫 checkpoint 再快轉：寫到一半失敗時整合分支還沒動，重跑會重新合併、再寫一次（最後一行為準）；
@@ -651,6 +719,20 @@ function syncMain(loadMax, main = mainCheckout(), getTree = () => stageWorktree(
   must(tree, 'merge', '--ff-only', '-q', SYNC_BRANCH);
   must(tree, 'branch', '-d', SYNC_BRANCH);
   return { value: pass ? `${sha} ${pass}` : sha, moved: true };
+}
+
+/**
+ * 上一次 sync-main 停在 CI_PENDING 的合併 commit：本機 pilot/stage-sync-main 的 parent 正好是 <tip> 與 <upstream>，
+ * 而 reg-sync-main.log 的最後一行是它的 `CI_PENDING <sha> …`（ci-run 的結果行）。是的話傳回那個 SHA，否則 undefined（照常重新合併）。
+ */
+function pendingSync(main, tip, upstream) {
+  const sha = gitIn(main, 'rev-parse', '-q', '--verify', `refs/heads/${SYNC_BRANCH}`).stdout.trim();
+  if (!sha) return undefined;
+  const parents = gitIn(main, 'rev-list', '--parents', '-n', '1', sha).stdout.trim().split(' ').slice(1);
+  if (parents.length !== 2 || parents[0] !== tip || parents[1] !== upstream) return undefined;
+  const log = join(main, '.scratch/pilot/reg-sync-main.log');
+  const last = existsSync(log) ? readFileSync(log, 'utf8').trimEnd().split('\n').pop() : '';
+  return last.startsWith(`CI_PENDING ${sha} `) ? sha : undefined;
 }
 
 /**
@@ -701,14 +783,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const loadMax = options.loadMax ?? (process.env.PILOT_LOAD_MAX || String(3 * availableParallelism()));
   const loadWait = process.env.PILOT_LOAD_WAIT_SECONDS || String(config.loadWait);
   const loadPoll = process.env.PILOT_LOAD_POLL_SECONDS || String(config.loadPoll);
-  if (bad || !/^[a-z0-9][a-z0-9-]*$/.test(key ?? '') || !LOAD.test(loadMax) || !LOAD.test(loadWait) || !LOAD.test(loadPoll) || !check.trim()
+  const ciTimeout = process.env.PILOT_CI_TIMEOUT_S || config.ciTimeout;
+  if (bad || !/^[a-z0-9][a-z0-9-]*$/.test(key ?? '') || !LOAD.test(loadMax) || !LOAD.test(loadWait) || !LOAD.test(loadPoll) || !LOAD.test(ciTimeout) || !check.trim()
     || !branchName.test(integration) || integration.startsWith('pilot/stage-') || !branchName.test(main)
     || (resolverPath !== undefined && !existsSync(resolverPath))
     || (request !== undefined && !(/^req-\d+$/.test(key) && /^retro\/[a-z0-9][a-z0-9-]*$/.test(request)))) {
     console.error(USAGE);
     process.exit(2);
   }
-  Object.assign(config, { check, integration, main, loadWait: Number(loadWait), loadPoll: Number(loadPoll) });
+  Object.assign(config, { check, integration, main, loadWait: Number(loadWait), loadPoll: Number(loadPoll), ciTimeout: ciTimeout });
   if (resolverPath) config.resolver = await import(pathToFileURL(resolverPath).href);
   try {
     // `sync-main --branch …`、`push --branch …` 已被上面 req-<n> 的檢查擋成用法錯誤。
