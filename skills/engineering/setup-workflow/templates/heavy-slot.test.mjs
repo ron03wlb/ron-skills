@@ -3,11 +3,11 @@ import './test/isolate-heavy-slot-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { realTmpdir } from './test/real-tmpdir.mjs';
-import { ageMs, effectivePriority, holdersField, labelPriority, parseArgs, percentile, queuePlan, repoOf, resumeKey, resumeMs, repoPriority, repoPriorityFile, slotCommand, slotCount, slotDir, slotTimeoutLine, starveMs, statsLines, SLOT_TIMEOUT_EXIT } from './heavy-slot.mjs';
+import { ageMs, effectivePriority, holdersField, labelPriority, parseArgs, percentile, queuePlan, repoOf, resumeKey, resumeMs, repoPriority, repoPriorityFile, slotCommand, slotCount, slotDir, slotTimeoutLine, starveMs, statsLines, reclaimStaleLock, withResumeLock, SLOT_TIMEOUT_EXIT } from './heavy-slot.mjs';
 
 const script = new URL('./heavy-slot.mjs', import.meta.url).pathname;
 
@@ -566,4 +566,134 @@ test('餓死保底：HEAVY_CHECK_STARVE_S=0 關閉，spay2 在等時 ron-skills 
   await Promise.all([hold.done, ron.done, spay.done]);
   assert.deepEqual(order(), ['spay2:check', 'ron-skills:pre-commit']);
   assert.doesNotMatch(ron.stderr(), /starve=1/);
+});
+
+test('同一筆 resume 紀錄只給一個重跑行程沿用：同時重跑兩次，只有一支印 SLOT_RESUMED（spay2 #1159 Codex 發現）', async t => {
+  const { dir, env, start, status, holdUntil, until } = fixture(t, 1);
+  const hold = await holdUntil('t:hold');
+  const command = `echo t:a >> ${dir}/order`;
+  assert.equal((await start('t:a', command, ['--timeout', '0.3']).done).code, SLOT_TIMEOUT_EXIT);
+  const one = start('t:a', command);
+  const two = start('t:a', command);
+  await until(() => (status().stdout.match(/^WAITER t:a /gm) ?? []).length === 2, '兩支 t:a 都排進隊伍');
+  hold.release();
+  const results = await Promise.all([one.done, two.done, hold.done]);
+  assert.deepEqual(results.map(r => r.code), [0, 0, 0]);
+  assert.equal(results.slice(0, 2).filter(r => /^SLOT_RESUMED /m.test(r.stderr)).length, 1, '只有一支沿用');
+  assert.deepEqual(resumeFiles(env), []);
+});
+
+test('同鍵兩支先後逾時：resume 紀錄保留較早的 since（spay2 #1159 Codex 發現）', async t => {
+  const { dir, env, start, holdUntil } = fixture(t, 1);
+  const hold = await holdUntil('t:hold');
+  const command = `echo t:a >> ${dir}/order`;
+  const first = start('t:a', command, ['--timeout', '0.4']);
+  await sleep(200);
+  const second = start('t:a', command, ['--timeout', '0.6']);
+  assert.equal((await first.done).code, SLOT_TIMEOUT_EXIT);
+  const [file] = resumeFiles(env);
+  const early = JSON.parse(readFileSync(join(env.HEAVY_CHECK_DIR, file), 'utf8')).since;
+  assert.equal((await second.done).code, SLOT_TIMEOUT_EXIT);
+  assert.equal(JSON.parse(readFileSync(join(env.HEAVY_CHECK_DIR, file), 'utf8')).since, early, '較晚逾時的不覆蓋較早的 since');
+  hold.release();
+  await hold.done;
+});
+
+test('resume 紀錄的同名路徑是目錄：檢查照常執行，目錄與裡面的檔案不被刪（spay2 #1159 Codex 發現）', async t => {
+  for (const limit of ['0', '7200']) {
+    const { dir, env, start } = fixture(t, 1, { HEAVY_CHECK_RESUME_S: limit });
+    const argv = ['sh', '-c', `echo ran >> ${dir}/order`];
+    const odd = join(env.HEAVY_CHECK_DIR, `resume-${resumeKey('t:a', process.cwd(), argv)}.json`);
+    mkdirSync(odd, { recursive: true });
+    writeFileSync(join(odd, 'sentinel'), 'x');
+    const result = await start('t:a', argv[2]).done;
+    assert.equal(result.code, 0, `${limit} ${result.stderr}`);
+    assert.equal(readFileSync(join(dir, 'order'), 'utf8').trim(), 'ran');
+    assert.ok(existsSync(join(odd, 'sentinel')), `${limit}：目錄裡的檔案還在`);
+  }
+});
+
+test('HEAVY_CHECK_RESUME_S=0 的一次 run 不消耗仍有效的 resume 紀錄（spay2 #1159 Codex 發現）', async t => {
+  const { dir, env, start, holdUntil } = fixture(t, 1);
+  const hold = await holdUntil('t:hold');
+  const command = `echo t:a >> ${dir}/order`;
+  assert.equal((await start('t:a', command, ['--timeout', '0.3']).done).code, SLOT_TIMEOUT_EXIT);
+  const [file] = resumeFiles(env);
+  const before = readFileSync(join(env.HEAVY_CHECK_DIR, file), 'utf8');
+  const disabled = spawn(process.execPath, [script, 'run', '--label', 't:a', '--interval', '0.1', '--timeout', '0.3', '--', 'sh', '-c', command], { env: { ...env, HEAVY_CHECK_RESUME_S: '0' }, stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = '';
+  disabled.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+  assert.equal(await new Promise(resolve => disabled.on('close', resolve)), SLOT_TIMEOUT_EXIT);
+  assert.doesNotMatch(stderr, /^SLOT_RESUMED/m);
+  assert.equal(readFileSync(join(env.HEAVY_CHECK_DIR, file), 'utf8'), before, '紀錄原封不動');
+  hold.release();
+  await hold.done;
+});
+
+test('resume 鎖的持有者還活著時，鎖再舊也不回收：這次不沿用、紀錄留著（spay2 #1159 Codex 發現）', async t => {
+  const { dir, env, start, holdUntil } = fixture(t, 1);
+  const hold = await holdUntil('t:hold');
+  const command = `echo t:a >> ${dir}/order`;
+  assert.equal((await start('t:a', command, ['--timeout', '0.3']).done).code, SLOT_TIMEOUT_EXIT);
+  const [file] = resumeFiles(env);
+  const record = join(env.HEAVY_CHECK_DIR, file);
+  const before = readFileSync(record, 'utf8');
+  const lock = `${record}.lock`;
+  writeFileSync(lock, String(process.pid));
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(lock, old, old);
+  const again = await start('t:a', command, ['--timeout', '2.5']).done;
+  assert.equal(again.code, SLOT_TIMEOUT_EXIT, again.stderr);
+  assert.doesNotMatch(again.stderr, /^SLOT_RESUMED/m, '拿不到鎖就不沿用');
+  assert.equal(readFileSync(lock, 'utf8'), String(process.pid), '活著的持有者的鎖沒被回收');
+  assert.equal(readFileSync(record, 'utf8'), before, '紀錄原封不動');
+  hold.release();
+  await hold.done;
+});
+
+test('resume 鎖的持有者已死：回收鎖並照常沿用（spay2 #1159 Codex 發現）', async t => {
+  const { dir, env, start, holdUntil } = fixture(t, 1);
+  const hold = await holdUntil('t:hold');
+  const command = `echo t:a >> ${dir}/order`;
+  assert.equal((await start('t:a', command, ['--timeout', '0.3']).done).code, SLOT_TIMEOUT_EXIT);
+  const [file] = resumeFiles(env);
+  const dead = spawnSync('sh', ['-c', 'echo $$']).stdout.toString().trim();
+  writeFileSync(join(env.HEAVY_CHECK_DIR, `${file}.lock`), dead);
+  const again = start('t:a', command);
+  await sleep(300);
+  hold.release();
+  const result = await again.done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stderr, /^SLOT_RESUMED t:a /m);
+  assert.deepEqual(readdirSync(env.HEAVY_CHECK_DIR).filter(name => name.startsWith('resume-')), [], '鎖與紀錄都清掉');
+  await hold.done;
+});
+
+test('兩支同時回收同一個死鎖：後到的那支不刪掉先到者剛建的鎖（spay2 #1159 review 發現）', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'heavy-slot-lock-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'resume-x.json');
+  const lock = `${file}.lock`;
+  const dead = spawnSync('sh', ['-c', 'echo $$']).stdout.toString().trim();
+  writeFileSync(lock, dead);
+  const result = withResumeLock(file, () => {
+    assert.equal(readFileSync(lock, 'utf8'), String(process.pid), '先到的回收死鎖後建了自己的鎖');
+    // 後到的那支稍早也讀到同一個死 pid，這時才動手回收。
+    reclaimStaleLock(lock, dead);
+    assert.equal(readFileSync(lock, 'utf8'), String(process.pid), '先到者的鎖還在');
+    assert.deepEqual(readdirSync(dir).filter(name => name.endsWith('.stale')), [], '回收用的暫存檔清掉');
+    return 'ok';
+  });
+  assert.equal(result, 'ok');
+  assert.deepEqual(readdirSync(dir), [], '釋放後鎖檔刪掉');
+});
+
+test('釋放 resume 鎖只刪內容是自己 pid 的鎖（spay2 #1159 review 發現）', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'heavy-slot-lock-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'resume-x.json');
+  const lock = `${file}.lock`;
+  const other = String(process.ppid);
+  withResumeLock(file, () => { writeFileSync(lock, other); });
+  assert.equal(readFileSync(lock, 'utf8'), other, '別支的鎖不被刪');
 });

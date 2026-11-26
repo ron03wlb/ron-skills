@@ -32,7 +32,8 @@
 //   SLOT_TIMEOUT 時把這次排隊用的 since 與基本優先級寫進 `<dir>/resume-<鍵>.json`（鍵＝label＋cwd＋<command> argv 的 sha256 前 16 字元，
 //   `{ label, cwd, argv, since, priority, saved_at }`）。同鍵的下一次 run 若在 saved_at 後 $HEAVY_CHECK_RESUME_S 秒內（預設 7200，0 不沿用也不寫）
 //   開始排隊，就沿用該 since（排序與防餓死升級都照原 since 算）與 priority（有給 --priority 時以它為準），並印 SLOT_RESUMED；
-//   拿到 slot 時刪掉紀錄，再次逾時則以同一個 since 覆寫；過期的紀錄讀到時忽略並刪掉。--timeout、SLOT_WAIT 的已等秒數與 log 的 wait_ms 仍從這次 run 起算。
+//   認領與寫回都在 `<紀錄>.lock`（檔案鎖，內容是持有者 pid；只回收持有者已不在的鎖，回收先 rename 再確認內容，釋放只刪自己的鎖）裡：開始排隊的那一支以 rename 認領後讀、刪（同時重跑兩次只有一支沿用），再次逾時則以同一個 since 寫回；
+//   同鍵另一支較晚逾時時保留較早的 since；停用（0）時不讀也不刪；過期的紀錄讀到時忽略並刪掉；刪除不遞迴；鎖、認領或清理失敗只影響續排，不擋檢查。--timeout、SLOT_WAIT 的已等秒數與 log 的 wait_ms 仍從這次 run 起算。
 // 巢狀：在 slot 裡跑的命令帶環境變數 HEAVY_SLOT_HELD；裡面再呼叫 run（例如 bin/check 的測試跑 pre-commit）時直接執行，不再拿第二個 slot（避免 N 個持有者互等）。
 //
 // 用法：node scripts/heavy-slot.mjs run --label <repo>:<用途> [--priority <high|normal|low>] [--timeout <秒>] [--interval <秒>] -- <command> [<arg>...]
@@ -75,7 +76,7 @@
 // exit：run 是命令的 exit code，75 等待逾時，2 用法錯誤；status、stats 0，2 用法錯誤。
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { constants, homedir, loadavg } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -247,13 +248,72 @@ export function resumeMs(env = process.env) {
 /** 逾時紀錄的鍵：label＋cwd＋命令 argv 的 sha256 前 16 字元。 */
 export const resumeKey = (label, cwd, argv) => createHash('sha256').update(JSON.stringify([label, cwd, argv])).digest('hex').slice(0, 16);
 
-/** 讀同鍵的逾時紀錄：期限內傳回 { since, priority }；過期或壞掉的刪掉並傳回 undefined。 */
+/** 紀錄在期限內而且 since 可解析。 */
+const freshResume = (saved, now, limit) => Boolean(saved) && limit > 0 && now - Date.parse(saved.saved_at) <= limit && !Number.isNaN(Date.parse(saved.since));
+
+/**
+ * 回收 `lock`（測試用而匯出）：`seen` 是先前判定持有者已不在時讀到的內容。先 rename 成這個行程專屬的檔名再看內容：
+ * 仍是 `seen` 才刪；已變成別支剛建的鎖（另一支同時回收同一個死鎖並搶先建了新鎖）就以 link 放回原名（原名已有新鎖時放不回，只能放棄），
+ * 不刪掉活著的持有者的鎖。只刪鎖檔本身（非遞迴）。
+ */
+export function reclaimStaleLock(lock, seen) {
+  const mine = `${lock}.${process.pid}.stale`;
+  try { renameSync(lock, mine); } catch { return; }
+  let content;
+  try { content = readFileSync(mine, 'utf8'); } catch { /* 讀不到就當成已變，放回原名 */ }
+  if (content !== seen) { try { linkSync(mine, lock); } catch { /* 原名已有新鎖 */ } }
+  try { rmSync(mine, { force: true }); } catch { /* 只留下這支專屬的檔名 */ }
+}
+
+/**
+ * 在 `<file>.lock`（檔案鎖，內容是持有者 pid，以 `wx` 建立）裡跑 fn：同鍵的認領與寫回不交錯（讀和寫之間不會插進另一支）。
+ * 等不到鎖（約 2 秒）或建不了鎖時不跑、傳回 undefined。只回收持有者已不在的鎖（還沒寫進 pid 的鎖要超過 10 秒才算；回收見 reclaimStaleLock）；
+ * 持有者還活著時鎖再舊也不動。釋放時只刪內容仍是自己 pid 的鎖。認領另是原子 rename，同一筆紀錄不會給兩支沿用。測試用而匯出。
+ */
+export function withResumeLock(file, fn) {
+  const lock = `${file}.lock`;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      writeFileSync(lock, String(process.pid), { flag: 'wx' });
+    } catch (error) {
+      if (error.code !== 'EEXIST') return undefined;
+      try {
+        const seen = readFileSync(lock, 'utf8');
+        const pid = Number(seen);
+        const stale = pid > 0 ? !alive(pid) : Date.now() - statSync(lock).mtimeMs > 10_000;
+        if (stale) reclaimStaleLock(lock, seen);
+      } catch { /* 別人剛放掉或剛清掉 */ }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      continue;
+    }
+    try { return fn(); } finally {
+      try { if (readFileSync(lock, 'utf8') === String(process.pid)) rmSync(lock); } catch { /* 只影響下一支等鎖 */ }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 認領同鍵的逾時紀錄（在鎖裡呼叫）：先 rename 成這個行程專屬的檔名再讀（rename 是原子的，同一筆只有一支拿得到；之後刪除失敗也不會再給別支），
+ * 期限內傳回 { since, priority }；過期、壞掉、不是一般檔案或認領失敗傳回 undefined。同名路徑是目錄時不動它；刪除不遞迴；清理失敗只影響續排，不擋檢查。
+ */
 function takeResume(file, now, limit) {
-  const saved = readJson(file);
-  if (!saved) return undefined;
-  const fresh = limit > 0 && now - Date.parse(saved.saved_at) <= limit && !Number.isNaN(Date.parse(saved.since));
-  if (!fresh) { rmSync(file, { force: true }); return undefined; }
+  try { if (!lstatSync(file).isFile()) return undefined; } catch { return undefined; }
+  const claim = `${file}.${process.pid}.claim`;
+  try { renameSync(file, claim); } catch { return undefined; }
+  const saved = readJson(claim);
+  try { rmSync(claim, { force: true }); } catch { /* 只留下這支專屬的檔名，不影響別支 */ }
+  if (!freshResume(saved, now, limit)) return undefined;
   return { since: saved.since, priority: PRIORITIES.includes(saved.priority) ? saved.priority : undefined };
+}
+
+/** 逾時時寫紀錄（在鎖裡呼叫）：同鍵已有期限內、since 較早的紀錄（另一支同指令先逾時）就保留它，不以較晚的 since 覆蓋；先寫暫存檔再 rename。 */
+function saveResume(file, record, limit) {
+  const saved = readJson(file);
+  const keep = freshResume(saved, Date.now(), limit) && Date.parse(saved.since) < Date.parse(record.since);
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, JSON.stringify(keep ? { ...record, since: saved.since, priority: saved.priority ?? record.priority } : record));
+  try { renameSync(temp, file); } catch (error) { rmSync(temp, { force: true }); throw error; }
 }
 
 /** label 的 repo：冒號前的字串；沒有冒號時整個 label。 */
@@ -400,7 +460,8 @@ async function run({ label, timeoutSec, intervalSec, argv, priority: override })
   let info = { label, pid: process.pid, cwd: process.cwd(), since: new Date(started).toISOString() };
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const resumed = takeResume(resumeFile, started, resumeLimit);
+    // 停用（0）時不讀也不刪：仍有效的紀錄留給之後啟用的重跑。
+    const resumed = resumeLimit > 0 ? withResumeLock(resumeFile, () => takeResume(resumeFile, started, resumeLimit)) : undefined;
     if (resumed) {
       info = { ...info, since: resumed.since };
       priority = override ?? resumed.priority ?? priority;
@@ -470,7 +531,7 @@ async function run({ label, timeoutSec, intervalSec, argv, priority: override })
   if (acquired.timeout) {
     dropWait();
     if (resumeLimit > 0) {
-      try { writeFileSync(resumeFile, JSON.stringify({ label, cwd: info.cwd, argv, since: info.since, priority, saved_at: new Date().toISOString() })); } catch { /* 只影響下次重跑的排隊位置 */ }
+      try { withResumeLock(resumeFile, () => saveResume(resumeFile, { label, cwd: info.cwd, argv, since: info.since, priority, saved_at: new Date().toISOString() }, resumeLimit)); } catch { /* 只影響下次重跑的排隊位置 */ }
     }
     process.stderr.write(`SLOT_TIMEOUT ${label} ${seconds(Date.now() - started)}s holders=${holdersNow()}\n`);
     logRun(dir, { ...record, wait_ms: Date.now() - started, run_ms: 0, exit: SLOT_TIMEOUT_EXIT, load1: loadavg()[0], timed_out: true, priority, effective_priority: effective, starve: false });
@@ -484,7 +545,6 @@ async function run({ label, timeoutSec, intervalSec, argv, priority: override })
   holder.removeAllListeners('close');
   // 持有期間 perl 不再印東西，只等 stdin 關閉後自己結束。鎖檔只是記錄，從另一個 fd 寫入不影響 flock。
   // 先寫鎖檔再刪 wait 檔：其他排隊者讀到的持有者才不會是上一個持有者留下的 label。
-  rmSync(resumeFile, { force: true });
   // 靠餓死保底拿到的 slot 在鎖檔記 starve：其他排隊者讀到它就知道保底 slot 已在用，不再用這條規則。
   const starveSlot = latest.starveGrant;
   try { writeFileSync(lockFiles(dir, slots)[acquired.slot - 1], JSON.stringify({ ...info, since: new Date().toISOString(), ...(starveSlot ? { starve: true } : {}) })); } catch { /* 只影響 status 顯示與保底計數 */ }

@@ -13,7 +13,7 @@
 // 預設觸發條件見 DEFAULT_TRIGGERS；`/retro` 的待關閉由 retro 最後一步自己呼叫 tab-state，記錄的標題已是待關閉時觸發條件不再降回待 Retro（#327）。專案可以在 `docs/agents/tab-state.json`
 // 新增、覆寫或停用觸發條件：`{ "triggers": { "<名稱>": { "event": "PostToolUse"|"Stop", "match": "<regex，逐行比對>", "skipCommand": "<regex>", "state": "<狀態>" } | null } }`，
 // 同名覆寫、null 停用；PostToolUse 的 match 比對 Bash 的 stdout，Stop 的比對最後一段 assistant 文字；
-// 選填的 skipCommand 命中 Bash 指令時不觸發（Stop 沒有指令，不看它）。檔案不存在或不是合法 JSON 就用預設值。
+// 選填的 skipCommand 命中 Bash 指令時不觸發（Stop 沒有指令，不看它）；比對前把引號內含空白的文字換成空字串（標題、訊息裡提到的不算），不含空白的去掉引號照常比對（`'--keep-branch'` 仍是選項）。檔案不存在或不是合法 JSON 就用預設值。
 // 不在 Orca 裡、輸入不合法、Orca 呼叫失敗時一律 exit 0 不輸出。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -22,8 +22,8 @@ import { pathToFileURL } from 'node:url';
 import { STATES, currentTitle, hasState, orcaContext, recordTitle, recordedTitle, sessionTarget, setState, titleMismatch } from './tab-state.mjs';
 
 export const DEFAULT_TRIGGERS = {
-  // land.mjs 合入後的最後一行；pilot 的 coordinator 以 `--keep-branch` 或 Push gate 入口 `pilot-land.mjs push`（#395）落地整合分支，它還在運作，不算
-  landed: { event: 'PostToolUse', match: '^LANDED \\S+ [0-9a-f]{7,40}$', skipCommand: '--keep-branch\\b|pilot-land\\.mjs push\\b', state: '待 Retro' },
+  // land.mjs 合入後的最後一行；pilot 的 coordinator 以 `--keep-branch` 或 Push gate 入口 `pilot-land.mjs push`（#395，只認指令開頭或 ; & | ( 之後的 node 呼叫）落地整合分支，它還在運作，不算
+  landed: { event: 'PostToolUse', match: '^LANDED \\S+ [0-9a-f]{7,40}$', skipCommand: '--keep-branch\\b|(^|[;&|(]\\s*)node\\s+\\S*pilot-land\\.mjs\\s+push\\b', state: '待 Retro' },
   // pilot-handoff.mjs 交接完成，舊 coordinator 退役（行尾可能帶接手 session 的 `name <name>`，#372）
   'pilot-handoff': { event: 'PostToolUse', match: '^HANDED_OFF \\S+( name .+)?$', state: '待 Retro' },
   // L3 worker 寫出 DONE 結果行
@@ -45,13 +45,21 @@ export function triggers(project) {
 }
 
 /**
+ * skipCommand 比對用的指令：引號內含空白的（標題、訊息）換成空字串 `''`，不含空白的去掉引號照常比對（`'--keep-branch'` 是實際傳入的選項）。
+ */
+const unquoted = command => String(command ?? '').replace(/"((?:[^"\\]|\\.)*)"|'([^']*)'/g, (quoted, double, single) => {
+  const text = single ?? double.replace(/\\(.)/g, '$1');
+  return /\s/.test(text) ? "''" : text;
+});
+
+/**
  * 第一個命中 `text`、而且 skipCommand 沒命中 `command` 的觸發條件：`{ state, name, text }`，text 是命中的那段文字；沒有就是 null。
  * regex 寫壞的觸發條件略過。要記觸發條件名稱的 hook（例如 log 寫 `trigger=<名稱>`）用這個，不要自己再寫一份比對迴圈（investing#529）。
  */
 export function matchedTrigger(list, event, text, command = '') {
   for (const trigger of list.filter(trigger => trigger.event === event)) {
     try {
-      if (trigger.skipCommand && new RegExp(trigger.skipCommand).test(command)) continue;
+      if (trigger.skipCommand && new RegExp(trigger.skipCommand).test(unquoted(command))) continue;
       const match = new RegExp(trigger.match, 'm').exec(text);
       if (match) return { state: trigger.state, name: trigger.name, text: match[0] };
     } catch { /* 略過寫壞的 regex */ }
