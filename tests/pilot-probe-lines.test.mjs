@@ -7,17 +7,28 @@ import { readFileSync } from 'node:fs';
 // 這裡從 probe 正本的程式（不含註解）抽出輸出行開頭的大寫關鍵字，四處都要提到每一個。
 // pilot-store-usage.test.mjs（#456）的結果行欄只讀檔頭 `// stdout` 段的反引號片段，pilot-probe 的檔頭多數沒加反引號、抽不準，
 // 所以這裡改從程式抽：字串或樣板字面值以關鍵字開頭、後面接空白、`${` 或字面值結尾的才算。
+// pilot-watch、pilot-idle-wait、pilot-dispatch 同樣不在 RESULT_LINE_SCRIPTS 裡，同一套抽法對檔頭與 PILOT-STORE.md 該腳本的列比對（#594）。
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
-const PROBE = 'skills/engineering/setup-workflow/templates/pilot-probe.mjs';
+const TEMPLATES = 'skills/engineering/setup-workflow/templates';
+const PROBE = `${TEMPLATES}/pilot-probe.mjs`;
 
 // 程式裡同樣寫法、但不是輸出行開頭的字面值：tracker 的狀態值、git 的 ref、要清掉的環境變數名稱。
 export const NOT_LINE_KEYWORDS = new Set(['CLOSED', 'HEAD', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE']);
 
-export function probeKeywords(source) {
+// 其他三支各自的排除表（#594）：同樣寫法、但不是該腳本輸出行開頭的字面值。
+export const SCRIPT_NOT_LINE_KEYWORDS = {
+  // 要清掉的 git 環境變數名稱。
+  'pilot-watch.mjs': new Set(['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE']),
+  'pilot-idle-wait.mjs': new Set(),
+  // git 的 ref、tracker 的狀態值、process.on 的信號名稱，以及草稿裡提到別支腳本（port-entries、merge-line-inserts）印的行。
+  'pilot-dispatch.mjs': new Set(['HEAD', 'OPEN', 'SIGINT', 'SIGTERM', 'NO_MATCH', 'AMBIGUOUS', 'LINE_CONFLICT']),
+};
+
+export function probeKeywords(source, notLineKeywords = NOT_LINE_KEYWORDS) {
   const code = source.split('\n').filter(line => !/^\s*(\/\/|\/\*|\*)/.test(line)).join('\n');
   const keywords = new Set();
   for (const [, word] of code.matchAll(/(?<![\w$])['"`]([A-Z][A-Z_]+)(?=[ '"`]|\$\{)/g)) {
-    if (!NOT_LINE_KEYWORDS.has(word)) keywords.add(word);
+    if (!notLineKeywords.has(word)) keywords.add(word);
   }
   return keywords;
 }
@@ -25,10 +36,29 @@ export function probeKeywords(source) {
 // `- **Probe.**` 條目（單行）。
 const probeEntry = text => text.split('\n').find(line => line.startsWith('- **Probe.**')) ?? '';
 
+// 檔頭：shebang 之後、檔案開頭連續的 `//` 行；中段的 `//` 註解不算，才不會蓋掉檔頭的缺口（#556 review P3）。
+export function headerComment(source) {
+  const lines = source.split('\n');
+  const header = [];
+  for (const line of lines.slice(lines[0]?.startsWith('#!') ? 1 : 0)) {
+    if (!line.startsWith('//')) break;
+    header.push(line);
+  }
+  return header.join('\n');
+}
+
+// PILOT-STORE.md 的 Canonical scripts 表裡該腳本的列。
+export function storeRow(script) {
+  return read('skills/engineering/issue-pilot/PILOT-STORE.md').split('\n').filter(line => line.startsWith(`| \`${script}\` |`)).join('\n');
+}
+
+export function scriptDocs(script, source) {
+  return { header: headerComment(source), 'PILOT-STORE.md': storeRow(script) };
+}
+
 export function probeDocs(source) {
   return {
-    header: source.split('\n').filter(line => line.startsWith('//')).join('\n'),
-    'PILOT-STORE.md': read('skills/engineering/issue-pilot/PILOT-STORE.md').split('\n').filter(line => line.startsWith('| `pilot-probe.mjs` |')).join('\n'),
+    ...scriptDocs('pilot-probe.mjs', source),
     'pilot-round.md': probeEntry(read('docs/agents/pilot-round.md')),
     'PILOT-ROUND-TEMPLATE.md': probeEntry(read('skills/engineering/issue-run/PILOT-ROUND-TEMPLATE.md')),
   };
@@ -49,6 +79,21 @@ test('pilot-probe 輸出行開頭的每個關鍵字，檔頭、PILOT-STORE.md、
   const docs = probeDocs(source);
   for (const [name, text] of Object.entries(docs)) assert.ok(text, `${name} 找不到 pilot-probe 的段落`);
   assert.deepEqual(keywordGaps(probeKeywords(source), docs), []);
+});
+
+for (const script of Object.keys(SCRIPT_NOT_LINE_KEYWORDS)) {
+  test(`${script} 輸出行開頭的每個關鍵字，檔頭與 PILOT-STORE.md 的 ${script} 列都有提到`, () => {
+    const source = read(`${TEMPLATES}/${script}`);
+    const docs = scriptDocs(script, source);
+    for (const [name, text] of Object.entries(docs)) assert.ok(text, `${name} 找不到 ${script} 的段落`);
+    assert.deepEqual(keywordGaps(probeKeywords(source, SCRIPT_NOT_LINE_KEYWORDS[script]), docs), []);
+  });
+}
+
+test('檔頭只取開頭連續的 `//` 段：中段註解提到的關鍵字不算檔頭提到', () => {
+  const source = ['#!/usr/bin/env node', '// 印 `DONE <n>`', "import x from 'y';", '// 中段提到 STOP', "console.log(`STOP ${n}`);"].join('\n');
+  assert.equal(headerComment(source), '// 印 `DONE <n>`');
+  assert.deepEqual(keywordGaps(probeKeywords(source), { header: headerComment(source) }), ['STOP header']);
 });
 
 test('抽取：輸出行的關鍵字都抽到，非輸出行的字面值與註解裡的字不算', () => {
