@@ -32,7 +32,7 @@
 //   SLOT_TIMEOUT 時把這次排隊用的 since 與基本優先級寫進 `<dir>/resume-<鍵>.json`（鍵＝label＋cwd＋<command> argv 的 sha256 前 16 字元，
 //   `{ label, cwd, argv, since, priority, saved_at }`）。同鍵的下一次 run 若在 saved_at 後 $HEAVY_CHECK_RESUME_S 秒內（預設 7200，0 不沿用也不寫）
 //   開始排隊，就沿用該 since（排序與防餓死升級都照原 since 算）與 priority（有給 --priority 時以它為準），並印 SLOT_RESUMED；
-//   認領與寫回都在 `<紀錄>.lock`（mkdir 鎖）裡：開始排隊的那一支讀了就刪（同時重跑兩次只有一支沿用），再次逾時則以同一個 since 寫回；
+//   認領與寫回都在 `<紀錄>.lock`（檔案鎖，內容是持有者 pid；只回收持有者已不在的鎖）裡：開始排隊的那一支以 rename 認領後讀、刪（同時重跑兩次只有一支沿用），再次逾時則以同一個 since 寫回；
 //   同鍵另一支較晚逾時時保留較早的 since；停用（0）時不讀也不刪；過期的紀錄讀到時忽略並刪掉；刪除不遞迴；鎖、認領或清理失敗只影響續排，不擋檢查。--timeout、SLOT_WAIT 的已等秒數與 log 的 wait_ms 仍從這次 run 起算。
 // 巢狀：在 slot 裡跑的命令帶環境變數 HEAVY_SLOT_HELD；裡面再呼叫 run（例如 bin/check 的測試跑 pre-commit）時直接執行，不再拿第二個 slot（避免 N 個持有者互等）。
 //
@@ -76,7 +76,7 @@
 // exit：run 是命令的 exit code，75 等待逾時，2 用法錯誤；status、stats 0，2 用法錯誤。
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { constants, homedir, loadavg } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -252,33 +252,40 @@ export const resumeKey = (label, cwd, argv) => createHash('sha256').update(JSON.
 const freshResume = (saved, now, limit) => Boolean(saved) && limit > 0 && now - Date.parse(saved.saved_at) <= limit && !Number.isNaN(Date.parse(saved.since));
 
 /**
- * 在 `<file>.lock`（mkdir 鎖）裡跑 fn：同鍵的認領與寫回不交錯（讀和寫之間不會插進另一支）。等不到鎖（約 2 秒）或建不了鎖時不跑、傳回 undefined；
- * 超過 10 秒的鎖視為持有者已死而移除。只用 rmdirSync（非遞迴），不刪鎖目錄以外的東西。
+ * 在 `<file>.lock`（檔案鎖，內容是持有者 pid，以 `wx` 建立）裡跑 fn：同鍵的認領與寫回不交錯（讀和寫之間不會插進另一支）。
+ * 等不到鎖（約 2 秒）或建不了鎖時不跑、傳回 undefined。只回收持有者已不在的鎖（還沒寫進 pid 的鎖要超過 10 秒才算）；持有者還活著時鎖再舊也不動。
+ * 兩支同時回收同一個死鎖時仍可能都進來，但認領是原子 rename，同一筆紀錄不會給兩支沿用；最多影響「保留較早 since」的合併。只刪鎖檔本身（非遞迴）。
  */
 function withResumeLock(file, fn) {
   const lock = `${file}.lock`;
   for (let attempt = 0; attempt < 100; attempt++) {
     try {
-      mkdirSync(lock);
+      writeFileSync(lock, String(process.pid), { flag: 'wx' });
     } catch (error) {
       if (error.code !== 'EEXIST') return undefined;
-      try { if (Date.now() - statSync(lock).mtimeMs > 10_000) rmdirSync(lock); } catch { /* 別人剛放掉或剛清掉 */ }
+      try {
+        const pid = Number(readFileSync(lock, 'utf8'));
+        const stale = pid > 0 ? !alive(pid) : Date.now() - statSync(lock).mtimeMs > 10_000;
+        if (stale) rmSync(lock);
+      } catch { /* 別人剛放掉或剛清掉 */ }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
       continue;
     }
-    try { return fn(); } finally { try { rmdirSync(lock); } catch { /* 只影響下一支等鎖 */ } }
+    try { return fn(); } finally { try { rmSync(lock); } catch { /* 只影響下一支等鎖 */ } }
   }
   return undefined;
 }
 
 /**
- * 認領同鍵的逾時紀錄（在鎖裡呼叫）：讀了就刪（同時重跑兩次只有一支沿用）；期限內傳回 { since, priority }，過期、壞掉或不是檔案傳回 undefined。
- * 刪除不遞迴：同名路徑是目錄時留著不動。清理失敗只影響續排，不擋檢查。
+ * 認領同鍵的逾時紀錄（在鎖裡呼叫）：先 rename 成這個行程專屬的檔名再讀（rename 是原子的，同一筆只有一支拿得到；之後刪除失敗也不會再給別支），
+ * 期限內傳回 { since, priority }；過期、壞掉、不是一般檔案或認領失敗傳回 undefined。同名路徑是目錄時不動它；刪除不遞迴；清理失敗只影響續排，不擋檢查。
  */
 function takeResume(file, now, limit) {
-  const saved = readJson(file);
-  if (saved === undefined) return undefined;
-  try { rmSync(file, { force: true }); } catch { /* 只影響續排紀錄 */ }
+  try { if (!lstatSync(file).isFile()) return undefined; } catch { return undefined; }
+  const claim = `${file}.${process.pid}.claim`;
+  try { renameSync(file, claim); } catch { return undefined; }
+  const saved = readJson(claim);
+  try { rmSync(claim, { force: true }); } catch { /* 只留下這支專屬的檔名，不影響別支 */ }
   if (!freshResume(saved, now, limit)) return undefined;
   return { since: saved.since, priority: PRIORITIES.includes(saved.priority) ? saved.priority : undefined };
 }

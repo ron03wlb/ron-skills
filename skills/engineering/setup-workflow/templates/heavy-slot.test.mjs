@@ -3,7 +3,7 @@ import './test/isolate-heavy-slot-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { realTmpdir } from './test/real-tmpdir.mjs';
@@ -627,5 +627,44 @@ test('HEAVY_CHECK_RESUME_S=0 的一次 run 不消耗仍有效的 resume 紀錄�
   assert.doesNotMatch(stderr, /^SLOT_RESUMED/m);
   assert.equal(readFileSync(join(env.HEAVY_CHECK_DIR, file), 'utf8'), before, '紀錄原封不動');
   hold.release();
+  await hold.done;
+});
+
+test('resume 鎖的持有者還活著時，鎖再舊也不回收：這次不沿用、紀錄留著（spay2 #1159 Codex 發現）', async t => {
+  const { dir, env, start, holdUntil } = fixture(t, 1);
+  const hold = await holdUntil('t:hold');
+  const command = `echo t:a >> ${dir}/order`;
+  assert.equal((await start('t:a', command, ['--timeout', '0.3']).done).code, SLOT_TIMEOUT_EXIT);
+  const [file] = resumeFiles(env);
+  const record = join(env.HEAVY_CHECK_DIR, file);
+  const before = readFileSync(record, 'utf8');
+  const lock = `${record}.lock`;
+  writeFileSync(lock, String(process.pid));
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(lock, old, old);
+  const again = await start('t:a', command, ['--timeout', '2.5']).done;
+  assert.equal(again.code, SLOT_TIMEOUT_EXIT, again.stderr);
+  assert.doesNotMatch(again.stderr, /^SLOT_RESUMED/m, '拿不到鎖就不沿用');
+  assert.equal(readFileSync(lock, 'utf8'), String(process.pid), '活著的持有者的鎖沒被回收');
+  assert.equal(readFileSync(record, 'utf8'), before, '紀錄原封不動');
+  hold.release();
+  await hold.done;
+});
+
+test('resume 鎖的持有者已死：回收鎖並照常沿用（spay2 #1159 Codex 發現）', async t => {
+  const { dir, env, start, holdUntil } = fixture(t, 1);
+  const hold = await holdUntil('t:hold');
+  const command = `echo t:a >> ${dir}/order`;
+  assert.equal((await start('t:a', command, ['--timeout', '0.3']).done).code, SLOT_TIMEOUT_EXIT);
+  const [file] = resumeFiles(env);
+  const dead = spawnSync('sh', ['-c', 'echo $$']).stdout.toString().trim();
+  writeFileSync(join(env.HEAVY_CHECK_DIR, `${file}.lock`), dead);
+  const again = start('t:a', command);
+  await sleep(300);
+  hold.release();
+  const result = await again.done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stderr, /^SLOT_RESUMED t:a /m);
+  assert.deepEqual(readdirSync(env.HEAVY_CHECK_DIR).filter(name => name.startsWith('resume-')), [], '鎖與紀錄都清掉');
   await hold.done;
 });

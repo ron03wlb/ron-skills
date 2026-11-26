@@ -256,6 +256,16 @@ test('landed：Push gate 入口 pilot-land.mjs push（內部以 --keep-branch �
   assert.equal(calls(), '');
 });
 
+test('landed：以引號帶的 --keep-branch 選項照樣不觸發；引號裡含空白的標題、訊息才不算（spay2 #1159 Codex 發現）', t => {
+  const { record, hook, calls } = fixture(t);
+  record('處理中｜[維運] issue-pilot coordinator');
+  for (const flag of ["'--keep-branch'", '"--keep-branch"', "--keep-'branch'"]) {
+    const result = hook(bash(`node scripts/land.mjs pilot/integration ${flag} --title 'batch 1：x' --body-file b.md`, `LANDED 140 ${SHA}\n`));
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(calls(), '', flag);
+  }
+});
+
 test('landed：一般 land.mjs 的標題或內文提到 pilot-land.mjs push 時照常觸發（spay2 #1159 Codex 發現）', t => {
   const { record, recorded, hook } = fixture(t);
   record('處理中｜#21 文件｜收尾｜land');
