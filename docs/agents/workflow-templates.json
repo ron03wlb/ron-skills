@@ -60,6 +60,11 @@
       "commit": "2ed35c541db8331b995fb8433830bb54673a3b87",
       "sha256": "e2236e28ceec71201cdd9f7f2e3962b076d791182a5a4c68f7814d638ab65721"
     },
+    "scripts/ci-run.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/ci-run.mjs",
+      "commit": "1c867ae8a7cab590edd619eacdc199ccec9dbc38",
+      "sha256": "eb95b0e69af49a4d101c65ad456d52189554dec816fbd3571bfb01efbef67ca0"
+    },
     "scripts/claude-hook-bang-space.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-bang-space.mjs",
       "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
@@ -107,8 +112,8 @@
     },
     "scripts/heavy-slot.mjs": {
       "template": "skills/engineering/setup-workflow/templates/heavy-slot.mjs",
-      "commit": "1b2b2c01acaaf228662a707abc85c6b19d3a690c",
-      "sha256": "da4f60bac388f64a909f2c7906d6fda2ed27810f368c36b2c7f01a1914efa99a"
+      "commit": "db3704bf733154567b8de579ba3bc347f268b155",
+      "sha256": "eb00e6ba67b5eef3bba3a48975b5b15cd2913d9299d8d2a522082dc4bf2fe946"
     },
     "scripts/hook-acceptance.mjs": {
       "template": "skills/engineering/setup-workflow/templates/hook-acceptance.mjs",

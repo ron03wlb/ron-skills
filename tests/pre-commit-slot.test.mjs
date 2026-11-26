@@ -24,6 +24,7 @@ function fixture(t, { plan, slotExit = 0 }) {
 import { appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 const args = process.argv.slice(2);
+if (args[0] === 'quota') { console.log('QUOTA ' + args[1] + ' ' + (process.env.SLOT_QUOTA ?? '-')); process.exit(0); }
 appendFileSync(${JSON.stringify(join(repo, 'slot-calls'))}, args.join(' ') + '\\n');
 if (args[0] === 'status') { console.log('SLOTS 2/2 dir=/fake'); console.log('HOLDER slot-1 spay2:check-contracts pid=1 held=1216s cwd=/x'); process.exit(0); }
 if (${slotExit} === 75) { console.error('SLOT_TIMEOUT ron-skills:pre-commit 1799s holders=spay2:check-contracts@1:1216s'); process.exit(75); }
@@ -95,4 +96,37 @@ test('經 slot 而 SLOT_TIMEOUT（exit 75）：stderr 附 heavy-slot status 與�
   assert.match(result.stderr, /^HOLDER slot-1 spay2:check-contracts/m);
   assert.match(result.stderr, /bin\/check/);
   assert.match(result.stderr, /CHECK_STAMP_FRESH/);
+});
+
+test('名額 0（heavy-slot quota 印 0）：要經 slot 的大子集改跑 bin/check --changed --light，不經 slot，stderr 印 CHECK_DELEGATED', t => {
+  for (const [name, plan, line] of [['大子集', tests(30), 'CHECK_DELEGATED tests 30'], ['退回完整', 'SUBSET_FULL path .githooks/pre-commit', 'CHECK_DELEGATED full'], ['計畫出錯', 'error', 'CHECK_DELEGATED full']]) {
+    const f = fixture(t, { plan });
+    const result = f.run({ SLOT_QUOTA: '0' });
+    assert.equal(result.status, 0, name + result.stderr);
+    assert.equal(f.slotCalls(), '', name);
+    assert.equal(f.checkCalls(), '--changed --light\n', name);
+    assert.match(result.stderr, new RegExp(`^${line}$`, 'm'), name);
+  }
+});
+
+test('名額 0：小子集照舊直接跑完整子集；CHECK_FULL=1 帶 --fallback 經 slot', t => {
+  let f = fixture(t, { plan: tests(2) });
+  let result = f.run({ SLOT_QUOTA: '0' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(f.checkCalls(), '--changed\n');
+  assert.doesNotMatch(result.stderr, /CHECK_DELEGATED/);
+  f = fixture(t, { plan: tests(1) });
+  result = f.run({ SLOT_QUOTA: '0', CHECK_FULL: '1' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(f.slotCalls(), /^run --fallback --label ron-skills:pre-commit -- bin\/check --changed$/m);
+  assert.doesNotMatch(result.stderr, /CHECK_DELEGATED/);
+});
+
+test('名額不是 0（沒設或 n > 0）：大子集照舊經 slot，不帶 --fallback', t => {
+  for (const quota of ['-', '1']) {
+    const f = fixture(t, { plan: tests(30) });
+    const result = f.run({ SLOT_QUOTA: quota });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(f.slotCalls(), /^run --label ron-skills:pre-commit -- bin\/check --changed$/m);
+  }
 });

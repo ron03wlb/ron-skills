@@ -1,28 +1,36 @@
 #!/usr/bin/env bash
 # 本 repo 唯一的檢查入口：pre-commit、CI 與 issue-run 的 acceptance 都只呼叫它，所有檢查只寫在這裡。
-# 用法：bin/check [--upstream] [--changed [<base>]]
+# 用法：bin/check [--upstream] [--changed [<base>]] [--light]
 #   --upstream  先把 Matt 與 pstack 上游最新 main 淺 clone 到暫存目錄再檢查（與 CI 相同）；
 #               本機 ~/code/skills 是 fork，會落後上游，只跑本機版本時 overlay 漂移要等 CI 才看得到。
 #   --changed   只跑和 merge-base(<base>, HEAD) 之後變更路徑有關的步驟與測試（<base> 預設 origin/main，沒有時 main；CoS item 67）。
 #               挑法與對應表見 scripts/check-subset.mjs、scripts/check-subset.json，拿不準時印 `CHECK_SUBSET full <原因>` 跑完整套件。
 #               只有 pre-commit 用它；acceptance、pilot 的 Regression 與 CI 都跑完整套件。環境變數 CHECK_FULL=1 時忽略 --changed。
+#   --light     只跑靜態步驟與 docs-rules 測試，不跑整套測試（tests、template-tests、fake-orca-macos），不經 slot、不記 stamp，最後一行 CHECK_PASS_LIGHT。
+#               只有 pre-commit 在 heavy-slot 名額 0 時用它（CoS item 67）：大子集與完整套件交給 PR 的 required checks。和 --changed 一起用時只跑子集挑到的靜態步驟。
 # 完整跑（沒帶 --changed，或 CHECK_FULL=1）一律經全機 heavy-slot（CoS item 67／138：worker 直接跑的完整 bin/check 不經 slot，和 spay2 搶滿 16 核）：
 #   還沒持有 slot（沒有 HEAVY_SLOT_HELD）時以 `node scripts/heavy-slot.mjs run --label ron-skills:bin-check -- bin/check <原參數>` 重跑自己，已在 slot 裡
 #   （pre-commit、land.mjs、pilot-land.mjs 經 slot 呼叫）就直接跑。排隊行 SLOT_WAIT、逾時 SLOT_TIMEOUT 與 exit 75（負載關卡，不是檢查失敗）見 heavy-slot.mjs 檔頭。
 #   --changed 子集不經 slot（pre-commit 自己判斷子集大小，#605）；CI（環境變數 CI）與沒有 scripts/heavy-slot.mjs 的 fixture repo 直接跑。
+# heavy-slot 給 ron-skills 的名額是 0（~/.config/orca-heavy-check/repo-slots，CoS item 67）時，完整跑改交給 GitHub Actions：
+#   工作樹乾淨、不是 CHECK_FULL=1 時跑 `node scripts/ci-run.mjs HEAD`（push 到 ci/<sha>、等 checks.yml 的 checks job，最多 $CHECK_CI_TIMEOUT_S 秒，預設 3600），
+#   照它的結果行：CI_PASS → 最後一行 `CHECK_PASS ci <sha> <run url> <秒數>s`、記 stamp、exit 0；CI_FAIL → `CHECK_FAIL ci <run url> <step>`、exit 1；
+#   CI_PENDING → `CHECK_CI_PENDING <run url>`、exit 75（稍後重跑同一行接著等）；CI_UNAVAILABLE → 印 `CHECK_CI_FALLBACK <原因>`，以 `heavy-slot.mjs run --fallback` 在本機排隊。
+#   工作樹不乾淨（CI 只能檢查 commit）或 CHECK_FULL=1（使用者明確要本機完整跑）時印 `CHECK_CI_SKIP <dirty|check-full>`，直接 --fallback 在本機排隊。
 # node 測試的併發上限：環境變數 NODE_TEST_CONCURRENCY（預設 6），由 node-test-guarded 帶入 --test-concurrency。
 # 環境變數 MATT_SKILLS、PSTACK_SKILLS 同 bin/sync-skills；--upstream 會覆寫它們。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # 呼叫者帶來的 GIT_DIR、GIT_INDEX_FILE 等會被測試的 git 繼承，fixture 就改到真正的 repo（#25）；不經 pre-commit 直接跑時（`git rebase --exec`）也要清（#301）。
 unset $(git rev-parse --local-env-vars)
-upstream= changed= base=
+upstream= changed= base= light=
 args=("$@")
 while (($#)); do
   case $1 in
     --upstream) upstream=1 ;;
     --changed) changed=1; if [[ $# -gt 1 && $2 != --* ]]; then base=$2; shift; fi ;;
-    *) echo "用法：bin/check [--upstream] [--changed [<base>]]" >&2; exit 2 ;;
+    --light) light=1 ;;
+    *) echo "用法：bin/check [--upstream] [--changed [<base>]] [--light]" >&2; exit 2 ;;
   esac
   shift
 done
@@ -46,9 +54,30 @@ if [[ -z ${CHECK_LOCK_PID:-} || $holder != "$CHECK_LOCK_PID" ]]; then
 fi
 # 完整跑而還沒持有 slot：先拿 slot 再跑（見檔頭）。排隊期間這一份持有工作樹的 pid 鎖，裡面那份以 CHECK_LOCK_PID 認出是自己的子行程、不擋；
 # 結束時照 EXIT trap 的規則清掉 pid 檔。空陣列寫成 ${a[@]+"${a[@]}"}：macOS bash 3.2 在 set -u 下展開空陣列會報 unbound variable。
-if [[ -z ${HEAVY_SLOT_HELD:-} && -z ${CI:-} && ( -z $changed || -n ${CHECK_FULL:-} ) && -f scripts/heavy-slot.mjs ]]; then
-  status=0
-  node scripts/heavy-slot.mjs run --label ron-skills:bin-check -- bin/check ${args[@]+"${args[@]}"} || status=$?
+if [[ -z ${HEAVY_SLOT_HELD:-} && -z ${CI:-} && -z $light && ( -z $changed || -n ${CHECK_FULL:-} ) && -f scripts/heavy-slot.mjs ]]; then
+  status=0 fallback=
+  if [[ $(node scripts/heavy-slot.mjs quota ron-skills 2>/dev/null) == 'QUOTA ron-skills 0' ]]; then
+    fallback=--fallback
+    if [[ -n ${CHECK_FULL:-} ]]; then echo "CHECK_CI_SKIP check-full"
+    elif [[ -n $(git status --porcelain 2>/dev/null) ]]; then echo "CHECK_CI_SKIP dirty"
+    elif [[ -f scripts/ci-run.mjs ]]; then
+      ci_out=$(node scripts/ci-run.mjs HEAD --timeout "${CHECK_CI_TIMEOUT_S:-3600}") || status=$?
+      echo "$ci_out"
+      read -r ci_kind ci_sha ci_url ci_rest <<<"$ci_out" || true
+      case $ci_kind in
+        CI_PASS) node scripts/check-stamp.mjs record "$(node scripts/check-stamp.mjs tree)" 2>/dev/null || true
+          echo "CHECK_PASS ci $ci_sha $ci_url $ci_rest" ;;
+        CI_FAIL) echo "CHECK_FAIL ci $ci_url $ci_rest" ;;
+        CI_PENDING) echo "CHECK_CI_PENDING $ci_url" ;;
+        *) echo "CHECK_CI_FALLBACK ${ci_out:-ci-run exit $status}"; status=0 ;;
+      esac
+      if [[ $ci_kind == CI_PASS || $ci_kind == CI_FAIL || $ci_kind == CI_PENDING ]]; then
+        [[ $(cat "$lock" 2>/dev/null) != "$$" ]] || rm -f "$lock"
+        exit $status
+      fi
+    fi
+  fi
+  node scripts/heavy-slot.mjs run ${fallback} --label ron-skills:bin-check -- bin/check ${args[@]+"${args[@]}"} || status=$?
   [[ $(cat "$lock" 2>/dev/null) != "$$" ]] || rm -f "$lock"
   exit $status
 fi
@@ -147,6 +176,10 @@ step=docs-rules
 if want docs-rules; then
 docs_rules=(tests/template-copies.test.mjs tests/pilot-split.test.mjs tests/setup-workflow-stations.test.mjs tests/gh-tracker.test.mjs tests/check-coordinator-permissions.test.mjs tests/pilot-probe-adapter-entries.test.mjs tests/pilot-push-gate-scripts.test.mjs tests/pilot-project-flags.test.mjs tests/pilot-store-usage.test.mjs)
 "${isolated[@]}" node --test --test-reporter=spec "${docs_rules[@]}" > "$tmp/docs-rules.log" 2>&1 || { sed -n '/failing tests:/,$p' "$tmp/docs-rules.log"; false; }
+fi
+if [[ -n $light ]]; then
+  echo "CHECK_PASS_LIGHT ${subset:+subset }static"
+  exit 0
 fi
 step=tests
 test_files=(tests/*.test.mjs)

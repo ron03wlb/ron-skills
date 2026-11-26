@@ -5,6 +5,10 @@
 # 何時經全機共用的重型檢查 slot（scripts/heavy-slot.mjs，CoS item 67）：子集輕（不是 full、測試檔數 ≤ CHECK_SLOT_FREE_TESTS，預設 10）時直接跑，
 # 其餘（子集大、退回完整套件、CHECK_FULL=1、算不出子集）照舊經 slot。#605：只挑到兩個檔相關測試的子集和完整套件排同一個 slot，
 # worker 兩次各等 1800 秒 SLOT_TIMEOUT，而不經 slot 的完整 bin/check 一跑就過；限流只罰到最輕的那條。
+# heavy-slot 給 ron-skills 的名額是 0（~/.config/orca-heavy-check/repo-slots，CoS item 67：完整檢查改走 GitHub Actions）時，原本要經 slot 的情況
+# （子集大、退回完整、算不出子集）改跑 `bin/check --changed --light`：只跑靜態步驟與 docs-rules 測試，不經 slot、不記 stamp，stderr 印
+# `CHECK_DELEGATED <tests <n>|full>`；完整的部分由 PR 的 required checks（checks、checks-macos 跑 bin/check --upstream）補位。小子集照舊直接跑。
+# CHECK_FULL=1 是使用者明確要本機完整跑：名額 0 時帶 --fallback 照舊排隊（排在 spay2 後面）。
 # 啟用：bin/sync-skills 會建連結（#300）；手動是 ln -s ../../.githooks/pre-commit .git/hooks/pre-commit
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -19,6 +23,7 @@ export CHECK_INDEX_TREE=$index_tree
 #   CHECK_STAMP_FRESH <tree>   bin/check 剛通過同一棵樹，不再跑（#297）；scripts/check-stamp.mjs 只讀本 worktree 的記錄
 #   CHECK_SUBSET …             跑了 bin/check --changed，印它挑的子集（`steps <群組>,… tests <n>`）或退回完整套件的原因（`full <原因>`）
 #   CHECK_PASS_SUBSET tests …  跑了子集，印 bin/check 的最後一行；退回完整套件時是 CHECK_PASS tests …
+#   CHECK_DELEGATED … 與 CHECK_PASS_LIGHT …  名額 0：只跑了輕量部分，完整檢查交給 PR 的 required checks
 # 樹沒變就沒有新東西要檢查：HEAD 那棵樹 commit 時已過 pre-commit（#621：只改訊息的 --amend 排 heavy-slot 等滿 SLOT_TIMEOUT 而失敗）。
 if head_tree=$(git rev-parse -q --verify 'HEAD^{tree}' 2>/dev/null) && [[ $head_tree == "$index_tree" ]]; then echo "CHECK_TREE_UNCHANGED $index_tree" >&2; exit 0; fi
 if [[ -f scripts/check-stamp.mjs ]] && node scripts/check-stamp.mjs fresh "$index_tree"; then echo "CHECK_STAMP_FRESH $index_tree" >&2; exit 0; fi
@@ -38,7 +43,14 @@ if [[ -f scripts/heavy-slot.mjs ]]; then
     limit=${CHECK_SLOT_FREE_TESTS:-10}; [[ $limit =~ ^[0-9]+$ ]] || limit=10
     if ((tests <= limit)); then slot=; echo "CHECK_SLOT_SKIP tests $tests" >&2; fi
   fi
-  [[ -z $slot ]] || check=(node scripts/heavy-slot.mjs run --label ron-skills:pre-commit -- bin/check --changed)
+  if [[ -n $slot ]]; then
+    check=(node scripts/heavy-slot.mjs run --label ron-skills:pre-commit -- bin/check --changed)
+    if [[ $(node scripts/heavy-slot.mjs quota ron-skills 2>/dev/null) == 'QUOTA ron-skills 0' ]]; then
+      if [[ -n ${CHECK_FULL:-} ]]; then check=(node scripts/heavy-slot.mjs run --fallback --label ron-skills:pre-commit -- bin/check --changed)
+      else slot=; check=(bin/check --changed --light); echo "CHECK_DELEGATED $([[ -n ${tests:-} ]] && echo "tests $tests" || echo full)" >&2
+      fi
+    fi
+  fi
 fi
 status=0
 "${check[@]}" >"$log" || status=$?
