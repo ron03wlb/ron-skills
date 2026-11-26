@@ -1113,6 +1113,127 @@ test('--fresh 草稿：prior 工作樹有未提交改動時備份、stash，草�
   assert.match(draft, /## 怎麼整併\n+$/);
 });
 
+// #633：#625 的原始情況是 prior worktree 停在半途 merge（issue-395）；有 unmerged paths 時 git stash 失敗，曾印 `STOP <n> backup git stash …`。
+function halfMerge(tree, theirs) {
+  const merged = spawnSync('git', ['-C', tree, 'merge', '-q', theirs], { encoding: 'utf8' });
+  assert.notEqual(merged.status, 0, 'fixture 的 merge 應該衝突');
+  mkdirSync(join(tree, '.claude'), { recursive: true });
+  writeFileSync(join(tree, '.claude/settings.json'), '{"permissions":{}}\n');
+  git(tree, 'add', '.claude/settings.json');
+}
+
+const merging = tree => spawnSync('git', ['-C', tree, 'rev-parse', '-q', '--verify', 'MERGE_HEAD']).status === 0;
+
+test('--fresh：prior 停在有衝突的半途 merge、另有 staged 的 settings.json 時備份 patch 後 merge --abort，照常重派（#633）', t => {
+  const fx = conflicted(t);
+  git(fx.repo, 'switch', '-q', '-c', 'side');
+  writeFileSync(join(fx.repo, 'work.txt'), 'side\n');
+  git(fx.repo, 'add', 'work.txt');
+  git(fx.repo, 'commit', '-qm', 'side');
+  git(fx.repo, 'switch', '-q', 'main');
+  halfMerge(fx.tree, 'side');
+  const result = fresh(fx);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const patch = join(fx.repo, '.scratch/pilot/backup/issue-46-dirty.patch');
+  assert.ok(lines(result).includes(`DIRTY_BACKUP 46 ${patch}`), result.stdout);
+  assert.match(readFileSync(patch, 'utf8'), /^diff --git a\/\.claude\/settings\.json b\/\.claude\/settings\.json$/m);
+  assert.equal(merging(fx.tree), false);
+  assert.equal(git(fx.tree, 'status', '--porcelain', '--untracked-files=all'), '');
+  assert.equal(git(fx.repo, 'branch', '--list', '*-prior*').trim(), 'issue/46-pilot-dispatch-prior');
+});
+
+test('--fresh：半途 merge 裡未 staged 的二進位改動（另設 textconv）存進 patch，abort 後仍套得回來（#633 review 1、2）', t => {
+  const fx = conflicted(t);
+  // review 2：textconv 讓 `git diff --binary` 只給轉換後的文字，原始 bytes 不進 patch。
+  writeFileSync(join(fx.repo, '.git/info/attributes'), 'work.txt diff=hide\n');
+  git(fx.repo, 'config', 'diff.hide.textconv', 'true');
+  git(fx.repo, 'switch', '-q', '-c', 'side');
+  writeFileSync(join(fx.repo, 'work.txt'), 'side\n');
+  git(fx.repo, 'add', 'work.txt');
+  git(fx.repo, 'commit', '-qm', 'side');
+  git(fx.repo, 'switch', '-q', 'main');
+  halfMerge(fx.tree, 'side');
+  const payload = Buffer.from([0, 1, 2, 255, 0, 66]);
+  writeFileSync(join(fx.tree, 'work.txt'), payload);
+  assert.equal(fresh(fx).status, 0);
+  const patch = join(fx.repo, '.scratch/pilot/backup/issue-46-dirty.patch');
+  assert.match(readFileSync(patch, 'utf8'), /^GIT binary patch$/m);
+  git(fx.tree, 'switch', '-q', '--detach', 'issue/46-pilot-dispatch-prior');
+  git(fx.tree, 'apply', patch);
+  assert.deepEqual(readFileSync(join(fx.tree, 'work.txt')), payload);
+});
+
+function sideConflict(fx) {
+  git(fx.repo, 'switch', '-q', '-c', 'side');
+  writeFileSync(join(fx.repo, 'work.txt'), 'side\n');
+  git(fx.repo, 'add', 'work.txt');
+  git(fx.repo, 'commit', '-qm', 'side');
+  git(fx.repo, 'switch', '-q', 'main');
+  halfMerge(fx.tree, 'side');
+}
+
+test('--fresh：半途 merge 的非 UTF-8 文字照原 bytes 存；同一檔 staged 後又改時 staged 版本另存 .staged.patch（#633 review 3）', t => {
+  const fx = conflicted(t);
+  sideConflict(fx);
+  const latin = Buffer.from('caf\xe9 r\xe9solu\n', 'latin1');
+  writeFileSync(join(fx.tree, 'work.txt'), latin);
+  writeFileSync(join(fx.tree, '.claude/settings.json'), '{"permissions":{"allow":["edited after add"]}}\n');
+  const result = fresh(fx);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const patch = join(fx.repo, '.scratch/pilot/backup/issue-46-dirty.patch');
+  const staged = join(fx.repo, '.scratch/pilot/backup/issue-46-dirty.staged.patch');
+  assert.match(readFileSync(staged, 'utf8'), /^\+\{"permissions":\{\}\}$/m);
+  git(fx.tree, 'switch', '-q', '--detach', 'issue/46-pilot-dispatch-prior');
+  git(fx.tree, 'apply', patch);
+  assert.deepEqual(readFileSync(join(fx.tree, 'work.txt')), latin);
+});
+
+test('--fresh：ignored 檔擋在 HEAD 追蹤的路徑上時不 abort，STOP backup、檔案留原處（#633 review 3）', t => {
+  const fx = conflicted(t);
+  sideConflict(fx);
+  git(fx.tree, 'rm', '-q', '--cached', 'work.txt');
+  writeFileSync(join(fx.tree, 'work.txt'), 'ignored payload\n');
+  writeFileSync(join(fx.repo, '.git/info/exclude'), 'work.txt\n');
+  const result = fresh(fx);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(result.stdout, /^STOP 46 backup .*work\.txt/m);
+  assert.equal(readFileSync(join(fx.tree, 'work.txt'), 'utf8'), 'ignored payload\n');
+  assert.equal(merging(fx.tree), true);
+});
+
+test('--fresh 草稿：只留 MERGE_HEAD、工作樹乾淨時也 abort，草稿註明 prior 停在 merge 中（#633 review 1）', t => {
+  const fx = drafted(t);
+  git(fx.tree, 'merge', '-q', '--no-commit', '-s', 'ours', 'pilot/integration');
+  assert.equal(merging(fx.tree), true);
+  assert.equal(git(fx.tree, 'status', '--porcelain'), '');
+  const result = fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch'], { ORCA_CLI_COMMAND: '' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(merging(fx.tree), false);
+  const draft = readFileSync(join(fx.repo, '.scratch/pilot/fresh-46.md'), 'utf8');
+  assert.match(draft, /^- prior worktree 當時停在半途 merge/m);
+});
+
+test('--fresh 草稿：prior 停在半途 merge 時備份、merge --abort，草稿註明 prior 停在 merge 中（#633）', t => {
+  const fx = drafted(t);
+  halfMerge(fx.tree, 'pilot/integration');
+  // review 2：worker 又改了 merge 自動合併好的檔，`git merge --abort` 會拒絕（Entry not uptodate）。
+  assert.equal(git(fx.tree, 'ls-files', '-u', 'src.mjs'), '');
+  writeFileSync(join(fx.tree, 'src.mjs'), readFileSync(join(fx.tree, 'src.mjs'), 'utf8') + '// worker edit after merge\n');
+  const result = fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch'], { ORCA_CLI_COMMAND: '' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const patch = join(fx.repo, '.scratch/pilot/backup/issue-46-dirty.patch');
+  assert.match(readFileSync(patch, 'utf8'), /^diff --git a\/\.claude\/settings\.json b\/\.claude\/settings\.json$/m);
+  assert.match(readFileSync(patch, 'utf8'), /^\+\/\/ worker edit after merge$/m);
+  assert.equal(merging(fx.tree), false);
+  assert.equal(git(fx.tree, 'status', '--porcelain'), '');
+  const draft = readFileSync(join(fx.repo, '.scratch/pilot/fresh-46.md'), 'utf8');
+  const section = draft.slice(draft.indexOf('## prior 未提交的改動'), draft.indexOf('## 怎麼整併'));
+  assert.match(section, /^- prior worktree 當時停在半途 merge/m);
+  // review 3：src.mjs 的 index 是 merge 結果、工作樹又改過，staged 版本另存。
+  assert.match(section, new RegExp(`^- 同一檔 staged 後又改過的，staged 版本另存在 \`${join(fx.repo, '.scratch/pilot/backup/issue-46-dirty.staged.patch').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\`.*\`src\\.mjs\``, 'm'));
+  assert.match(section, /^- `\.claude\/settings\.json` 是受保護、owner 手改的檔/m);
+});
+
 test('--fresh 草稿：沒有未提交改動、沒有 wip patch 時不印「prior 未提交的改動」段', t => {
   const fx = drafted(t);
   assert.equal(fx.dispatch(['23-46', '--fresh', '46:pilot-dispatch'], { ORCA_CLI_COMMAND: '' }).status, 0);
