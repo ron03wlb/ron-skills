@@ -4,7 +4,8 @@ on:
   push:
   pull_request:
   schedule:
-    - cron: '0 1 * * 1'
+    # 每天台北 03:00（UTC 19:00）：取代本機夜間完整檢查（Orca automation 67d557bd，CoS item 67：heavy-slot 給 ron-skills 0 個名額）。
+    - cron: '0 19 * * *'
   workflow_dispatch:
 
 permissions:
@@ -20,7 +21,7 @@ jobs:
           node-version: '24.21.0'
       - name: Checks on upstream main
         run: bin/check --upstream
-  # private repo 的 macOS runner 以 10 倍計費（#87）：只在 PR、每週與手動觸發時跑，push 只跑上面的 ubuntu。
+  # private repo 的 macOS runner 以 10 倍計費（#87）：只在 PR、每天的排程與手動觸發時跑，push 只跑上面的 ubuntu。
   # 除了 if 與 runs-on，內容與 ubuntu job 一字不差（tests/ci-workflow-jobs.test.mjs 比對）。
   checks-macos:
     if: contains(fromJSON('["pull_request", "schedule", "workflow_dispatch"]'), github.event_name)

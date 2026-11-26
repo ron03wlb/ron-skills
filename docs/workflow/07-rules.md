@@ -17,7 +17,7 @@ agent 每個 session 都從零開始。踩過的坑要不再踩，就得寫在�
 
 | 失誤 | 原本的規則 | 升級成 |
 | --- | --- | --- |
-| 本機的 Matt fork 落後上游，overlay 補丁在上游已經套不上，本機卻一直是綠的 | README 寫「升級前先同步 fork」 | `bin/check --upstream` 對上游最新版重跑，CI 每週一跑一次 |
+| 本機的 Matt fork 落後上游，overlay 補丁在上游已經套不上，本機卻一直是綠的 | README 寫「升級前先同步 fork」 | `bin/check --upstream` 對上游最新版重跑，CI 每天跑一次 |
 | `/loop` 驅動的 skill 被設成 `disable-model-invocation`，loop 叫不起來 | README 一句話 | `scripts/check-loop-invocable.mjs` 接進 `bin/sync-skills --check` |
 | skill 引用了 adapter 範本裡不存在的 Pilot 設定行 | 寫 skill 時自己對照 | `scripts/check-pilot-lines.mjs` |
 | 導讀站從實例專案改寫時，專案名與內網位址混進通用版 | 改寫時注意 | `scripts/check-workflow-strings.mjs` |
