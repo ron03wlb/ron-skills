@@ -9,6 +9,8 @@
 - **Import check.** 改了範本的 import 或 export 之後，先對每支 import 它的範本跑 `node --check <檔>`（毫秒級，ESM 頂層撞名當場報 `SyntaxError: Identifier '<名>' has already been declared`），再跑單檔測試（#504：`pilot-dispatch.mjs` 自己的 `stopLine` 和新 import 的同名，等幾分鐘的測試才報）。
 - **Edit scripts.** 多行的編輯腳本（Python、node）先用 Write 寫進 scratchpad 再執行，不寫成 heredoc：內文含 JS、`$`、反引號時，Claude Code 的內建安全檢查會擋下整條指令，多一輪改寫（#525）。Issue 留言內文同理（[issue-run.md](issue-run.md) Evidence 段，#444）。
 - **Case-sensitive names.** review 判斷題：以名稱判斷檔案在不在、而名稱的大小寫有意義時（連結目標、條目名），對 `readdirSync` 的檔名清單比對，不用 `existsSync`／`statSync`：macOS 的 APFS 不分大小寫，`[[Open]]` 會找到 `open.md`，本機 Linux 的 regression 全綠，到 CI 的 `checks-macos` 才紅（#478：`memory-audit.mjs`，多花約 70 分鐘）。
+- **Wait then act.** review 判斷題：diff 在寫入或合併之前加了等待或輪詢（等 load、等 slot、等 gate）時，review 逐一列出等待前讀到的值（checkpoint 成員、gates、分支 tip、設定檔），每一個要在等待後重讀，或說明它為什麼不會變；常見的修法是等完從頭再跑一次讀取（#588：等 load 期間 `pilot-batch.mjs move … --state stop` 或 `pilot-gate.mjs … open --hold 1`，原指令仍印 `STAGED`、`MERGED`；修好 `land()` 後 `sync-main` 的 `loadGate` 又漏一次）。
+- **Red from base.** tdd 的紅測試若驅動本次才加的測試掛勾（新的 env 格式、旗標），base 不認得它就退回真實環境，「紅」可能只是剛好：至少一個斷言要在 base 已經能觀察到（例如掛勾不生效時的預設值或輸出），紅測試記錄寫出是哪一個（#588：`PILOT_LOAD_NOW=59,59,5` 在 base 退回讀真機 `loadavg()`，「load 先高後低」在 base 是綠的，補上序列第一個值的斷言才 4 個都紅）。
 
 - **Size budgets.** 改了 `docs/agents/pilot*.md`、`docs/agents/issue-run*.md` 或 `skills/engineering/issue-run/PILOT-*TEMPLATE.md` 後，先跑 `node scripts/check-adapter-size.mjs` 與 `node --test tests/pilot-split.test.mjs tests/setup-workflow-stations.test.mjs`（秒級，都在 `bin/check` 的 docs-rules 步驟，超出時印 `<size>/<cap> bytes，超 <n>`，照數字一次刪夠），再起整條 `bin/check`（#420、#567：PILOT-TEMPLATE 預算原本要等整條 tests 才報，五個 worker 各多跑一輪）。
 

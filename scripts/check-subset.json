@@ -28,7 +28,7 @@
     {
       "match": ["docs/agents/**"],
       "steps": ["links", "settings", "adapter-size"],
-      "tests": ["tests/gh-tracker.test.mjs", "tests/pilot-store-contract.test.mjs", "tests/check-coordinator-permissions.test.mjs"],
+      "tests": ["tests/gh-tracker.test.mjs", "tests/pilot-store-contract.test.mjs", "tests/check-coordinator-permissions.test.mjs", "tests/pilot-adapter-stage.test.mjs"],
       "related": true
     },
     {
@@ -47,6 +47,10 @@
       "steps": ["links", "sync-skills", "workflow-site", "adapter-size"],
       "tests": ["tests/skill-*.test.mjs"],
       "related": true
+    },
+    {
+      "match": ["skills/engineering/issue-run/*TEMPLATE.md"],
+      "tests": ["tests/pilot-adapter-stage.test.mjs"]
     },
     {
       "match": ["skills/**"],
