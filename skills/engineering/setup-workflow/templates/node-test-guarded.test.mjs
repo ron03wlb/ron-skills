@@ -56,7 +56,15 @@ test('全部回報：exit 0，輸出照舊是 spec（含 suite、子測試、ski
   const result = run('a.test.mjs', 'b.test.mjs');
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /^ℹ tests 9$/m);
-  assert.doesNotMatch(result.stderr, /NODE_TEST_LOST|MISSING_RESULTS/);
+  assert.doesNotMatch(result.stderr, /NODE_TEST_LOST|MISSING_RESULTS|NODE_TEST_NESTED/);
+});
+
+test('在 node --test 裡以繼承的 NODE_TEST_CONTEXT 呼叫：stderr 印 actionable 的 NODE_TEST_NESTED 提示（retro spay2 c3b3a383#1）', t => {
+  // 本檔在 node --test 底下時 NODE_TEST_CONTEXT 已有值；直接以 node 執行本檔時補上同樣的值
+  const run = fixture(t, { 'a.test.mjs': "import { test } from 'node:test';\ntest('a', () => {});\n" },
+    { NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT || 'child-v8', NODE_TEST_GUARD_WAIT_MS: '0', NODE_TEST_RERUN_TIMEOUT_MS: '60000' });
+  const result = run('a.test.mjs');
+  assert.match(result.stderr, /^NODE_TEST_NESTED → 子行程 env 拿掉 NODE_TEST_CONTEXT$/m, result.stderr);
 });
 
 test('子行程記下跑完的測試名稱：不必等候逾時，exit 0、不印 NODE_TEST_LOST', t => {

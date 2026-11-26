@@ -30,3 +30,12 @@ test('code-review overlay：repo 有 adapter-line.mjs 時，兩份 brief 說明 
   assert.match(text, /do not report it as a broken link/);
   assert.match(text, /Without `scripts\/adapter-line\.mjs`, leave this sentence out/);
 });
+
+// spay2 retro c3b3a383#2：Spec sub-agent 以自寫的合成輸出推出 P2「父 suite 被列為失敗」，真實 Node v24.21 輸出不會出現。
+test('code-review overlay：Spec brief 要求解析工具輸出的 finding 以本機真實輸出重現，合成樣本標猜測且不高於 P3', t => {
+  const text = applyOverlay(t, 'code-review').split('\n\n').find(p => p.startsWith('**Parsed tool output.**'));
+  assert.ok(text, 'overlay 沒有 Parsed tool output 段落');
+  assert.match(text, /Add to the Spec brief/);
+  assert.match(text, /real output on this machine: paste the command and its output/);
+  assert.match(text, /marked as a guess and rated no higher than P3/);
+});

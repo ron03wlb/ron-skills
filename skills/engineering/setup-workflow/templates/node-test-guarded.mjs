@@ -35,6 +35,9 @@
 // 併發上限（CoS item 67／138）：node --test 沒帶 --test-concurrency 時預設開 availableParallelism()-1 個測試行程，heavy-slot 只限同時幾支、不限每支用多少 CPU，
 //   16 核機器上 2 個 slot 持有者就占滿整台（load 67–86）。所以呼叫端沒帶 `--test-concurrency` 時，帶入環境變數 NODE_TEST_CONCURRENCY（正整數，預設 6）；
 //   值不合法（空字串除外）時 stderr 印 `WARN NODE_TEST_CONCURRENCY <值> 不是正整數，改用 6`。呼叫端自己帶了（`--test-concurrency=<n>`）就以呼叫端為準。建議值見 setup-workflow SKILL 的 Concurrency。
+// 巢狀呼叫（retro spay2 c3b3a383#1）：在 node --test 的測試裡以繼承的 env 跑本 wrapper 時，`NODE_TEST_CONTEXT` 讓子行程的 node --test 印
+//   `run() is being called recursively … skipping running files` 並略過所有測試檔，接著只看得到 `MISSING_RESULTS <path> no-record`。所以這個變數有值時，
+//   開跑前在 stderr 印一行 actionable 的 `NODE_TEST_NESTED → 子行程 env 拿掉 NODE_TEST_CONTEXT`（呼叫端 spawn 時從 env 刪掉它）；其餘行為不變。
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -277,6 +280,7 @@ async function rerun(options, path) {
 }
 
 export async function main(argv) {
+  if (process.env.NODE_TEST_CONTEXT) console.error('NODE_TEST_NESTED → 子行程 env 拿掉 NODE_TEST_CONTEXT');
   const { path: durationsPath, rest: args } = takeDurations(argv);
   const options = withConcurrency(args.filter(arg => arg.startsWith('-')));
   if (!options.some(arg => arg.startsWith('--test-reporter='))) options.unshift('--test-reporter=spec');
