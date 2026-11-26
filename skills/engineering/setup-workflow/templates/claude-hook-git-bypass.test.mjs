@@ -3,7 +3,7 @@ import { after, test } from 'node:test';
 import './test/isolate-git-env.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BUILTIN_BACKGROUND_ONLY, backgroundJobReason, bypassReason, chainedHandoff, chainedLongWaitReason, chainedNote, detachReason, exitGateReason, exitGateRewrite, foregroundReason, pipeStatusReason, probeFilterReason, scratchpadDir, selfMatchLoopReason, wideGrepReason, writesFile } from './claude-hook-git-bypass.mjs';
@@ -887,7 +887,15 @@ test('hook：attached HEAD、目標不是本機分支或取不到狀態時 --det
       [`git checkout --detach ${detached.sha}`, detached.dir], ['git checkout --detach origin/develop', detached.dir], ['git switch -d origin/develop', detached.dir],
       ['git checkout --detach nosuch', detached.dir], ['git checkout --detach', detached.dir], ['git checkout --detach develop -- a.md', detached.dir],
       ['git checkout --detach develop', plain], ['cd x && git checkout --detach develop', plain],
+      // #548 review r1：查到的工作樹必須是 git 實際操作的那個，且執行到這段時 HEAD 仍是查到的狀態。
+      ['git -C link/.. checkout --detach develop', detached.dir], ['git -C missing/.. checkout --detach develop', detached.dir],
+      [`git --git-dir=${attached.dir}/.git --work-tree=${attached.dir} checkout --detach develop`, detached.dir],
+      [`git --git-dir ${attached.dir}/.git checkout --detach develop`, detached.dir], [`GIT_DIR=${attached.dir}/.git git checkout --detach develop`, detached.dir],
+      ['git switch main && git checkout --detach develop', detached.dir], ['git checkout main; git switch -d develop', detached.dir],
     ];
+    // link 指向 attached 工作樹的子目錄：git 跟著符號連結走，`link/..` 是 attached，不是 detached。
+    mkdirSync(join(attached.dir, 'sub'));
+    symlinkSync(join(attached.dir, 'sub'), join(detached.dir, 'link'));
     for (const [command, cwd] of cases) {
       const denied = call(command, cwd);
       assert.equal(denied.status, 2, `${command} @ ${cwd}`);
