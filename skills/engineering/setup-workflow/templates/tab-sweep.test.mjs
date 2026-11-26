@@ -104,7 +104,8 @@ test('待關閉的分頁被關、待 Retro 的分頁送 /retro；處理中、現
     assert.ok(lines.includes('TAB_SKIP term_retro_recent not-idle 3m'));
     assert.equal(lines.at(-1), 'SUMMARY sent=1 closed=1 skipped=5 failed=0 other=1');
     assert.ok(!calls.some(c => /term_(worker|coord|self|working)\b/.test(c)), '不讀、不送、不關這些分頁的畫面');
-    assert.equal(recorded.length, 2, '動作各記一筆 decisions');
+    assert.equal(recorded.length, 3, '動作各記一筆 decisions，最後再記一筆 SUMMARY');
+    assert.match(recorded.at(-1), /^SUMMARY sent=1 closed=1 skipped=5 failed=0 other=1 — /);
     const state = JSON.parse(readFileSync(join(main, STATE_FILE), 'utf8'));
     assert.deepEqual(Object.keys(state.sent), ['term_retro']);
     const again = await run(main);
@@ -124,12 +125,30 @@ test('畫面不閒置就跳過：工作中、有草稿、看不到空的 ❯；�
     assert.ok(lines.includes('TAB_SKIP term_retro screen-busy'));
     assert.ok(lines.includes('TAB_SKIP term_close screen-no-prompt'));
     assert.ok(lines.includes('TAB_SKIP term_close_busy screen-busy'));
-    assert.deepEqual(recorded.map(r => r.split(' — ')[0]), ['TAB_SKIP term_close screen-no-prompt']);
+    const notSummary = rows => rows.map(r => r.split(' — ')[0]).filter(r => !r.startsWith('SUMMARY '));
+    assert.deepEqual(notSummary(recorded), ['TAB_SKIP term_close screen-no-prompt']);
     const again = await run(main, { fake: fakeOrca({ screens }) });
-    assert.deepEqual(again.recorded, [], '同一分頁同一原因不重記');
+    assert.deepEqual(notSummary(again.recorded), [], '同一分頁同一原因不重記');
     const unreadable = await run(main, { fake: fakeOrca({ fail: { read: 'timeout terminal read 15000ms' } }) });
     assert.ok(unreadable.lines.includes('TAB_SKIP term_retro screen-unreadable timeout terminal read 15000ms'));
     assert.deepEqual(sendsAndCloses(unreadable.calls), []);
+  } finally {
+    rmSync(main, { recursive: true, force: true });
+  }
+});
+
+// #646：coordinator 漏跑第 4 步時 decisions.md 沒有任何 Tab sweep 列，看守分不出「跑了但沒事」與「沒跑」；每輪都記一筆 SUMMARY。
+test('全是 TAB_SKIP 的一輪也在 decisions 記一筆 SUMMARY；dry-run 不記', async () => {
+  const main = fixture();
+  try {
+    const terminals = [term('term_w'), term('term_self')];
+    const titles = { term_w: '處理中｜w', term_self: '處理中｜self' };
+    const { lines, recorded } = await run(main, { fake: fakeOrca({ terminals, titles }) });
+    assert.ok(lines.every(l => l.startsWith('TAB_SKIP ') || l.startsWith('SUMMARY ')), lines.join('\n'));
+    assert.deepEqual(recorded.map(r => r.split(' — ')[0]), [lines.at(-1)]);
+    assert.match(lines.at(-1), /^SUMMARY sent=0 closed=0 skipped=2 failed=0 /);
+    const dry = await run(main, { dryRun: true, fake: fakeOrca({ terminals, titles }) });
+    assert.deepEqual(dry.recorded, []);
   } finally {
     rmSync(main, { recursive: true, force: true });
   }
@@ -191,9 +210,10 @@ test('送出失敗記 TAB_FAILED 不記 sent；enabled false 不呼叫 Orca；dr
   }
   const off = fixture({ enabled: false, sent: {} });
   try {
-    const { lines, calls } = await run(off);
+    const { lines, calls, recorded } = await run(off);
     assert.deepEqual(lines, ['TAB_SWEEP_OFF']);
     assert.deepEqual(calls, []);
+    assert.deepEqual(recorded.map(r => r.split(' — ')[0]), ['TAB_SWEEP_OFF'], '暫停中也記一筆，看守分得出沒跑與暫停');
   } finally {
     rmSync(off, { recursive: true, force: true });
   }
@@ -263,7 +283,18 @@ else fail('unknown');
     assert.match(decisions, /\| Tab sweep：TAB_SWEEP_FAILED no-orca \|/);
     assert.match(decisions, /\| Tab sweep：TAB_RETRO_SENT term_r 待 Retro｜r \|/);
     assert.match(decisions, /\| Tab sweep：TAB_CLOSED term_c 待關閉｜c \|/);
+    assert.match(decisions, /\| Tab sweep：SUMMARY sent=1 closed=1 skipped=0 failed=0 other=0 \|/);
     assert.equal(cli({}, '--roster').status, 2);
+    // #646 review：decisions.md 寫不進去時不能只在 stderr 說，否則看守的「有 tick 沒這一列就是沒跑」會誤判。
+    rmSync(join(main, '.scratch/pilot/decisions.md'));
+    mkdirSync(join(main, '.scratch/pilot/decisions.md'));
+    const unrecorded = cli({ ORCA_CLI_COMMAND: join(bin, 'orca'), ORCA_TERMINAL_HANDLE: 'term_me' });
+    assert.notEqual(unrecorded.status, 0, unrecorded.stdout);
+    assert.match(unrecorded.stdout, /^SUMMARY sent=\d+ closed=\d+ skipped=\d+ failed=\d+ other=\d+$/m, 'SUMMARY 照印');
+    assert.match(unrecorded.stdout.trim().split('\n').at(-1), /^TAB_RECORD_FAILED \d+ \S/);
+    const unrecordedOff = cli({});
+    assert.notEqual(unrecordedOff.status, 0);
+    assert.match(unrecordedOff.stdout, /^TAB_SWEEP_FAILED no-orca\nTAB_RECORD_FAILED \d+ \S/);
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
