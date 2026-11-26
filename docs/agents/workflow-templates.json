@@ -127,8 +127,8 @@
     },
     "scripts/land.mjs": {
       "template": "skills/engineering/setup-workflow/templates/land.mjs",
-      "commit": "289177bde0cce3a7beec3f3f1cfe9be875e0b8c8",
-      "sha256": "48f31fd1adabe6bcf9dc7d96c121bece1cf2f6bab6feb474f3312eca9db3567c"
+      "commit": "17cf228df3e2105036f3a38ed0d67e298117242b",
+      "sha256": "8d334839e60619984d86d6d7964e8747341f207990f157c885fee6225653d12c"
     },
     "scripts/lib/changed-units.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/changed-units.mjs",
@@ -242,8 +242,8 @@
     },
     "scripts/pilot-land.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-land.mjs",
-      "commit": "17729e71653f41ad69300e85bbccbc06ffb51623",
-      "sha256": "b1b4337553636ff87e3e4fdcd5c2fa58279e1583a41ad8ed8b054033241a40ad"
+      "commit": "17cf228df3e2105036f3a38ed0d67e298117242b",
+      "sha256": "c795ce4f66f61ff6914d2d4d5cf20fd130e40003cee7d6c4f12921cd91997acb"
     },
     "scripts/pilot-pr-body.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-pr-body.mjs",

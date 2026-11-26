@@ -556,7 +556,11 @@ else if (sub === 'create') {
 else if (sub === 'edit') console.log(find(args[2]).url);
 else if (sub === 'view' && arg('--json').includes('statusCheckRollup')) {
   const pr = find(args[2]);
-  console.log(JSON.stringify(mergeSample(SAMPLES['pr-view-checks'], { headRefOid: pr.headRefOid, statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }] }, 'pr')));
+  // FAKE_GH_PENDING：checks 已 pass、checks-macos 還在跑（retro spay2 1dce1925#2 的 PR 682）。
+  const rollup = process.env.FAKE_GH_PENDING
+    ? [{ name: 'checks', status: 'COMPLETED', conclusion: 'SUCCESS' }, { name: 'checks-macos', status: 'IN_PROGRESS', conclusion: '' }]
+    : [{ status: 'COMPLETED', conclusion: 'SUCCESS' }];
+  console.log(JSON.stringify(mergeSample(SAMPLES['pr-view-checks'], { headRefOid: pr.headRefOid, statusCheckRollup: rollup }, 'pr')));
 }
 else if (sub === 'view') console.log(JSON.stringify(out(find(args[2]))));
 else if (sub === 'merge') {
@@ -676,6 +680,18 @@ test('push：已包含 origin/main 時不 sync，pr-body 後直接 land，印 LA
   assert.equal(result.lines.filter(line => line.startsWith('PR_BODY ')).length, 1, result.stdout);
   assert.match(result.last, /^LANDED \d+ [0-9a-f]{40}$/);
   assert.equal(f.checks(), 'check \n');
+});
+
+// retro spay2 1dce1925#2：land.mjs 的 STOP checks-timeout 箭頭後要印 coordinator 該重跑的 pilot-land push 那一行，不是 land.mjs 自己的指令。
+test('push：等 CI 逾時時 STOP checks-timeout 帶 pending 的 check 名與 pilot-land push 的重跑指令', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
+  withOrigin(f);
+  assert.equal(f.land(f.key).status, 0);
+  const gh = fakeGh(f);
+  const result = gh.push({ FAKE_GH_PENDING: '1', LAND_CHECKS_TIMEOUT_MS: '300' });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(result.last, `STOP checks-timeout 40 → 重跑同一指令接著等（pending：checks-macos）：node ${script} push --title 'batch 1：a'`);
+  assert.doesNotMatch(gh.calls(), /^gh pr merge /m);
 });
 
 test('push：沒有 merged batch 時印 pilot-pr-body 的 STOP no-merged-batch，不跑 land', t => {

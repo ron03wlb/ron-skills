@@ -6,3 +6,5 @@ for (const key of Object.keys(process.env)) if (key.startsWith('GIT_')) delete p
 import "./isolate-orca-env.mjs";
 // 也把 heavy-slot.mjs 的鎖檔目錄換成暫存目錄：被測的 pilot-land.mjs、land.mjs 經 slot 跑檢查，不能去排全機真實的 slot。
 import "./isolate-heavy-slot-env.mjs";
+// 再 import isolate-claude-env.mjs 清掉 Claude session 繼承的 CLAUDE_CODE_SESSION_ID、CLAUDE_PID：被測腳本寫出 session 值時，測試只在 Claude 裡失敗（retro spay2 d5492792#1）；要用的測試自己設。
+import "./isolate-claude-env.mjs";
