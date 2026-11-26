@@ -23,22 +23,24 @@
 //   通過後：待 Retro → `terminal send --text /retro --enter`，記 sent[handle]（同一 handle 只送一次）；待關閉 → `terminal close --terminal <handle> --tab`。
 //   --roster <指令>：以 sh -c 在主 checkout 跑，輸出每行 `<DONE|PENDING|COLLECTED> <session> <handle|-> …`（spay2 的 `node scripts/retro-collect.mjs --status`）；
 //     只在有待關閉分頁時跑。沒給時待關閉直接可關（ron-skills：/retro 已把候選開成 Issue 才換待關閉）。
-// stdout 每個主 checkout 分頁一行，最後一行 SUMMARY：
+// stdout 每個主 checkout 分頁一行，最後一行 SUMMARY（decisions.md 有一列沒記到時，其後再多一行 TAB_RECORD_FAILED）：
 //   TAB_RETRO_SENT <handle> <標題>
 //   TAB_CLOSED <handle> <標題>
 //   TAB_SKIP <handle> <原因>：self、coordinator、working、no-state、split-pane、already-sent <ISO>、not-idle <分>m、idle-unknown、
 //     screen-busy、screen-no-prompt、screen-draft、screen-unreadable <錯誤>、retro-uncollected <DONE|PENDING> <session8>、roster-failed、shared-tab <handle,…>
 //   TAB_FAILED <handle> <retro-send|close> <原因>（沒記入 sent，下個 tick 再試）
-//   TAB_SWEEP_FAILED <原因>（no-orca、terminal-list、roster、coordinator-unknown；exit 0）
+//   TAB_SWEEP_FAILED <原因>（no-orca、terminal-list、roster、coordinator-unknown；exit 0。state <錯誤>：tab-sweep.json 寫不進去，印在 SUMMARY 前）
 //   TAB_SWEEP_OFF（tab-sweep.json 的 "enabled": false：用量吃緊時人暫停，每個 /retro 都花用量；不呼叫 Orca）
 //   SUMMARY sent=<n> closed=<n> skipped=<n> failed=<n> other=<其他 worktree 分頁數>
+//   TAB_RECORD_FAILED <exit> <stderr 首行>（有一列沒記進 decisions.md；印在最後、exit 1，其他行照印，#646）
 // 寫入（--dry-run 都不寫，動作行尾加 ` dry-run`）：
-//   `.scratch/pilot/decisions.md`（同目錄 pilot-decision.mjs）：TAB_RETRO_SENT、TAB_CLOSED、TAB_FAILED、TAB_SWEEP_FAILED 各一列；
+//   `.scratch/pilot/decisions.md`（同目錄 pilot-decision.mjs）：TAB_RETRO_SENT、TAB_CLOSED、TAB_FAILED、TAB_SWEEP_FAILED、TAB_SWEEP_OFF 各一列，
+//     每輪最後的 SUMMARY 也記一列（全是 TAB_SKIP 時也記：看守靠它分得出「跑了但沒事」與「沒跑」，#646）；
 //     看不清楚而跳過的（UNCLEAR：idle-unknown、screen-unreadable、screen-no-prompt、roster-failed）也記一列，同一 handle 同一原因只記一次（noted）。
 //   `.scratch/pilot/tab-sweep.json`：`{ "enabled": true|false, "sent": { "<handle>": { "at", "title" } }, "noted": { "<handle>": "<原因>" } }`；
 //     不存在時當作 enabled；已不在 terminal list 的 handle 從 sent、noted 移除。
 // 環境變數：ORCA_CLI_COMMAND（沒有時 TAB_SWEEP_FAILED no-orca）、ORCA_TERMINAL_HANDLE（自己）、TAB_SWEEP_NOW（ISO，測試固定現在時刻）。
-// exit：0 完成（含只記錄的失敗）；2 用法錯誤。
+// exit：0 完成（含只記錄的失敗）；1 有一列沒記進 decisions.md（TAB_RECORD_FAILED）；2 用法錯誤。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -162,7 +164,7 @@ export async function sweep({ main, orca, roster = null, record = () => {}, self
   const statePath = join(main, STATE_FILE);
   const state = readState(statePath);
   if (!state.enabled) {
-    emit('TAB_SWEEP_OFF');
+    emit('TAB_SWEEP_OFF', '人暫停了 Tab sweep（tab-sweep.json 的 enabled false）；記一列讓看守分得出暫停與沒跑');
     return { lines, state };
   }
   let list;
@@ -249,23 +251,35 @@ export async function sweep({ main, orca, roster = null, record = () => {}, self
   for (const handle of Object.keys(state.sent)) if (!open.has(handle)) delete state.sent[handle];
   state.noted = noted;
   if (!dryRun) {
-    mkdirSync(dirname(statePath), { recursive: true });
-    writeFileSync(statePath, `${JSON.stringify({ ...state, enabled: true }, null, 2)}\n`);
+    try {
+      mkdirSync(dirname(statePath), { recursive: true });
+      writeFileSync(statePath, `${JSON.stringify({ ...state, enabled: true }, null, 2)}\n`);
+    } catch (error) {
+      // 不拋錯：SUMMARY 仍要印、記（#646 review）；sent 沒存下，下個 tick 可能對同一分頁再送一次 /retro
+      emit(`TAB_SWEEP_FAILED state ${firstLine(error)}`, 'tab-sweep.json 寫不進去，這輪的 sent 沒存下');
+    }
   }
-  emit(`SUMMARY sent=${counts.sent} closed=${counts.closed} skipped=${counts.skipped} failed=${counts.failed} other=${other}`);
+  emit(`SUMMARY sent=${counts.sent} closed=${counts.closed} skipped=${counts.skipped} failed=${counts.failed} other=${other}`,
+    '每輪都記一列（全是 TAB_SKIP 也記），看守分得出跑了但沒事與沒跑（#646）');
   return { lines, state };
 }
 
 const firstLine = error => String(error?.message ?? error).split('\n')[0].replaceAll('|', '/');
 
-/** 同目錄 pilot-decision.mjs 在主 checkout 的 decisions.md 記一列；失敗時 stderr 說明，不中斷。 */
+/**
+ * 同目錄 pilot-decision.mjs 在主 checkout 的 decisions.md 記一列；失敗時 stderr 說明、不中斷，
+ * 回傳 `<exit> <stderr 首行>` 給 CLI 在最後印 TAB_RECORD_FAILED（#646 review：只寫 stderr，看守會把漏記當成沒跑）。
+ */
 function recordDecision(main, line, reason) {
   const script = join(dirname(fileURLToPath(import.meta.url)), 'pilot-decision.mjs');
-  if (!existsSync(script)) { console.error(`decisions.md 沒記到（no-pilot-decision）：${line}`); return; }
+  if (!existsSync(script)) { console.error(`decisions.md 沒記到（no-pilot-decision）：${line}`); return 'missing no-pilot-decision'; }
   const clean = text => String(text).replaceAll('|', '/').replace(/\s*\n\s*/g, ' ');
   const run = spawnSync(process.execPath, [script, main, '--decision', clean(`Tab sweep：${line}`), '--reason', clean(reason),
     '--evidence', 'scripts/tab-sweep.mjs', '--result', '—'], { encoding: 'utf8' });
-  if (run.status !== 0) console.error(`decisions.md 沒記到（pilot-decision exit ${run.status}）：${line}`);
+  if (run.status === 0) return null;
+  console.error(`decisions.md 沒記到（pilot-decision exit ${run.status}）：${line}`);
+  const detail = String(run.stderr || run.error?.message || '').trim().split('\n')[0].trim() || 'no-stderr';
+  return `${run.status ?? run.signal} ${detail}`;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -282,20 +296,32 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const main = resolve(rest[0]);
   const cli = process.env.ORCA_CLI_COMMAND;
   const now = process.env.TAB_SWEEP_NOW ? Date.parse(process.env.TAB_SWEEP_NOW) : Date.now();
-  const record = (line, reason) => recordDecision(main, line, reason);
+  let recordFailed = null;
+  const record = (line, reason) => { const failed = recordDecision(main, line, reason); recordFailed ??= failed; };
+  // 不用 process.exit：stdout 接管線時會截掉還沒寫完的 SUMMARY 與 TAB_RECORD_FAILED（#646 review）。
+  const finish = () => {
+    if (!recordFailed) return;
+    console.log(`TAB_RECORD_FAILED ${recordFailed}`);
+    process.exitCode = 1;
+  };
   if (!cli) {
     console.log('TAB_SWEEP_FAILED no-orca');
     if (!dryRun) record('TAB_SWEEP_FAILED no-orca', '沒有 ORCA_CLI_COMMAND，這輪不動任何分頁');
-    process.exit(0);
+    finish();
+  } else {
+    const roster = rosterCommand ? () => {
+      const run = spawnSync('sh', ['-c', rosterCommand], { cwd: main, encoding: 'utf8', timeout: 300_000, maxBuffer: 64 * 1024 * 1024 });
+      if (run.status !== 0) throw new Error(`exit ${run.status ?? run.signal}：${(run.stderr || run.stdout || '').trim().split('\n').at(-1) ?? ''}`);
+      return run.stdout;
+    } : null;
+    try {
+      await sweep({
+        main, roster, record, now, dryRun, self: process.env.ORCA_TERMINAL_HANDLE || null,
+        orca: (...rest) => orcaCall({ cli, signal: AbortSignal.timeout(ORCA_MS) }, ...rest),
+        recorded: recordedTitle, log: line => console.log(line),
+      });
+    } finally {
+      finish(); // sweep 意外拋錯時，先前漏記的列也要報
+    }
   }
-  const roster = rosterCommand ? () => {
-    const run = spawnSync('sh', ['-c', rosterCommand], { cwd: main, encoding: 'utf8', timeout: 300_000, maxBuffer: 64 * 1024 * 1024 });
-    if (run.status !== 0) throw new Error(`exit ${run.status ?? run.signal}：${(run.stderr || run.stdout || '').trim().split('\n').at(-1) ?? ''}`);
-    return run.stdout;
-  } : null;
-  await sweep({
-    main, roster, record, now, dryRun, self: process.env.ORCA_TERMINAL_HANDLE || null,
-    orca: (...rest) => orcaCall({ cli, signal: AbortSignal.timeout(ORCA_MS) }, ...rest),
-    recorded: recordedTitle, log: line => console.log(line),
-  });
 }
