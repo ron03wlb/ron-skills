@@ -13,7 +13,7 @@
 // 各起一個 `terminal wait --for tui-idle`，和 interval 一起等、先到先醒。worker 印完結果行、結束那一輪就是 tui-idle，watcher 隨即讀畫面印 RESULT，
 // 不必等到下一個 interval。畫面已閒置的 handle 不起等待（tui-idle 會立刻成立而空轉）；醒來沒有結果時照常下一輪，那個 handle 讀到閒置就不再起。
 // batch 成員印 RESULT 時同時把結果行記進 checkpoint 同目錄的 `results/<handle>`（`<ISO 時間> <結果行>`，pilot-probe.mjs 的 recordResult）：
-// 結果行之後可能被捲走、terminal 可能結束，Probe 畫面上讀不到時改讀這份，--apply 照常寫回（#413 第 1 項）。記不進去時照樣印 RESULT、stderr 印原因。
+// 結果行之後可能被捲走、terminal 可能結束，Probe 畫面上讀不到時改讀這份，--apply 照常寫回（#413 第 1 項）。記不進去時照樣印 RESULT、stderr 印 `RECORD_FAILED <handle> <原因>`。
 // batch 成員的結果是 DONE（含 from-state）時，畫面上它之前的 `POSTLAND <n> <command>`（pilot-probe.mjs 的 postlandCommands）在 checkpoint 鎖內補成
 // 表格下方的 `postland: #<n> <command>` 行（已記過的不重記，lib/pilot-store.mjs 的 addPostland），pilot-land.mjs 落地後印 POSTLAND_PENDING（#502）。
 // stdout 不變；寫不進去時 stderr 印 `POSTLAND_RECORD_FAILED <handle> <原因>`。

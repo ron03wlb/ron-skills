@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from 'node:fs';
 //   和範本 `const USAGE =` 字串與檔頭 `// 用法：` 行的旗標集合要相同。
 // - 結果行欄：範本檔頭 `// stdout` 段反引號片段開頭的大寫 token（`REGISTERED`、`NAME_CHECK`…），都要出現在該腳本的列裡。
 //   只對 RESULT_LINE_SCRIPTS 做：pilot-probe、pilot-watch、pilot-idle-wait、pilot-dispatch 的 stdout 段多數結果行沒加反引號，
-//   抽不準（會漏也會把說明裡別支腳本的 token 抽進來）。
+//   抽不準（會漏也會把說明裡別支腳本的 token 抽進來），這四支的結果行改由 pilot-probe-lines.test.mjs 從程式抽（#556、#594）。
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const STORE = 'skills/engineering/issue-pilot/PILOT-STORE.md';
 const TEMPLATES = 'skills/engineering/setup-workflow/templates';

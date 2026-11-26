@@ -282,8 +282,8 @@
     },
     "scripts/pilot-watch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-watch.mjs",
-      "commit": "17729e71653f41ad69300e85bbccbc06ffb51623",
-      "sha256": "fd683283c48605c884d7f7730db132d1d1ca0c2d54e670cb1e92058d71b54d43"
+      "commit": "f75cf822f4bf557a3da1709245101a05ec536015",
+      "sha256": "f62489e7103be7549f3e88df9504b7ab1cec4537abb1a17e8c919feef7cd9a7d"
     },
     "scripts/run-codex-review.mjs": {
       "template": "skills/engineering/setup-workflow/templates/run-codex-review.mjs",
