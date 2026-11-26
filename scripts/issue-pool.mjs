@@ -29,7 +29,11 @@
 // （`.scratch/pilot/main-paused`，`pilot-hold.mjs set-main` 寫、until 當天仍有效，判斷是 export 的 mainPause，Probe 的 MAIN_PAUSED 共用，#379），
 // landed 桶不逐張印，在它的位置收成一行 `LANDED_COUNT <數量> <整合分支>`；旗標過期、讀不懂或沒有時照逐行印。stale 桶預設也不逐張印，在它的位置收成一行 `STALE <數量>`，
 // 帶 `--stale` 才逐行印（/issue-queue 要逐張列認領者時帶；investing retro 1123c：每輪 Pool 約 190 行 stale 蓋過 4 行 needs-triage，#550）；Probe 的 BLOCKER_OPEN_SCOPE 用同一份 blocker 資料（export 的 blockerOpenScope，#359），這支 CLI 不印。之後 ready 桶本文有 `… prerequisite：<內容>` 一行、內容不是「無」的，
-// 依 ready 的順序各印一行 `PREREQ <n> <內容>`（先查環境或開 gate 再派）；最後對開著、有 triage 狀態 label（TRIAGE_STATES）卻沒有分類 label 的單印一行
+// 依 ready 的順序各印一行 `PREREQ <n> <內容>`（先查環境或開 gate 再派）；再對 ready 桶前 PICK_TOP（5）張印 Pick 前的重疊提示（#591）：
+// 前面的 n 與後面的 m 本文提到同一個檔（帶常見副檔名的路徑，URL 裡的不算；裸檔名對得上完整路徑的尾段）印 `PICK_OVERLAP <n> <m> <檔>`，提到同一個 `**<條目>.**` 印 `PICK_OVERLAP <n> <m> **<條目>.**`；
+// n 本文提到的檔在別的 worktree 的實際改動裡（worktree-overlap.mjs 的 OVERLAP_WT，基準是 --integration 的分支、沒帶時 main；基底過舊的不算，n 自己號碼的分支不算）
+// 印 `PICK_OVERLAP <n> <m> <改到的檔> [**<條目>.**…]`，m 是分支最後一段 `<m>-` 的號碼、取不到時是分支名，條目是本文也提到、那個檔也改到的。
+// 只是提示、不保證準（本文推測會漏，#355 本文沒提 `orca-session-send.mjs` 卻改了它）；查不了 worktree 改動時 stderr 印 `PICK_OVERLAP_SKIP <原因>`、只比本文，exit 不變。最後對開著、有 triage 狀態 label（TRIAGE_STATES）卻沒有分類 label 的單印一行
 // `NO_CATEGORY <n> <n>...`（號碼升冪，沒有時不印），母單（有 sub-issue 或 `parent` label）、`retro-candidates` 與 `--skip-labels` 的 label 不算。分類 label 預設是 DEFAULT_CATEGORIES（triage 的 `bug`、`enhancement`），
 // adapter 用的 label 不同時以 `--categories` 覆寫（逗號分隔）。exit 0。gh 或 glab 失敗時 stderr 印原因、exit 1；用法錯誤或本機 Markdown tracker 時 exit 2。
 // 有母單的 ready 行在號碼與標題之間多寫 `parent #<p> `（`ready #<n> parent #<p> <標題>`；別的 repo 的母單寫 `<owner>/<repo>#<p>`，GitLab 是父項目），
@@ -65,6 +69,7 @@ import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { codeHost, projectInDoc, trackerKind } from './lib/hosts.mjs';
+import { worktreeOverlaps } from './worktree-overlap.mjs';
 
 const USAGE = '用法：node scripts/issue-pool.mjs [--repo <專案>] [--stale-hours <h>] [--stale] [--categories <label>,...] [--skip-labels <label>,...] [--integration <分支>] [--pickable-blocked] | claim <n> [--repo <專案>] [--session <id>] [--take-stale] [--integration <分支>] | children <母單> [--repo <專案>] [--ask-prefix <前綴>]... | open-work <n> [--repo <專案>]';
 /** pool() 與 children 共用的 label、blocked-by 欄位片段。 */
@@ -406,7 +411,7 @@ export function mainPause(checkout, today = localDate()) {
 
 /** stdout 的全部行（格式見檔頭）：分桶行、PREREQ、NO_CATEGORY。landed、integration 只在帶 --integration 時給；
  * paused（main 暫停旗標有效，#379）時 landed 桶收成一行 `LANDED_COUNT <數量> <整合分支>`，放在 landed 桶的位置。 */
-export function poolLines(issues, { repo, categories = DEFAULT_CATEGORIES, landed, integration, paused = false, listStale = false, ...options }) {
+export function poolLines(issues, { repo, categories = DEFAULT_CATEGORIES, landed, integration, paused = false, listStale = false, worktreeChanges = [], ...options }) {
   const rows = pool(issues, { repo, landed, ...options });
   const detail = (issue, bucket) => bucket === 'blocked' ? `${blockedDetail(issue, { repo, landed, integration })} ` : bucket === 'ready' ? parentDetail(issue, repo) : '';
   const count = bucket => rows.filter(row => row.bucket === bucket).length;
@@ -423,8 +428,54 @@ export function poolLines(issues, { repo, categories = DEFAULT_CATEGORIES, lande
     const prerequisite = prerequisiteOf(issue.body);
     if (prerequisite && !NO_PREREQUISITE.test(prerequisite)) lines.push(`PREREQ ${issue.number} ${prerequisite}`);
   }
+  lines.push(...pickOverlaps(rows.filter(({ bucket }) => bucket === 'ready').map(({ issue }) => issue), worktreeChanges));
   const missing = missingCategory(issues, categories, options.skipLabels);
   if (missing.length) lines.push(`NO_CATEGORY ${missing.join(' ')}`);
+  return lines;
+}
+
+/** PICK_OVERLAP 只比 ready 桶的前這麼多張：一批派出的 worker 遠少於此（#591）。 */
+export const PICK_TOP = 5;
+// 本文裡的檔名：帶常見副檔名、可帶目錄；前面緊接 `/`、`.` 或字元的不算（URL 裡的路徑、`a.b.md` 的中段）。
+const MENTIONED_FILE = /(?<![\w./-])((?:[\w.-]+\/)*[\w-][\w.-]*\.(?:mjs|cjs|js|jsx|ts|tsx|md|json|ya?ml|sh|py|java|kt|sql|patch|toml|txt|html|css|go|rb|xml|gradle|properties))(?![\w-])/g;
+const MENTIONED_ENTRY = /\*\*([^*\n]+?)\.\*\*/g;
+
+/** 本文提到的檔名（去掉開頭的 `./`）與 `**<條目>.**` 的條目名，各自去重。 */
+export function mentions(body) {
+  const text = body ?? '';
+  return {
+    files: [...new Set([...text.matchAll(MENTIONED_FILE)].map(([, path]) => path.replace(/^\.\//, '')))],
+    entries: [...new Set([...text.matchAll(MENTIONED_ENTRY)].map(([, name]) => name.trim()))],
+  };
+}
+
+/** 兩個路徑指同一個檔：相等，或較短的一邊是較長一邊以 `/` 切開的尾段（`pilot-probe.mjs` 對 `scripts/pilot-probe.mjs`）；傳回較長的一邊，對不上時 undefined。 */
+function sameFile(a, b) {
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  return short === long || long.endsWith(`/${short}`) ? long : undefined;
+}
+
+/**
+ * Pick 前的重疊提示（#591），不保證準：本文推測會漏（#355 本文沒提 `orca-session-send.mjs` 卻改了它），Probe 的 OVERLAP 仍是底線。
+ * `ready` 是排好序的 ready 桶，只看前 PICK_TOP 張：前面的 n 對後面的 m，本文提到同一個檔印 `PICK_OVERLAP <n> <m> <檔>`、同一個條目印 `PICK_OVERLAP <n> <m> **<條目>.**`；
+ * `changes`（[{ branch, path, entries }]，worktreeOverlaps 的 OVERLAP_WT）是各 worktree 的實際改動：n 的本文提到的檔被改到時印 `PICK_OVERLAP <n> <m> <改到的檔>`，
+ * 本文提到的條目也在那個檔改到的條目裡時再接 ` **<條目>.**`。m 是分支最後一段 `<m>-` 的號碼，取不到時是分支名；n 自己的分支不算。
+ */
+export function pickOverlaps(ready, changes = []) {
+  const top = ready.slice(0, PICK_TOP).map(issue => ({ n: issue.number, ...mentions(issue.body) }));
+  const lines = [];
+  top.forEach((a, i) => {
+    for (const b of top.slice(i + 1)) {
+      const files = new Set(a.files.flatMap(x => b.files.map(y => sameFile(x, y)).filter(Boolean)));
+      for (const file of files) lines.push(`PICK_OVERLAP ${a.n} ${b.n} ${file}`);
+      for (const entry of a.entries.filter(name => b.entries.includes(name))) lines.push(`PICK_OVERLAP ${a.n} ${b.n} **${entry}.**`);
+    }
+    for (const { branch, path, entries } of changes) {
+      if (branchOfIssue(branch, a.n) || !a.files.some(file => sameFile(file, path))) continue;
+      const m = branch.split('/').pop().match(/^(\d+)-/)?.[1] ?? branch;
+      lines.push([`PICK_OVERLAP ${a.n} ${m} ${path}`, ...a.entries.filter(name => entries.includes(name)).map(name => `**${name}.**`)].join(' '));
+    }
+  });
   return lines;
 }
 
@@ -585,6 +636,20 @@ function openWork(n, tracker) {
   return 0;
 }
 
+/** 各 worktree 從與 `base` 的 merge-base 起的實際改動（worktree-overlap.mjs 的 OVERLAP_WT，基底過舊的 OVERLAP_STALE_BASE 不算）→ [{ branch, path, entries }]。
+ * 只是 PICK_OVERLAP 的提示來源：查不了（例如沒有 `base` 這條分支）時 stderr 印 `PICK_OVERLAP_SKIP <原因>`、當作沒有改動，不讓 pool 失敗。 */
+function changesInWorktrees(base) {
+  try {
+    return worktreeOverlaps(process.cwd(), [], { main: base }).flatMap(line => {
+      const match = line.match(/^OVERLAP_WT (\S+) (\S+)(.*)$/);
+      return match ? [{ branch: match[1], path: match[2], entries: [...match[3].matchAll(/\*\*(.+?)\.\*\*/g)].map(([, name]) => name) }] : [];
+    });
+  } catch (error) {
+    console.error(`PICK_OVERLAP_SKIP ${error.message.split('\n')[0]}`);
+    return [];
+  }
+}
+
 function main(argv) {
   let repo, staleHours = 24, categories = DEFAULT_CATEGORIES, skipLabels = [], session = defaultSession(), takeStale = false, integration, pickable = false, listStale = false;
   const askPrefixes = [];
@@ -620,7 +685,8 @@ function main(argv) {
     }
     const checkout = landed && mainCheckout();
     const paused = Boolean(checkout && mainPause(checkout));
-    for (const line of poolLines(issues, { repo, staleHours, categories, skipLabels, landed, integration, paused, listStale })) console.log(line);
+    const worktreeChanges = changesInWorktrees(integration ?? 'main');
+    for (const line of poolLines(issues, { repo, staleHours, categories, skipLabels, landed, integration, paused, listStale, worktreeChanges })) console.log(line);
     return 0;
   } catch (error) {
     if (!(error instanceof CliError) && !(error instanceof UsageError)) throw error;
