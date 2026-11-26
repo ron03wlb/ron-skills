@@ -60,6 +60,11 @@
       "commit": "2ed35c541db8331b995fb8433830bb54673a3b87",
       "sha256": "e2236e28ceec71201cdd9f7f2e3962b076d791182a5a4c68f7814d638ab65721"
     },
+    "scripts/ci-run.mjs": {
+      "template": "skills/engineering/setup-workflow/templates/ci-run.mjs",
+      "commit": "1c867ae8a7cab590edd619eacdc199ccec9dbc38",
+      "sha256": "eb95b0e69af49a4d101c65ad456d52189554dec816fbd3571bfb01efbef67ca0"
+    },
     "scripts/claude-hook-bang-space.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-bang-space.mjs",
       "commit": "3260cc30f94b9a83bbe320553609dcf322f392a5",
