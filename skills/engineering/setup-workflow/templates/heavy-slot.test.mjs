@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { realTmpdir } from './test/real-tmpdir.mjs';
-import { ageMs, effectivePriority, holdersField, labelPriority, parseArgs, percentile, queuePlan, repoOf, resumeKey, resumeMs, repoPriority, repoPriorityFile, slotCommand, slotCount, slotDir, slotTimeoutLine, starveMs, statsLines, SLOT_TIMEOUT_EXIT } from './heavy-slot.mjs';
+import { ageMs, effectivePriority, holdersField, labelPriority, parseArgs, percentile, queuePlan, repoOf, resumeKey, resumeMs, repoPriority, repoPriorityFile, slotCommand, slotCount, slotDir, slotTimeoutLine, starveMs, statsLines, reclaimStaleLock, withResumeLock, SLOT_TIMEOUT_EXIT } from './heavy-slot.mjs';
 
 const script = new URL('./heavy-slot.mjs', import.meta.url).pathname;
 
@@ -667,4 +667,33 @@ test('resume 鎖的持有者已死：回收鎖並照常沿用（spay2 #1159 Code
   assert.match(result.stderr, /^SLOT_RESUMED t:a /m);
   assert.deepEqual(readdirSync(env.HEAVY_CHECK_DIR).filter(name => name.startsWith('resume-')), [], '鎖與紀錄都清掉');
   await hold.done;
+});
+
+test('兩支同時回收同一個死鎖：後到的那支不刪掉先到者剛建的鎖（spay2 #1159 review 發現）', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'heavy-slot-lock-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'resume-x.json');
+  const lock = `${file}.lock`;
+  const dead = spawnSync('sh', ['-c', 'echo $$']).stdout.toString().trim();
+  writeFileSync(lock, dead);
+  const result = withResumeLock(file, () => {
+    assert.equal(readFileSync(lock, 'utf8'), String(process.pid), '先到的回收死鎖後建了自己的鎖');
+    // 後到的那支稍早也讀到同一個死 pid，這時才動手回收。
+    reclaimStaleLock(lock, dead);
+    assert.equal(readFileSync(lock, 'utf8'), String(process.pid), '先到者的鎖還在');
+    assert.deepEqual(readdirSync(dir).filter(name => name.endsWith('.stale')), [], '回收用的暫存檔清掉');
+    return 'ok';
+  });
+  assert.equal(result, 'ok');
+  assert.deepEqual(readdirSync(dir), [], '釋放後鎖檔刪掉');
+});
+
+test('釋放 resume 鎖只刪內容是自己 pid 的鎖（spay2 #1159 review 發現）', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'heavy-slot-lock-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'resume-x.json');
+  const lock = `${file}.lock`;
+  const other = String(process.ppid);
+  withResumeLock(file, () => { writeFileSync(lock, other); });
+  assert.equal(readFileSync(lock, 'utf8'), other, '別支的鎖不被刪');
 });

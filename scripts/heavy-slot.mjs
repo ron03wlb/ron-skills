@@ -32,7 +32,7 @@
 //   SLOT_TIMEOUT 時把這次排隊用的 since 與基本優先級寫進 `<dir>/resume-<鍵>.json`（鍵＝label＋cwd＋<command> argv 的 sha256 前 16 字元，
 //   `{ label, cwd, argv, since, priority, saved_at }`）。同鍵的下一次 run 若在 saved_at 後 $HEAVY_CHECK_RESUME_S 秒內（預設 7200，0 不沿用也不寫）
 //   開始排隊，就沿用該 since（排序與防餓死升級都照原 since 算）與 priority（有給 --priority 時以它為準），並印 SLOT_RESUMED；
-//   認領與寫回都在 `<紀錄>.lock`（檔案鎖，內容是持有者 pid；只回收持有者已不在的鎖）裡：開始排隊的那一支以 rename 認領後讀、刪（同時重跑兩次只有一支沿用），再次逾時則以同一個 since 寫回；
+//   認領與寫回都在 `<紀錄>.lock`（檔案鎖，內容是持有者 pid；只回收持有者已不在的鎖，回收先 rename 再確認內容，釋放只刪自己的鎖）裡：開始排隊的那一支以 rename 認領後讀、刪（同時重跑兩次只有一支沿用），再次逾時則以同一個 since 寫回；
 //   同鍵另一支較晚逾時時保留較早的 since；停用（0）時不讀也不刪；過期的紀錄讀到時忽略並刪掉；刪除不遞迴；鎖、認領或清理失敗只影響續排，不擋檢查。--timeout、SLOT_WAIT 的已等秒數與 log 的 wait_ms 仍從這次 run 起算。
 // 巢狀：在 slot 裡跑的命令帶環境變數 HEAVY_SLOT_HELD；裡面再呼叫 run（例如 bin/check 的測試跑 pre-commit）時直接執行，不再拿第二個 slot（避免 N 個持有者互等）。
 //
@@ -76,7 +76,7 @@
 // exit：run 是命令的 exit code，75 等待逾時，2 用法錯誤；status、stats 0，2 用法錯誤。
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { constants, homedir, loadavg } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -252,11 +252,25 @@ export const resumeKey = (label, cwd, argv) => createHash('sha256').update(JSON.
 const freshResume = (saved, now, limit) => Boolean(saved) && limit > 0 && now - Date.parse(saved.saved_at) <= limit && !Number.isNaN(Date.parse(saved.since));
 
 /**
- * 在 `<file>.lock`（檔案鎖，內容是持有者 pid，以 `wx` 建立）裡跑 fn：同鍵的認領與寫回不交錯（讀和寫之間不會插進另一支）。
- * 等不到鎖（約 2 秒）或建不了鎖時不跑、傳回 undefined。只回收持有者已不在的鎖（還沒寫進 pid 的鎖要超過 10 秒才算）；持有者還活著時鎖再舊也不動。
- * 兩支同時回收同一個死鎖時仍可能都進來，但認領是原子 rename，同一筆紀錄不會給兩支沿用；最多影響「保留較早 since」的合併。只刪鎖檔本身（非遞迴）。
+ * 回收 `lock`（測試用而匯出）：`seen` 是先前判定持有者已不在時讀到的內容。先 rename 成這個行程專屬的檔名再看內容：
+ * 仍是 `seen` 才刪；已變成別支剛建的鎖（另一支同時回收同一個死鎖並搶先建了新鎖）就以 link 放回原名（原名已有新鎖時放不回，只能放棄），
+ * 不刪掉活著的持有者的鎖。只刪鎖檔本身（非遞迴）。
  */
-function withResumeLock(file, fn) {
+export function reclaimStaleLock(lock, seen) {
+  const mine = `${lock}.${process.pid}.stale`;
+  try { renameSync(lock, mine); } catch { return; }
+  let content;
+  try { content = readFileSync(mine, 'utf8'); } catch { /* 讀不到就當成已變，放回原名 */ }
+  if (content !== seen) { try { linkSync(mine, lock); } catch { /* 原名已有新鎖 */ } }
+  try { rmSync(mine, { force: true }); } catch { /* 只留下這支專屬的檔名 */ }
+}
+
+/**
+ * 在 `<file>.lock`（檔案鎖，內容是持有者 pid，以 `wx` 建立）裡跑 fn：同鍵的認領與寫回不交錯（讀和寫之間不會插進另一支）。
+ * 等不到鎖（約 2 秒）或建不了鎖時不跑、傳回 undefined。只回收持有者已不在的鎖（還沒寫進 pid 的鎖要超過 10 秒才算；回收見 reclaimStaleLock）；
+ * 持有者還活著時鎖再舊也不動。釋放時只刪內容仍是自己 pid 的鎖。認領另是原子 rename，同一筆紀錄不會給兩支沿用。測試用而匯出。
+ */
+export function withResumeLock(file, fn) {
   const lock = `${file}.lock`;
   for (let attempt = 0; attempt < 100; attempt++) {
     try {
@@ -264,14 +278,17 @@ function withResumeLock(file, fn) {
     } catch (error) {
       if (error.code !== 'EEXIST') return undefined;
       try {
-        const pid = Number(readFileSync(lock, 'utf8'));
+        const seen = readFileSync(lock, 'utf8');
+        const pid = Number(seen);
         const stale = pid > 0 ? !alive(pid) : Date.now() - statSync(lock).mtimeMs > 10_000;
-        if (stale) rmSync(lock);
+        if (stale) reclaimStaleLock(lock, seen);
       } catch { /* 別人剛放掉或剛清掉 */ }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
       continue;
     }
-    try { return fn(); } finally { try { rmSync(lock); } catch { /* 只影響下一支等鎖 */ } }
+    try { return fn(); } finally {
+      try { if (readFileSync(lock, 'utf8') === String(process.pid)) rmSync(lock); } catch { /* 只影響下一支等鎖 */ }
+    }
   }
   return undefined;
 }
