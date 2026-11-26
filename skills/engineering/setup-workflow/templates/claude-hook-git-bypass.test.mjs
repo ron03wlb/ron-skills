@@ -892,7 +892,13 @@ test('hook：attached HEAD、目標不是本機分支或取不到狀態時 --det
       [`git --git-dir=${attached.dir}/.git --work-tree=${attached.dir} checkout --detach develop`, detached.dir],
       [`git --git-dir ${attached.dir}/.git checkout --detach develop`, detached.dir], [`GIT_DIR=${attached.dir}/.git git checkout --detach develop`, detached.dir],
       ['git switch main && git checkout --detach develop', detached.dir], ['git checkout main; git switch -d develop', detached.dir],
+      [`LC_ALL=C GIT_DIR=${attached.dir}/.git git checkout --detach develop`, detached.dir],
     ];
+    // #548 review r2：多個 `VAR=` 前綴不能讓解析停住（hook 卡到逾時）。
+    for (const command of ['LC_ALL=C LANG=C git status', 'A=1 B=2 C=3 echo x']) {
+      const run = spawnSync('node', [script], { input: JSON.stringify({ cwd: detached.dir, tool_input: { command } }), encoding: 'utf8', cwd: plain, timeout: 10000 });
+      assert.equal(run.status, 0, command);
+    }
     // link 指向 attached 工作樹的子目錄：git 跟著符號連結走，`link/..` 是 attached，不是 detached。
     mkdirSync(join(attached.dir, 'sub'));
     symlinkSync(join(attached.dir, 'sub'), join(detached.dir, 'link'));

@@ -824,7 +824,7 @@ export function detachReason(command, cwd = process.cwd()) {
     }
     let at = 0;
     let assigns = false;
-    while (at < words.length && (LEADING_WORD.test(words[at]) || /^\w+=/.test(words[at]))) assigns ||= /^\w+=/.test(words[at++]);
+    for (; at < words.length && (LEADING_WORD.test(words[at]) || /^\w+=/.test(words[at])); at++) if (/^\w+=/.test(words[at])) assigns = true;
     const prior = priorSafe;
     priorSafe = false;
     if (!/^(?:\S*\/)?git$/.test(words[at] ?? '')) continue;
