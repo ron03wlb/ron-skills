@@ -46,12 +46,14 @@ function worktree(temp) {
   return repo;
 }
 
-function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit = 0, staleReport = false, rulings, writes = [], outDir = '.scratch/issue-run-1', baseline, checkpoint, capacity = '', spec = 'spec.md', specContent = '# spec\n', checkSpec = false, codexHome, login = '', sleepMs = '', timeoutMs = '', bin: binOverride, baselineArg, reviewLog, env = {}, force = false } = {}) {
+function review(t, { log = header(), report = '**Standards**\n**Spec**\n', exit = 0, staleReport = false, rulings, writes = [], outDir = '.scratch/issue-run-1', baseline, checkpoint, capacity = '', spec = 'spec.md', specContent = '# spec\n', checkSpec = false, codexHome, login = '', sleepMs = '', timeoutMs = '', bin: binOverride, baselineArg, reviewLog, env = {}, force = false, prior = [] } = {}) {
   const temp = mkdtempSync(join(realTmpdir(), 'codex-review-'));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const bin = join(temp, 'codex'); writeFileSync(bin, FAKE); chmodSync(bin, 0o755);
   const repo = worktree(temp); const out = join(repo, outDir); const argvFile = join(temp, 'argv.json');
   if (staleReport) { mkdirSync(out, { recursive: true }); writeFileSync(join(out, 'review.md'), 'stale'); }
+  // prior：review 前已在 out dir 的檔案（[檔名, 內容]），測上一輪 review.md 的改名。
+  for (const [name, content] of prior) { mkdirSync(out, { recursive: true }); writeFileSync(join(out, name), content); }
   // checkpoint：.scratch/issue-run-1/state.md 宣告 integration: main；stale 時分支先合入一個 main 的新 commit，而 baseline 仍指舊 HEAD。
   // stacked*：task 疊在 blocker 候選（task 上的 b1、b2，不在 main）上，checkpoint baseline: 記 b2；stacked 傳 b2，stacked-old 傳舊候選 b1。
   // stale-recorded：checkpoint baseline: 記整合分支上的舊祖先（非 stacked），傳入值與之相等但不是 merge-base。
@@ -228,6 +230,25 @@ test('Codex 非零結束判定 CODEX_EXIT', t => {
 test('未產出報告或空報告判定 NO_REPORT；舊報告先清除不採計', t => {
   assert.equal(error(review(t, { report: '' }).result), 'NO_REPORT');
   assert.equal(error(review(t, { report: '', staleReport: true }).result), 'NO_REPORT');
+});
+test('上一輪 review.md 改名為 review-r<n>.md（下一個未用的號）再開跑：額度不足的失敗輪後上一輪結論仍在（spay2 retro dfaa806f#2）', t => {
+  const first = review(t, { prior: [['review.md', '上一輪結論\n']], exit: 1, report: '', log: header() + 'ERROR: Your workspace is out of credits. Ask your workspace owner to refill in order to continue.\n' });
+  assert.equal(error(first.result), 'CODEX_NO_CREDITS');
+  assert.equal(existsSync(join(first.out, 'review.md')), false);
+  assert.equal(readFileSync(join(first.out, 'review-r1.md'), 'utf8'), '上一輪結論\n');
+  const next = review(t, { prior: [['review-r1.md', 'r1\n'], ['review-r3.md', 'r3\n'], ['review.md', 'r2\n']] });
+  assert.equal(next.result.status, 0, next.result.stderr);
+  assert.equal(readFileSync(join(next.out, 'review-r2.md'), 'utf8'), 'r2\n');
+  assert.equal(readFileSync(join(next.out, 'review-r1.md'), 'utf8'), 'r1\n');
+  assert.equal(readFileSync(join(next.out, 'review.md'), 'utf8'), '**Standards**\n**Spec**\n');
+});
+test('out dir 位於 worktree 內且未被忽略時，改名的 review-r<n>.md 不判定 REVIEW_WROTE_REPO；同目錄其他新檔仍判定', t => {
+  const ok = review(t, { outDir: 'reviews/r1', prior: [['review.md', 'old\n']] });
+  assert.equal(ok.result.status, 0, ok.result.stderr);
+  assert.equal(readFileSync(join(ok.out, 'review-r1.md'), 'utf8'), 'old\n');
+  const wrote = review(t, { outDir: 'reviews/r1', prior: [['review.md', 'old\n']], writes: [['reviews/r1/review-r1.md.bak', 'x\n']] });
+  assert.equal(error(wrote.result), 'REVIEW_WROTE_REPO');
+  assert.deepEqual(JSON.parse(wrote.result.stderr.trim()).paths, ['reviews/r1/review-r1.md.bak']);
 });
 test('未給裁決檔時 prompt 不提已裁決項目', t => {
   const { result, call } = review(t);
