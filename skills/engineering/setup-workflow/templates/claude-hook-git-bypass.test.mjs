@@ -808,7 +808,7 @@ test('hook：orca-session-send.mjs --when-idle 是內建 background-only，前�
 // 真實指令：retro spay2 db00b6a5#1（worktree 內想讀舊檔，HEAD 離開任務分支；舊碼 rc=0）。
 const DETACH_INCIDENT = 'git checkout -q 7da0a2eae -- 2>/dev/null';
 
-test('hook：不帶路徑的 git checkout <rev>（含 -- 後無路徑）與 switch --detach 不需參數就 exit 2，訊息指向 git show <rev>:<path>', () => {
+test('hook：不帶路徑的 git checkout <rev>（含 -- 後無路徑）與 switch --detach 不需參數就 exit 2，訊息指向 git show <rev>:<path> 與暫存 clone 的 git switch -c', () => {
   const call = command => hook(JSON.stringify({ tool_input: { command } }));
   for (const command of [DETACH_INCIDENT, 'cd /w/feature-ron-issue-1 && git checkout 7da0a2eae', 'git -C wt switch --detach HEAD', 'git switch -d main',
     'git checkout --detach', 'git checkout HEAD~1', 'git checkout main@{2}', 'git checkout origin/main --', 'git checkout -q abcdef1 > /dev/null']) {
@@ -816,7 +816,12 @@ test('hook：不帶路徑的 git checkout <rev>（含 -- 後無路徑）與 swit
     assert.equal(denied.status, 2, command);
     assert.match(denied.stderr, /^拒絕：`git (?:checkout|switch)[^`]*` 會讓 HEAD 離開分支（detached HEAD）/, command);
     assert.match(denied.stderr, /`git show <rev>:<path>`/, command);
+    assert.match(denied.stderr, /暫存 clone 用 `git switch -c <tmp> <rev>`/, command);
   }
+  // spay2 retro c31287e9#1：scratchpad 內暫存 clone 的 `checkout --detach` 照樣擋（只加訊息、不放寬），訊息指向的 switch -c 寫法放行。
+  const CLONE_INCIDENT = 'rm -rf $S/fx && git clone -q --shared --no-checkout $W $S/fx && cd $S/fx && git checkout -q --detach 959020369';
+  assert.equal(call(CLONE_INCIDENT).status, 2);
+  assert.equal(detachReason('cd $S/fx && git switch -q -c fx1167 1a27217b0'), null);
   assert.equal(detachReason(DETACH_INCIDENT), 'git checkout 7da0a2eae --');
 });
 

@@ -42,7 +42,7 @@
 //   actionable：改用 run_in_background 的完成通知，或取 pid 後 `while kill -0 <pid>`（retro spay2 1a01bf03#1：#961 worker 卡 2 小時）。
 // 另攔讓 HEAD 離開分支的 `git checkout <rev>`（不帶路徑，含 `git checkout <rev> --` 後面沒有路徑）與 `git switch --detach`／`-d`、`git checkout --detach`（內建規則，見 detachReason）：
 //   訊息「會讓 HEAD 離開分支（detached HEAD）」；actionable：讀舊版用 `git show <rev>:<path>`（retro spay2 db00b6a5#1：worktree 內 `git checkout -q 7da0a2eae -- 2>/dev/null`
-//   想讀舊檔，HEAD 離開任務分支）。不看所在目錄：主 checkout 的 claude-hook-main-checkout.mjs 放行 `checkout … --` 與非本機分支的 rev，兩邊都會踩到。
+//   想讀舊檔，HEAD 離開任務分支）；暫存 clone 用 `git switch -c <tmp> <rev>`（spay2 retro c31287e9#1：scratchpad 內 clone 的 `git checkout --detach` 被擋，只加訊息、不放寬規則）。不看所在目錄：主 checkout 的 claude-hook-main-checkout.mjs 放行 `checkout … --` 與非本機分支的 rev，兩邊都會踩到。
 //   本 hook 不呼叫 git，`<rev>` 以字面判斷：7–40 位十六進位、含 `~`／`^`／`@{`（`@{-N}` 同 `-`，不算）、`HEAD` 開頭帶後綴，或 `origin/`、`refs/remotes/`、`refs/tags/` 開頭；
 //   分支名稱、`-`、建分支（`-b`／`-B`／`--orphan`）與帶路徑的 `git checkout <rev> -- <path>`、`git checkout <rev> <path>` 放行。
 // `--background-only` 另有內建項目 BUILTIN_BACKGROUND_ONLY（`orca-session-send.mjs --when-idle`，retro spay2 1a01bf03#8），訊息同 `--background-only`。
@@ -714,7 +714,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const detach = detachReason(command);
   if (detach) {
     deny(`拒絕：\`${detach}\` 會讓 HEAD 離開分支（detached HEAD），之後的 commit 不在任務分支上。只要讀舊版內容用 \`git show <rev>:<path>\``
-      + '（整棵樹用 `git archive <rev> | tar -x -C <暫存目錄>`）；要把檔案還原成舊版用 `git checkout <rev> -- <path>`（帶路徑，HEAD 不動）。\n');
+      + '（整棵樹用 `git archive <rev> | tar -x -C <暫存目錄>`）；要把檔案還原成舊版用 `git checkout <rev> -- <path>`（帶路徑，HEAD 不動）。'
+      + '暫存 clone 用 `git switch -c <tmp> <rev>`。\n');
   }
   if (selfMatchLoopReason(command)) {
     deny('拒絕：while／until 迴圈裡的 `pgrep -f` 會比對到執行這個迴圈的 shell 本身（它的命令列含同一段 pattern），迴圈永遠不會結束。'

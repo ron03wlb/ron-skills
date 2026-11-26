@@ -31,13 +31,14 @@
 // （retro spay2 followups #797：空的 rulings.md 回 RULINGS_MISSING 讀起來像檔案不存在，多跑一輪）。
 // review.md 寫出未完成需求（Spec）審查（如「未完成需求符合性審查」「Spec：缺少來源」）時判 SPEC_NOT_REVIEWED；反引號、「」、半形 "…" 與全形 “…” 內的引用不算。
 // 產出 <out-dir>/review.md 與 <out-dir>/codex.log；成功 exit 0，任何失敗 exit 1 並於 stderr 輸出一行 JSON。
+// out-dir 已有 review.md 時，開跑前先改名為 review-r<n>.md（n 為 out-dir 內下一個未用的號，從 1 起），不刪：失敗輪後上一輪結論仍在（spay2 retro dfaa806f#2）。
 // baseline 先在 worktree 解析為完整 commit SHA 再交給 Codex：解析不到時 Codex 只會寫「無法開始 review」的報告，不能算 OK。
 // out-dir（或其上層）有 checkpoint `state.md`（含 `integration:` 行）時，baseline 還必須等於 HEAD 與其 `integration:` 的 merge-base：
 // drift check 剛合併過整合分支而 baseline 沒跟上時判 BASELINE_STALE，不讓 review 把上游變更當成任務 diff。
 // 疊在 blocker 候選上（checkpoint `baseline:` 是 HEAD 的祖先但不在整合分支上）時，
 // 預期值改為 checkpoint `baseline:` 本身，因為 stacked 卡的 merge-base 必然不等於 blocker 候選。
 // 沙箱為 workspace-write（codex 一定讓 cwd 可寫，無法只開暫存目錄），故 review 前後比對 worktree 快照，有變動即判定 REVIEW_WROTE_REPO；
-// runner 自己寫的 review.md／codex.log 不計入（out-dir 可能位於 worktree 內且未被忽略）。
+// runner 自己寫的 review.md／codex.log／review-r<n>.md 不計入（out-dir 可能位於 worktree 內且未被忽略）。
 // 模型降級：主模型回報容量不足（log 行首 `ERROR: Selected model is at capacity`）時，把該次 log 改名為 codex.<model>.log，
 // 改用 FALLBACK_MODEL 重跑一次，MODEL_MISMATCH 改以實際使用的模型比對；stdout JSON 降級時另帶 fallbackFrom。
 // 沙箱開放網路（sandbox_workspace_write.network_access=true）：網路關閉時 seccomp 擋下 Node 建 stdio pipe，reviewer 的 spawnSync 回 EPERM、無法跑 fixture 測試。
@@ -212,9 +213,11 @@ function snapshot(dir, own) {
   const status = spawnSync('git', ['--no-optional-locks', '-C', dir, 'status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all'],
     { encoding: 'utf8', maxBuffer: 1 << 28 });
   if (status.error || status.status !== 0) fail('SNAPSHOT_FAILED', { worktree: dir, message: status.error?.message ?? status.stderr.trim() });
-  return new Map(status.stdout.split('\0').filter(Boolean).filter(entry => !own.has(resolve(dir, entry.slice(3))))
+  return new Map(status.stdout.split('\0').filter(Boolean).filter(entry => !isOwn(own, resolve(dir, entry.slice(3))))
     .map(entry => [entry.slice(3), `${entry.slice(0, 2)} ${digest(join(dir, entry.slice(3)))}`]));
 }
+/** runner 自己的檔：own 集合（review.md、codex.log、reviewer.json、降級 log），加上 out-dir 內歷輪改名的 review-r<n>.md。 */
+const isOwn = (own, path) => own.has(path) || (dirname(path) === resolve(outDir) && /^review-r\d+\.md$/.test(basename(path)));
 function digest(file) {
   try {
     const content = lstatSync(file).isSymbolicLink() ? readlinkSync(file) : readFileSync(file);
@@ -268,7 +271,15 @@ const specNotReviewed = text => text.split('\n').some(line => SPEC_NOT_REVIEWED.
 mkdirSync(outDir, { recursive: true });
 const report = join(outDir, 'review.md'); const logPath = join(outDir, 'codex.log');
 const own = new Set([resolve(report), resolve(logPath), resolve(outDir, 'reviewer.json')]);
-rmSync(report, { force: true }); rmSync(join(outDir, 'reviewer.json'), { force: true });
+// 上一輪的 review.md 改名為 review-r<n>.md（n 取 out-dir 內下一個未用的號，從 1 起）再開跑，不刪：
+// 失敗輪（例如 CODEX_NO_CREDITS）不產出新報告時，前一輪結論仍查得到（spay2 retro dfaa806f#2）。
+const PRIOR = /^review-r(\d+)\.md$/;
+if (existsSync(report)) {
+  const used = new Set(readdirSync(outDir).map(name => PRIOR.exec(name)?.[1]).filter(Boolean).map(Number));
+  let n = 1; while (used.has(n)) n += 1;
+  renameSync(report, join(outDir, `review-r${n}.md`));
+}
+rmSync(join(outDir, 'reviewer.json'), { force: true });
 
 // 不加 --ephemeral：reviewer 以 fork_turns 載入父 rollout，ephemeral session 沒有 rollout。
 const args = model => ['exec', '-s', 'workspace-write', '--ignore-user-config', '-m', model, '-c', `model_reasoning_effort=${EFFORT}`,
