@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { env } from './helpers/git-fixture.mjs';
@@ -313,4 +313,19 @@ test('整份 pilot.md 沒有在主 checkout checkout／switch 的步驟', () => 
   // 手打的 switch 都已改成 pilot-land.mjs（含 #193 的 sync-main），pilot.md 可能一個都沒有：先確認 regex 認得兩種寫法，零命中才有意義。
   assert.deepEqual(switches('`git -C <主 checkout> switch x`、`git -C <stage worktree> checkout y`'), ['<主 checkout>', stageWorktree]);
   for (const { text } of pilotDocs) for (const target of switches(text)) assert.equal(target, stageWorktree);
+});
+
+// sync-main 與 Stage 都可能跑 Regression，超過 Bash 前景 600 秒上限而被轉到背景（#392、#528、#561）：提到 sync-main 的行一律寫 run_in_background。
+test('提到 sync-main 的行不要求前景 timeout: 600000', () => {
+  const files = [
+    ...readdirSync(new URL('../docs/agents/', import.meta.url)).filter(name => name.endsWith('.md')).map(name => `docs/agents/${name}`),
+    ...readdirSync(new URL('../skills/engineering/issue-run/', import.meta.url)).filter(name => name.endsWith('TEMPLATE.md')).map(name => `skills/engineering/issue-run/${name}`),
+  ];
+  const offenders = [];
+  for (const path of files) {
+    readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').split('\n').forEach((text, index) => {
+      if (text.includes('sync-main') && text.includes('timeout: 600000')) offenders.push(`${path}:${index + 1}`);
+    });
+  }
+  assert.deepEqual(offenders, []);
 });
