@@ -225,13 +225,17 @@ export const prerequisiteOf = body => (body ?? '').match(/^.*\bprerequisite\s*[�
 /** prerequisite 寫「無」（或 none，後面可接標點或括號說明）表示不用等人；`**Operator prerequisite：** 無` 的粗體記號由 prerequisiteOf 略過。 */
 const NO_PREREQUISITE = /^(?:無|none)(?:$|[\s。.,，、;；（(])/i;
 /** 本文第一個以「為什麼是 needs-」開頭的 Markdown 標題（任一層級，去掉開頭的 `#` 與空白），沒有時 undefined：本文自己寫著還不能做（#666）。
- * 只認標題行；散文、行內文字與 ``` / ~~~ 程式碼區塊裡的不算。 */
+ * 只認標題行；散文、行內文字與 ``` / ~~~ 程式碼區塊裡的不算（圍欄開閉照 GFM）。 */
 export function needsHeadingOf(body) {
   let fence;
   for (const line of (body ?? '').split(/\r?\n/)) {
-    const marker = line.match(/^ {0,3}(`{3,}|~{3,})/)?.[1];
-    if (marker && (!fence || (marker[0] === fence[0] && marker.length >= fence.length))) { fence = fence ? undefined : marker; continue; }
-    if (fence) continue;
+    // GFM：關閉的圍欄同符號、不短於開啟的、後面只能有空白；``` 開啟時資訊字串不能含 `（否則是行內碼）。
+    const [, marker, rest] = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/) ?? [];
+    if (fence) {
+      if (marker?.[0] === fence[0] && marker.length >= fence.length && !rest.trim()) fence = undefined;
+      continue;
+    }
+    if (marker && !(marker[0] === '`' && rest.includes('`'))) { fence = marker; continue; }
     const heading = line.match(/^ {0,3}#{1,6}[ \t]+(為什麼是 needs-.*?)[ \t#]*$/)?.[1];
     if (heading) return heading;
   }

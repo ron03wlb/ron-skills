@@ -348,6 +348,16 @@ test('「為什麼是 needs-…」只認標題：散文、行內碼、程式碼�
     + 'PREREQ 603 為什麼是 needs-info\nPREREQ 605 先錄樣本\nPREREQ 606 為什麼是 needs-triage\n');
 });
 
+test('程式碼區塊照 GFM 開閉：帶資訊字串的 ~~~ 不關閉區塊、行首成對的 ``` 是行內碼不開區塊（#666 review r1）', () => {
+  const ready = ['enhancement', 'ready-for-agent'];
+  const result = fakeGh({ issues: [
+    issue(611, { labels: ready, body: '~~~\n~~~ still inside\n## 為什麼是 needs-info\n~~~\n' }),
+    issue(612, { labels: ready, body: '```example```\n\n## 為什麼是 needs-info\n' }),
+  ] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #611 標題 611\nready #612 標題 612\nPREREQ 612 為什麼是 needs-info\n');
+});
+
 // #591（retro 1124a，#417 第 2 項）：#339、#340 都改 pilot-probe.mjs，Pick 時沒有工具看出，要到 worker 改完 Probe 才印 OVERLAP。
 test('PICK_OVERLAP：ready 前幾張的本文提到同一個檔（裸檔名對得上完整路徑）或同一個條目時印 PICK_OVERLAP <n> <m> <檔|條目>', () => {
   const result = fakeGh({ issues: [
