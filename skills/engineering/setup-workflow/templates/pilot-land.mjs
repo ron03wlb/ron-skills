@@ -78,7 +78,8 @@
 //   3. land.mjs 印 `STOP behind-main …`（stage 之後 origin/<主分支> 才前進）時不照印那行，改印 `PUSH_BEHIND_MAIN <整合分支>`（不同於 Probe 的 `BEHIND_MAIN <落後數> <sha>`），跑同 sync-main 的步驟
 //      （印 RECORDED、SYNCED；它的 STOP 就以那行結束，不 land），再從 1 重來一次；第二次還是 behind-main 就照印 land.mjs 的 STOP 行結束。
 //   最後一行與 exit 是 land.mjs 的（`LANDED <pr> <merge sha>` exit 0，`STOP <原因>` exit 4）；pilot-pr-body.mjs 或 sync-main STOP 時是它們的 STOP 行（exit 4）。land.mjs 等 CI 最多約 8 分鐘、sync-main 的 Regression
-//   另計，所以 coordinator 以背景執行；`STOP checks-timeout <pr>` 時重跑同一行，PR 沿用、body 重產。
+//   另計，所以 coordinator 以背景執行；`STOP checks-timeout <pr> → …` 時重跑同一行，PR 沿用、body 重產：land.mjs 經環境變數 LAND_RERUN_COMMAND
+//   收到本檔這一行（`node <本檔相對 cwd 的路徑> push …`），箭頭後印的就是它，不是 land.mjs 自己的指令（retro spay2 1dce1925#2）。
 // resolver 模組的契約（都可省略；ron-skills 的 scripts/pilot-resolve.mjs 是一例）：
 //   resolveFile(tree, path, kinds)  合併中途、不是戳記檔的衝突檔：傳回合併後的全文（本檔寫回並 git add），解不了傳回 undefined；
 //                                   用到的解法名稱加進 Set kinds，依加入順序出現在 RESOLVED 行。
@@ -104,7 +105,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { availableParallelism, loadavg } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CI_PENDING_EXIT, CI_UNAVAILABLE_EXIT } from './ci-run.mjs';
 import { slotCommand, slotDelegatedLine, slotTimeoutLine } from './heavy-slot.mjs';
@@ -646,13 +647,20 @@ function postlandPending(key) {
 const SYNC_BRANCH = 'pilot/stage-sync-main';
 
 /** 子腳本（旁邊的 pilot-pr-body.mjs、land.mjs）在主 checkout 跑：stdout 照印，傳回 exit code 與最後一行。stderr 直接顯示。 */
-function runScript(main, name, args, { hide } = {}) {
-  const result = spawnSync(process.execPath, [join(here, name), ...args], { cwd: main, encoding: 'utf8', env: childEnv, stdio: ['ignore', 'pipe', 'inherit'] });
+function runScript(main, name, args, { hide, env = {} } = {}) {
+  const result = spawnSync(process.execPath, [join(here, name), ...args], { cwd: main, encoding: 'utf8', env: { ...childEnv, ...env }, stdio: ['ignore', 'pipe', 'inherit'] });
   const lines = (result.stdout ?? '').trimEnd().split('\n').filter(Boolean);
   const last = lines.at(-1) ?? '';
   const shown = hide?.(last) ? lines.slice(0, -1) : lines;
   if (shown.length) process.stdout.write(`${shown.join('\n')}\n`);
   return { code: result.status ?? 1, last };
+}
+
+/** 重跑本檔同一行的指令（land.mjs 的 STOP checks-timeout 箭頭後印它）：`node <本檔相對 cwd 的路徑> <原參數>`，參數照 shell 加引號。 */
+function rerunSelf() {
+  const quote = arg => /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`;
+  const self = relative(process.cwd(), process.argv[1]);
+  return ['node', self.startsWith('..') ? process.argv[1] : self, ...process.argv.slice(2)].map(quote).join(' ');
 }
 
 /**
@@ -668,7 +676,7 @@ function push(title, loadMax, mainOption) {
     const prBody = runScript(main, 'pilot-pr-body.mjs', [main, '--out', body]);
     if (prBody.code !== 0) return prBody.code;
     const landed = runScript(main, 'land.mjs', [config.integration, '--keep-branch', '--title', title, '--body-file', body, '--check-command', config.check,
-      ...(mainOption ? ['--main', mainOption] : [])], { hide: line => attempt === 0 && behind(line) });
+      ...(mainOption ? ['--main', mainOption] : [])], { hide: line => attempt === 0 && behind(line), env: { LAND_RERUN_COMMAND: rerunSelf() } });
     if (attempt > 0 || !behind(landed.last)) return landed.code;
     console.log(`PUSH_BEHIND_MAIN ${config.integration}`);
     console.log(`SYNCED ${syncMain(loadMax, main).value}`);

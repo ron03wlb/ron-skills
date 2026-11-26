@@ -38,11 +38,15 @@
 // 合入之後的收尾問題（main 沒跟上、sync-skills 失敗）印 WARN，不影響 LANDED；main 沒跟上時不跑 sync-skills，印 WARN skills-not-updated <merge sha>（已安裝的 skill 還是舊版，#297）。
 // 主 checkout 的 adapter（docs/agents/issue-run.md）以 `Protected paths:` 行宣告保護路徑時，快轉會讓它們底下的追蹤檔消失（刪除、改名、換類型）就不快轉，
 //   印 WARN main-not-synced 快轉會刪掉被保護的路徑 <檔…>，交給人處理（PR 已合入，照樣 LANDED）；判斷與 pilot-close.mjs 共用 lib/protected-paths.mjs（#303）。
+// 等 CI 逾時的 STOP 行是 `STOP checks-timeout <pr> → 重跑同一指令接著等（pending：<check 名…>）：<原指令>`（actionable：照箭頭重跑同一條指令，PR 沿用、接著等），
+//   pending 取最後一次讀到、還沒結束的 checks（PR head 還不是 push 的 SHA 或 checks 還沒登記時寫 `尚無 checks`）；<原指令> 是 `node <本檔相對 cwd 的路徑> <原參數>`（shell 引號），
+//   呼叫端以環境變數 LAND_RERUN_COMMAND 指定要重跑的指令時改印它（pilot-land.mjs push 帶自己的指令）。retro spay2 1dce1925#2：checks pass、只剩 checks-macos pending 時
+//   原本只印 `STOP checks-timeout 682`，要另查 `gh pr checks` 才知道在等什麼、該重跑哪一行。
 // exit：0 已合入；4 STOP；2 用法錯誤；1 其他失敗。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, relative } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { slotCommand, slotDelegatedLine, slotTimeoutLine } from './heavy-slot.mjs';
@@ -53,7 +57,7 @@ const USAGE = '用法：node scripts/land.mjs <branch> [--keep-branch] [--local-
 
 /** CI 輪詢：剛 push 時 PR 的 head 可能還沒更新、checks 可能還沒登記（空陣列），都照 pending 處理到逾時。 */
 const CHECKS_POLL_MS = Number(process.env.LAND_CHECKS_POLL_MS || 10000);
-/** Bash 工具最多等 600 秒；逾時 STOP checks-timeout，重跑會沿用同一個 PR 接著等。 */
+/** Bash 工具最多等 600 秒；逾時 STOP checks-timeout（帶 pending 的 checks 與重跑指令），重跑會沿用同一個 PR 接著等。 */
 const CHECKS_TIMEOUT_MS = Number(process.env.LAND_CHECKS_TIMEOUT_MS || 480000);
 /** `--local-checks` 的檢查：ron-skills 的 bin/check --upstream 實測 166 秒（#137，macOS）；420 秒之後還留 180 秒給 Bash 600 秒內的 push、合併與收尾。 */
 const LOCAL_CHECKS_TIMEOUT_MS = Number(process.env.LAND_LOCAL_CHECKS_TIMEOUT_MS || 420000);
@@ -79,6 +83,22 @@ const PUSH_RETRIES = 2;
 const PUSH_RETRY_MS = Number(process.env.LAND_PUSH_RETRY_MS || 120000);
 
 class Stop extends Error {}
+
+/** 給 shell 的單一參數：只有安全字元時原樣，否則以單引號包起來。 */
+const shellQuote = arg => /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`;
+
+/** 重跑同一條 land 指令的寫法：LAND_RERUN_COMMAND（呼叫端指定）優先，否則 `node <本檔相對 cwd 的路徑> <原參數>`。 */
+export function rerunCommand(argv = process.argv, cwd = process.cwd(), override = process.env.LAND_RERUN_COMMAND) {
+  if (override) return override;
+  const script = relative(cwd, argv[1]);
+  return ['node', script.startsWith('..') ? argv[1] : script, ...argv.slice(2)].map(shellQuote).join(' ');
+}
+
+/** 等 CI 逾時的 STOP 原因（不含 `STOP `）：帶還在等的 checks 與接續指令（retro spay2 1dce1925#2）。 */
+export function checksTimeoutReason(number, checks, command) {
+  const pending = checks.filter(check => check.bucket === 'pending').map(check => check.name);
+  return `checks-timeout ${number} → 重跑同一指令接著等（pending：${pending.length ? pending.join(' ') : '尚無 checks'}）：${command}`;
+}
 
 function run(cmd, args, cwd) {
   const result = spawnSync(cmd, args, { cwd, encoding: 'utf8' });
@@ -227,7 +247,7 @@ async function waitChecks(cwd, number, head) {
       throw new Stop(reason ? `ci-not-started ${number} ${reason} ${links}` : `ci-failed ${number} ${links}`);
     }
     if (verdict === 'pass') return checks.length;
-    if (Date.now() >= deadline) throw new Stop(`checks-timeout ${number}`);
+    if (Date.now() >= deadline) throw new Stop(checksTimeoutReason(number, checks, rerunCommand()));
     await sleep(CHECKS_POLL_MS);
   }
 }
