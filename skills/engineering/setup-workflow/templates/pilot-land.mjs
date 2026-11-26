@@ -29,10 +29,12 @@
 //               `[confirm]` ruling 行（行首，前面可有 `- `），而 gates.md 沒有任何 gate（開著或已 resolved）的 Issue 指向 #n 時，
 //               印 `STOP operator-questions <n> <confirm 行數>`（依成員列順序取第一個），什麼都不動；開 gate（pilot-gate open）後重跑同一行
 //               （#406：investing#432 帶著沒人答的 Operator 問題落地，下游 #434 照 Pool 規則派工後停在 STOP decision）。checkpoint 不在時不檢查。RESUME 也經過這一關。
-//   load 關卡   要重新 stage（不是 RESUME）時，建 stage worktree 與 stage 之前先讀 1 分鐘 load（os.loadavg）；超過門檻就印
-//               `STOP load <load> <門檻>`（load 取到小數兩位），stage 分支、stage worktree、checkpoint 與整合分支都不動，
-//               下一輪重跑同一行就接著做（ron-skills #178：同時跑 8 個 worker 時 load 約 90，檢查時間加倍，計時測試失敗）。
-//               門檻依序取 --load-max <n>、$PILOT_LOAD_MAX，都沒有時 3 × os.availableParallelism()；$PILOT_LOAD_NOW 取代實測值（測試用）。
+//   load 關卡   要重新 stage（不是 RESUME）時，建 stage worktree 與 stage 之前先讀 1 分鐘 load（os.loadavg）；超過門檻時在腳本內每
+//               $PILOT_LOAD_POLL_SECONDS（預設 15）秒重讀，降到門檻以下就照常繼續（#588：短暫尖峰不必等 coordinator 下一次喚醒）；
+//               等滿 $PILOT_LOAD_WAIT_SECONDS（預設 480，0 是只讀一次）還高才印 `STOP load <load> <門檻>`（最後讀到的 load，取到小數兩位），
+//               等待期間與 STOP 時 stage 分支、stage worktree、checkpoint 與整合分支都不動，下一輪重跑同一行就接著做
+//               （ron-skills #178：同時跑 8 個 worker 時 load 約 90，檢查時間加倍，計時測試失敗）。
+//               門檻依序取 --load-max <n>、$PILOT_LOAD_MAX，都沒有時 3 × os.availableParallelism()；$PILOT_LOAD_NOW 取代實測值（測試用；逗號分隔的序列依序取值）。
 //   Regression  在 staged SHA 跑 Regression 指令，完整輸出寫到 <主 checkout>/.scratch/pilot/reg-<key>.log，
 //               checkpoint 追加 `regression: <sha> exit <code>`（通過、而且輸出最後一行以 `CHECK_PASS ` 開頭時附上那一行），同一次寫入拿掉 regressing 標記。
 //               指令經同目錄 heavy-slot.mjs 的全機共用 slot 執行（label `<主 checkout 目錄名>:regression`，排隊時 log 有 SLOT_WAIT 行）；
@@ -45,6 +47,7 @@
 //   但有 done 成員的 candidate 不是 <sha> 的祖先（成員修好衝突後重報 DONE 的新候選，<sha> 不含它）時從 Stage 重來：疊到現在的整合分支 tip、
 //   跑自己的 Regression（舊的 regression 行不算），印新的 STAGED、MERGED（#500：#504 重報 DONE 4d28b541 後只回舊的 MERGED be82eb7，要手改 checkpoint）。
 // checkpoint 寫回之後再讀一次，沒寫進去就 STOP checkpoint，不會靜默失敗（ron-skills #74）。
+// checkpoint 缺檔而存檔裡有 key 包含這些號碼的 batch（move 之後 key 不變）時，同一行附 ` hint: 用 key <原 key>`（#582）。
 // 請求分支（沒有 Issue 的 `retro/<x>`）：`req-<n> --branch retro/<x>`（<n> 是 requests.md 的行號）在 batch-req-<n>.md 不存在時開出它，
 //   唯一的成員列 Issue 欄是 `-`、state `done`、candidate 是分支 tip；已存在時成員要是同一個分支，否則 STOP checkpoint。之後與一般 batch 相同。
 //   分支不存在印 `STOP branch <分支> …`，不開 checkpoint。成員列是 `-` 時，STOP、RESOLVED 行裡的 <n> 是分支名稱。
@@ -95,7 +98,7 @@ import { availableParallelism, loadavg } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { slotCommand, slotTimeoutLine } from './heavy-slot.mjs';
-import { CheckpointLocked, dropRegressing, exitIfLocked, gateIssues, heldIssues, openGates, postlandEntries, runInStageWorktree, updateCheckpoint } from './lib/pilot-store.mjs';
+import { batchMembers, CheckpointLocked, dropRegressing, exitIfLocked, gateIssues, heldIssues, openGates, postlandEntries, runInStageWorktree, updateCheckpoint } from './lib/pilot-store.mjs';
 
 const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--check-command <指令>] [--integration <分支>] [--main <分支>] [--resolver <模組>] [--load-max <n>] | sync-main [同上選項，不含 --branch] | push --title <標題> [同 sync-main 的選項]（--branch 時 key 是 req-<n>；門檻預設 $PILOT_LOAD_MAX，再來 3 × 核心數；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
 const LOAD = /^\d+(\.\d+)?$/;
@@ -104,8 +107,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 // 從 pre-commit hook 或 worktree 呼叫時繼承的 GIT_DIR 等會讓 git -C 讀寫到別的 repo。
 const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'].includes(key)));
 
-/** 專案值：命令列解析完填入。resolver 是載入後的模組（沒有時是空物件）。 */
-const config = { check: 'bin/check', integration: 'pilot/integration', main: 'main', resolver: {} };
+/** 專案值：命令列解析完填入。resolver 是載入後的模組（沒有時是空物件）；loadWait、loadPoll 是 load 關卡最多等幾秒、隔幾秒重讀（$PILOT_LOAD_WAIT_SECONDS、$PILOT_LOAD_POLL_SECONDS）。 */
+const config = { check: 'bin/check', integration: 'pilot/integration', main: 'main', resolver: {}, loadWait: 480, loadPoll: 15 };
 
 /** 停下：訊息就是 `STOP ` 後面那段。 */
 class Stop extends Error {}
@@ -165,18 +168,30 @@ function createStageWorktree(main, key) {
  * batch checkpoint：`current:` 的值、成員 `{ n, branch, state }`（欄位見 PILOT-STORE.md）與最後一個 `regression:` 行的值。欄位前後的空格不影響。
  * Issue 欄是 `-` 的請求分支成員以分支名稱當 n，排在 Issue 成員之後、照表格順序。
  */
-const order = ({ n }) => (typeof n === 'number' ? n : Number.MAX_SAFE_INTEGER);
+const order = ({ n }) => (/^\d+$/.test(n) ? Number(n) : Number.MAX_SAFE_INTEGER);
 
-function readCheckpoint(file) {
-  if (!existsSync(file)) throw new Stop(`checkpoint 缺 ${file}`);
+/** batch-<key>.md 的 key 只由號碼組成時的號碼陣列，其他（req-<n>、sync-main）undefined。 */
+const keyNumbers = name => name.match(/^batch-(\d+(?:-\d+)*)\.md$/)?.[1].split('-');
+
+/**
+ * checkpoint 缺檔時的提示（#582 第 2 項）：同一個存檔目錄裡 key 包含要找的每個號碼的 batch（`pilot-batch.mjs move 555-556 556` 之後 key 仍是 555-556，
+ * 用 `555` 當 key 就缺檔），有時傳回 ` hint: 用 key <原 key>`（多個以「或」相連），沒有時空字串。
+ */
+function keyHint(file) {
+  const wanted = keyNumbers(basename(file));
+  const dir = dirname(file);
+  if (!wanted || !existsSync(dir)) return '';
+  const keys = readdirSync(dir).map(keyNumbers).filter(parts => parts && wanted.every(n => parts.includes(n))).map(parts => parts.join('-')).sort();
+  return keys.length ? ` hint: 用 key ${keys.join(' 或 ')}` : '';
+}
+
+export function readCheckpoint(file) {
+  if (!existsSync(file)) throw new Stop(`checkpoint 缺 ${file}${keyHint(file)}`);
   const text = readFileSync(file, 'utf8');
   const current = text.match(/^current:[ \t]*(.*)$/m)?.[1].trim();
   if (current === undefined) throw new Stop(`checkpoint ${file} 沒有 current: 行`);
-  const members = text.split('\n').filter(line => line.trim().startsWith('|'))
-    .map(line => line.trim().split('|').slice(1, -1).map(cell => cell.trim()))
-    .filter(([n]) => /^(\d+|-)$/.test(n))
-    .map(([n, branch, worktree, , , , state, candidate]) => ({ n: n === '-' ? branch : Number(n), branch, worktree, state, candidate }))
-    .sort((a, b) => order(a) - order(b));
+  // 成員列與 pilot-probe 的 parseBatch 共用 lib/pilot-store.mjs 的解析，n 一律是字串（#453 第 1 項）；這裡另收請求分支列，依號碼排序。
+  const members = batchMembers(text, { requests: true }).sort((a, b) => order(a) - order(b));
   const regression = [...text.matchAll(/^regression:[ \t]*(.*)$/gm)].pop()?.[1].trim();
   return { current, members, regression };
 }
@@ -383,11 +398,33 @@ function stage(tree, key, members, tip) {
   return must(tree, 'rev-parse', 'HEAD');
 }
 
-/** load 關卡：1 分鐘 load 超過門檻就 STOP load，什麼都還沒動。 */
+/** 讀過幾次 load：$PILOT_LOAD_NOW 的序列依序取值。 */
+let loadReads = 0;
+
+/** 讀一次 1 分鐘 load，取到小數兩位；$PILOT_LOAD_NOW（測試用，逗號分隔的序列依序取值、取完停在最後一個）取代實測值。 */
+function readLoad() {
+  const fake = process.env.PILOT_LOAD_NOW?.split(',');
+  const index = Math.min(loadReads++, (fake?.length ?? 1) - 1);
+  return Math.round((fake?.every(value => LOAD.test(value)) ? Number(fake[index]) : loadavg()[0]) * 100) / 100;
+}
+
+/**
+ * load 關卡：1 分鐘 load 超過門檻時在腳本內每 config.loadPoll 秒重讀，降到門檻以下就繼續；等滿 config.loadWait 秒還高才 STOP load（印最後讀到的 load），什麼都還沒動
+ * （#588：短暫尖峰就退出時，coordinator 要等下一次喚醒才重跑，batch 555-556 連三次 STOP load 多等約 40 分鐘）。
+ * 一次執行裡的各次關卡共用同一個期限（第一次呼叫時起算），合計最多等 config.loadWait 秒。傳回這次有沒有等過：等過的呼叫端要重讀等待前讀的狀態。
+ */
+let loadDeadline;
 function loadGate(max) {
-  const now = process.env.PILOT_LOAD_NOW;
-  const load = Math.round((LOAD.test(now ?? '') ? Number(now) : loadavg()[0]) * 100) / 100;
-  if (load > max) throw new Stop(`load ${load} ${max}`);
+  loadDeadline ??= Date.now() + config.loadWait * 1000;
+  let load = readLoad();
+  if (load <= max) return false;
+  if (config.loadWait > 0) process.stderr.write(`pilot-land: load ${load} > ${max}，最多等 ${config.loadWait} 秒\n`);
+  for (; load > max; load = readLoad()) {
+    const left = loadDeadline - Date.now();
+    if (left <= 0) throw new Stop(`load ${load} ${max}`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(config.loadPoll * 1000, left));
+  }
+  return true;
 }
 
 /**
@@ -497,7 +534,8 @@ async function land(key, loadMax) {
     && sameMembers(main, checkpoint.members, staged, tip);
   const getTree = () => stageWorktree(main) ?? createStageWorktree(main, key);
   if (!resume) {
-    loadGate(loadMax);
+    // 等過 load 之後從頭再走一次（#588 review）：等待前讀的成員（期間被 move）、gates（期間開了 hold）與整合分支 tip 都可能已變。
+    if (loadGate(loadMax)) return land(key, loadMax);
     // #366：要 stage 時先讓整合分支包含 origin/<主分支>（同 sync-main），否則 Push gate 才 STOP behind-main、Regression 再跑一次（investing#313）。
     // RESUME 不同步：staged SHA 已驗過，落後時照舊交給 Push gate 的 sync-main。沒有 origin remote 時沒有可落後的對象。
     if (gitIn(main, 'remote', 'get-url', 'origin').status === 0) {
@@ -661,14 +699,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const resolverPath = resolver === undefined ? undefined : resolve(here, '..', resolver);
   const branchName = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
   const loadMax = options.loadMax ?? (process.env.PILOT_LOAD_MAX || String(3 * availableParallelism()));
-  if (bad || !/^[a-z0-9][a-z0-9-]*$/.test(key ?? '') || !LOAD.test(loadMax) || !check.trim()
+  const loadWait = process.env.PILOT_LOAD_WAIT_SECONDS || String(config.loadWait);
+  const loadPoll = process.env.PILOT_LOAD_POLL_SECONDS || String(config.loadPoll);
+  if (bad || !/^[a-z0-9][a-z0-9-]*$/.test(key ?? '') || !LOAD.test(loadMax) || !LOAD.test(loadWait) || !LOAD.test(loadPoll) || !check.trim()
     || !branchName.test(integration) || integration.startsWith('pilot/stage-') || !branchName.test(main)
     || (resolverPath !== undefined && !existsSync(resolverPath))
     || (request !== undefined && !(/^req-\d+$/.test(key) && /^retro\/[a-z0-9][a-z0-9-]*$/.test(request)))) {
     console.error(USAGE);
     process.exit(2);
   }
-  Object.assign(config, { check, integration, main });
+  Object.assign(config, { check, integration, main, loadWait: Number(loadWait), loadPoll: Number(loadPoll) });
   if (resolverPath) config.resolver = await import(pathToFileURL(resolverPath).href);
   try {
     // `sync-main --branch …`、`push --branch …` 已被上面 req-<n> 的檢查擋成用法錯誤。

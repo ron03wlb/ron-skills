@@ -152,7 +152,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
 import { mergeConflicts } from './lib/merge-tree.mjs';
-import { CheckpointLocked, gateLines, heldIssues, resolvedGateLines, resolvedGates, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
+import { batchMembers, CheckpointLocked, gateLines, heldIssues, resolvedGateLines, resolvedGates, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
 import { SPINNER, orca } from './orca-session-send.mjs';
 import { envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 import { POOL_FIELDS, blockerOpenScope, landedOn, mainPause, pool, prerequisiteOf } from './issue-pool.mjs';
@@ -670,13 +670,8 @@ export function parseBatch(text) {
   const regression = lastRegression?.[1];
   const regressionExit = lastRegression?.[2];
   const sha = current.match(/^(?:merged|pushed) ([0-9a-f]{7,40})\b/)?.[1] ?? regression;
-  const members = [];
-  for (const line of text.split('\n')) {
-    const cells = tableCells(line);
-    if (cells.length < 8 || !/^\d+$/.test(cells[0])) continue;
-    const [n, branch, worktree, handle, started, stuckAfter, state, candidate] = cells;
-    members.push({ n, branch, worktree, handle, started, stuckAfter, state, candidate });
-  }
+  // 成員列與 pilot-land 共用 lib/pilot-store.mjs 的解析，n 是字串（#453 第 1 項）。
+  const members = batchMembers(text);
   // pilot-batch resume 記下的那一行（#356）：每個成員取最後一行 `resumed: #<n> <time> <結果行|->`；時間給 watch 的記錄比對（#413）。
   for (const [, n, time, line] of text.matchAll(/^resumed: #(\d+) (\S+) (.*)$/gm)) {
     for (const member of members) {

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { env, git, write } from './helpers/git-fixture.mjs';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
 
@@ -11,7 +11,7 @@ const SYNC = new URL('../scripts/check-workflow-sync.mjs', import.meta.url).path
 const SYNC_SOURCES = Object.keys(JSON.parse(readFileSync(new URL('../scripts/workflow-doc-sync.json', import.meta.url), 'utf8')).sources);
 
 // 假 bin/check：每次呼叫在 $FAKE_CHECK_LOG 記一行；$FAKE_CHECK_EXIT 決定 exit code（預設 0，通過時印 CHECK_PASS）；
-// land() 預設 PILOT_LOAD_NOW=0：測試不受真機負載影響（load 關卡另有案例）。
+// land() 預設 PILOT_LOAD_NOW=0：測試不受真機負載影響（load 關卡另有案例）；PILOT_LOAD_WAIT_SECONDS=0：load 過高時不在腳本內等（#588 的等待另有案例）。
 // $FAKE_CHECK_DRIFT 是主 checkout 時，跑的途中在 pilot/integration 多接一個 commit，模擬 stage 之後整合分支前進。
 const FAKE_CHECK = `#!/usr/bin/env bash
 echo "check $*" >> "$FAKE_CHECK_LOG"
@@ -71,7 +71,7 @@ function fixture(t, { members, base = {}, checkpoint = text => text, stage = tru
   const log = join(temp, 'check.log');
   writeFileSync(log, '');
   const land = (extra = {}, args = [key]) => {
-    const result = spawnSync('node', [script, ...args, ...PROJECT], { cwd: repo, encoding: 'utf8', env: { ...landEnv, FAKE_CHECK_LOG: log, PILOT_LOAD_NOW: '0', ...extra } });
+    const result = spawnSync('node', [script, ...args, ...PROJECT], { cwd: repo, encoding: 'utf8', env: { ...landEnv, FAKE_CHECK_LOG: log, PILOT_LOAD_NOW: '0', PILOT_LOAD_WAIT_SECONDS: '0', ...extra } });
     const lines = result.stdout.trim().split('\n');
     return { ...result, lines, last: lines.at(-1) };
   };
@@ -135,6 +135,79 @@ test('load 超過門檻：STOP load <load> <門檻>，不 stage、不跑 Regress
   const merged = f.land({ PILOT_LOAD_NOW: '29.9', PILOT_LOAD_MAX: '30' });
   assert.equal(merged.status, 0, merged.stdout + merged.stderr);
   assert.match(merged.last, /^MERGED /);
+});
+
+// #588：短暫尖峰不再立刻 STOP load。腳本內每 $PILOT_LOAD_POLL_SECONDS 重讀一次，等到門檻以下就照常 stage；
+// 等滿 $PILOT_LOAD_WAIT_SECONDS（預設 480）還高才 STOP load。PILOT_LOAD_NOW 可寫成逗號分隔的序列，依序取值、取完停在最後一個。
+test('load 先高後低：腳本內輪詢等到門檻以下就 STAGED、MERGED，不印 STOP load', t => {
+  const f = fixture(t, { members: TWO });
+  // 上限 0 就是舊行為：只讀一次（序列的第一個值），立刻 STOP load。
+  const once = f.land({ PILOT_LOAD_NOW: '59,59,5', PILOT_LOAD_MAX: '48' });
+  assert.deepEqual(once.lines, ['STOP load 59 48']);
+  const result = f.land({ PILOT_LOAD_NOW: '59,59,5', PILOT_LOAD_MAX: '48', PILOT_LOAD_WAIT_SECONDS: '30', PILOT_LOAD_POLL_SECONDS: '0.01' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(!result.lines.some(line => line.startsWith('STOP ')), result.stdout);
+  assert.match(result.lines[0], new RegExp(`^STAGED ${f.key} `));
+  assert.match(result.last, /^MERGED /);
+  assert.equal(f.checks(), 1);
+});
+
+test('load 一直高：等滿上限才 STOP load（印最後一次讀到的 load），什麼都不動', t => {
+  const f = fixture(t, { members: TWO, stage: false });
+  const before = { tip: f.tip(), text: f.read() };
+  const started = Date.now();
+  const result = f.land({ PILOT_LOAD_NOW: '59,55.555', PILOT_LOAD_MAX: '48', PILOT_LOAD_WAIT_SECONDS: '0.4', PILOT_LOAD_POLL_SECONDS: '0.05' });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.deepEqual(result.lines, ['STOP load 55.56 48']);
+  assert.ok(Date.now() - started >= 400, `等了 ${Date.now() - started} ms`);
+  assert.equal(f.tip(), before.tip);
+  assert.equal(f.read(), before.text);
+  assert.equal(f.checks(), 0);
+  assert.equal(existsSync(f.stageTree), false, '沒有建 stage worktree');
+  const bad = f.land({ PILOT_LOAD_WAIT_SECONDS: 'abc' });
+  assert.equal(bad.status, 2, bad.stdout + bad.stderr);
+});
+
+// #588 review：等待前讀的成員與 gate 不能沿用到等待之後。等待期間開了 hold gate，等完要 STOP held，不 stage。
+test('load 等待期間開了 hold gate：等完重讀 gates 與 checkpoint，STOP held，不 stage、不跑 Regression', async t => {
+  const f = fixture(t, { members: TWO });
+  const before = { tip: f.tip(), text: f.read() };
+  const child = spawn('node', [script, f.key, ...PROJECT], { cwd: f.repo, env: { ...landEnv, FAKE_CHECK_LOG: join(f.temp, 'check.log'),
+    PILOT_LOAD_NOW: `${Array(40).fill('59').join(',')},5`, PILOT_LOAD_MAX: '48', PILOT_LOAD_WAIT_SECONDS: '30', PILOT_LOAD_POLL_SECONDS: '0.05' } });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  const waiting = new Promise(done => child.stderr.on('data', chunk => { stderr += chunk; if (stderr.includes('最多等')) done(); }));
+  const exited = new Promise(done => child.on('close', done));
+  await Promise.race([waiting, exited]);
+  write(f.repo, { '.scratch/pilot/gates.md': '# Gates\n\n## G7 #2 等人決定\n- Issue：#2\n- hold：#2\n- opened：2026-11-26T09:00:00+08:00\n' });
+  const code = await exited;
+  assert.equal(code, 4, stdout + stderr);
+  assert.equal(stdout.trim().split('\n').at(-1), 'STOP held 2 G7');
+  assert.equal(f.tip(), before.tip);
+  assert.equal(f.read(), before.text);
+  assert.equal(f.checks(), 0);
+});
+
+// #582-2：`pilot-batch.mjs move 555-556 556` 之後 key 仍是 555-556，用成員號碼當 key 只印 STOP checkpoint 缺 …；同一行補上原 key。
+test('checkpoint 缺檔、存檔裡有含這些號碼的 batch：STOP checkpoint 缺 … 同一行附 hint: 用 key <原 key>', t => {
+  const f = fixture(t, { members: TWO });
+  const missing = f.land({}, ['2']);
+  assert.equal(missing.status, 4, missing.stdout + missing.stderr);
+  assert.deepEqual(missing.lines, [`STOP checkpoint 缺 ${join(f.repo, '.scratch/pilot/batch-2.md')} hint: 用 key ${f.key}`]);
+  const none = f.land({}, ['9']);
+  assert.deepEqual(none.lines, [`STOP checkpoint 缺 ${join(f.repo, '.scratch/pilot/batch-9.md')}`]);
+});
+
+// #453-1：pilot-land 的 readCheckpoint 與 pilot-probe 的 parseBatch 共用 lib/pilot-store.mjs 的成員列解析，n 一律是字串。
+test('pilot-land 與 pilot-probe 讀同一份 checkpoint：成員 n 的型別與值相同（字串）', async t => {
+  const f = fixture(t, { members: TWO });
+  const { readCheckpoint } = await import(script);
+  const { parseBatch } = await import(new URL('../scripts/pilot-probe.mjs', import.meta.url).pathname);
+  const land = readCheckpoint(f.file).members.map(m => m.n);
+  const probe = parseBatch(f.read()).members.map(m => m.n);
+  assert.deepEqual(land, probe);
+  assert.deepEqual(land.map(n => typeof n), ['string', 'string']);
 });
 
 test('Regression 已通過、只差 Integrate 的重跑不看 load：RESUME 後照常 MERGED', t => {
@@ -1073,7 +1146,7 @@ function syncMainFixture(t, { integration, upstream, base = {}, batches = {} }) 
   writeFileSync(log, '');
   // 同 land()：預設 PILOT_LOAD_NOW=0，不受真機負載與本機環境的 PILOT_LOAD_MAX 影響。
   const sync = (extra = {}, args = []) => {
-    const result = spawnSync('node', [script, 'sync-main', ...args, ...PROJECT], { cwd: repo, encoding: 'utf8', env: { ...landEnv, FAKE_CHECK_LOG: log, PILOT_LOAD_NOW: '0', ...extra } });
+    const result = spawnSync('node', [script, 'sync-main', ...args, ...PROJECT], { cwd: repo, encoding: 'utf8', env: { ...landEnv, FAKE_CHECK_LOG: log, PILOT_LOAD_NOW: '0', PILOT_LOAD_WAIT_SECONDS: '0', ...extra } });
     const lines = result.stdout.trim().split('\n');
     return { ...result, lines, last: lines.at(-1) };
   };
