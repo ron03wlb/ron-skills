@@ -22,6 +22,11 @@
 //     low     pre-commit，或以 `pre-commit-` 開頭
 //   防餓死：每等滿 $HEAVY_CHECK_AGE_S 秒（預設 900，0 不升級）用途優先級升一級（low→normal→high），不會比 high 更高；
 //     只在沒有更前面的 repo 在等時生效（有 spay2 在等時，ron-skills 的等待者不升級，也不會排到 spay2 前面）。
+//   餓死保底（owner 2026-11-26 經 CoS item 126 核准，規則 B；起因 11-25 ron-skills #395 的 stage commit 被不斷進場的 spay2 檢查擋了 4.3 小時以上，item 93、#637）：
+//     不在最前面那一級 repo 的等待者，已等滿 $HEAVY_CHECK_STARVE_S 秒（預設 7200，0 關閉這條規則；從 since 算，沿用的 since 也算）時，
+//     有空出的 slot 就先給它 1 個，即使前面那一級還有人在等；全機同時最多 1 個 slot 是用這條規則拿的（持有者的鎖檔記 `starve: true`），
+//     那個 slot 還在用時其他人都不再用這條規則，其餘空出的 slot 照舊只給最前面那一級。符合的等待者不只一個時給 since 最早的（再比 pid）。
+//     只用空出的 slot，不搶占已經在跑的檢查。
 //   還沒換成這版的副本（舊版等待者）照舊每秒搶鎖、不看排隊；它的 wait 檔照樣算進列裡（優先級由 label 推）。
 // 逾時重跑保留排隊位置（retro 00abd5f9#1：spay2 check-contracts 逾時前 rank 1/5，照原指令重跑後 since 重設成現在，掉到 3/5、老化歸零）：
 //   SLOT_TIMEOUT 時把這次排隊用的 since 與基本優先級寫進 `<dir>/resume-<鍵>.json`（鍵＝label＋cwd＋<command> argv 的 sha256 前 16 字元，
@@ -44,23 +49,25 @@
 // 鎖檔目錄：$HEAVY_CHECK_DIR，預設 ~/.local/state/orca-heavy-check。不用 /tmp、~/.cache（會被清理：持有中的鎖檔被刪，下一個行程建新的同名檔
 //   就 flock 得到，兩支同時在 slot 裡），也不用 $XDG_RUNTIME_DIR（git hook、cron、Orca 分頁不一定都有它，有的有、有的沒有就分成兩組 slot）。
 // 其他環境變數：HEAVY_CHECK_TIMEOUT、HEAVY_CHECK_WAIT_INTERVAL、HEAVY_CHECK_REPO_PRIORITY（repo 優先序，逗號分隔）、HEAVY_CHECK_AGE_S（防餓死升級的間隔秒數）、HEAVY_CHECK_POLL（排隊重算的間隔秒數，預設 1）、
-//   HEAVY_CHECK_RESUME_S（逾時紀錄的沿用期限秒數，預設 7200，0 停用）。
+//   HEAVY_CHECK_RESUME_S（逾時紀錄的沿用期限秒數，預設 7200，0 停用）、HEAVY_CHECK_STARVE_S（餓死保底的門檻秒數，預設 7200，0 關閉）。
 // 量測 log：每次 run 拿到 slot 並結束、或等到逾時，在鎖檔目錄的 log.jsonl 追加一行
 //   `{ label, repo（label 冒號前）, pid, wait_ms, run_ms, exit, load1（拿到 slot 時的 1 分鐘 load；逾時時是放棄時的）, started_at（開始排隊，ISO）, timed_out,
-//   priority（基本優先級）, effective_priority（拿到 slot 或逾時那一刻的有效優先級） }`；priority 兩欄是這版才加的，舊紀錄沒有，stats 不用它們。
+//   priority（基本優先級）, effective_priority（拿到 slot 或逾時那一刻的有效優先級）, starve（這個 slot 是不是用餓死保底拿的；逾時時是 false） }`；
+//   priority 兩欄與 starve 是後來加的，舊紀錄沒有，stats 不用它們。
 //   寫不進去只略過，不影響命令與 exit code。巢狀（SLOT_NESTED）與 SLOT_UNAVAILABLE 不記。
 // stderr（run；命令自己的輸出照原樣）：
-//   SLOT_WAIT <label> <已等秒數>s holders=<label>@<pid>:<已持有秒數>s[,…] rank=<名次>/<排隊數> priority=<有效優先級>
+//   SLOT_WAIT <label> <已等秒數>s holders=<label>@<pid>:<已持有秒數>s[,…] rank=<名次>/<排隊數> priority=<有效優先級>[ starve=1]
 //                                                                           排隊中，每 interval 秒一行（第一行在等滿 interval 時）；holders 沒人時是 `-`；
-//                                                                           rank、priority 是最近一次算的排隊結果（還沒算過時是 `?`）
-//   SLOT_ACQUIRED <label> slot-<i>/<N> waited=<秒數>s                       拿到 slot，接著執行命令（量排隊時間用）
+//                                                                           rank、priority 是最近一次算的排隊結果（還沒算過時是 `?`）；
+//                                                                           starve=1：已符合餓死保底（等下一個空出的 slot，或在等保底 slot 釋放）
+//   SLOT_ACQUIRED <label> slot-<i>/<N> waited=<秒數>s[ starve=1]            拿到 slot，接著執行命令（量排隊時間用）；starve=1 是用餓死保底拿的
 //   SLOT_TIMEOUT <label> <已等秒數>s holders=…                               等到上限，不執行命令，exit 75：呼叫端當負載關卡處理（稍後重跑），不是檢查失敗
 //   SLOT_RESUMED <label> since=<ISO>                                         沿用上次逾時留下的 since（見「逾時重跑保留排隊位置」），只是資訊、不必處理，接著照常排隊
 //   SLOT_NESTED <label> held=<外層>                                          已在 slot 裡（HEAVY_SLOT_HELD），直接執行
 //   SLOT_UNAVAILABLE <label> <原因>                                          沒有 perl 或鎖檔目錄建不了，不限流、直接執行
-// stdout（status）：`SLOTS <忙>/<N> dir=<目錄>`，每個持有者 `HOLDER slot-<i> <label> pid=<pid> held=<秒數>s cwd=<目錄>`，
-//   每個排隊者依排隊順序 `WAITER <label> pid=<pid> waited=<秒數>s cwd=<目錄> rank=<名次> priority=<有效優先級> base=<基本優先級> repo_rank=<repo 名次>`
-//   （repo_rank 從 1 起算，沒列在 repo 優先序裡的 repo 是清單長度 + 1）。
+// stdout（status）：`SLOTS <忙>/<N> dir=<目錄>`，每個持有者 `HOLDER slot-<i> <label> pid=<pid> held=<秒數>s cwd=<目錄>[ starve=1]`，
+//   每個排隊者依排隊順序 `WAITER <label> pid=<pid> waited=<秒數>s cwd=<目錄> rank=<名次> priority=<有效優先級> base=<基本優先級> repo_rank=<repo 名次>[ starve=1]`
+//   （repo_rank 從 1 起算，沒列在 repo 優先序裡的 repo 是清單長度 + 1；持有者的 starve=1 是用餓死保底拿的 slot，排隊者的是已符合餓死保底）。
 // stdout（stats）：每個 label 一行（依 label 排序）`STATS <label> n=<件數> timeouts=<逾時件數> wait_p50=<ms> wait_p90=<ms> run_p50=<ms> run_p90=<ms>`
 //   （run 只算拿到 slot 的件數，沒有時印 `-`）；沒有任何符合的紀錄時印 `STATS none`。
 // 不提供 acquire／release：wrapper 已涵蓋兩個 repo 的入口；而且 Claude 的每次 Bash 呼叫是新的行程，
@@ -225,6 +232,12 @@ export function effectivePriority(priority, since, now = Date.now(), age = ageMs
   return PRIORITIES[Math.max(0, base - steps)];
 }
 
+/** 餓死保底的門檻毫秒數：$HEAVY_CHECK_STARVE_S（預設 7200；0 關閉）；不是非負數時用預設。 */
+export function starveMs(env = process.env) {
+  const value = env.HEAVY_CHECK_STARVE_S ?? '7200';
+  return /^\d+(\.\d+)?$/.test(value) ? Number(value) * 1000 : 7_200_000;
+}
+
 /** 逾時紀錄的沿用期限毫秒數：$HEAVY_CHECK_RESUME_S（預設 7200；0 停用）；不是非負數時用預設。 */
 export function resumeMs(env = process.env) {
   const value = env.HEAVY_CHECK_RESUME_S ?? '7200';
@@ -262,20 +275,33 @@ export function repoPriority(env = process.env) {
 export const repoRank = (repo, order) => (order.includes(repo) ? order.indexOf(repo) : order.length);
 
 /**
- * 排隊結果：{ order: [排好的等待者，各帶 effective（有效用途優先級）與 repoRank], granted: Set(這輪可以去試鎖的 pid) }。
+ * 排隊結果：{ order: [排好的等待者，各帶 effective（有效用途優先級）、repoRank 與 starve（已符合餓死保底）], granted: Set(這輪可以去試鎖的 pid),
+ * starved（這輪用餓死保底分到 slot 的 pid，沒有時 undefined） }。
  * 依（repo 名次、有效用途優先級、since、pid）排序；只有最前面那一級 repo 的等待者能分到空出的 slot（slots - holders.length），
  * 由列首往後分配。防餓死升級只給最前面那一級，後面的 repo 用基本優先級。
+ * 餓死保底（見檔頭）：後面那幾級裡已等滿 starve 毫秒的等待者，在沒有持有者帶 starve 記號時，先拿 1 個空出的 slot（since 最早的），剩下的才照上面分。
  */
-export function queuePlan({ holders, waiters, slots, now = Date.now(), age = ageMs(), repos = repoPriority() }) {
+export function queuePlan({ holders, waiters, slots, now = Date.now(), age = ageMs(), repos = repoPriority(), starve = starveMs() }) {
   const ranked = waiters.map(w => ({ ...w, repoRank: repoRank(repoOf(w.label), repos) }));
   const top = Math.min(...ranked.map(w => w.repoRank));
+  const sinceMs = w => Date.parse(w.since) || 0;
   const order = ranked
-    .map(w => ({ ...w, effective: w.repoRank === top ? effectivePriority(w.priority, w.since, now, age) : w.priority }))
+    .map(w => ({
+      ...w,
+      effective: w.repoRank === top ? effectivePriority(w.priority, w.since, now, age) : w.priority,
+      starve: starve > 0 && w.repoRank > top && Date.parse(w.since) <= now - starve,
+    }))
     .sort((a, b) => a.repoRank - b.repoRank || PRIORITIES.indexOf(a.effective) - PRIORITIES.indexOf(b.effective)
-      || (Date.parse(a.since) || 0) - (Date.parse(b.since) || 0) || a.pid - b.pid);
-  const free = Math.max(0, slots - holders.length);
+      || sinceMs(a) - sinceMs(b) || a.pid - b.pid);
+  let free = Math.max(0, slots - holders.length);
+  let starved;
+  if (free > 0 && !holders.some(h => h.starve)) {
+    starved = order.filter(w => w.starve).sort((a, b) => sinceMs(a) - sinceMs(b) || a.pid - b.pid)[0]?.pid;
+    if (starved !== undefined) free -= 1;
+  }
   const granted = new Set(order.filter(w => w.repoRank === top).slice(0, free).map(w => w.pid));
-  return { order, granted };
+  if (starved !== undefined) granted.add(starved);
+  return { order, granted, starved };
 }
 
 /** SLOT_WAIT／SLOT_TIMEOUT 的 holders 欄：`<label>@<pid>:<秒數>s`，逗號分隔；沒人時 `-`。 */
@@ -365,6 +391,7 @@ async function run({ label, timeoutSec, intervalSec, argv, priority: override })
   const started = Date.now();
   const age = ageMs();
   const repos = repoPriority();
+  const starve = starveMs();
   const resumeLimit = resumeMs();
   const resumeFile = join(dir, `resume-${resumeKey(label, process.cwd(), argv)}.json`);
   const record = { label, repo: label.split(':')[0], pid: process.pid, started_at: new Date(started).toISOString() };
@@ -390,14 +417,15 @@ async function run({ label, timeoutSec, intervalSec, argv, priority: override })
   const holder = spawn('perl', ['-e', HOLDER, ...lockFiles(dir, slots)], { stdio: ['pipe', 'pipe', 'inherit'] });
   holder.stdin.on('error', () => { /* perl 已結束：close 事件會處理 */ });
   // 最近一次算的排隊結果：SLOT_WAIT 的 holders、rank、priority 都從這裡來，不另外再讀。
-  let latest = { holders: undefined, rank: '?', total: '?', effective: '?' };
+  // starving：最近一次算的時候已符合餓死保底；starveGrant：最近一次輪到自己是靠餓死保底（拿到 slot 時據此在鎖檔記 starve）。
+  let latest = { holders: undefined, rank: '?', total: '?', effective: '?', starving: false, starveGrant: false };
   const plan = () => {
     let state;
     try { state = readSlots({ dir, slots }); } catch { return true; } // 讀不到排隊狀態（例如 probe 失敗）：退回直接試鎖
     if (!state.waiters.some(w => w.pid === process.pid)) state.waiters.push({ ...info, priority });
-    const { order, granted } = queuePlan({ ...state, slots, age, repos });
+    const { order, granted, starved } = queuePlan({ ...state, slots, age, repos, starve });
     const rank = order.findIndex(w => w.pid === process.pid);
-    latest = { holders: state.holders, rank: rank + 1, total: order.length, effective: order[rank].effective };
+    latest = { holders: state.holders, rank: rank + 1, total: order.length, effective: order[rank].effective, starving: order[rank].starve, starveGrant: starved === process.pid };
     return granted.has(process.pid);
   };
   const holdersNow = () => {
@@ -433,7 +461,7 @@ async function run({ label, timeoutSec, intervalSec, argv, priority: override })
     timers.push(setInterval(tick, Number(POLL) * 1000));
     timers.push(setInterval(() => {
       const holders = latest.holders ? holdersField(latest.holders) : holdersNow();
-      process.stderr.write(`SLOT_WAIT ${label} ${seconds(Date.now() - started)}s holders=${holders} rank=${latest.rank}/${latest.total} priority=${latest.effective}\n`);
+      process.stderr.write(`SLOT_WAIT ${label} ${seconds(Date.now() - started)}s holders=${holders} rank=${latest.rank}/${latest.total} priority=${latest.effective}${latest.starving ? ' starve=1' : ''}\n`);
     }, intervalSec * 1000));
     if (timeoutSec > 0) timers.push(setTimeout(() => { holder.kill('SIGKILL'); done({ timeout: true }); }, timeoutSec * 1000));
   });
@@ -445,7 +473,7 @@ async function run({ label, timeoutSec, intervalSec, argv, priority: override })
       try { writeFileSync(resumeFile, JSON.stringify({ label, cwd: info.cwd, argv, since: info.since, priority, saved_at: new Date().toISOString() })); } catch { /* 只影響下次重跑的排隊位置 */ }
     }
     process.stderr.write(`SLOT_TIMEOUT ${label} ${seconds(Date.now() - started)}s holders=${holdersNow()}\n`);
-    logRun(dir, { ...record, wait_ms: Date.now() - started, run_ms: 0, exit: SLOT_TIMEOUT_EXIT, load1: loadavg()[0], timed_out: true, priority, effective_priority: effective });
+    logRun(dir, { ...record, wait_ms: Date.now() - started, run_ms: 0, exit: SLOT_TIMEOUT_EXIT, load1: loadavg()[0], timed_out: true, priority, effective_priority: effective, starve: false });
     return SLOT_TIMEOUT_EXIT;
   }
   if (acquired.error) {
@@ -457,14 +485,16 @@ async function run({ label, timeoutSec, intervalSec, argv, priority: override })
   // 持有期間 perl 不再印東西，只等 stdin 關閉後自己結束。鎖檔只是記錄，從另一個 fd 寫入不影響 flock。
   // 先寫鎖檔再刪 wait 檔：其他排隊者讀到的持有者才不會是上一個持有者留下的 label。
   rmSync(resumeFile, { force: true });
-  try { writeFileSync(lockFiles(dir, slots)[acquired.slot - 1], JSON.stringify({ ...info, since: new Date().toISOString() })); } catch { /* 只影響 status 顯示 */ }
+  // 靠餓死保底拿到的 slot 在鎖檔記 starve：其他排隊者讀到它就知道保底 slot 已在用，不再用這條規則。
+  const starveSlot = latest.starveGrant;
+  try { writeFileSync(lockFiles(dir, slots)[acquired.slot - 1], JSON.stringify({ ...info, since: new Date().toISOString(), ...(starveSlot ? { starve: true } : {}) })); } catch { /* 只影響 status 顯示與保底計數 */ }
   dropWait();
-  process.stderr.write(`SLOT_ACQUIRED ${label} slot-${acquired.slot}/${slots} waited=${seconds(Date.now() - started)}s\n`);
+  process.stderr.write(`SLOT_ACQUIRED ${label} slot-${acquired.slot}/${slots} waited=${seconds(Date.now() - started)}s${starveSlot ? ' starve=1' : ''}\n`);
   const runStarted = Date.now();
   const load1 = loadavg()[0];
   const code = await runDirect(argv, { ...process.env, HEAVY_SLOT_HELD: `${label} slot-${acquired.slot}` });
   holder.stdin.end();
-  logRun(dir, { ...record, wait_ms: runStarted - started, run_ms: Date.now() - runStarted, exit: code, load1, timed_out: false, priority, effective_priority: effective });
+  logRun(dir, { ...record, wait_ms: runStarted - started, run_ms: Date.now() - runStarted, exit: code, load1, timed_out: false, priority, effective_priority: effective, starve: starveSlot });
   return code;
 }
 
@@ -479,9 +509,9 @@ function status() {
   const now = Date.now();
   const age = since => (since ? `${seconds(now - Date.parse(since))}s` : '?');
   console.log(`SLOTS ${holders.length}/${slots} dir=${dir}`);
-  for (const h of holders) console.log(`HOLDER slot-${h.slot} ${h.label} pid=${h.pid ?? '?'} held=${age(h.since)} cwd=${h.cwd ?? '?'}`);
+  for (const h of holders) console.log(`HOLDER slot-${h.slot} ${h.label} pid=${h.pid ?? '?'} held=${age(h.since)} cwd=${h.cwd ?? '?'}${h.starve ? ' starve=1' : ''}`);
   const { order } = queuePlan({ holders, waiters, slots, now, repos: repoPriority() });
-  order.forEach((w, i) => console.log(`WAITER ${w.label} pid=${w.pid} waited=${age(w.since)} cwd=${w.cwd ?? '?'} rank=${i + 1} priority=${w.effective} base=${w.priority} repo_rank=${w.repoRank + 1}`));
+  order.forEach((w, i) => console.log(`WAITER ${w.label} pid=${w.pid} waited=${age(w.since)} cwd=${w.cwd ?? '?'} rank=${i + 1} priority=${w.effective} base=${w.priority} repo_rank=${w.repoRank + 1}${w.starve ? ' starve=1' : ''}`));
   return 0;
 }
 

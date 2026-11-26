@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { realTmpdir } from './test/real-tmpdir.mjs';
-import { ageMs, effectivePriority, holdersField, labelPriority, parseArgs, percentile, queuePlan, repoOf, resumeKey, resumeMs, repoPriority, repoPriorityFile, slotCommand, slotCount, slotDir, slotTimeoutLine, statsLines, SLOT_TIMEOUT_EXIT } from './heavy-slot.mjs';
+import { ageMs, effectivePriority, holdersField, labelPriority, parseArgs, percentile, queuePlan, repoOf, resumeKey, resumeMs, repoPriority, repoPriorityFile, slotCommand, slotCount, slotDir, slotTimeoutLine, starveMs, statsLines, SLOT_TIMEOUT_EXIT } from './heavy-slot.mjs';
 
 const script = new URL('./heavy-slot.mjs', import.meta.url).pathname;
 
@@ -18,6 +18,7 @@ function fixture(t, slots = 2, extraEnv = {}) {
   delete env.HEAVY_SLOT_HELD;
   delete env.HEAVY_CHECK_AGE_S;
   delete env.HEAVY_CHECK_RESUME_S;
+  delete env.HEAVY_CHECK_STARVE_S;
   // repo 優先序固定成預設值：不讀機器上真實的 ~/.config/orca-heavy-check/repo-priority。
   env.HEAVY_CHECK_REPO_PRIORITY = 'spay2,ron-skills';
   Object.assign(env, extraEnv);
@@ -453,4 +454,116 @@ test('resume 紀錄過期（HEAVY_CHECK_RESUME_S）不沿用並清掉；不同�
   assert.equal(resumeMs({}), 7_200_000);
   assert.equal(resumeMs({ HEAVY_CHECK_RESUME_S: '60' }), 60_000);
   assert.equal(resumeMs({ HEAVY_CHECK_RESUME_S: '0' }), 0);
+});
+
+test('餓死保底 queuePlan：低優先 repo 等滿門檻可拿 1 個空出的 slot；未滿、已有保底 slot、沒空 slot、門檻 0 都拿不到', () => {
+  const since = '2026-11-26T00:00:00Z';
+  const w = (pid, label, priority, sec) => ({ pid, label, priority, since: new Date(Date.parse(since) + sec * 1000).toISOString() });
+  const repos = ['spay2', 'ron-skills'];
+  const starve = 7_200_000;
+  const now = Date.parse(since) + starve; // pid 1（since 0 秒）剛好等滿門檻
+  const spay = w(9, 'spay2:check', 'normal', 7000);
+  // 等滿門檻、1 個 slot 空出：ron-skills 拿到，spay2 這輪不拿（只剩的那個給了保底）。
+  let plan = queuePlan({ holders: [{ label: 'x:h', pid: 50 }], waiters: [w(1, 'ron-skills:pre-commit', 'low', 0), spay], slots: 2, now, repos, starve });
+  assert.equal(plan.starved, 1);
+  assert.deepEqual([...plan.granted], [1]);
+  assert.deepEqual(plan.order.map(x => [x.pid, x.starve]), [[9, false], [1, true]], '排序不變，只是標出 starve');
+  // 2 個 slot 空出：保底拿 1 個，另一個照舊給 spay2。
+  plan = queuePlan({ holders: [], waiters: [w(1, 'ron-skills:pre-commit', 'low', 0), spay], slots: 2, now, repos, starve });
+  assert.deepEqual([...plan.granted].sort(), [1, 9]);
+  // 差 1 秒未滿門檻：拿不到。
+  plan = queuePlan({ holders: [{ label: 'x:h', pid: 50 }], waiters: [w(1, 'ron-skills:pre-commit', 'low', 1), spay], slots: 2, now, repos, starve });
+  assert.equal(plan.starved, undefined);
+  assert.deepEqual([...plan.granted], [9]);
+  assert.equal(plan.order.find(x => x.pid === 1).starve, false);
+  // 已有 1 個保底 slot 在用：第 2 個等滿門檻的低優先等待者拿不到，空出的 slot 給 spay2。
+  plan = queuePlan({ holders: [{ label: 'ron-skills:pre-commit', pid: 1, starve: true }], waiters: [w(2, 'ron-skills:check', 'normal', 0), spay], slots: 2, now, repos, starve });
+  assert.equal(plan.starved, undefined);
+  assert.deepEqual([...plan.granted], [9]);
+  assert.equal(plan.order.find(x => x.pid === 2).starve, true, '仍標出已符合，只是保底 slot 被佔');
+  // 沒有空 slot：不搶占正在跑的檢查。
+  plan = queuePlan({ holders: [{ label: 'spay2:a', pid: 50 }, { label: 'spay2:b', pid: 51 }], waiters: [w(1, 'ron-skills:pre-commit', 'low', 0), spay], slots: 2, now, repos, starve });
+  assert.deepEqual([...plan.granted], []);
+  assert.equal(plan.starved, undefined);
+  // 門檻 0：規則關閉，等再久也不拿、不標。
+  plan = queuePlan({ holders: [{ label: 'x:h', pid: 50 }], waiters: [w(1, 'ron-skills:pre-commit', 'low', -86400), spay], slots: 2, now, repos, starve: 0 });
+  assert.deepEqual([...plan.granted], [9]);
+  assert.equal(plan.order.find(x => x.pid === 1).starve, false);
+  // 多個符合：給 since 最早的（跨 repo 級別），而且只給 1 個。
+  plan = queuePlan({ holders: [], waiters: [w(1, 'ron-skills:check', 'normal', -10), w(2, 'dbg', 'normal', -20), spay], slots: 3, now, repos, starve });
+  assert.equal(plan.starved, 2);
+  assert.deepEqual([...plan.granted].sort(), [2, 9]);
+  // 最前面那一級自己不適用保底（它本來就會拿到）。
+  plan = queuePlan({ holders: [], waiters: [w(1, 'ron-skills:check', 'normal', -10)], slots: 1, now, repos, starve });
+  assert.equal(plan.starved, undefined);
+  assert.deepEqual([...plan.granted], [1]);
+  assert.equal(starveMs({}), 7_200_000);
+  assert.equal(starveMs({ HEAVY_CHECK_STARVE_S: '0' }), 0);
+  assert.equal(starveMs({ HEAVY_CHECK_STARVE_S: '30' }), 30_000);
+  assert.equal(starveMs({ HEAVY_CHECK_STARVE_S: 'x' }), 7_200_000);
+});
+
+test('餓死保底實跑：spay2 在等、ron-skills 等滿 HEAVY_CHECK_STARVE_S，持有者放掉後 ron-skills 拿到（status、SLOT_WAIT、log 都標 starve）；不搶占', async t => {
+  const { dir, env, start, status, holdUntil, enqueue, order, until } = fixture(t, 1, { HEAVY_CHECK_STARVE_S: '1' });
+  const hold = await holdUntil('t:hold');
+  const gate = join(dir, 'release-ron');
+  const ron = start('ron-skills:pre-commit', `echo ron-skills:pre-commit >> ${dir}/order; while [ ! -e ${gate} ] && [ -d ${dir} ]; do sleep 0.05; done`);
+  await until(() => /^WAITER ron-skills:pre-commit /m.test(status().stdout), 'ron-skills 排進隊伍');
+  const spay = await enqueue('spay2:check');
+  await until(() => /^WAITER ron-skills:pre-commit .* repo_rank=2 starve=1$/m.test(status().stdout), 'ron-skills 標 starve=1');
+  await until2(() => ron.stderr(), /^SLOT_WAIT ron-skills:pre-commit \d+s holders=t:hold@\d+:\d+s rank=2\/2 priority=low starve=1$/m);
+  // 不搶占：持有者還在跑時誰都沒拿到。
+  assert.deepEqual(order(), []);
+  assert.match(status().stdout, /^SLOTS 1\/1 /m);
+  hold.release();
+  await until(() => order().includes('ron-skills:pre-commit'), 'ron-skills 用保底拿到 slot');
+  assert.match(ron.stderr(), /^SLOT_ACQUIRED ron-skills:pre-commit slot-1\/1 waited=\d+s starve=1$/m);
+  assert.match(status().stdout, /^HOLDER slot-1 ron-skills:pre-commit pid=\d+ held=\d+s cwd=\S+ starve=1$/m);
+  spawnSync('touch', [gate]);
+  assert.deepEqual((await Promise.all([hold.done, ron.done, spay.done])).map(r => r.code), [0, 0, 0]);
+  assert.deepEqual(order(), ['ron-skills:pre-commit', 'spay2:check']);
+  const log = readFileSync(join(env.HEAVY_CHECK_DIR, 'log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(log.map(r => [r.label, r.starve]).sort(), [['ron-skills:pre-commit', true], ['spay2:check', false], ['t:hold', false]]);
+  assert.doesNotMatch(spay.stderr(), /starve=1/);
+});
+
+test('餓死保底實跑：已有 1 個保底 slot 在用時，第 2 個等滿門檻的低優先等待者拿不到，空出的 slot 給 spay2', async t => {
+  const { dir, start, status, holdUntil, order, until } = fixture(t, 2, { HEAVY_CHECK_STARVE_S: '1' });
+  const h1 = await holdUntil('t:one');
+  const h2 = await holdUntil('t:two');
+  const gated = (label, name) => start(label, `echo ${label} >> ${dir}/order; while [ ! -e ${join(dir, `release-${name}`)} ] && [ -d ${dir} ]; do sleep 0.05; done`);
+  const ronA = gated('ron-skills:pre-commit', 'a');
+  await until(() => /^WAITER ron-skills:pre-commit /m.test(status().stdout), 'ron-skills:pre-commit 排進隊伍');
+  const ronB = gated('ron-skills:check', 'b');
+  await until(() => /^WAITER ron-skills:check /m.test(status().stdout), 'ron-skills:check 排進隊伍');
+  const spay = gated('spay2:check', 's');
+  await until(() => /^WAITER spay2:check /m.test(status().stdout), 'spay2 排進隊伍');
+  await until(() => (status().stdout.match(/ starve=1$/gm) ?? []).length === 2, '兩個 ron-skills 都符合保底');
+  h1.release();
+  await until(() => order().includes('ron-skills:pre-commit'), '較早的 ron-skills 用保底拿到 slot');
+  await until(() => /^HOLDER .* ron-skills:pre-commit .* starve=1$/m.test(status().stdout), '保底 slot 記在鎖檔');
+  h2.release();
+  await until(() => order().includes('spay2:check'), 'spay2 拿到第二個空出的 slot');
+  await sleep(300);
+  assert.deepEqual(order(), ['ron-skills:pre-commit', 'spay2:check'], '第 2 個低優先等待者沒拿到');
+  // spay2 已不在等：ron-skills 成了最前面那一級，不再標 starve，等一般 slot 空出。
+  assert.match(status().stdout, /^WAITER ron-skills:check .* repo_rank=2$/m);
+  // 保底 slot 釋放後，ron-skills:check 照常拿到空出的 slot。
+  spawnSync('touch', [join(dir, 'release-a')]);
+  await until(() => order().includes('ron-skills:check'), '保底 slot 釋放後 ron-skills:check 拿到');
+  for (const name of ['b', 's']) spawnSync('touch', [join(dir, `release-${name}`)]);
+  assert.deepEqual((await Promise.all([h1.done, h2.done, ronA.done, ronB.done, spay.done])).map(r => r.code), [0, 0, 0, 0, 0]);
+});
+
+test('餓死保底：HEAVY_CHECK_STARVE_S=0 關閉，spay2 在等時 ron-skills 等再久也不拿、不標 starve', async t => {
+  const { status, holdUntil, enqueue, order } = fixture(t, 1, { HEAVY_CHECK_STARVE_S: '0' });
+  const hold = await holdUntil('t:hold');
+  const ron = await enqueue('ron-skills:pre-commit');
+  const spay = await enqueue('spay2:check');
+  await sleep(1200);
+  assert.doesNotMatch(status().stdout, /starve=1/);
+  hold.release();
+  await Promise.all([hold.done, ron.done, spay.done]);
+  assert.deepEqual(order(), ['spay2:check', 'ron-skills:pre-commit']);
+  assert.doesNotMatch(ron.stderr(), /starve=1/);
 });
