@@ -232,10 +232,10 @@ export function needsHeadingOf(body) {
     // GFM：關閉的圍欄同符號、不短於開啟的、後面只能有空白；``` 開啟時資訊字串不能含 `（否則是行內碼）。
     // 縮排開啟的（清單內）遇到縮排更少的非空行視為清單結束、區塊關閉，該行照常判斷：寧可多印 PREREQ，不漏印。
     const [, indent, marker, rest] = line.match(/^( {0,3})(`{3,}|~{3,})(.*)$/) ?? [];
-    if (fence && line.trim() && line.match(/^ */)[0].length < fence.indent) fence = undefined;
     if (fence) {
-      if (marker?.[0] === fence.marker[0] && marker.length >= fence.marker.length && !rest.trim()) fence = undefined;
-      continue;
+      if (marker?.[0] === fence.marker[0] && marker.length >= fence.marker.length && !rest.trim()) { fence = undefined; continue; }
+      if (!line.trim() || line.match(/^ */)[0].length >= fence.indent) continue;
+      fence = undefined;
     }
     if (marker && !(marker[0] === '`' && rest.includes('`'))) { fence = { marker, indent: indent.length }; continue; }
     const heading = line.match(/^ {0,3}#{1,6}[ \t]+(為什麼是 needs-.*?)[ \t#]*$/)?.[1];

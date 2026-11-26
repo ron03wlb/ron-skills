@@ -358,12 +358,13 @@ test('程式碼區塊照 GFM 開閉：帶資訊字串的 ~~~ 不關閉區塊、�
   assert.equal(result.stdout, 'ready #611 標題 611\nready #612 標題 612\nPREREQ 612 為什麼是 needs-info\n');
 });
 
-test('清單內縮排開啟的程式碼區塊在清單結束時關閉，之後的標題照印 PREREQ（#666 review r2）', () => {
+test('清單內縮排開啟的程式碼區塊在清單結束時關閉、縮排較少的結束圍欄照常關閉，之後的標題照印 PREREQ（#666 review r2、r3）', () => {
   const result = fakeGh({ issues: [
     issue(621, { labels: ['enhancement', 'ready-for-agent'], body: '- 範例\n\n  ~~~md\n  ## 為什麼是 needs-triage\n\n## 為什麼是 needs-info\n' }),
+    issue(622, { labels: ['enhancement', 'ready-for-agent'], body: '  ~~~md\n  ## 為什麼是 needs-triage\n~~~\n\n## 為什麼是 needs-info\n' }),
   ] }).run();
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, 'ready #621 標題 621\nPREREQ 621 為什麼是 needs-info\n');
+  assert.equal(result.stdout, 'ready #621 標題 621\nready #622 標題 622\nPREREQ 621 為什麼是 needs-info\nPREREQ 622 為什麼是 needs-info\n');
 });
 
 // #591（retro 1124a，#417 第 2 項）：#339、#340 都改 pilot-probe.mjs，Pick 時沒有工具看出，要到 worker 改完 Probe 才印 OVERLAP。
