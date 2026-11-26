@@ -23,7 +23,9 @@
 //   --batch    監看 <主 checkout>/.scratch/pilot/batch-<key>.md 裡 state 為 running 的成員；可重複，每一批都監看（investing 舊版只看最後一批，發生三次）。
 //              --checkout 預設是目前目錄所屬 repo 的主 checkout（`git worktree list` 的第一個）。
 //   <checkpoint>.md  直接給 batch checkpoint 的路徑，同 --batch；batch 名取檔名 `batch-<key>.md` 的 key（不是這個形狀時取去掉 .md 的檔名）。
-//   batch 成員只認自己號碼的結果行；直接給的 handle 任何號碼都算。
+//   batch 成員只認自己號碼的結果行；直接給的 handle 任何號碼都算。`# batch req-<n>` 的 checkpoint（pilot-dispatch --unit 的 fix unit，#590）裡
+//   Issue 欄是 `-` 的列也是成員，號碼是 `req-<n>`（pilot-probe.mjs 的 parseBatch），認 `DONE req-<n> <sha>`、`STOP req-<n> <cause>`；直接給的 handle 也認。
+//   unit 的 POSTLAND 不記成 `postland:` 行（讀取端只認 Issue 號碼）。
 //   --interval 輪詢間隔秒數（預設 60，可帶小數）。
 //   --worker-state <路徑>（#466，只對 batch 成員）：worker checkpoint 的路徑，`<worktree>`、`<n>` 換成成員列的值，預設 `<worktree>/.scratch/issue-run-<n>/state.md`
 //              （同 pilot-probe.mjs 的 --worker-state）。
@@ -137,7 +139,8 @@ export async function watch({ targets, intervalMs = 60_000, read, scrollback = a
         }
         if (match && match.line !== target.resumed) {
           record(target, match.line);
-          const commands = match.kind === 'DONE' ? postlandCommands(match.tail ?? tail, n) : [];
+          // 請求 unit（`req-<n>`，#590）不記：`postland:` 行的讀取端（pilot-land 的 POSTLAND_PENDING）只認 Issue 號碼。
+          const commands = match.kind === 'DONE' && /^\d+$/.test(n) ? postlandCommands(match.tail ?? tail, n) : [];
           if (commands.length) postland(target, commands);
           print(`RESULT ${batch} ${handle} ${match.line}`);
           events++;
@@ -149,7 +152,7 @@ export async function watch({ targets, intervalMs = 60_000, read, scrollback = a
           if (round === 0 && !stateResult(target, workerState)) { stale.add(handle); exitedFirst.push(target); continue; }
           // #466：分頁已結束卻沒有結果行時讀 worker checkpoint（與 Probe 的 workerState 同一判斷）。
           const sha = stateResult(target, workerState);
-          const commands = sha ? postlandCommands(tail, n) : [];
+          const commands = sha && /^\d+$/.test(n) ? postlandCommands(tail, n) : [];
           if (commands.length) postland(target, commands);
           print(sha ? `RESULT ${batch} ${handle} DONE ${n} ${sha} from-state` : `EXITED ${batch} ${handle}`);
           events++;

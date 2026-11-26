@@ -198,13 +198,17 @@ const isMemberRow = line => tableCells(line).length >= 8 && /^\d+$/.test(tableCe
 /**
  * batch checkpoint 的成員列（欄位見 PILOT-STORE.md），依表格順序：每列 `{ n, branch, worktree, handle, started, stuckAfter, state, candidate }`，n 一律是字串。
  * pilot-land 的 readCheckpoint 與 pilot-probe 的 parseBatch 共用（#453 第 1 項：一邊轉 Number、一邊留字串，照 probe 寫的 `held.has(m.n)` 在 pilot-land 不中）。
- * 預設只收 Issue 欄是號碼的列；`requests` 時也收 Issue 欄是 `-` 的請求分支列，n 是分支名稱。
+ * 預設只收 Issue 欄是號碼的列；`requests` 時也收 Issue 欄是 `-` 的請求分支列，n 是分支名稱；
+ * `requestKey`（請求 batch 的 key `req-<n>`，見 requestBatchKey）時也收 `-` 列，n 是這個 key（#590：worker 回報 `DONE req-<n> <sha>`，Probe 與 pilot-watch 以它比對結果行）。
  */
-export function batchMembers(text, { requests = false } = {}) {
+export function batchMembers(text, { requests = false, requestKey } = {}) {
   return text.split('\n').map(tableCells)
-    .filter(cells => cells.length >= 8 && (/^\d+$/.test(cells[0]) || (requests && cells[0] === '-')))
-    .map(([n, branch, worktree, handle, started, stuckAfter, state, candidate]) => ({ n: n === '-' ? branch : n, branch, worktree, handle, started, stuckAfter, state, candidate }));
+    .filter(cells => cells.length >= 8 && (/^\d+$/.test(cells[0]) || ((requests || requestKey) && cells[0] === '-')))
+    .map(([n, branch, worktree, handle, started, stuckAfter, state, candidate]) => ({ n: n === '-' ? requestKey ?? branch : n, branch, worktree, handle, started, stuckAfter, state, candidate }));
 }
+
+/** 請求 batch（pilot-dispatch --unit、pilot-land `req-<n> --branch` 開的 batch-req-<n>.md）的 key：標題行 `# batch req-<n>` 的 `req-<n>`，其他 batch 是 undefined（#590）。 */
+export const requestBatchKey = text => String(text).match(/^# batch (req-\d+)[ \t]*$/m)?.[1];
 
 /**
  * batch checkpoint 的行陣列裡成員全是 `moved …` 時，把 `current:` 就地寫成 `closed moved`；傳回這次是否改了。

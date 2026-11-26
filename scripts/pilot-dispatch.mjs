@@ -75,6 +75,21 @@
 //   `.scratch/issue-run-<n>*/wip/*.patch`，`.claude/settings.json`（受保護、owner 手改）單獨一行（段不放進「怎麼整併」，免得重跑草稿撞上 draft-filled）。
 //   最後一段空白的「怎麼整併」給 coordinator 補，補完再帶 --note 重跑。
 //
+// --unit（#590）派非 Issue 的 fix unit（sync-main 衝突修正、修 CI 的 tooling fix），取代手加 requests.md、手開 worktree、手開分頁、手送 brief 的六步：
+//   key 是 `req-<n>`（`pilot-request.mjs <checkout> add … --source <session>` 印的 ADDED 行號），分支是 `retro/<x>`（pilot-land 請求分支的規則）。
+//   不讀 Issue：沒有認領檢查、blocker、放掉認領；重疊、容量（算 1 人）、Orca 可用、Bare guard（時機 `dispatch req-<n>`）、Env sync、重派時關舊分頁照一般派工。
+//   batch-req-<n>.md 已不是 dispatched（staged、merged、closed…）時 `STOP req-<n> checkpoint <檔> current: <值>`；分支已是別的開著的 batch 的成員時
+//   `STOP req-<n> branch-taken <key>`（重用它的 worktree 會關掉那個 worker 的分頁）；兩者都什麼都不動。
+//   batch-req-<n>.md 已有別的分支的成員列時 `STOP req-<n> checkpoint <檔> 的成員分支是 <分支>`，什麼都不動（同 pilot-land 的 STOP checkpoint）。
+//   這些檢查派工開頭先做一次；重疊檢查之後、建任何東西之前，在 `.scratch/pilot/units` 與 batch-req-<n>.md 兩把鎖內重查並寫預留列（running、handle 空）：同 key 正在派時 `STOP req-<n> running dispatching`，別的 key 同分支時 `branch-taken`。
+//   `-` 列是 running、它的分頁還開著（或 worktree 已不在、無從確認）時 `STOP req-<n> running <handle>`，不關分頁、不寫預留列；開頭讀到的 `-` 列到鎖內已被改寫（probe --apply 寫了 done）時
+//   `STOP req-<n> checkpoint <檔> 的成員列在派工中被改寫`；overlap 的 STOP 不留預留列（#590 review4）。這些都是 row=kept。
+//   worktree 與分頁標題用 `req-<n>`。開好分頁、等到 tui-idle 之後輪詢 `terminal read --screen` 直到最後一個非空行是 Claude Code 的提示列（claudeOnScreen），最多 PILOT_DISPATCH_CLAUDE_MS（預設 60000）、
+//   間隔 PILOT_DISPATCH_CLAUDE_POLL_MS（預設 2000）；沒出現就 stderr 印畫面尾巴、`STOP req-<n> claude-not-started <handle>`，不送、成員列記 stop、分頁留著
+//   （G22：`--command claude` 開出的分頁只有 bash，tui-idle 照樣成立，brief 送進 shell）。出現後送一行（每次 terminal send 前再確認一次畫面，退回 shell 就 claude-not-started）：brief 的絕對路徑與結果行格式
+//   `DONE req-<n> <sha>`／`STOP req-<n> <原因>`。成員列寫進 batch-req-<n>.md，Issue 欄是 `-`（pilot-land `req-<n> --branch` 與 pilot-close 的請求分支列），
+//   Probe 與 pilot-watch 在 `# batch req-<n>` 的 checkpoint 把它當成員 `req-<n>`，Watch 通知 DONE、Probe 寫回 done 後 pilot-land 照常 stage。
+//
 // 容量檢查是派工路徑（一般派工與帶 --note 的 --fresh）的預設（#534：從草稿切到派工時只加 --note，漏了 --capacity --repo-cap 4 就無聲派出）：
 //   沒帶旗標時同帶 `--capacity --repo-cap 4`；--capacity 照舊可帶（無作用），--repo-cap <n> 換掉 repo 上限；只有顯式 --no-capacity 才兩項都略過、不讀也不寫帳本
 //   （--no-capacity 和 --capacity、--repo-cap 一起帶是用法錯誤）。下面寫「帶 --capacity」「帶 --repo-cap」的段落都是指這個預設。
@@ -95,31 +110,33 @@
 // 用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--repo-cap <n>|--no-capacity] [--integration <分支>] [--stuck-after <分鐘>m]（在主 checkout 跑，需要 ORCA_CLI_COMMAND）
 //       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--repo-cap <n>|--no-capacity] [--integration <分支>] [--stuck-after <分鐘>m]
 //       node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--allow-overlap] [--integration <分支>]（草稿，不需要 ORCA_CLI_COMMAND）
+//       node scripts/pilot-dispatch.mjs req-<n> --unit <brief 檔> --branch retro/<x> [--allow-overlap] [--capacity] [--repo-cap <n>|--no-capacity] [--integration <分支>] [--stuck-after <分鐘>m]
 //   --integration worktree 的 base 與表頭的整合分支，預設 pilot/integration；--stuck-after 成員行的 stuck-after，預設 90m；--repo-cap 預設 4（見上）。
 // stdout：容量行（CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP default 4 → …、CAPACITY ok repo …、CAPACITY ok …，或 STOP capacity repo …、STOP capacity … 接 RELEASED <n>）、Orca 不能用時唯一的成員外 STOP orca-unavailable <第一行>（見上）、最後的 REPORTED <repo> …（見上）；
-//   stderr 另有 WARN release …、WARN capacity-report …、WARN orca-register …、WARN stamp-files …。每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、worktree-branch、create、unbare、terminal、tui-timeout、send、orca、timeout、signal），Env sync 失敗是 `STOP sync <n> exit <code>`（見上）；
+//   stderr 另有 WARN release …、WARN capacity-report …、WARN orca-register …、WARN stamp-files …。每個成員一行 DISPATCHED <n> <terminal handle> 或 STOP <n> <原因>（not-claimed、claim-check（讀不到留言）、running、overlap、overlap-check、worktree-branch、create、unbare、terminal、claude-not-started、checkpoint、branch-taken（這三個只有 --unit）、tui-timeout、send、orca、timeout、signal；--unit 的 <n> 是 `req-<n>`），Env sync 失敗是 `STOP sync <n> exit <code>`（見上）；
 //   Bare guard 還原主 checkout 時另有一行 UNBARE <主 checkout>。成員行同時寫進 <主 checkout>/.scratch/pilot/batch-<key>.md，
 //   state 只寫 running 或 stop（pilot-probe.mjs 只認 PILOT-STORE.md 的 running／done／stop；running、overlap 的 STOP 不改寫那一列；
 //   send 的 STOP 記 running：worker 可能其實已在跑，交給 Probe 判定，#354），STOP 原因只在 stdout。
 //   每個成員的 STOP 行（含 --fresh 與草稿的）最後一欄是 ` row=<kept|stop|running>`：這一行之後成員列沒動（kept），或寫成 stop、running（investing#481：
 //   哪些 STOP 改寫成員列以前只能讀程式碼）。HOLD 行不改成員列。不屬於成員的 STOP capacity、STOP orca-unavailable 不寫任何列，也沒有這一欄。
 //   --fresh 帶 --note 時 prior 有未提交改動、已備份就先印 `DIRTY_BACKUP <n> <patch>`；成功時 DISPATCHED 之後再印 `PRIOR <n> <prior 分支> <sha>`，有草稿時再印 `DRAFT_ARCHIVED <n> <path>`；草稿只印 `NOTE_DRAFT <path>`（exit 0）或 `STOP <n> git …`、`STOP <n> overlap …`、`STOP <n> overlap-check …`、`STOP <n> title …`、`STOP <n> draft-filled <path>`（exit 4）；另有 `STOP <n> backup <原因>`、`STOP refresh-twice <n>`、`STOP <n> running <handle>`、`STOP <n> worktree …`、`STOP <n> git …`、`STOP <n> terminal-close …`、`STOP <n> comment …`。
-// exit：0 全部派出（草稿：寫好）；4 有成員 STOP 或 HOLD（或 STOP capacity、STOP orca-unavailable）；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤（含草稿帶了派工旗標、Env sync 宣告寫錯）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
+// exit：0 全部派出（草稿：寫好）；4 有成員 STOP 或 HOLD（或 STOP capacity、STOP orca-unavailable）；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤（含草稿帶了派工旗標、Env sync 宣告寫錯；--unit 的 key 不是 req-<n>、分支不是 retro/<x>、brief 檔不在、併用 <n>:<slug> 或 --fresh，或沒有 --unit 卻帶 --branch）或派工時沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { claimedBy, defaultSession } from './issue-pool.mjs';
-import { orca, sendToSession } from './orca-session-send.mjs';
-import { closeIfAllMoved, exitIfLocked, updateCheckpoint } from './lib/pilot-store.mjs';
-import { ADAPTER, changedUnits, memberOverlaps, parseBatch, pilotFiles, pilotSection } from './pilot-probe.mjs';
+import { orca, reportScreenTail, sendPrompt, sendToSession, waitTuiReady } from './orca-session-send.mjs';
+import { closeIfAllMoved, exitIfLocked, updateCheckpoint, withCheckpointLock } from './lib/pilot-store.mjs';
+import { ADAPTER, changedUnits, memberOverlaps, parseBatch, pilotFiles, pilotSection, screenLines } from './pilot-probe.mjs';
 import { envMissingLines, check as capacityCheck, ledgerPath, machineCap, report as capacityReport, stopLine as capacityStopLine } from './pilot-capacity.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
 
 const USAGE = '用法：node scripts/pilot-dispatch.mjs <batch key> <n>:<slug>... [--allow-overlap] [--capacity] [--repo-cap <n>|--no-capacity] [--integration <分支>] [--stuck-after <分鐘>m]（需要 ORCA_CLI_COMMAND；容量檢查預設做，--repo-cap 預設 4）\n'
   + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> --note <檔> [--again] [--allow-overlap] [--capacity] [--repo-cap <n>|--no-capacity] [--integration <分支>] [--stuck-after <分鐘>m]\n'
-  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--allow-overlap] [--integration <分支>]（只寫 fresh-<n>.md 草稿、不派工）';
+  + '      node scripts/pilot-dispatch.mjs <batch key> --fresh <n>:<slug> [--allow-overlap] [--integration <分支>]（只寫 fresh-<n>.md 草稿、不派工）\n'
+  + '      node scripts/pilot-dispatch.mjs req-<n> --unit <brief 檔> --branch retro/<x> [--allow-overlap] [--capacity] [--repo-cap <n>|--no-capacity] [--integration <分支>] [--stuck-after <分鐘>m]（非 Issue 的 fix unit）';
 const GUARD = join(dirname(fileURLToPath(import.meta.url)), 'pilot-unbare.sh');
 const WORKTREE_CREATE = fileURLToPath(new URL('./orca-worktree-create.mjs', import.meta.url));
 const TRACKER = fileURLToPath(new URL('./gh-tracker.mjs', import.meta.url));
@@ -128,6 +145,16 @@ const DEADLINE = Date.now() + BUDGET_MS;
 // 上限用 ??：0 是合法值（只查一次，測試用），間隔與預算的 || 則把 0 當成沒設。
 const REGISTER_MS = Number(process.env.PILOT_DISPATCH_REGISTER_MS ?? 60000);
 const REGISTER_POLL_MS = Number(process.env.PILOT_DISPATCH_REGISTER_POLL_MS || 2000);
+// --unit 開分頁後等 Claude Code 出現的上限與間隔（#590）。
+const CLAUDE_MS = Number(process.env.PILOT_DISPATCH_CLAUDE_MS ?? 60000);
+const CLAUDE_POLL_MS = Number(process.env.PILOT_DISPATCH_CLAUDE_POLL_MS || 2000);
+/**
+ * Claude Code 正在分頁前景的畫面（#590）：最後一個非空行是輸入框下方的 `⏵⏵` 模式列或 `? for shortcuts`，或工作中的 `esc to interrupt`。
+ * 只看最後一行：shell 提示上方可能殘留舊的 banner 或含版本字串的錯誤訊息；`❯` 也是常見 shell 主題的提示符，不算。
+ * G22 的分頁只有 bash，tui-idle 照樣成立，brief 送進 shell 變成 command not found。
+ */
+const CLAUDE_FOOTER = /^[\s│]*(?:⏵⏵|\? for shortcuts)|esc to interrupt/;
+const claudeOnScreen = tail => CLAUDE_FOOTER.test(screenLines(tail).filter(line => line.trim()).at(-1) ?? '');
 /** 派工路徑預設的單一 repo 上限（#534：沒帶 --repo-cap 時用它，--no-capacity 才略過）。 */
 const DEFAULT_REPO_CAP = 4;
 /** 副本清單（copy-templates.mjs 的同一份）：草稿的 patch 指令排除它登記的副本（#572）。 */
@@ -424,16 +451,117 @@ async function spawnText(command, args, options) {
 }
 
 /**
+ * --unit 開分頁之後（#590）：輪詢 `terminal read --screen` 直到 claudeOnScreen，最多 CLAUDE_MS、間隔 CLAUDE_POLL_MS；讀取回來時已過上限的畫面不算。
+ * 看到傳回 true；到上限仍沒看到時把畫面尾巴印到 stderr（orca-session-send 的 reportScreenTail）並傳回 false。Orca 一時讀不到當作還沒看到；`signal` 中止時丟錯。
+ */
+async function claudeStarted(ctx, handle) {
+  return pollClaude(ctx, handle, CLAUDE_MS, true);
+}
+
+/** 讀一次（或輪詢到 `ms` 為止）`--screen`，claudeOnScreen 時傳回 true；`report` 時沒看到就把畫面尾巴印到 stderr。 */
+async function pollClaude(ctx, handle, ms, report) {
+  const until = Date.now() + ms;
+  // 每次讀取也受上限約束（#590 review 第 2 輪：Orca 卡住時只剩整體預算的 STOP timeout）；畫面尾巴的診斷讀取另給 10 秒。
+  const limited = ms => ({ ...ctx, signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(Math.max(1, ms))]) });
+  for (;;) {
+    try {
+      // ms 為 0 是送出前的單次確認（guard）：讀取用 10 秒上限、不比期限。
+      const { tail } = (await orca(limited(ms ? until - Date.now() : 10000), 'terminal', 'read', '--terminal', handle, '--screen')).terminal ?? {};
+      if (claudeOnScreen(tail) && (!ms || Date.now() <= until)) return true;
+    } catch (error) {
+      if (ctx.signal.aborted) throw error;
+    }
+    if (Date.now() + CLAUDE_POLL_MS > until) {
+      if (report) await reportScreenTail(limited(10000), handle);
+      return false;
+    }
+    await sleep(CLAUDE_POLL_MS, undefined, { signal: ctx.signal });
+  }
+}
+
+/** checkpoint 裡成員 `n` 那一列的原文；沒有檔或沒有這一列傳回 undefined。 */
+function rowLine(checkpoint, n) {
+  if (!existsSync(checkpoint)) return undefined;
+  return readFileSync(checkpoint, 'utf8').split('\n').find(line => line.startsWith(`| ${n} |`));
+}
+
+/**
+ * --unit 動手之前（#590 review 第 2、3 輪、review4）：在 `.scratch/pilot/units` 與 batch 檔兩把鎖內讀 `-` 列、檢查、寫預留列，同 key 或同分支的並行派工因此看得到正在派的 unit，
+ * pilot-probe --apply 在讀與寫之間寫的 DONE 也不會被蓋掉。`seen` 是派工開頭讀到的 `-` 列原文（沒有列時 undefined），`closed` 是開頭已確認不在開著分頁裡的 handle。
+ * 檢查依序：unitStop 的四項；`-` 列與 `seen` 不同 → `checkpoint <檔> 的成員列在派工中被改寫`；`-` 列是 running、handle 不是 `closed`（分頁可能還開著） → `running <handle>`；
+ * 沒帶 `allowOverlap` 時和開著的 batch 重疊 → overlapStop 的 `overlap …`／`overlap-check …`（並行的 unit 因此看得到彼此的預留列）。
+ * 都沒有時寫表頭（沒有時）與 `-` 列（running、worktree 與 handle 空），傳回 undefined；否則傳回 STOP 原因，什麼都沒寫。
+ * 成功時 `progress.reserved` 設為 true：之後的 STOP 才改寫成員列，之前的（逾時、中止等）一律 row=kept。
+ */
+function reserveUnit(main, checkpoint, n, branch, stuckAfter, integration, seen, closed, allowOverlap, progress) {
+  return withCheckpointLock([join(main, '.scratch/pilot/units'), checkpoint], () => {
+    const line = rowLine(checkpoint, '-');
+    const stop = unitStop(main, checkpoint, branch, line);
+    if (stop) return stop;
+    if (line !== seen) return `checkpoint ${checkpoint} 的成員列在派工中被改寫`;
+    const row = line?.split('|').map(cell => cell.trim());
+    if (row?.[7] === 'running' && row[4] !== closed) return `running ${row[4]}`;
+    // 重疊檢查也在鎖內（#590 fresh 第 2 輪：在鎖外時兩個並行的 unit 都看不到對方的預留列）。
+    const overlap = !allowOverlap && overlapStop(main, n, branch, integration);
+    if (overlap) return overlap;
+    writeHeader(main, checkpoint, n, integration);
+    writeRow(checkpoint, '-', [branch, '', '', now(), stuckAfter, 'running']);
+    progress.reserved = true;
+    return undefined;
+  }, { timeout: Number(process.env.PILOT_STORE_LOCK_TIMEOUT_MS) || ROW_LOCK_TIMEOUT_MS });
+}
+
+/**
+ * --unit 的列檢查（不寫）：`line` 是 `-` 列原文。依序：`-` 列是別的分支 → `checkpoint <檔> 的成員分支是 <分支>`；checkpoint 已不是 dispatched → `checkpoint <檔> current: <值>`；
+ * `-` 列是 running、handle 空（別的派工正在派） → `running dispatching`；分支已是別的開著 batch 的成員 → `branch-taken <key>`。傳回 STOP 原因或 undefined。
+ * 派工開頭不拿鎖先跑一次（不白跑 Orca 與 overlap），reserveUnit 在鎖內再跑一次。
+ */
+function unitStop(main, checkpoint, branch, line) {
+  const row = line?.split('|').map(cell => cell.trim());
+  if (row && row[2] !== branch) return `checkpoint ${checkpoint} 的成員分支是 ${row[2]}`;
+  const current = existsSync(checkpoint) ? parseBatch(readFileSync(checkpoint, 'utf8')).current : 'dispatched';
+  if (!/^dispatched\b/.test(current)) return `checkpoint ${checkpoint} current: ${current}`;
+  if (row?.[7] === 'running' && !row[4]) return 'running dispatching';
+  const other = branchOwner(main, branch, checkpoint);
+  return other ? `branch-taken ${other}` : undefined;
+}
+
+/** 開著（current 不是 closed）的 batch checkpoint 裡，成員列分支是 `branch`、state 不是 moved 的 batch key（`skip` 那份不算）；沒有時 undefined（#590）。 */
+function branchOwner(main, branch, skip) {
+  const pilot = join(main, '.scratch/pilot');
+  if (!existsSync(pilot)) return undefined;
+  return readdirSync(pilot).filter(file => /^batch-.+\.md$/.test(file) && join(pilot, file) !== skip)
+    .find(file => {
+      const { current, members } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
+      return !/^closed\b/.test(current) && members.some(m => m.branch === branch && !/^moved\b/.test(m.state));
+    })?.slice('batch-'.length, -'.md'.length);
+}
+
+/** --unit 送進分頁的一行（#590）：brief 的路徑與 unit 要印的結果行，pilot-watch 與 Probe 以 `req-<n>` 比對。 */
+const unitPrompt = ({ n, branch, brief }) => `${brief} 是 pilot unit ${n}（分支 ${branch}）的 brief：讀完照做。`
+  + `做完時最後一行印 \`DONE ${n} <candidate 完整 SHA>\`，停下時最後一行印 \`STOP ${n} <原因>\`。`;
+
+/**
  * 派一個成員；傳回 `{ worktree?, handle }`、`{ worktree?, handle?, stop, keep? }`（不含 `STOP <n> ` 前綴；`keep` 時什麼都沒動，成員列也不改寫），
  * 或 `{ hold, keep: true }`（不含 `HOLD <n> ` 前綴；`checkBlockers` 為真時才檢查，--fresh 不檢查）。
  * `envSync` 是 adapter 宣告的 Env sync 指令（沒宣告時 undefined），worktree 確認建好之後、開分頁之前在裡面跑。
  * worktree 已存在（重跑 STOP 的成員）時不再 create：再呼叫一次，Orca 會去重出 `issue-<n>-2`。
  * `signal` 中止時（reason 為 `timeout` 或 `signal <名稱>`）進行中的步驟丟錯，STOP 原因改用 reason；create 被中止時仍跑 Bare guard。
+ * `brief` 有值時是 --unit 的請求 unit（#590）：n 是 `req-<n>`，不讀 Issue（沒有認領、blocker），worktree 名稱與分頁標題是 n，
+ * 成員列的 Issue 欄是 `-`；開分頁後先確認 Claude Code 已啟動（claudeStarted），沒啟動就 `claude-not-started <handle>`、不送；送的是 unitPrompt。
  */
-async function dispatchMember(cli, main, checkpoint, integration, { n, branch }, signal, allowOverlap, envSync, checkBlockers = false) {
+async function dispatchMember(cli, main, checkpoint, integration, { n, branch, brief, stuckAfter }, signal, allowOverlap, envSync, checkBlockers = false, progress = {}) {
   if (signal.aborted) return { stop: signal.reason };
-  const checked = issueCheck(n, checkBlockers);
+  // --unit：先照預留列的檢查（不寫）擋下別的分支、closed batch、別的 key 占用的分支（#590 review），動手前再在鎖內重查並寫預留列。
+  const seen = brief ? rowLine(checkpoint, '-') : undefined;
+  if (brief) {
+    const early = unitStop(main, checkpoint, branch, seen);
+    if (early) return { stop: early, keep: true };
+  }
+  let closed;
+  const checked = brief ? { blockers: [] } : issueCheck(n, checkBlockers);
   if (checked.stop) return { stop: checked.stop };
+  const name = brief ? n : `issue-${n}`;
   let created = '';
   const existed = worktreeOf(main, branch);
   const ctx = { cli, signal };
@@ -446,25 +574,32 @@ async function dispatchMember(cli, main, checkpoint, integration, { n, branch },
       // 還沒動任何東西：成員列照舊，running 的 worker 下次重跑仍擋得住。
       return { stop: signal.aborted ? signal.reason : `terminal-close ${error.message}`, keep: true };
     }
-    const row = rowOf(checkpoint, n);
+    const row = rowOf(checkpoint, brief ? '-' : n);
     if (row?.[7] === 'running' && open.includes(row[4])) return { stop: `running ${row[4]}`, keep: true };
+    if (row?.[7] === 'running') closed = row[4];
   }
   const unstaged = checkBlockers ? unstagedBlockers(main, integration, checked.blockers) : [];
   if (unstaged.length) return { hold: `blocker ${unstaged.join(',')} unstaged`, keep: true };
-  const overlap = !allowOverlap && overlapStop(main, n, branch, integration);
-  if (overlap) return { worktree: existed, stop: overlap, keep: !overlap.startsWith('overlap-check ') };
+  if (brief) {
+    // 重疊檢查與預留列在同一把鎖內，overlap 的 STOP 不留預留列（#590 review4、fresh 第 2 輪）。
+    const reserved = reserveUnit(main, checkpoint, n, branch, stuckAfter, integration, seen, closed, allowOverlap, progress);
+    if (reserved) return { worktree: existed, stop: reserved, keep: true };
+  } else {
+    const overlap = !allowOverlap && overlapStop(main, n, branch, integration);
+    if (overlap) return { worktree: existed, stop: overlap, keep: !overlap.startsWith('overlap-check ') };
+  }
   if (!existed) {
-    const taken = worktreeNamed(main, `issue-${n}`);
+    const taken = worktreeNamed(main, name);
     if (taken) return { stop: `worktree-branch ${taken.path} ${taken.branch ?? '(detached)'}` };
     try {
-      created = await spawnText('node', [WORKTREE_CREATE, '--name', `issue-${n}`, '--base-branch', integration, '--branch', branch, '--issue', n],
+      created = await spawnText('node', [WORKTREE_CREATE, '--name', name, '--base-branch', integration, '--branch', branch, ...(brief ? [] : ['--issue', n])],
         { cwd: main, env: { ...process.env, ORCA_BIN: cli }, signal });
     } catch (error) {
       created = error.message;
     }
   }
   if (existsSync(GUARD)) {
-    const unbare = run(GUARD, [main, `dispatch #${n}`]);
+    const unbare = run(GUARD, [main, `dispatch ${brief ? n : `#${n}`}`]);
     if (unbare.stdout) process.stdout.write(unbare.stdout);
     if (unbare.status !== 0) return { stop: `unbare ${(unbare.stderr ?? '').trim() || `exit ${unbare.status ?? unbare.error?.code}`}` };
   }
@@ -492,7 +627,7 @@ async function dispatchMember(cli, main, checkpoint, integration, { n, branch },
       return { worktree, stop: signal.aborted ? signal.reason : `terminal-close ${error.message}` };
     }
   }
-  const title = withState(`#${n}`, '處理中');
+  const title = withState(brief ? n : `#${n}`, '處理中');
   let handle;
   const createTerminal = () => orca(ctx, 'terminal', 'create', '--worktree', `path:${worktree}`, '--title', title, '--command', 'claude');
   try {
@@ -513,6 +648,26 @@ async function dispatchMember(cli, main, checkpoint, integration, { n, branch },
     // 殺掉 create 時 Orca 可能已開好分頁卻沒回 handle。
     if (signal.aborted) return { worktree, stop: `${signal.reason}（請確認有沒有留下標題 ${title} 的分頁）` };
     return { worktree, stop: `terminal ${error.message}` };
+  }
+  if (brief) {
+    // 先等 tui-idle 再檢查 claude、緊接著送（#590 review 第 2 輪：檢查排在 tui-idle 之前時，claude 在等待中結束，brief 照樣送進 shell）。
+    let started;
+    try {
+      if (!await waitTuiReady(ctx, handle)) return { worktree, handle, stop: `tui-timeout ${handle}` };
+      started = await claudeStarted(ctx, handle);
+    } catch (error) {
+      return { worktree, handle, stop: signal.aborted ? signal.reason : `orca ${error.message}` };
+    }
+    if (!started) return { worktree, handle, stop: `claude-not-started ${handle}` };
+    let delivered;
+    try {
+      // 每次送出前再確認 Claude Code 還在前景（#590 review 第 3 輪：sendPrompt 送出與重送之間分頁可能已退回 shell）。
+      delivered = await sendPrompt(ctx, handle, unitPrompt({ n, branch, brief }), { guard: () => pollClaude(ctx, handle, 0, false) });
+    } catch (error) {
+      if (error.code === 'guard' && !signal.aborted) return { worktree, handle, stop: `claude-not-started ${handle}` };
+      return { worktree, handle, stop: signal.aborted ? signal.reason : `orca ${error.message}` };
+    }
+    return { worktree, handle, ...(delivered ? {} : { stop: signal.aborted ? signal.reason : `send ${handle}` }) };
   }
   const sent = await sendToSession(ctx, handle, `/issue-run ${n} --worker ${checkpoint}`);
   return { worktree, handle, ...(sent.stop && signal.aborted ? { stop: signal.reason } : sent) };
@@ -852,7 +1007,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (args[i] === '--allow-overlap') { bad ||= 'allowOverlap' in given; given.allowOverlap = true; continue; }
     if (args[i] === '--capacity') { bad ||= 'capacity' in given; given.capacity = true; continue; }
     if (args[i] === '--no-capacity') { bad ||= 'noCapacity' in given; given.noCapacity = true; continue; }
-    const name = new Map(Object.entries({ '--integration': 'integration', '--stuck-after': 'stuckAfter', '--fresh': 'fresh', '--note': 'note', '--repo-cap': 'repoCap' })).get(args[i]);
+    const name = new Map(Object.entries({ '--integration': 'integration', '--stuck-after': 'stuckAfter', '--fresh': 'fresh', '--note': 'note', '--repo-cap': 'repoCap', '--unit': 'unit', '--branch': 'branch' })).get(args[i]);
     const value = args[++i];
     if (!name || !value || value.startsWith('--') || name in given) bad = true;
     else given[name] = value;
@@ -868,7 +1023,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (given.noCapacity && (given.capacity || 'repoCap' in given)) bad = true;
   const capacity = !draft && !given.noCapacity;
   if (fresh ? specs.length : 'note' in given || given.again) bad = true;
-  const members = (fresh ? [given.fresh] : specs).map(spec => spec.match(/^(\d+):([a-z0-9][a-z0-9-]*)$/)).map(m => m && { n: m[1], branch: `issue/${m[1]}-${m[2]}` });
+  // --unit（#590）：key 就是 unit 的號碼 req-<n>（requests.md 的行號），分支是 retro/<x>（pilot-land 的請求分支規則），不帶 <n>:<slug> 與 --fresh；--branch 只跟 --unit 一起用。
+  const unit = 'unit' in given;
+  if (unit ? fresh || specs.length || !/^req-\d+$/.test(key ?? '') || !/^retro\/[a-z0-9][a-z0-9-]*$/.test(given.branch ?? '') || !existsSync(given.unit) || !statSync(given.unit).isFile() : 'branch' in given) bad = true;
+  const members = unit ? [{ n: key, branch: given.branch, brief: resolve(given.unit), stuckAfter: options.stuckAfter }]
+    : (fresh ? [given.fresh] : specs).map(spec => spec.match(/^(\d+):([a-z0-9][a-z0-9-]*)$/)).map(m => m && { n: m[1], branch: `issue/${m[1]}-${m[2]}` });
   const cli = process.env.ORCA_CLI_COMMAND;
   if (bad || !key || !members.length || members.some(m => !m) || (!cli && !draft) || (capacity && machineCap() === undefined)) {
     console.error(USAGE);
@@ -900,7 +1059,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     }
     const stopCapacity = line => {
       console.log(line);
-      releaseClaims(members);
+      // unit 沒有 Issue，沒有認領可放（#590）。
+      if (!unit) releaseClaims(members);
       clearTimeout(budget);
       process.exit(4);
     };
@@ -958,16 +1118,22 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       process.exit(result.stop ? 4 : 0);
     }
     const checkpoint = join(main, `.scratch/pilot/batch-${key}.md`);
-    writeHeader(main, checkpoint, key, options.integration);
+    // unit 的表頭等到要寫成員列才寫：row=kept 的 STOP（branch-taken 等）不留下空的 batch-req-<n>.md（#590）。
+    if (!unit) writeHeader(main, checkpoint, key, options.integration);
     let stopped = false;
     let dispatched = 0;
     for (const member of members) {
       const started = now();
-      const result = await dispatchMember(cli, main, checkpoint, options.integration, member, controller.signal, Boolean(given.allowOverlap), envSync, true);
+      const progress = {};
+      const result = await dispatchMember(cli, main, checkpoint, options.integration, member, controller.signal, Boolean(given.allowOverlap), envSync, true, progress);
+      // unit 寫預留列之前的 STOP（逾時、中止等）不動成員列：那一列可能是還在跑的 worker（#590 fresh 第 2 輪）。
+      if (member.brief && !progress.reserved) result.keep = true;
       stopped ||= Boolean(result.stop || result.hold);
       console.log(result.hold ? `HOLD ${member.n} ${result.hold}`
         : result.stop ? stopLine(member.n, result.stop, result.keep ? 'kept' : rowState(result.stop)) : `DISPATCHED ${member.n} ${result.handle}`);
-      if (!result.keep) writeRow(checkpoint, member.n, [member.branch, result.worktree ?? '', result.handle ?? '', started, options.stuckAfter, rowState(result.stop)]);
+      // unit 的成員列 Issue 欄是 `-`（pilot-land／pilot-close 的請求分支列，#590）。
+      if (!result.keep && unit) writeHeader(main, checkpoint, key, options.integration);
+      if (!result.keep) writeRow(checkpoint, member.brief ? '-' : member.n, [member.branch, result.worktree ?? '', result.handle ?? '', started, options.stuckAfter, rowState(result.stop)]);
       if (!result.stop && !result.hold) dispatched++;
     }
     reportDispatched(dispatched);

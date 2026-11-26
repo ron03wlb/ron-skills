@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { FAST, orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 import { copyScripts } from './test/script-deps.mjs';
-import { ALWAYS_LINES, applyResults, changedUnits } from './pilot-probe.mjs';
+import { ALWAYS_LINES, applyResults, changedUnits, parseBatch, savedResult, stageLines, workerState } from './pilot-probe.mjs';
 
 const script = new URL('./pilot-probe.mjs', import.meta.url).pathname;
 // pre-commit hook 匯出的 GIT_DIR 等會讓暫存 repo 的 git 指令寫到本 repo。
@@ -2126,6 +2126,66 @@ test('applyResults：checkpoint 被活著的 pid 鎖住到逾時，傳回 CHECKP
   t.after(() => { if (saved === undefined) delete process.env.PILOT_STORE_LOCK_TIMEOUT_MS; else process.env.PILOT_STORE_LOCK_TIMEOUT_MS = saved; });
   assert.deepEqual(applyResults(file, '7', [{ n: '7', state: 'done', sha: 'a'.repeat(40) }]), [`CHECKPOINT_LOCKED ${file}.lock ${holder}`]);
   assert.equal(readFileSync(file, 'utf8'), text);
+});
+
+// #590：pilot-dispatch --unit 派出的請求 unit 寫在 batch-req-<n>.md，唯一的成員列 Issue 欄是 `-`（pilot-land／pilot-close 的請求分支列）。
+// Probe 以前只認號碼列，unit 對它不存在；現在以 batch 標題的 req-<n> 當成員號碼，WORKER、--apply、STAGEABLE 照常接手。
+const REQUEST_BATCH = '# batch req-12\ncurrent: dispatched 2026-11-26T10:00:00+08:00\nintegration: pilot/integration @ 370114b\n\n'
+  + '| Issue | branch | worktree | handle | started | stuck-after | state | candidate |\n|---|---|---|---|---|---|---|---|\n'
+  + '| - | retro/fix-ci | /w/req-12 | term_u | 2026-11-26T10:00:00+08:00 | 90m | running | |\n';
+
+test('parseBatch：batch-req-<n> 的 - 列是成員，號碼是 req-<n>；其他 batch 的 - 列照舊不算', () => {
+  assert.deepEqual(parseBatch(REQUEST_BATCH).members.map(({ n, branch, handle, state }) => ({ n, branch, handle, state })),
+    [{ n: 'req-12', branch: 'retro/fix-ci', handle: 'term_u', state: 'running' }]);
+  assert.deepEqual(parseBatch(REQUEST_BATCH.replace('# batch req-12', '# batch 12')).members, []);
+});
+
+test('applyResults：req-<n> 的結果寫回 - 列；stageLines 對 done 的 unit 印 STAGEABLE req-<n>', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'pilot-probe-req-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'batch-req-12.md');
+  writeFileSync(file, REQUEST_BATCH);
+  const sha = 'a'.repeat(40);
+  assert.deepEqual(applyResults(file, 'req-12', [{ n: 'req-12', state: 'done', sha }]), []);
+  assert.match(readFileSync(file, 'utf8'), new RegExp(`^\\| - \\| retro/fix-ci \\| /w/req-12 \\| term_u \\| .* \\| done \\| ${sha} \\|$`, 'm'));
+  const { members } = parseBatch(readFileSync(file, 'utf8'));
+  assert.deepEqual(stageLines('req-12', members, []), ['STAGEABLE req-12']);
+});
+
+test('applyResults：別的 req key 的結果不寫進這個請求 batch 的 - 列（鎖內比對標題 key）', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'pilot-probe-req-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'batch-req-12.md');
+  writeFileSync(file, REQUEST_BATCH);
+  assert.deepEqual(applyResults(file, 'req-12', [{ n: 'req-13', state: 'done', sha: 'a'.repeat(40) }]), ['APPLY_MISS req-12 req-13 rows 0']);
+  assert.equal(readFileSync(file, 'utf8'), REQUEST_BATCH);
+});
+
+// #590 review（fresh 第 1 輪）：Probe 讀舊分頁拿到的 DONE 在 --unit 重派寫好預留列（running、handle 空）或新列之後才回寫，會寫進新的那次派工的列，
+// 派工收尾再把列改回 running、清掉 candidate。結果帶讀取時的 handle，列的 handle 不同就不寫。
+test('applyResults：結果帶的 handle 與列的 handle 不同（預留列、重派後的新分頁）時不寫，印 APPLY_MISS', t => {
+  const dir = mkdtempSync(join(realTmpdir(), 'pilot-probe-req-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'batch-req-12.md');
+  for (const text of [REQUEST_BATCH.replace('| /w/req-12 | term_u |', '| | |'), REQUEST_BATCH.replace('term_u', 'term_new')]) {
+    writeFileSync(file, text);
+    assert.deepEqual(applyResults(file, 'req-12', [{ n: 'req-12', state: 'done', sha: 'a'.repeat(40), handle: 'term_u' }]), ['APPLY_MISS req-12 req-12 rows 0']);
+    assert.equal(readFileSync(file, 'utf8'), text);
+  }
+  writeFileSync(file, REQUEST_BATCH);
+  assert.deepEqual(applyResults(file, 'req-12', [{ n: 'req-12', state: 'done', sha: 'a'.repeat(40), handle: 'term_u' }]), []);
+  assert.match(readFileSync(file, 'utf8'), / term_u \| .* \| done \| a{40} \|$/m);
+});
+
+// #590 review（fresh 第 2 輪）：--unit 的預留列是 running、handle 空；Probe 把空 handle 解析成 results 目錄本身，Watch 存過任何結果時讀到目錄、整輪 exit 1。
+test('workerState／savedResult：handle 空的 running 列（--unit 正在派）是 dispatching，不讀 terminal、不讀 results 目錄', async t => {
+  const pilot = mkdtempSync(join(realTmpdir(), 'pilot-probe-req-'));
+  t.after(() => rmSync(pilot, { recursive: true, force: true }));
+  mkdirSync(join(pilot, 'results'));
+  writeFileSync(join(pilot, 'results', 'term_x'), `${new Date().toISOString()} DONE 7 ${'a'.repeat(40)}\n`);
+  const member = { n: 'req-12', handle: '', state: 'running', started: '2026-11-26T10:00:00+08:00' };
+  assert.equal(savedResult(pilot, member), null);
+  assert.equal(await workerState({ cli: '/nonexistent/orca' }, member), 'dispatching');
 });
 
 // #398：adapter 檔的大小預算由同時進行的成員共用，每個成員在自己的 base 上都通過，合計超過要到 stage 的 pre-commit 才發現（#353、#394）。
