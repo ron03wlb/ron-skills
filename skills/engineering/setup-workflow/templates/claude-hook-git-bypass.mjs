@@ -492,8 +492,8 @@ const shellWord = text => (/^[\w./:@%+=,-]+$/.test(text) ? text : `'${text.repla
 
 /**
  * `--exit-gate` 被拒的指令改寫成可直接重送的一整行（spay2 #1171，retro 7f7996ad#3：同一 session 被拒 4 次、每次手打 log 路徑）：
- * 頂層那段 `<gate…> | <過濾…>` 改成 `<gate…> > <log> 2>&1; rc=$?; <過濾…> < <log>`；整個呼叫只有這一段時接 `; exit $rc`，
- * 有串接時換成 `{ …; (exit $rc); }` 保留 `&&`／`||` 的語意（平鋪的 `A || gate | tail` 在 A 成功時會讀到舊 log）。
+ * 頂層那段 `<gate…> | <過濾…>` 改成 `<gate…> > <log> 2>&1; rc=$?; <過濾…> < <log>`；整個呼叫只有這一段（後面只剩 `;`）時接 `; exit $rc`，
+ * 有串接或以 `&` 背景化時換成 `{ …; (exit $rc); }` 保留 `&&`／`||` 的語意（平鋪的 `A || gate | tail` 在 A 成功時會讀到舊 log）。
  * gate 與過濾之間還有其他管線（`gate | tee x | rg`）時 rc 取管線第一支的結束碼（firstStatus：bash `${PIPESTATUS[0]}`、zsh `${pipestatus[1]}`）。gate 要在該段第一個指令、且不是唯讀形式（runsGate）。
  * @param {string} command Bash tool 的完整指令
  * @param {string} script 被拒的 gate（exitGateReason 的 script）
@@ -516,7 +516,8 @@ export function exitGateRewrite(command, script, logDir, env = process.env) {
     const filter = command.slice(filterStart, part.pipes[k + 1] ?? part.end).trim();
     const rest = part.pipes[k + 1] === undefined ? '' : ` ${command.slice(part.pipes[k + 1], part.end).trim()}`;
     const body = `${pre} > ${log} 2>&1; rc=${k > 0 ? firstStatus(env) : '$?'}; ${filter} < ${log}${rest}`;
-    if (real.length === 1) return `${body}; exit $rc`;
+    // 平鋪只在整個呼叫就這一段、後面只剩 `;` 或空白時：尾端 `&` 要留在群組後（#1171 review r1：平鋪會變前景、exit 結束 shell）。
+    if (real.length === 1 && /^[;\s]*$/.test(command.slice(part.end))) return `${body}; exit $rc`;
     const text = command.slice(part.start, part.end);
     const from = part.start + text.length - text.trimStart().length;
     const to = part.start + text.trimEnd().length;

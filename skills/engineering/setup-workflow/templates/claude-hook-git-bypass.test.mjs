@@ -921,6 +921,11 @@ test('exitGateRewrite：頂層 gate 接過濾改寫成寫 log、保留 exit code
   // 串接時只換那一段，以群組保留 &&／|| 的語意。
   assert.equal(exitGateRewrite('cd /m && node scripts/followups.mjs add "a | b" |& tail -1; git status', 'followups.mjs', '/pad'),
     'cd /m && { node scripts/followups.mjs add "a | b" > /pad/followups.log 2>&1; rc=$?; tail -1 < /pad/followups.log; (exit $rc); }; git status');
+  // 單段但以 `&` 背景化：群組後保留 `&`，不變成前景、也不以 exit 結束 shell（#1171 review r1）。
+  assert.equal(exitGateRewrite('node scripts/batch-merge.mjs a | tail -3 &', 'batch-merge.mjs', '/pad'),
+    '{ node scripts/batch-merge.mjs a > /pad/batch-merge.log 2>&1; rc=$?; tail -3 < /pad/batch-merge.log; (exit $rc); } &');
+  assert.equal(exitGateRewrite('node scripts/batch-merge.mjs a | tail -3;', 'batch-merge.mjs', '/pad'),
+    'node scripts/batch-merge.mjs a > /pad/batch-merge.log 2>&1; rc=$?; tail -3 < /pad/batch-merge.log; exit $rc');
   // 頂層找不到（迴圈、$(…)、bash -c、here-doc、註解）時不改寫，由泛用訊息處理。
   for (const command of ['for k in a; do node scripts/followups.mjs add x | tail; done', 'X=$(node scripts/batch-land.mjs c | tail -1)',
     "bash -c 'node scripts/land.mjs 12 | tail'", "cat > f <<'E'\nx\nE\nnode scripts/land.mjs 1 | tail", 'node scripts/land.mjs 1 | tail # x',
