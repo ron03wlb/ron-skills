@@ -70,7 +70,7 @@
 //   「怎麼整併」之前是固定的「整併注意」段（#551，investing retro 1123c：note 寫「先 merge prior 再 merge 整合分支」，worktree 已在整合分支 tip，
 //   第二個 merge 只回 unmerged files；「兩邊測試都保留」讓整合分支新增的測試呼叫 prior 已改掉的舊簽章）：只 merge prior、
 //   兩邊測試都保留但改到 prior 的新簽章並以測試為準、兩邊都改過的函式要查交會路徑並補測試。
-//   「整併注意」另固定印 scripts/entry-survival.mjs（存在時，#618）與 scripts/port-entries.mjs（存在時）的指令；
+//   「整併注意」另固定印 scripts/entry-survival.mjs（存在時，#618）、scripts/port-entries.mjs 與 scripts/merge-line-inserts.mjs（存在時，#557）的指令；
 //   草稿這一步若發現 prior 工作樹有未提交改動（#625），同樣備份並 stash，並在「怎麼整併」前加「prior 未提交的改動」段：patch 路徑、改到的檔、
 //   `.scratch/issue-run-<n>*/wip/*.patch`，`.claude/settings.json`（受保護、owner 手改）單獨一行（段不放進「怎麼整併」，免得重跑草稿撞上 draft-filled）。
 //   最後一段空白的「怎麼整併」給 coordinator 補，補完再帶 --note 重跑。
@@ -804,11 +804,12 @@ function freshDraft(main, key, integration, { n, branch }, allowOverlap) {
   return { path };
 }
 
-/** 草稿「整併注意」的 entry-survival 與 port-entries 行（#618）：對應的 scripts/ 檔在 repo 裡才印。 */
+/** 草稿「整併注意」的 entry-survival、port-entries 與 merge-line-inserts 行（#618、#557）：對應的 scripts/ 檔在 repo 裡才印。 */
 function entrySurvivalLines(main, integration) {
   const lines = [];
   if (existsSync(join(main, 'scripts/entry-survival.mjs'))) lines.push(`- 整併後跑 \`node scripts/entry-survival.mjs $(git merge-base HEAD ${integration})\`，把印出的每行 \`ENTRY_LOST\`／\`ENTRY_CHANGED\` 抄進 checkpoint notes、逐條註明是 prior 有意改寫還是被蓋掉（判讀見 \`node scripts/adapter-line.mjs 'Entry survival'\`）；review-only verifier 會自己再跑一次。`);
   if (existsSync(join(main, 'scripts/port-entries.mjs'))) lines.push('- prior 改到的條目已搬到別的檔、`git apply -3` 衝突時，跑 `node scripts/port-entries.mjs <base> <prior> <檔> [<目標檔>]`，再手動處理印出的 `NO_MATCH`／`AMBIGUOUS`。');
+  if (existsSync(join(main, 'scripts/merge-line-inserts.mjs'))) lines.push('- 一整行的列或條目（用法表的列、`- **Probe.**` 這類單行條目）兩邊各改一處、`git apply -3` 整列衝突時，先跑 `node scripts/merge-line-inserts.mjs <檔>...` 自動合併（只改工作樹），只手動處理它印的 `LINE_CONFLICT <檔> <行>`，不再手寫合併腳本。');
   return lines;
 }
 
