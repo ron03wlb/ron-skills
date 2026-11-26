@@ -426,9 +426,29 @@ test('PR 的 head 一直沒更新到 push 的 SHA：STOP checks-timeout，不合
 
   const result = land(['feature', '--body-file', body], undefined, { LAND_CHECKS_TIMEOUT_MS: '500' });
   assert.equal(result.status, 4);
-  assert.equal(last(result), 'STOP checks-timeout 40');
+  assert.equal(last(result), `STOP checks-timeout 40 → 重跑同一指令接著等（pending：尚無 checks）：node ${script} feature --body-file ${body}`);
   assert.doesNotMatch(calls(), /^gh pr merge /m);
   assert.equal(prs()[0].state, 'OPEN');
+});
+
+// retro spay2 1dce1925#2：#1171 的 land 在 `checks` 已 pass、只剩 `checks-macos` pending 時印 `STOP checks-timeout 682`、exit 4，
+// 沒有接續指令，要另查 `gh pr checks 682` 才知道在等什麼；STOP 行要帶 pending 的 check 名與重跑的原指令（相對 cwd、引號照 shell）。
+test('checks pass、checks-macos 還在跑時逾時：STOP checks-timeout 帶 pending 的 check 名與重跑指令', t => {
+  const checks = [[{ name: 'checks', status: 'COMPLETED', conclusion: 'SUCCESS' }, { name: 'checks-macos', status: 'IN_PROGRESS', conclusion: '' }]];
+  const { wt, body, land, calls, prs, last } = fixture(t, { selfHosted: true, checks });
+
+  const result = land(['feature', '--body-file', body, '--check-command', 'bin/check --upstream'], wt, { LAND_CHECKS_TIMEOUT_MS: '500' });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(last(result), `STOP checks-timeout 40 → 重跑同一指令接著等（pending：checks-macos）：node scripts/land.mjs feature --body-file ${body} --check-command 'bin/check --upstream'`);
+  assert.doesNotMatch(calls(), /^gh pr merge /m);
+  assert.equal(prs()[0].state, 'OPEN');
+});
+
+test('LAND_RERUN_COMMAND：呼叫端指定的重跑指令取代 land 自己的指令（pilot-land.mjs push）', t => {
+  const { body, land, last } = fixture(t, { checks: [PENDING] });
+  const result = land(['feature', '--body-file', body], undefined, { LAND_CHECKS_TIMEOUT_MS: '500', LAND_RERUN_COMMAND: "node scripts/pilot-land.mjs push --title 'batch 1'" });
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(last(result), /^STOP checks-timeout 40 → 重跑同一指令接著等（pending：\S+）：node scripts\/pilot-land\.mjs push --title 'batch 1'$/);
 });
 
 // 真實發生過的錯：Push gate 中途斷掉，重跑時重開 PR 或重複合併（#27 commit 8dcea3d「Push gate 中斷可接回」）。
