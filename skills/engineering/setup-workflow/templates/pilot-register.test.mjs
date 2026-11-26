@@ -134,6 +134,62 @@ test('sessions.md 記著這個 session 交接出去：已退役，印 STOP retir
   assert.ok(!existsSync(store(dir, 'coordinator')));
 });
 
+// #592：Entry 一行判定，coordinator 不再自己讀 coordinator、sessions.md 與 kill -0。
+test('--entry 且這個 session 已交接出去：只印 ENTRY retired → <terminal>、exit 4，什麼都不寫', t => {
+  const dir = checkout(t);
+  mkdirSync(join(dir, '.scratch/pilot'), { recursive: true });
+  const sessions = `2026-10-30T20:43:41+08:00   handoff from-session ${SESSION} → terminal term_c1f21a41   reason 合入 2 批\n`;
+  writeFileSync(store(dir, 'sessions.md'), sessions);
+  const result = run(dir, ['--entry', ...ARGS]);
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(result.stdout, 'ENTRY retired → term_c1f21a41\n');
+  assert.ok(!existsSync(store(dir, 'coordinator')));
+  assert.equal(read(dir, 'sessions.md'), sessions);
+});
+
+test('--entry 且 coordinator 是別人、pid 還活著：只印 ENTRY yield <name> pid=<pid>、exit 4，什麼都不寫', t => {
+  const dir = checkout(t);
+  mkdirSync(join(dir, '.scratch/pilot'), { recursive: true });
+  // 測試程序自己就是活著的 pid。
+  const coordinator = `pid ${process.pid}   loop yes   since 2026-10-30T20:43:33+08:00   name other-7f\n`;
+  writeFileSync(store(dir, 'coordinator'), coordinator);
+  const result = run(dir, ['--entry', ...ARGS]);
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(result.stdout, `ENTRY yield other-7f pid=${process.pid}\n`);
+  assert.equal(read(dir, 'coordinator'), coordinator);
+  assert.ok(!existsSync(store(dir, 'sessions.md')));
+  // 第一行永遠是 Entry 判定：缺清單檔也先判 yield。
+  const missing = run(dir, ['--entry', ...ARGS, '--sources-file', 'docs/missing.txt']);
+  assert.equal(missing.status, 4, missing.stderr);
+  assert.equal(missing.stdout, `ENTRY yield other-7f pid=${process.pid}\n`);
+});
+
+test('--entry 且沒有 coordinator 檔，或自己就是現任：印 ENTRY coordinator 後照常登記', t => {
+  const fresh = checkout(t);
+  const first = run(fresh, ['--entry', ...ARGS]);
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, new RegExp(`^ENTRY coordinator\\nREGISTERED pid 553382   since ${TIME}\\nSESSION_APPENDED\\n$`));
+
+  const self = checkout(t);
+  mkdirSync(join(self, '.scratch/pilot'), { recursive: true });
+  writeFileSync(store(self, 'coordinator'), 'pid 553382   loop yes   since 2026-10-30T20:43:33+08:00   name demo-0c\n');
+  writeFileSync(store(self, 'sessions.md'), `2026-10-30T20:43:33+08:00   session ${SESSION}   pid 553382   demo-0c\n`);
+  const again = run(self, ['--entry', ...ARGS]);
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(again.stdout, 'ENTRY coordinator\nREGISTERED pid 553382   since 2026-10-30T20:43:33+08:00\n');
+});
+
+test('--entry 且 coordinator 是別人、pid 已不在：印 ENTRY coordinator 後照常登記', t => {
+  const dir = checkout(t);
+  mkdirSync(join(dir, '.scratch/pilot'), { recursive: true });
+  const dead = spawnSync('node', ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }).stdout.trim();
+  writeFileSync(store(dir, 'coordinator'), `pid ${dead}   loop yes   since 2026-10-30T20:43:33+08:00   name other-7f\n`);
+  const result = run(dir, ['--entry', ...ARGS]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`^ENTRY coordinator\\nREGISTERED pid 553382   since ${TIME}\\nSESSION_APPENDED\\n$`));
+  assert.match(read(dir, 'coordinator'), /^pid 553382   loop yes /);
+});
+
 test('缺 pid、session、name 或 loop 不是 yes/no：exit 2', t => {
   const dir = checkout(t);
   assert.equal(run(dir, ARGS, { CLAUDE_PID: '' }).status, 2);
