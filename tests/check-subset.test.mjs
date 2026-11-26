@@ -85,6 +85,19 @@ test('對應表與 bin/check 的步驟群組一致，每條規則的步驟都在
   for (const step of TABLE.always.steps) assert.ok(TABLE.steps.includes(step), step);
 });
 
+// #654：pilot-adapter-stage.test.mjs 以 readdirSync 掃 docs/agents/*.md 與 issue-run 的 *TEMPLATE.md，不提及個別檔名，
+// related 找不到它；只改 issue-run-checks.md 等文件的 commit，pre-commit 不跑這條，到完整 bin/check 才紅。
+test('目錄掃描的 pilot-adapter-stage 測試：改它掃的任一份文件都在子集裡（#654）', () => {
+  const files = spawnSync('git', ['ls-files'], { cwd: root, encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+  const scanned = files.filter(file => /^docs\/agents\/[^/]+\.md$/.test(file) || /^skills\/engineering\/issue-run\/[^/]*TEMPLATE\.md$/.test(file));
+  assert.ok(scanned.includes('docs/agents/issue-run-checks.md') && scanned.includes('skills/engineering/issue-run/PILOT-TEMPLATE.md'));
+  const tests = files.filter(file => file.startsWith('tests/'));
+  for (const changed of scanned) {
+    const result = plan({ changed: [changed], files: tests, read: () => '', table: TABLE });
+    assert.ok(result.tests?.includes('tests/pilot-adapter-stage.test.mjs'), `${changed}：${JSON.stringify(result)}`);
+  }
+});
+
 test('pre-commit 跑子集；CHECK_PASS_SUBSET 不以 `CHECK_PASS ` 開頭（pilot-land.mjs 只認後者為 Regression 通過）', () => {
   // 直接跑與經 heavy-slot 跑的兩種寫法都帶 --changed。
   const hook = readFileSync(join(root, '.githooks/pre-commit'), 'utf8');
@@ -133,7 +146,8 @@ function fixture(t) {
   const log = join(logDir, 'steps');
   const run = (args, extra = {}) => {
     writeFileSync(log, '');
-    const result = spawnSync('bin/check', args, { cwd: repo, encoding: 'utf8', env: { ...env, STEP_LOG: log, ...extra }, timeout: 60_000 });
+    // HEAVY_SLOT_HELD：完整跑時不去排本機 heavy-slot、不看名額；名額 0 的機器單獨跑這支時，CHECK_FULL=1 那次會走 CI 委派分支，步驟一條都不記（retro 1126b）。
+    const result = spawnSync('bin/check', args, { cwd: repo, encoding: 'utf8', env: { ...env, HEAVY_SLOT_HELD: '1', STEP_LOG: log, ...extra }, timeout: 60_000 });
     return { ...result, steps: readFileSync(log, 'utf8').split('\n').filter(Boolean) };
   };
   return { repo, write, git, run };
