@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { realTmpdir } from './test/real-tmpdir.mjs';
-import { ageMs, effectivePriority, holdersField, labelPriority, parseArgs, percentile, queuePlan, repoOf, resumeKey, resumeMs, repoPriority, repoPriorityFile, slotCommand, slotCount, slotDir, slotTimeoutLine, starveMs, statsLines, reclaimStaleLock, withResumeLock, SLOT_TIMEOUT_EXIT } from './heavy-slot.mjs';
+import { repoSlots, repoSlotsFile, slotDelegatedLine, SLOT_DELEGATED_EXIT, ageMs, effectivePriority, holdersField, labelPriority, parseArgs, percentile, queuePlan, repoOf, resumeKey, resumeMs, repoPriority, repoPriorityFile, slotCommand, slotCount, slotDir, slotTimeoutLine, starveMs, statsLines, reclaimStaleLock, withResumeLock, SLOT_TIMEOUT_EXIT } from './heavy-slot.mjs';
 
 const script = new URL('./heavy-slot.mjs', import.meta.url).pathname;
 
@@ -21,6 +21,8 @@ function fixture(t, slots = 2, extraEnv = {}) {
   delete env.HEAVY_CHECK_STARVE_S;
   // repo 優先序固定成預設值：不讀機器上真實的 ~/.config/orca-heavy-check/repo-priority。
   env.HEAVY_CHECK_REPO_PRIORITY = 'spay2,ron-skills';
+  // 每個 repo 的名額預設不限：不讀機器上真實的 ~/.config/orca-heavy-check/repo-slots（ron-skills 0 時這裡的 ron-skills:* 都會被交給 CI）。
+  env.HEAVY_CHECK_REPO_SLOTS = '';
   Object.assign(env, extraEnv);
   const children = [];
   t.after(() => children.forEach(child => child.kill('SIGKILL')));
@@ -146,9 +148,9 @@ test('參數：label、--、數值都要合法；環境變數給預設值', () =
 test('slotCommand、slotTimeoutLine、holdersField：給呼叫端的 helper', () => {
   const [command, args] = slotCommand('repo:regression', ['sh', '-c', 'bin/check'], { timeoutSec: 120 });
   assert.equal(command, process.execPath);
-  assert.deepEqual(args, [script, 'run', '--label', 'repo:regression', '--timeout', '120', '--', 'sh', '-c', 'bin/check']);
-  assert.deepEqual(slotCommand('r:x', ['true'])[1], [script, 'run', '--label', 'r:x', '--', 'true']);
-  assert.equal(slotCommand('個人 wiki:regression', ['true'])[1][3], '___wiki:regression', '目錄名的空白、中文換成 _');
+  assert.deepEqual(args, [script, 'run', '--fallback', '--label', 'repo:regression', '--timeout', '120', '--', 'sh', '-c', 'bin/check']);
+  assert.deepEqual(slotCommand('r:x', ['true'])[1], [script, 'run', '--fallback', '--label', 'r:x', '--', 'true']);
+  assert.equal(slotCommand('個人 wiki:regression', ['true'])[1][4], '___wiki:regression', '目錄名的空白、中文換成 _');
   assert.equal(slotTimeoutLine(75, 'x\nSLOT_TIMEOUT r:x 9s holders=-\n'), 'SLOT_TIMEOUT r:x 9s holders=-');
   assert.equal(slotTimeoutLine(1, 'SLOT_TIMEOUT r:x 9s holders=-'), undefined, '不是 75 不算');
   assert.equal(slotTimeoutLine(75, 'CHECK_FAIL x'), undefined, '沒有 SLOT_TIMEOUT 行不算');
@@ -190,8 +192,8 @@ test('每次 run 在 log.jsonl 記一行（含逾時）；stats 依 label 印件
   assert.ok(records[1].wait_ms >= 300 && records[1].run_ms === 0, '逾時的等待時間到上限、沒有執行時間');
   const stats = spawnSync(process.execPath, [script, 'stats', '--label', 'r:*'], { env, encoding: 'utf8' });
   assert.equal(stats.status, 0, stats.stderr);
-  assert.match(stats.stdout, /^STATS r:late n=1 timeouts=1 wait_p50=\d+ wait_p90=\d+ run_p50=- run_p90=-$/m);
-  assert.match(stats.stdout, /^STATS r:pass n=1 timeouts=0 wait_p50=\d+ wait_p90=\d+ run_p50=\d+ run_p90=\d+$/m);
+  assert.match(stats.stdout, /^STATS r:late n=1 timeouts=1 wait_p50=\d+ wait_p90=\d+ run_p50=- run_p90=- run_sum=0 wait_sum=\d+ delegated=0 fallback=0$/m);
+  assert.match(stats.stdout, /^STATS r:pass n=1 timeouts=0 wait_p50=\d+ wait_p90=\d+ run_p50=\d+ run_p90=\d+ run_sum=\d+ wait_sum=\d+ delegated=0 fallback=0$/m);
   const future = spawnSync(process.execPath, [script, 'stats', '--since', '2999-01-01T00:00:00Z'], { env, encoding: 'utf8' });
   assert.equal(future.stdout, 'STATS none\n');
 });
@@ -200,11 +202,11 @@ test('statsLines：nearest-rank 中位數與 P90、--since、--label glob、壞�
   const rows = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((wait, i) => JSON.stringify({ label: 'a:x', wait_ms: wait, run_ms: wait * 2, started_at: `2026-11-23T0${i % 10}:00:00Z`, timed_out: false }));
   const text = [...rows, 'not json', JSON.stringify({ label: 'b:y', wait_ms: 5, run_ms: 0, started_at: '2026-11-23T00:00:00Z', timed_out: true })].join('\n');
   assert.deepEqual(statsLines(text), [
-    'STATS a:x n=10 timeouts=0 wait_p50=50 wait_p90=90 run_p50=100 run_p90=180',
-    'STATS b:y n=1 timeouts=1 wait_p50=5 wait_p90=5 run_p50=- run_p90=-',
+    'STATS a:x n=10 timeouts=0 wait_p50=50 wait_p90=90 run_p50=100 run_p90=180 run_sum=1100 wait_sum=550 delegated=0 fallback=0',
+    'STATS b:y n=1 timeouts=1 wait_p50=5 wait_p90=5 run_p50=- run_p90=- run_sum=0 wait_sum=5 delegated=0 fallback=0',
   ]);
-  assert.deepEqual(statsLines(text, { label: 'b:?' }), ['STATS b:y n=1 timeouts=1 wait_p50=5 wait_p90=5 run_p50=- run_p90=-']);
-  assert.deepEqual(statsLines(text, { since: '2026-11-23T08:00:00Z', label: 'a:*' }), ['STATS a:x n=2 timeouts=0 wait_p50=90 wait_p90=100 run_p50=180 run_p90=200']);
+  assert.deepEqual(statsLines(text, { label: 'b:?' }), ['STATS b:y n=1 timeouts=1 wait_p50=5 wait_p90=5 run_p50=- run_p90=- run_sum=0 wait_sum=5 delegated=0 fallback=0']);
+  assert.deepEqual(statsLines(text, { since: '2026-11-23T08:00:00Z', label: 'a:*' }), ['STATS a:x n=2 timeouts=0 wait_p50=90 wait_p90=100 run_p50=180 run_p90=200 run_sum=380 wait_sum=190 delegated=0 fallback=0']);
   assert.equal(percentile([], 50), undefined);
   assert.match(parseArgs(['stats', '--since', 'nope']).error, /--since/);
 });
@@ -696,4 +698,83 @@ test('釋放 resume 鎖只刪內容是自己 pid 的鎖（spay2 #1159 review 發
   const other = String(process.ppid);
   withResumeLock(file, () => { writeFileSync(lock, other); });
   assert.equal(readFileSync(lock, 'utf8'), other, '別支的鎖不被刪');
+});
+
+test('repoSlots：環境變數 > ~/.config/orca-heavy-check/repo-slots（一行 <repo> <n>，略過空行、# 與格式不對的行）> 不限；quota 子命令', t => {
+  const home = mkdtempSync(join(realTmpdir(), 'heavy-slot-home-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  assert.deepEqual([...repoSlots({ HOME: home })], [], '沒有設定檔：都不限');
+  mkdirSync(join(home, '.config/orca-heavy-check'), { recursive: true });
+  writeFileSync(repoSlotsFile({ HOME: home }), '# 名額\nron-skills 0\n\n spay2   1 \nbad x\nthree 1 2\n');
+  assert.deepEqual([...repoSlots({ HOME: home })], [['ron-skills', 0], ['spay2', 1]]);
+  assert.deepEqual([...repoSlots({ HOME: home, HEAVY_CHECK_REPO_SLOTS: 'a=0, b=2,c=x' })], [['a', 0], ['b', 2]], '環境變數優先');
+  assert.deepEqual([...repoSlots({ HOME: home, HEAVY_CHECK_REPO_SLOTS: '' })], [], '空字串：都不限');
+  const env = { ...process.env, HOME: home };
+  delete env.HEAVY_CHECK_REPO_SLOTS;
+  const quota = repo => spawnSync(process.execPath, [script, 'quota', repo], { encoding: 'utf8', env });
+  assert.equal(quota('ron-skills').stdout, 'QUOTA ron-skills 0\n');
+  assert.equal(quota('other').stdout, 'QUOTA other -\n');
+  assert.equal(quota('').status, 2);
+  assert.match(parseArgs(['quota']).error, /quota/);
+});
+
+test('名額 0：run 印 SLOT_DELEGATED、exit 76、不執行命令也不排隊，log 記 delegated；stats 分開計', async t => {
+  const { dir, env, start, status } = fixture(t, 1, { HEAVY_CHECK_REPO_SLOTS: 'ron-skills=0' });
+  const result = await start('ron-skills:bin-check', `touch ${dir}/ran`).done;
+  assert.equal(result.code, SLOT_DELEGATED_EXIT);
+  assert.equal(result.stderr, 'SLOT_DELEGATED ron-skills:bin-check ci\n');
+  assert.ok(!existsSync(join(dir, 'ran')), '交給 CI：不執行命令');
+  assert.equal(slotDelegatedLine(result.code, result.stderr), 'SLOT_DELEGATED ron-skills:bin-check ci');
+  assert.equal(slotDelegatedLine(75, result.stderr), undefined, '不是 76 不算');
+  assert.equal(slotDelegatedLine(76, 'CHECK_FAIL x'), undefined, '沒有 SLOT_DELEGATED 行不算');
+  assert.doesNotMatch(status().stdout, /WAITER/);
+  const record = JSON.parse(readFileSync(join(env.HEAVY_CHECK_DIR, 'log.jsonl'), 'utf8').trim());
+  assert.equal(record.delegated, true);
+  assert.equal(record.exit, SLOT_DELEGATED_EXIT);
+  // 其他 repo 不受影響。
+  assert.equal((await start('spay2:push-gate', `touch ${dir}/spay-ran`).done).code, 0);
+  assert.ok(existsSync(join(dir, 'spay-ran')));
+  const stats = spawnSync(process.execPath, [script, 'stats'], { env, encoding: 'utf8' }).stdout;
+  assert.match(stats, /^STATS ron-skills:bin-check n=0 timeouts=0 wait_p50=- wait_p90=- run_p50=- run_p90=- run_sum=0 wait_sum=0 delegated=1 fallback=0$/m);
+  assert.match(stats, /^STATS spay2:push-gate n=1 .* delegated=0 fallback=0$/m);
+});
+
+test('名額 0 加 --fallback（或 HEAVY_SLOT_FALLBACK=1）：照舊排隊執行，排在 spay2 後面；log 記 fallback', async t => {
+  const { env, status, holdUntil, enqueue, order } = fixture(t, 1, { HEAVY_CHECK_REPO_SLOTS: 'ron-skills=0' });
+  const hold = await holdUntil('t:hold');
+  const ron = await enqueue('ron-skills:bin-check', ['--fallback']);
+  const spay = await enqueue('spay2:check-contracts');
+  assert.deepEqual(status().stdout.split('\n').filter(l => l.startsWith('WAITER')).map(l => l.split(' ')[1]), ['spay2:check-contracts', 'ron-skills:bin-check']);
+  hold.release();
+  assert.deepEqual((await Promise.all([hold.done, ron.done, spay.done])).map(r => r.code), [0, 0, 0]);
+  assert.deepEqual(order(), ['spay2:check-contracts', 'ron-skills:bin-check']);
+  const viaEnv = spawnSync(process.execPath, [script, 'run', '--label', 'ron-skills:x', '--', 'true'], { env: { ...env, HEAVY_SLOT_FALLBACK: '1' }, encoding: 'utf8' });
+  assert.equal(viaEnv.status, 0);
+  assert.match(viaEnv.stderr, /SLOT_ACQUIRED ron-skills:x /);
+  const records = readFileSync(join(env.HEAVY_CHECK_DIR, 'log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(records.find(r => r.label === 'ron-skills:bin-check').fallback, true);
+  assert.equal(records.find(r => r.label === 'spay2:check-contracts').fallback, undefined);
+  assert.equal(parseArgs(['run', '--label', 'x:y', '--fallback', '--timeout', '5', '--', 'true']).fallback, true);
+  assert.equal(parseArgs(['run', '--label', 'x:y', '--timeout', '5', '--fallback', '--', 'true']).timeoutSec, 5);
+  assert.equal(parseArgs(['run', '--label', 'x:y', '--', 'true'], { HEAVY_SLOT_FALLBACK: '1' }).fallback, true);
+});
+
+test('沒設 repo-slots：同一組等待者的分配和以前一樣；名額 n > 0 的 repo 已滿時讓給下一級，不擋後面的 repo', () => {
+  const since = '2026-11-24T00:00:00Z';
+  const w = (pid, label, priority, sec) => ({ pid, label, priority, since: new Date(Date.parse(since) + sec * 1000).toISOString() });
+  const now = Date.parse(since) + 60_000;
+  const repos = ['spay2', 'ron-skills'];
+  const waiters = [w(1, 'spay2:push-gate', 'high', 0), w(2, 'spay2:check', 'normal', 1), w(3, 'ron-skills:regression', 'normal', 2)];
+  // 不限（空 Map）：spay2 在等，兩個空 slot 都給 spay2。
+  assert.deepEqual([...queuePlan({ holders: [], waiters, slots: 2, now, repos, quotas: new Map() }).granted], [1, 2]);
+  // spay2 名額 1：只給一支 spay2，另一個空 slot 給 ron-skills。
+  assert.deepEqual([...queuePlan({ holders: [], waiters, slots: 2, now, repos, quotas: new Map([['spay2', 1]]) }).granted], [1, 3]);
+  // spay2 已持有 1 個（名額 1）：spay2 的等待者不拿、也不擋 ron-skills。
+  assert.deepEqual([...queuePlan({ holders: [{ label: 'spay2:x', pid: 9 }], waiters, slots: 2, now, repos, quotas: new Map([['spay2', 1]]) }).granted], [3]);
+  // 名額 0 的 repo（只有 --fallback 會排進來）照舊排隊、不受名額限制。
+  assert.deepEqual([...queuePlan({ holders: [], waiters: [w(3, 'ron-skills:regression', 'normal', 2)], slots: 2, now, repos, quotas: new Map([['ron-skills', 0]]) }).granted], [3]);
+  // 餓死保底也看名額：已滿的 repo 不用保底拿 slot。
+  const old = w(4, 'ron-skills:pre-commit', 'low', -10_000);
+  assert.deepEqual([...queuePlan({ holders: [{ label: 'ron-skills:h', pid: 8 }], waiters: [w(1, 'spay2:push-gate', 'high', 0), old], slots: 2, now, repos, starve: 1000, quotas: new Map([['ron-skills', 1]]) }).granted], [1]);
+  assert.deepEqual([...queuePlan({ holders: [{ label: 'ron-skills:h', pid: 8 }], waiters: [w(1, 'spay2:push-gate', 'high', 0), old], slots: 2, now, repos, starve: 1000, quotas: new Map() }).granted], [4]);
 });

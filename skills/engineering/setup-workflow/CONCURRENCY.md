@@ -21,6 +21,16 @@ Every full run of the repo's check entry goes through `heavy-slot.mjs`, includin
 - **Python test shards.** A runner that splits Python tests across shards (spay2's `run-python-tests.py --shards 3`) adds one process per shard on top of the node tests in the same slot. Suggested: 2 shards on 16 cores. The repo changes its own runner; there is no template for it.
 - **Gradle.** `org.gradle.workers.max` (4 suggested on 16 cores) in the user-level `~/.gradle/gradle.properties`, and test fork limits in the repo's build, belong to the repo.
 
+## Handing a repo's full checks to CI
+
+`~/.config/orca-heavy-check/repo-slots` sets a per-repo cap, one `<repo> <n>` per line; a repo not listed is capped only by the machine-wide slot count, and without the file nothing changes. A cap above 0 limits how many of that repo's checks hold a slot at once; a repo at its cap does not block the next repo in the priority order. A cap of 0 means the repo's full checks run on its CI instead (ron-skills since 2026-11-26, CoS item 67: it is public, so GitHub Actions is free): `run` prints `SLOT_DELEGATED <label> ci` and exits 76 without running the command, which is neither a pass, a failure, nor a load timeout. `node scripts/heavy-slot.mjs quota <repo>` prints the cap so a check entry can decide before it asks for a slot.
+
+The caller then hands the check to CI. ron-skills' `bin/check` does this for a full run on a clean worktree: `scripts/ci-run.mjs` pushes `HEAD` to a `ci/*` branch and reads the `checks` job of `.github/workflows/checks.yml` on that SHA. A red CI job is a failed check; the caller does not rerun it locally. Only when CI is unavailable (the push fails, no run appears within 5 minutes, the job ends with no steps or as `startup_failure`, it stays queued past 20 minutes, or `gh` itself fails) does the caller rerun with `run --fallback` (or `HEAVY_SLOT_FALLBACK=1`), which ignores the 0 cap and queues as before, behind higher-priority repos and with the same anti-starvation rules. A dirty worktree cannot go to CI, so it falls back at once. `CHECK_FULL=1` on a commit is an explicit request for a local full run and always queues with `--fallback`.
+
+With the cap at 0 the pre-commit hook still runs small subsets (10 test files or fewer) locally without a slot, as before; a larger subset, a fallback to the full suite, or an uncomputable subset runs only the light part (`bin/check --changed --light`: the static steps and at most 10 test files) and prints `CHECK_DELEGATED`. The merge gate does not move: the PR's required checks run the full `bin/check --upstream` on Linux and macOS before `land.mjs` merges. Deleting the repo's line in `repo-slots` restores the local path everywhere.
+
+`stats` counts delegated runs (`delegated=`) and fallbacks (`fallback=`) per label and prints `run_sum` and `wait_sum`, so `stats --label '<repo>:*' --since <time>` over the week before and after setting the cap shows how much slot time the repo gave back.
+
 ## Sessions that count against the cap
 
 `pilot-capacity.mjs` counts only the batch members each coordinator reports. Other sessions a coordinator opens that run the full check entry (a tooling fix unit, a `/retro-collect` collector) use the same CPU; until they are recorded in the ledger (ron-skills #622), the coordinator counts them by hand against its share before dispatching.

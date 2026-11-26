@@ -65,7 +65,7 @@ controller 與 worker 是同一個 `/issue-run` skill 的兩種模式：沒有 c
 1. 改動寫成 `overlays/<name>.patch`，一個 skill 一個補丁，只放最小差異（例如給 `code-review` 的子代理指定模型、讓 `retro` 在有收集條目時改開 Issue）。
 2. `bin/sync-skills` 把上游的 skill 複製到 `~/.local/share/ron-skills/overlay/<name>`，在副本上套補丁，再把 `~/.claude/skills/<name>` 連到副本。上游 checkout（`~/code/skills`、`~/code/pstack`）本身一個字都不動，`git pull` 永遠是快轉。
 3. `bin/sync-skills --check` 只檢查不寫：每個補丁能不能套在目前的上游版本、上游有沒有新增 skill 要決定連不連。上游改到補丁的位置時印 `OVERLAY_FAILED`，連結保持舊版，重做那個補丁再同步。
-4. 升級上游時，先 `--check` 通過、試跑過，再更新 `matt-skills.txt`／`pstack-skills.txt` 的 `# pin:`（驗證過的上游 SHA）。ron-skills 的 CI 每週對上游最新 main 跑一次 `bin/check --upstream`，上游一改到補丁位置就先在 CI 變紅。
+4. 升級上游時，先 `--check` 通過、試跑過，再更新 `matt-skills.txt`／`pstack-skills.txt` 的 `# pin:`（驗證過的上游 SHA）。ron-skills 的 CI 每天對上游最新 main 跑一次 `bin/check --upstream`，上游一改到補丁位置就先在 CI 變紅。
 
 每個補丁改了什麼，列在 ron-skills 根目錄 [`README.md`](../../README.md) 的「overlays 清單」。
 
