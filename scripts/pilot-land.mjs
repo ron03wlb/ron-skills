@@ -522,7 +522,8 @@ async function readRunning(file, key) {
     const state = await workerState({ cli: process.env.ORCA_CLI_COMMAND }, member);
     const { kind, sha } = workerResult(state);
     if (!kind) throw new Stop(`member ${member.n} running (${state})，先跑 pilot-probe.mjs --apply`);
-    results.push({ n: member.n, state: kind === 'DONE' ? 'done' : 'stop', sha, line: `WORKER ${member.n} ${state}` });
+    // 帶讀取的 handle：列已換成重派的預留列或新分頁時不寫（#590，applyResults）。
+    results.push({ n: member.n, state: kind === 'DONE' ? 'done' : 'stop', sha, handle: member.handle, line: `WORKER ${member.n} ${state}` });
   }
   for (const { line } of results) console.log(line);
   const misses = applyResults(file, key, results);
