@@ -11,7 +11,8 @@
 //   --timeout      總共最多等幾秒（預設 $CI_RUN_TIMEOUT_S，再來 540：留在 Bash 工具 600 秒內）；等不完印 CI_PENDING，重跑同一行會找到同一個 run 接著等。
 //   --start-timeout push 後等 run 出現的上限（預設 300）；--queue-timeout job 停在 queued 的上限（從 run 建立起算，預設 1200）。
 // 步驟：先找這個 SHA 上已有的 run（`gh run list --commit <sha> --workflow <檔名>`，含先前 push 的 worker 分支、PR）；沒有才 push <sha> 到 --ref。
-//   之後每 $CI_RUN_POLL_S 秒（預設 15）讀一次 run 與 job；job 結束就印結果。--ref 是 `ci/` 開頭、而且遠端那條分支還指著 <sha> 時，有結論後刪掉它。
+//   之後每 $CI_RUN_POLL_S 秒（預設 15）讀一次 run 與 job；job 結束就印結果。--ref 是一次性分支（`ci/` 或 pilot-land 用的 `pilot/stage-` 開頭）、
+//   而且遠端那條分支還指著 <sha> 時，有結論後刪掉它（CI_PENDING 不刪：重跑要接著等同一個 run）。
 // 「CI 不可用」（CI_UNAVAILABLE）的判斷，任一成立：push 失敗（伺服器暫時失敗重試一次後）；push 後 start-timeout 秒內沒有 run；
 //   job 以 0 個 step 結束（runner 沒接單、帳務）或 run 是 startup_failure；job 被取消；job 停在 queued 超過 queue-timeout；`gh` 連續 3 次失敗。
 // stdout 最後一行（之前的進度行在 stderr：`CI_WAIT <sha> <run url|-> <已等秒數>s <狀態>`，每 60 秒一行）：
@@ -28,6 +29,8 @@ export const CI_PENDING_EXIT = 75;
 export const CI_UNAVAILABLE_EXIT = 76;
 const USAGE = '用法：node scripts/ci-run.mjs [<rev>] [--ref <分支>] [--workflow <檔名>] [--job <名稱>] [--timeout <秒>] [--start-timeout <秒>] [--queue-timeout <秒>]';
 const PUSH_TRANSIENT = /fatal error in commit_refs|\[remote rejected\][^\n]*\(failure\)|Could not resolve host|Connection (reset|timed out)|HTTP 5\d\d/;
+/** 有結論後可以刪掉的一次性分支：ci-run 自己的 `ci/<sha>`，與 pilot-land Regression 的 `pilot/stage-<key>`（只在本機用，推上去只為了觸發 CI）。 */
+const DISPOSABLE_REF = /^(ci\/|pilot\/stage-[^/]+$)/;
 const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'].includes(key)));
 
 /** 命令列 → 選項；錯誤時 { error }。 */
@@ -105,7 +108,7 @@ export async function ciRun(options, { gh, git, now = Date.now, sleep = ms => ne
     return undefined;
   };
   const cleanup = () => {
-    if (!ref.startsWith('ci/')) return;
+    if (!DISPOSABLE_REF.test(ref)) return;
     const remote = git(['ls-remote', 'origin', `refs/heads/${ref}`]);
     if (remote.status === 0 && remote.stdout.startsWith(sha)) git(['push', '-q', 'origin', '--delete', ref]);
   };

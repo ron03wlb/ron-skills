@@ -70,6 +70,17 @@ test('SHA 上已有 run（例如 worker 分支的 push）：不再 push；job �
   assert.ok(!calls.git.some(c => c.startsWith('push')), '已有 run 不 push；--ref 不是 ci/ 開頭也不刪');
 });
 
+test('--ref pilot/stage-<key>（pilot-land 的 Regression）：push 到那條分支，有結論後也刪掉；同名前綴但更深的路徑不刪', async () => {
+  const pass = () => fakes({ runs: [[], [run(1)]], views: [view([job('completed', 'success')], { status: 'completed', conclusion: 'success' })] });
+  const stage = pass();
+  assert.equal((await ciRun(parseArgs(['--ref', 'pilot/stage-646'], {}), stage.deps)).code, 0);
+  assert.ok(stage.calls.git.includes(`push -q origin ${SHA}:refs/heads/pilot/stage-646`));
+  assert.ok(stage.calls.git.includes('push -q origin --delete pilot/stage-646'), '一次性分支：有結論後刪掉');
+  const other = pass();
+  assert.equal((await ciRun(parseArgs(['--ref', 'pilot/stage-646/x'], {}), other.deps)).code, 0);
+  assert.ok(!other.calls.git.some(c => c.includes('--delete')));
+});
+
 test('CI 不可用：push 失敗、沒有 run、0 個 step、排隊過久、gh 連續失敗都印 CI_UNAVAILABLE exit 76', async () => {
   const unavailable = async (opts, args = []) => (await ciRun(parseArgs(args, {}), fakes(opts).deps));
   let r = await unavailable({ push: { status: 1, stdout: '', stderr: 'remote: Permission denied\nfatal: unable to access' } });

@@ -661,6 +661,78 @@ test('restamp 後的檢查沒過：仍是 STOP restamp-checks-failed', t => {
   assert.match(last(result), new RegExp(`^STOP restamp-checks-failed ${sh(wt, 'rev-parse', 'HEAD')} exit 3 `));
 });
 
+// CoS item 67：heavy-slot 給這個 repo 0 個名額（fixture 的主 checkout 目錄名是 main）時，restamp 後的檢查交給 PR 的 checks；
+// `--local-checks` 是 CI 不可用時的退路，維持在本機跑（帶 --fallback）；名額大於 0 時和以前一樣在本機檢查。
+const QUOTA_ZERO = { HEAVY_CHECK_REPO_SLOTS: 'main=0' };
+
+test('名額 0：restamp 後不在本機檢查，印 RESTAMP_CHECKS_DELEGATED、push，等 PR 的 checks 通過後合併', t => {
+  const { body, land, calls, prs, last, pushMain, commitFeature } = fixture(t, { seed: STAMP_SEED, checks: [PENDING, PASS] });
+  commitFeature({ 'src/a.txt': 'a1\n', 'stamp.json': stamp({ 'a.txt': 'a1\n', 'b.txt': 'b0\n' }) });
+  pushMain({ 'src/b.txt': 'b1\n', 'stamp.json': stamp({ 'a.txt': 'a0\n', 'b.txt': 'b1\n' }) });
+
+  const result = land(['feature', '--body-file', body, '--check-command', 'bin/check --upstream'], undefined, QUOTA_ZERO);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [pr] = prs();
+  const restamped = result.stdout.match(/^RESTAMPED (\d+) ([0-9a-f]{40})$/m);
+  assert.ok(restamped, result.stdout);
+  assert.match(result.stdout, new RegExp(`^RESTAMP_CHECKS_DELEGATED ${pr.number} ${restamped[2]}$`, 'm'));
+  assert.doesNotMatch(calls(), /^check /m, '名額 0：本機不跑檢查入口');
+  assert.equal(pr.headRefOid, restamped[2], '新 tip 已 push，PR 的 checks 驗的是它');
+  assert.match(result.stdout, new RegExp(`^CHECKS_PASSED ${pr.number} `, 'm'));
+  assert.equal(last(result), `LANDED ${pr.number} ${pr.mergeCommit.oid}`);
+});
+
+test('名額 0、restamp 後 PR 的 checks 失敗：STOP ci-failed，不合併', t => {
+  const { body, land, calls, prs, last, pushMain, commitFeature } = fixture(t, { seed: STAMP_SEED, checks: [FAIL] });
+  commitFeature({ 'src/a.txt': 'a1\n', 'stamp.json': stamp({ 'a.txt': 'a1\n', 'b.txt': 'b0\n' }) });
+  pushMain({ 'src/b.txt': 'b1\n', 'stamp.json': stamp({ 'a.txt': 'a0\n', 'b.txt': 'b1\n' }) });
+
+  const result = land(['feature', '--body-file', body], undefined, QUOTA_ZERO);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESTAMP_CHECKS_DELEGATED /m);
+  assert.match(last(result), /^STOP ci-failed /);
+  assert.doesNotMatch(calls(), /^gh pr merge /m);
+  assert.equal(prs()[0].state, 'OPEN');
+});
+
+test('名額 0 加 --local-checks（CI 不可用的退路）：push 前與 restamp 後的檢查都帶 --fallback 在本機跑', t => {
+  const { wt, body, sh, land, calls, prs, comments, last, commitFeature } = fixture(t, {
+    seed: STAMP_SEED, checks: [FAIL], mainMovesAtMerge: { 'src/b.txt': 'b1\n', 'stamp.json': stamp({ 'a.txt': 'a0\n', 'b.txt': 'b1\n' }) },
+  });
+  commitFeature({ 'src/a.txt': 'a1\n', 'stamp.json': stamp({ 'a.txt': 'a1\n', 'b.txt': 'b0\n' }) });
+  const tip = sh(wt, 'rev-parse', 'HEAD');
+  const slots = mkdtempSync(join(realTmpdir(), 'land-quota-'));
+  t.after(() => rmSync(slots, { recursive: true, force: true }));
+
+  const result = land(['feature', '--body-file', body, '--local-checks', tip], undefined, { ...QUOTA_ZERO, HEAVY_CHECK_DIR: slots });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const restamped = result.stdout.match(/^RESTAMPED (\d+) ([0-9a-f]{40})$/m);
+  assert.ok(restamped, result.stdout);
+  assert.doesNotMatch(result.stdout, /^RESTAMP_CHECKS_DELEGATED /m);
+  assert.match(calls(), new RegExp(`^check  ${tip} dirty=\\[\\]$`, 'm'));
+  assert.match(calls(), new RegExp(`^check  ${restamped[2]} dirty=\\[\\]$`, 'm'));
+  assert.doesNotMatch(calls(), CHECK_POLL);
+  assert.equal(comments().length, 2);
+  const records = readFileSync(join(slots, 'log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(records.map(r => [r.label, r.fallback, r.exit]), [['main:land-checks', true, 0], ['main:land-checks', true, 0]], '經 --fallback 排隊，不是交給 CI');
+  const [pr] = prs();
+  assert.equal(last(result), `LANDED ${pr.number} ${pr.mergeCommit.oid}`);
+});
+
+test('名額大於 0：restamp 後照舊在本機檢查，不印 RESTAMP_CHECKS_DELEGATED', t => {
+  const { body, land, calls, prs, last, pushMain, commitFeature } = fixture(t, { seed: STAMP_SEED });
+  commitFeature({ 'src/a.txt': 'a1\n', 'stamp.json': stamp({ 'a.txt': 'a1\n', 'b.txt': 'b0\n' }) });
+  pushMain({ 'src/b.txt': 'b1\n', 'stamp.json': stamp({ 'a.txt': 'a0\n', 'b.txt': 'b1\n' }) });
+
+  const result = land(['feature', '--body-file', body], undefined, { HEAVY_CHECK_REPO_SLOTS: 'main=2' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const restamped = result.stdout.match(/^RESTAMPED (\d+) ([0-9a-f]{40})$/m);
+  assert.ok(restamped, result.stdout);
+  assert.doesNotMatch(result.stdout, /^RESTAMP_CHECKS_DELEGATED /m);
+  assert.match(calls(), new RegExp(`^check  ${restamped[2]} dirty=\\[\\]$`, 'm'));
+  assert.equal(last(result), `LANDED ${prs()[0].number} ${prs()[0].mergeCommit.oid}`);
+});
+
 test('--local-checks 逾時：STOP local-checks-timeout，不合併', t => {
   const { wt, body, sh, land, calls, last } = fixture(t, { checks: [FAIL] });
   const tip = sh(wt, 'rev-parse', 'HEAD');

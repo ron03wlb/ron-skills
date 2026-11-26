@@ -693,3 +693,150 @@ test('push：沒有 --title 是用法錯誤 exit 2', t => {
   const result = spawnSync('node', [script, 'push'], { cwd: f.repo, encoding: 'utf8', env });
   assert.equal(result.status, 2, result.stdout + result.stderr);
 });
+
+/**
+ * CoS item 67：PATH 上的假 gh，給 ci-run.mjs 讀 run。狀態檔 `{ run, view }`：`gh run list` 回 [run]（run 是 null 時空陣列），`gh run view` 回 view；
+ * set() 換狀態（重跑之間 CI 有了結論）；calls() 是 gh 的參數，一行一次。env 另帶 repo 名額 0（fixture 的主 checkout 目錄名是 repo）與 ci-run 時限 0（沒結論就 CI_PENDING）。
+ */
+function fakeCi(t, quota = 'repo=0') {
+  const dir = mkdtempSync(join(realTmpdir(), 'pilot-land-ci-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = join(dir, 'state.json');
+  const log = join(dir, 'gh.log');
+  writeFileSync(log, '');
+  mkdirSync(join(dir, 'bin'));
+  writeFileSync(join(dir, 'bin/gh'), `#!/usr/bin/env node
+const fs = require('fs'); const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(log)}, args.join(' ') + '\\n');
+const s = JSON.parse(fs.readFileSync(${JSON.stringify(state)}, 'utf8'));
+if (args[1] === 'list') console.log(JSON.stringify(s.run ? [s.run] : []));
+else console.log(JSON.stringify(s.view));
+`);
+  chmodSync(join(dir, 'bin/gh'), 0o755);
+  const set = ({ run = null, view = {} }) => writeFileSync(state, JSON.stringify({ run, view }));
+  set({});
+  return { set, calls: () => readFileSync(log, 'utf8'), env: { PATH: `${join(dir, 'bin')}:${process.env.PATH}`, HEAVY_CHECK_REPO_SLOTS: quota, PILOT_CI_TIMEOUT_S: '0' } };
+}
+
+const RUN_URL = 'https://github.com/o/r/actions/runs/7';
+const ciRun = (status = 'completed', conclusion = 'success') => ({ databaseId: 7, status, conclusion, event: 'push', createdAt: new Date().toISOString(), url: RUN_URL });
+const ciJob = (status, conclusion, steps = [{ name: 'Checks on upstream main', conclusion }]) =>
+  ({ name: 'checks', status, conclusion, steps, startedAt: '2026-11-26T00:00:00Z', completedAt: '2026-11-26T00:04:30Z' });
+const ciPass = { run: ciRun(), view: { jobs: [ciJob('completed', 'success')], status: 'completed', conclusion: 'success', url: RUN_URL } };
+const ciFail = { run: ciRun('completed', 'failure'), view: { jobs: [ciJob('completed', 'failure', [{ name: 'Set up', conclusion: 'success' }, { name: 'Checks on upstream main', conclusion: 'failure' }])], status: 'completed', conclusion: 'failure', url: RUN_URL } };
+const ciPending = { run: ciRun('in_progress', null), view: { jobs: [ciJob('in_progress', null)], status: 'in_progress', conclusion: null, url: RUN_URL } };
+
+test('名額 0：Regression 交給 CI（ci-run），CI_PASS 時 regression 行記 exit 0 CI_PASS <run url>、MERGED，本機不跑檢查', t => {
+  const ci = fakeCi(t);
+  ci.set(ciPass);
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }], extraEnv: ci.env });
+  const result = f.land(f.key);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const sha = result.lines[0].match(/^STAGED 1 ([0-9a-f]{40}) onto /)?.[1];
+  assert.ok(sha, result.stdout);
+  assert.equal(result.last, `MERGED 1 ${sha}`);
+  assert.equal(f.checks(), '', '名額 0：本機不跑 Regression');
+  assert.match(f.read(), new RegExp(`^regression: ${sha} exit 0 CI_PASS ${RUN_URL}$`, 'm'));
+  assert.match(ci.calls(), new RegExp(`^run list --commit ${sha} --workflow checks.yml `, 'm'));
+  const log = readFileSync(join(f.repo, `.scratch/pilot/reg-${f.key}.log`), 'utf8');
+  assert.match(log, /^SLOT_DELEGATED repo:regression ci$/m);
+  assert.match(log, new RegExp(`^CI_PASS ${sha} ${RUN_URL} 270s$`, 'm'));
+});
+
+test('名額 0、CI_FAIL：regression 行記 exit 1 CI_FAIL <run url> <step>，STOP regression 1，不退回本機', t => {
+  const ci = fakeCi(t);
+  ci.set(ciFail);
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }], extraEnv: ci.env });
+  const before = git(f.repo, 'rev-parse', 'pilot/integration');
+  const result = f.land(f.key);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(result.last, 'STOP regression 1');
+  assert.equal(f.checks(), '');
+  assert.match(f.read(), new RegExp(`^regression: [0-9a-f]{40} exit 1 CI_FAIL ${RUN_URL} Checks_on_upstream_main$`, 'm'));
+  assert.equal(git(f.repo, 'rev-parse', 'pilot/integration'), before, '整合分支不動');
+});
+
+test('名額 0、CI_PENDING：STOP load ci-pending <run url>、記 exit 75；重跑不重新 stage，RESUME … ci-pending 接著等同一個 SHA 的 run 後 MERGED', t => {
+  const ci = fakeCi(t);
+  ci.set(ciPending);
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }], extraEnv: ci.env });
+  const pending = f.land(f.key);
+  assert.equal(pending.status, 4, pending.stdout + pending.stderr);
+  assert.equal(pending.last, `STOP load ci-pending ${RUN_URL}`);
+  const sha = pending.lines[0].match(/^STAGED 1 ([0-9a-f]{40}) onto /)?.[1];
+  assert.ok(sha, pending.stdout);
+  assert.match(f.read(), new RegExp(`^regression: ${sha} exit 75 CI_PENDING ${RUN_URL}$`, 'm'));
+
+  ci.set(ciPass);
+  const resumed = f.land(f.key);
+  assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr);
+  assert.deepEqual(resumed.lines, [`RESUME 1 ${sha} ci-pending`, `MERGED 1 ${sha}`]);
+  assert.match(f.read(), new RegExp(`^regression: ${sha} exit 0 CI_PASS ${RUN_URL}$`, 'm'));
+  assert.equal((ci.calls().match(new RegExp(`^run list --commit ${sha} `, 'gm')) ?? []).length, 2, '兩次都等同一個 SHA 的 run');
+  assert.equal(f.checks(), '');
+  assert.doesNotMatch(f.read(), /^regressing:/m, '寫 regression 行時拿掉存活標記');
+});
+
+test('名額 0、CI 不可用（沒有 run、push 失敗）：以 --fallback 在本機排隊跑 Regression，照本機結果 MERGED', t => {
+  const ci = fakeCi(t);
+  const slots = mkdtempSync(join(realTmpdir(), 'pilot-land-fallback-'));
+  t.after(() => rmSync(slots, { recursive: true, force: true }));
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }], extraEnv: { ...ci.env, HEAVY_CHECK_DIR: slots } });
+  const result = f.land(f.key);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.last, /^MERGED 1 [0-9a-f]{40}$/);
+  assert.equal(f.checks(), 'check \n', 'CI 不可用：退回本機');
+  assert.match(f.read(), /^regression: [0-9a-f]{40} exit 0 CHECK_PASS tests 1\+2$/m);
+  const log = readFileSync(join(f.repo, `.scratch/pilot/reg-${f.key}.log`), 'utf8');
+  assert.match(log, /^CI_UNAVAILABLE [0-9a-f]{40} push /m);
+  const records = readFileSync(join(slots, 'log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(records.map(r => [Boolean(r.delegated), Boolean(r.fallback)]), [[true, false], [false, true]], '先交給 CI，CI 不可用才 --fallback');
+});
+
+test('名額大於 0：Regression 照舊在本機跑，不呼叫 gh', t => {
+  const ci = fakeCi(t, 'repo=1');
+  ci.set(ciPass);
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }], extraEnv: ci.env });
+  const result = f.land(f.key);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.checks(), 'check \n');
+  assert.match(f.read(), /^regression: [0-9a-f]{40} exit 0 CHECK_PASS tests 1\+2$/m);
+  assert.equal(ci.calls(), '');
+});
+
+// coordinator G50：名額 0 時 sync-main 的 Regression 拿到 SLOT_DELEGATED（exit 76），舊版當成 STOP regression sync-main 76。
+test('名額 0、sync-main 的 Regression 交給 CI（--ref pilot/stage-sync-main）：CI_PASS 時 SYNCED <sha> CI_PASS <run url>，不是 STOP regression sync-main 76', t => {
+  const ci = fakeCi(t);
+  ci.set(ciPass);
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }], extraEnv: ci.env });
+  const upstream = withOrigin(f, { upstream: { 'up.txt': 'up\n' }, integration: { 'int.txt': 'int\n' } });
+  const result = f.land('sync-main');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const sha = result.last.match(new RegExp(`^SYNCED ([0-9a-f]{40}) CI_PASS ${RUN_URL}$`))?.[1];
+  assert.ok(sha, result.stdout);
+  assert.equal(git(f.repo, 'rev-parse', 'pilot/integration'), sha);
+  assert.equal(git(f.repo, 'merge-base', '--is-ancestor', upstream, sha), '');
+  assert.equal(f.checks(), '');
+  assert.match(ci.calls(), new RegExp(`^run list --commit ${sha} `, 'm'));
+});
+
+test('名額 0、sync-main 的 CI_PENDING：STOP load ci-pending，重跑沿用同一個合併 commit 接著等，通過後 SYNCED', t => {
+  const ci = fakeCi(t);
+  ci.set(ciPending);
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }], extraEnv: ci.env });
+  withOrigin(f, { upstream: { 'up.txt': 'up\n' }, integration: { 'int.txt': 'int\n' } });
+  const tip = git(f.repo, 'rev-parse', 'pilot/integration');
+  const pending = f.land('sync-main');
+  assert.equal(pending.status, 4, pending.stdout + pending.stderr);
+  assert.equal(pending.last, `STOP load ci-pending ${RUN_URL}`);
+  assert.equal(git(f.repo, 'rev-parse', 'pilot/integration'), tip, '整合分支不動');
+  const sha = ci.calls().match(/^run list --commit ([0-9a-f]{40}) /m)?.[1];
+  assert.ok(sha, ci.calls());
+
+  ci.set(ciPass);
+  const synced = f.land('sync-main');
+  assert.equal(synced.status, 0, synced.stdout + synced.stderr);
+  assert.equal(synced.last, `SYNCED ${sha} CI_PASS ${RUN_URL}`);
+  assert.equal(git(f.repo, 'rev-parse', 'pilot/integration'), sha);
+  assert.equal(f.checks(), '');
+});
