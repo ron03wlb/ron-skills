@@ -885,10 +885,47 @@ test('站台 html、戳記檔與兩邊改同一段的 05-level3.md 一起衝突�
   const before = f.tip();
   const result = f.land();
   assert.equal(result.status, 4, result.stdout + result.stderr);
-  assert.equal(result.last, `STOP conflict 2 ${LEVEL3}=member 1:other ${LEVEL3_SITE}=member 1:other scripts/workflow-doc-sync.json=member 1:other`);
+  assert.equal(result.last, `STOP conflict 2 ${LEVEL3}=member 1:導讀 ${LEVEL3_SITE}=member 1:other scripts/workflow-doc-sync.json=member 1:other`);
   assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
   assert.equal(f.tip(), before);
   assert.equal(f.checks(), 0);
+});
+
+// #608：#589 的事例（G10 等了約 7.5 小時）是整合分支與成員改了 05-level3.md 同一段轉述；種類欄要分得出「導讀」，coordinator 才能不開 gate。
+test('導讀衝突：整合分支與成員改了 docs/workflow/*.md 同一段，連同站台 html 與戳記檔衝突，md 的種類欄是 導讀', t => {
+  const f = syncFixture(t, syncMembers({ a: siteChange(LEVEL3_MD.replace('a1', 'A')) }).slice(0, 1), siteBase());
+  write(f.stageTree, { ...siteChange(LEVEL3_MD.replace('a1', 'I')), [SYNC_SOURCES[1]]: '# integration\n' });
+  const restamp = spawnSync('node', ['scripts/check-workflow-sync.mjs', '--restamp'], { cwd: f.stageTree, encoding: 'utf8' });
+  assert.equal(restamp.status, 0, restamp.stderr);
+  git(f.stageTree, 'add', '.');
+  git(f.stageTree, 'commit', '-qm', 'integration moves');
+  const result = f.land();
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(result.last, `STOP conflict 1 ${LEVEL3}=integration:導讀 ${LEVEL3_SITE}=integration:other scripts/workflow-doc-sync.json=integration:other`);
+});
+
+test('導讀衝突：docs/workflow/*.md 裡兩邊都改同一個條目，種類欄是 導讀，不是 entry <名稱>', t => {
+  const guide = 'docs/workflow/07-rules.md';
+  const f = fixture(t, {
+    base: { [guide]: ENTRIES },
+    members: [
+      { n: 1, slug: 'a', files: { [guide]: ENTRIES.replace('close v1', 'close A') } },
+      { n: 2, slug: 'b', files: { [guide]: ENTRIES.replace('close v1', 'close B') } },
+    ],
+  });
+  assert.equal(f.land().last, `STOP conflict 2 ${guide}=member 1:導讀`);
+});
+
+test('導讀與程式檔一起衝突、來源含 integration：各自印 導讀 與 code；docs/agents/*.md 不是導讀', t => {
+  const guide = 'docs/workflow/05-level3.md';
+  const f = fixture(t, {
+    base: { [guide]: 'a\n', 'scripts/x.mjs': 'a\n', 'docs/agents/pilot.md': ENTRIES, 'docs/workflow/site/note.md': 'a\n' },
+    members: [{ n: 1, slug: 'a', files: { [guide]: 'A\n', 'scripts/x.mjs': 'A\n', 'docs/agents/pilot.md': ENTRIES.replace('close v1', 'close A'), 'docs/workflow/site/note.md': 'A\n' } }],
+  });
+  write(f.stageTree, { [guide]: 'I\n', 'scripts/x.mjs': 'I\n', 'docs/agents/pilot.md': ENTRIES.replace('close v1', 'close I'), 'docs/workflow/site/note.md': 'I\n' });
+  git(f.stageTree, 'commit', '-qam', 'integration moves');
+  assert.equal(f.land().last,
+    `STOP conflict 1 docs/agents/pilot.md=integration:entry Close ${guide}=integration:導讀 docs/workflow/site/note.md=integration:other scripts/x.mjs=integration:code`);
 });
 
 test('重產站台失敗：abort，STOP conflict，stage worktree 乾淨', t => {
