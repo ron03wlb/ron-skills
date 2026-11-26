@@ -143,6 +143,35 @@ test('Stage：來源只有 integration 的 code 衝突照 Fresh redispatch 重�
   for (const text of [stage, line('Dispatch stops')]) assert.match(text, /依號碼一次只重派一張.*park <key> <n> --after <先做的那張> --fresh --reason <原因>/);
 });
 
+// #608：#589 的 G10 兩邊改了 docs/workflow/05-level3.md 同一段轉述，gate 等了約 7.5 小時，conflict-fix 只花 9 分鐘。
+// fixture 是 tests/pilot-land.test.mjs 的導讀衝突 STOP 行：排除重產物後全是 導讀、來源含 integration，Stage conflict 要有一句讓它不開 gate。
+test('Stage：導讀衝突（docs/workflow 轉述、來源含 integration）不開 gate，照順序重派並 open 後立刻 resolve；範圍外照舊', () => {
+  const stage = line('Stage conflict');
+  assert.match(stage, /`導讀`（`docs\/workflow\/` 底下、`site\/` 以外的 `\.md`[^）]*優先於 `entry <名稱>`/);
+  const fixture = 'STOP conflict 1 docs/workflow/05-level3.md=integration:導讀 docs/workflow/site/05-level3.html=integration:other scripts/workflow-doc-sync.json=integration:other';
+  const fields = fixture.split(' ').slice(3).map(field => field.slice(field.indexOf('=') + 1).split(':'));
+  assert.deepEqual(fields.map(([, kind]) => kind), ['導讀', 'other', 'other']);
+  const rule = stage.split('。').find(sentence => sentence.includes('是導讀衝突')) ?? '';
+  assert.ok(rule, 'Stage conflict 要有一句定義導讀衝突');
+  // 判定：排除重產物後至少一個、全是導讀、至少一個來源含 integration、沒有 unknown。
+  assert.match(rule, /排除重產物（站台 `docs\/workflow\/site\/\*\*` 與戳記檔 `scripts\/workflow-doc-sync\.json`、`docs\/agents\/workflow-templates\.json`）/);
+  assert.match(rule, /至少剩一個、種類全是 `導讀`、至少一個的來源含 `integration`、沒有檔的來源是 `unknown`/);
+  // 處理：不開 gate、不查例外清單，照 member 順序或原 key 重派；留紀錄。
+  assert.match(rule, /不開 gate、不查下面「仍開 gate 等人」的例外清單/);
+  assert.match(rule, /來源含 `member <m>` 時先 move、讓其餘成員合入再 fresh 重派/);
+  assert.match(rule, /來源只有 `integration` 時照 Fresh redispatch 以原 key 重派[^。]*`OVERLAP <n> <m>`/);
+  assert.match(rule, /以 `docs\/workflow\/` 對照 SKILL／ADAPTER 正本為準/);
+  assert.match(rule, /照 Gates 先 `open` 再立刻 `resolve` 留紀錄、不通知，並照 Decisions 記一筆/);
+  // 只有 member 來源的導讀衝突行為不變：歸「來源全是同批 member」那條，同樣不等人。
+  assert.match(stage, /來源全是同批 `member <m>`、種類是 `code`、`other` 或 `導讀`（沒有 `entry`）時也不等人/);
+  // 範圍外：混有 code／other 照 #560 或照舊 gate；docs/agents、SKILL、ADAPTER、程式檔不是導讀。
+  assert.match(stage, /混有 `導讀` 的檔照 `other` 算/);
+  // 導讀衝突的重產物種類是 other，字面上也像「來源全是 integration 的 other」：#560 那句要明寫導讀衝突除外（#608 review P2）。
+  const integrationRule = stage.split('。').find(sentence => /來源全是 `integration`/.test(sentence) && /`code`/.test(sentence)) ?? '';
+  assert.match(integrationRule, /不是上面的導讀衝突/);
+  assert.match(stage, /`docs\/agents\/\*\*`、SKILL、ADAPTER 與程式檔不是 `導讀`/);
+});
+
 // #560 review：人工改動可能藏在 stage 合併後面（成員分支合過 main、成員改了檔名），整合 PR 合併後整合分支快轉、
 // first-parent 只剩 PR 合併，本機 main 也可能落後 origin/main。照 Stage conflict 寫的指令在真的 repo 上跑：
 // 有人工改動的要保留 gate，只有 pilot 改動的才直接重派。

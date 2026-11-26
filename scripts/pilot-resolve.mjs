@@ -12,7 +12,7 @@
 //   流程站戳記 scripts/workflow-doc-sync.json（STAMP_FILES）：其他衝突檔都解完之後由 restamp 重算；land.mjs 的 scripts/restamp.mjs 也用它（#72、#173）。
 //   流程站站台 docs/workflow/site/**（isGenerated）：build-workflow-site.mjs 從 docs/workflow/*.md 重產的產物，衝突時和戳記檔一起交給 restamp 重產，
 //              不必另開 gate（#589：只有站台 html 與戳記檔衝突時 G10 等了約 7.5 小時）；來源 md 本身解不了照樣 STOP conflict。
-//   STOP conflict 的種類：Markdown 檔解不了的 hunk 裡兩邊都改的 `- **<名稱>.**` 條目是 `entry <名稱>`（#192）；其他交回正本判斷（code／other）。
+//   STOP conflict 的種類：docs/workflow/ 底下（site/ 除外）的 .md 是 `導讀`，優先於 entry（#608）；其他 Markdown 檔解不了的 hunk 裡兩邊都改的 `- **<名稱>.**` 條目是 `entry <名稱>`（#192）；其他交回正本判斷（code／other）。
 // 契約（正本檔頭）：KINDS 是解法名稱的順序；resolveFile(tree, path, kinds) 傳回合併後的文字或 undefined；conflictKind(tree, path) 傳回種類或 undefined；
 //   STAMP_FILES、isGenerated(path) 與 restamp(tree, files)。
 import { spawnSync } from 'node:child_process';
@@ -395,11 +395,16 @@ export function resolveFile(tree, path, kinds) {
   return segments && walkHunks(segments, (hunk, context) => resolveHunk(hunk.base, hunk.ours, hunk.theirs, kinds, context));
 }
 
+/** 流程站導讀：docs/workflow/ 底下（站台 site/ 除外）的 .md，是對照 SKILL／ADAPTER 正本寫的轉述（#608）。 */
+const GUIDE = '導讀';
+const isGuide = path => path.startsWith('docs/workflow/') && !path.startsWith(SITE) && path.endsWith('.md');
+
 /**
- * STOP conflict 的種類欄（#192）：Markdown 檔裡解不了的 hunk 有兩邊都改的 `- **<名稱>.**` 條目時是 `entry <名稱>`（多個以、連接，
+ * STOP conflict 的種類欄（#192）：導讀檔一律是 `導讀`，優先於 `entry <名稱>`（#608）；Markdown 檔裡解不了的 hunk 有兩邊都改的 `- **<名稱>.**` 條目時是 `entry <名稱>`（多個以、連接，
  * 條目開頭之前的文字歸到 hunk 之前所在的條目）；不是這種情況傳回 undefined，由正本判斷 code／other。
  */
 export function conflictKind(tree, path) {
+  if (isGuide(path)) return GUIDE;
   const segments = path.endsWith('.md') ? diff3(tree, path) : undefined;
   const names = new Set();
   if (segments) {
