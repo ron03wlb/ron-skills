@@ -147,8 +147,8 @@
     },
     "scripts/lib/pilot-store.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/pilot-store.mjs",
-      "commit": "3568ca5b825edfcb87002953286aec1e2e8597fa",
-      "sha256": "17f669f3f982ae22b13fef8036f96bc0daa49ec0c749122ccbc1e27be65fcb9b"
+      "commit": "f3465e035603f1d6cbbc1bb6c6134a7b984d69cd",
+      "sha256": "faa77567bb738a1cae93d6a78d1ed42261967b2a7aec4f2a8ef0ffc286718bf3"
     },
     "scripts/lib/protected-paths.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/protected-paths.mjs",
@@ -237,8 +237,8 @@
     },
     "scripts/pilot-land.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-land.mjs",
-      "commit": "83f53ad04a17d19643f3ca05c3186d42899d2d88",
-      "sha256": "950655fbd46841e23b7b0561ebed79aed33aaacd6f09ea870af6269595004601"
+      "commit": "f3465e035603f1d6cbbc1bb6c6134a7b984d69cd",
+      "sha256": "2ecee125599b6682f132238d4dbcbe253f818769670c406c75c80502bf6c08f1"
     },
     "scripts/pilot-pr-body.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-pr-body.mjs",
@@ -247,8 +247,8 @@
     },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",
-      "commit": "564b6ffc90620cad6d6a117adb90bd461a6a4c0b",
-      "sha256": "09ebb5e1c2f31dd5fa3d146a57595c7c2c8e6dd364b0cf8357c82dcad56f4ac0"
+      "commit": "f3465e035603f1d6cbbc1bb6c6134a7b984d69cd",
+      "sha256": "1a54da95fb2666d0b05e312538dafc1dafe9e603fc676c28aaa79975fe89f7f7"
     },
     "scripts/pilot-register.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-register.mjs",

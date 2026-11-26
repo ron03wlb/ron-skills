@@ -196,6 +196,17 @@ export const tableCells = line => line.split('|').slice(1, -1).map(cell => cell.
 const isMemberRow = line => tableCells(line).length >= 8 && /^\d+$/.test(tableCells(line)[0]);
 
 /**
+ * batch checkpoint 的成員列（欄位見 PILOT-STORE.md），依表格順序：每列 `{ n, branch, worktree, handle, started, stuckAfter, state, candidate }`，n 一律是字串。
+ * pilot-land 的 readCheckpoint 與 pilot-probe 的 parseBatch 共用（#453 第 1 項：一邊轉 Number、一邊留字串，照 probe 寫的 `held.has(m.n)` 在 pilot-land 不中）。
+ * 預設只收 Issue 欄是號碼的列；`requests` 時也收 Issue 欄是 `-` 的請求分支列，n 是分支名稱。
+ */
+export function batchMembers(text, { requests = false } = {}) {
+  return text.split('\n').map(tableCells)
+    .filter(cells => cells.length >= 8 && (/^\d+$/.test(cells[0]) || (requests && cells[0] === '-')))
+    .map(([n, branch, worktree, handle, started, stuckAfter, state, candidate]) => ({ n: n === '-' ? branch : n, branch, worktree, handle, started, stuckAfter, state, candidate }));
+}
+
+/**
  * batch checkpoint 的行陣列裡成員全是 `moved …` 時，把 `current:` 就地寫成 `closed moved`；傳回這次是否改了。
  * pilot-batch 的 move／park 與 pilot-dispatch 的 --fresh 共用（#205：--fresh 搬走全部成員的舊 batch 留在 dispatched，status.md 一直列成開著）。
  */
