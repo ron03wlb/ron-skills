@@ -567,3 +567,43 @@ test('餓死保底：HEAVY_CHECK_STARVE_S=0 關閉，spay2 在等時 ron-skills 
   assert.deepEqual(order(), ['spay2:check', 'ron-skills:pre-commit']);
   assert.doesNotMatch(ron.stderr(), /starve=1/);
 });
+
+test('同一筆 resume 紀錄只給一個重跑行程沿用：同時重跑兩次，只有一支印 SLOT_RESUMED（spay2 #1159 Codex 發現）', async t => {
+  const { dir, env, start, status, holdUntil, until } = fixture(t, 1);
+  const hold = await holdUntil('t:hold');
+  const command = `echo t:a >> ${dir}/order`;
+  assert.equal((await start('t:a', command, ['--timeout', '0.3']).done).code, SLOT_TIMEOUT_EXIT);
+  const one = start('t:a', command);
+  const two = start('t:a', command);
+  await until(() => (status().stdout.match(/^WAITER t:a /gm) ?? []).length === 2, '兩支 t:a 都排進隊伍');
+  hold.release();
+  const results = await Promise.all([one.done, two.done, hold.done]);
+  assert.deepEqual(results.map(r => r.code), [0, 0, 0]);
+  assert.equal(results.slice(0, 2).filter(r => /^SLOT_RESUMED /m.test(r.stderr)).length, 1, '只有一支沿用');
+  assert.deepEqual(resumeFiles(env), []);
+});
+
+test('同鍵兩支先後逾時：resume 紀錄保留較早的 since（spay2 #1159 Codex 發現）', async t => {
+  const { dir, env, start, holdUntil } = fixture(t, 1);
+  const hold = await holdUntil('t:hold');
+  const command = `echo t:a >> ${dir}/order`;
+  const first = start('t:a', command, ['--timeout', '0.4']);
+  await sleep(200);
+  const second = start('t:a', command, ['--timeout', '0.6']);
+  assert.equal((await first.done).code, SLOT_TIMEOUT_EXIT);
+  const [file] = resumeFiles(env);
+  const early = JSON.parse(readFileSync(join(env.HEAVY_CHECK_DIR, file), 'utf8')).since;
+  assert.equal((await second.done).code, SLOT_TIMEOUT_EXIT);
+  assert.equal(JSON.parse(readFileSync(join(env.HEAVY_CHECK_DIR, file), 'utf8')).since, early, '較晚逾時的不覆蓋較早的 since');
+  hold.release();
+  await hold.done;
+});
+
+test('resume 紀錄清不掉（同名路徑是目錄）不影響檢查執行（spay2 #1159 Codex 發現）', async t => {
+  const { dir, env, start } = fixture(t, 1, { HEAVY_CHECK_RESUME_S: '0' });
+  const argv = ['sh', '-c', `echo ran >> ${dir}/order`];
+  mkdirSync(join(env.HEAVY_CHECK_DIR, `resume-${resumeKey('t:a', process.cwd(), argv)}.json`), { recursive: true });
+  const result = await start('t:a', argv[2]).done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(readFileSync(join(dir, 'order'), 'utf8').trim(), 'ran');
+});

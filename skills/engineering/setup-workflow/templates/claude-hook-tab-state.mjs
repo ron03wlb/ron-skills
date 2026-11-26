@@ -22,8 +22,8 @@ import { pathToFileURL } from 'node:url';
 import { STATES, currentTitle, hasState, orcaContext, recordTitle, recordedTitle, sessionTarget, setState, titleMismatch } from './tab-state.mjs';
 
 export const DEFAULT_TRIGGERS = {
-  // land.mjs 合入後的最後一行；pilot 的 coordinator 以 `--keep-branch` 或 Push gate 入口 `pilot-land.mjs push`（#395）落地整合分支，它還在運作，不算
-  landed: { event: 'PostToolUse', match: '^LANDED \\S+ [0-9a-f]{7,40}$', skipCommand: '--keep-branch\\b|pilot-land\\.mjs push\\b', state: '待 Retro' },
+  // land.mjs 合入後的最後一行；pilot 的 coordinator 以 `--keep-branch` 或 Push gate 入口 `pilot-land.mjs push`（#395，只認指令開頭或 ; & | ( 之後的 node 呼叫，標題提到它不算）落地整合分支，它還在運作，不算
+  landed: { event: 'PostToolUse', match: '^LANDED \\S+ [0-9a-f]{7,40}$', skipCommand: '--keep-branch\\b|(^|[;&|(]\\s*)node\\s+\\S*pilot-land\\.mjs\\s+push\\b', state: '待 Retro' },
   // pilot-handoff.mjs 交接完成，舊 coordinator 退役（行尾可能帶接手 session 的 `name <name>`，#372）
   'pilot-handoff': { event: 'PostToolUse', match: '^HANDED_OFF \\S+( name .+)?$', state: '待 Retro' },
   // L3 worker 寫出 DONE 結果行

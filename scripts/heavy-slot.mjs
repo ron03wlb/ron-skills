@@ -32,7 +32,8 @@
 //   SLOT_TIMEOUT 時把這次排隊用的 since 與基本優先級寫進 `<dir>/resume-<鍵>.json`（鍵＝label＋cwd＋<command> argv 的 sha256 前 16 字元，
 //   `{ label, cwd, argv, since, priority, saved_at }`）。同鍵的下一次 run 若在 saved_at 後 $HEAVY_CHECK_RESUME_S 秒內（預設 7200，0 不沿用也不寫）
 //   開始排隊，就沿用該 since（排序與防餓死升級都照原 since 算）與 priority（有給 --priority 時以它為準），並印 SLOT_RESUMED；
-//   拿到 slot 時刪掉紀錄，再次逾時則以同一個 since 覆寫；過期的紀錄讀到時忽略並刪掉。--timeout、SLOT_WAIT 的已等秒數與 log 的 wait_ms 仍從這次 run 起算。
+//   紀錄由開始排隊的那一支以 rename 認領後即刪（同時重跑兩次只有一支沿用），再次逾時則以同一個 since 寫回；同鍵另一支較晚逾時時保留較早的 since；
+//   過期的紀錄讀到時忽略並刪掉；認領或清理失敗只影響續排，不擋檢查。--timeout、SLOT_WAIT 的已等秒數與 log 的 wait_ms 仍從這次 run 起算。
 // 巢狀：在 slot 裡跑的命令帶環境變數 HEAVY_SLOT_HELD；裡面再呼叫 run（例如 bin/check 的測試跑 pre-commit）時直接執行，不再拿第二個 slot（避免 N 個持有者互等）。
 //
 // 用法：node scripts/heavy-slot.mjs run --label <repo>:<用途> [--priority <high|normal|low>] [--timeout <秒>] [--interval <秒>] -- <command> [<arg>...]
@@ -75,7 +76,7 @@
 // exit：run 是命令的 exit code，75 等待逾時，2 用法錯誤；status、stats 0，2 用法錯誤。
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { constants, homedir, loadavg } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -247,13 +248,30 @@ export function resumeMs(env = process.env) {
 /** 逾時紀錄的鍵：label＋cwd＋命令 argv 的 sha256 前 16 字元。 */
 export const resumeKey = (label, cwd, argv) => createHash('sha256').update(JSON.stringify([label, cwd, argv])).digest('hex').slice(0, 16);
 
-/** 讀同鍵的逾時紀錄：期限內傳回 { since, priority }；過期或壞掉的刪掉並傳回 undefined。 */
+/** 紀錄在期限內而且 since 可解析。 */
+const freshResume = (saved, now, limit) => Boolean(saved) && limit > 0 && now - Date.parse(saved.saved_at) <= limit && !Number.isNaN(Date.parse(saved.since));
+
+/**
+ * 認領同鍵的逾時紀錄：先 rename 成這個行程專屬的檔名再讀（同時重跑的另一支 rename 不到，不會兩支都沿用），讀完就刪；
+ * 期限內傳回 { since, priority }，過期、壞掉或認領失敗傳回 undefined。清理失敗只影響續排，不擋檢查。
+ */
 function takeResume(file, now, limit) {
-  const saved = readJson(file);
-  if (!saved) return undefined;
-  const fresh = limit > 0 && now - Date.parse(saved.saved_at) <= limit && !Number.isNaN(Date.parse(saved.since));
-  if (!fresh) { rmSync(file, { force: true }); return undefined; }
+  const claim = `${file}.${process.pid}.claim`;
+  try { renameSync(file, claim); } catch { return undefined; }
+  const saved = readJson(claim);
+  try { rmSync(claim, { force: true, recursive: true }); } catch { /* 只影響續排紀錄 */ }
+  if (!freshResume(saved, now, limit)) return undefined;
   return { since: saved.since, priority: PRIORITIES.includes(saved.priority) ? saved.priority : undefined };
+}
+
+/** 逾時時寫紀錄：同鍵已有期限內、since 較早的紀錄（另一支同指令先逾時）就保留它，不以較晚的 since 覆蓋；先寫暫存檔再 rename。 */
+function saveResume(file, record, limit) {
+  const now = Date.now();
+  const saved = readJson(file);
+  const keep = freshResume(saved, now, limit) && Date.parse(saved.since) < Date.parse(record.since);
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, JSON.stringify(keep ? { ...record, since: saved.since, priority: saved.priority ?? record.priority } : record));
+  renameSync(temp, file);
 }
 
 /** label 的 repo：冒號前的字串；沒有冒號時整個 label。 */
@@ -470,7 +488,7 @@ async function run({ label, timeoutSec, intervalSec, argv, priority: override })
   if (acquired.timeout) {
     dropWait();
     if (resumeLimit > 0) {
-      try { writeFileSync(resumeFile, JSON.stringify({ label, cwd: info.cwd, argv, since: info.since, priority, saved_at: new Date().toISOString() })); } catch { /* 只影響下次重跑的排隊位置 */ }
+      try { saveResume(resumeFile, { label, cwd: info.cwd, argv, since: info.since, priority, saved_at: new Date().toISOString() }, resumeLimit); } catch { /* 只影響下次重跑的排隊位置 */ }
     }
     process.stderr.write(`SLOT_TIMEOUT ${label} ${seconds(Date.now() - started)}s holders=${holdersNow()}\n`);
     logRun(dir, { ...record, wait_ms: Date.now() - started, run_ms: 0, exit: SLOT_TIMEOUT_EXIT, load1: loadavg()[0], timed_out: true, priority, effective_priority: effective, starve: false });
@@ -484,7 +502,6 @@ async function run({ label, timeoutSec, intervalSec, argv, priority: override })
   holder.removeAllListeners('close');
   // 持有期間 perl 不再印東西，只等 stdin 關閉後自己結束。鎖檔只是記錄，從另一個 fd 寫入不影響 flock。
   // 先寫鎖檔再刪 wait 檔：其他排隊者讀到的持有者才不會是上一個持有者留下的 label。
-  rmSync(resumeFile, { force: true });
   // 靠餓死保底拿到的 slot 在鎖檔記 starve：其他排隊者讀到它就知道保底 slot 已在用，不再用這條規則。
   const starveSlot = latest.starveGrant;
   try { writeFileSync(lockFiles(dir, slots)[acquired.slot - 1], JSON.stringify({ ...info, since: new Date().toISOString(), ...(starveSlot ? { starve: true } : {}) })); } catch { /* 只影響 status 顯示與保底計數 */ }
