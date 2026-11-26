@@ -3,6 +3,7 @@ import { after, test } from 'node:test';
 import './test/isolate-git-env.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { spawnHook, unfinishedExports, unfinishedHookRuns } from './test/hook-timeout.mjs';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +13,7 @@ import { realTmpdir } from './test/real-tmpdir.mjs';
 const script = fileURLToPath(new URL('./claude-hook-git-bypass.mjs', import.meta.url));
 // hook 在不是 git repo 的目錄執行：detachReason 會讀所在工作樹的 HEAD（#548），測試不能隨跑測試的 checkout（CI 是 detached HEAD）而變。
 const outsideRepo = mkdtempSync(join(realTmpdir(), 'git-bypass-hook-'));
-const hook = (input, args = []) => spawnSync('node', [script, ...args], { input, encoding: 'utf8', cwd: outsideRepo });
+const hook = (input, args = []) => spawnHook('node', [script, ...args], { input, encoding: 'utf8', cwd: outsideRepo });
 after(() => rmSync(outsideRepo, { recursive: true, force: true }));
 // 專案以參數指定的長等待指令與要整份讀的指令（spec 是「script 名稱[ 旗標]」）。
 const LONG_WAIT = ['job-watch.mjs', 'job-queue.mjs --wait'];
@@ -681,7 +682,7 @@ test('wideGrepReason：沒有 -o、單邊、範圍小、固定次數、-P、GNU 
 test('hook：寬範圍 grep -o 被拒；專案有 scripts/doc-excerpt.mjs 時指向它，否則指向 Python', t => {
   const dir = mkdtempSync(join(realTmpdir(), 'git-bypass-grep-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const run = command => spawnSync('node', [script], { input: JSON.stringify({ tool_input: { command } }), encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: dir } });
+  const run = command => spawnHook('node', [script], { input: JSON.stringify({ tool_input: { command } }), encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: dir } });
   const python = run(WIDE_GREP);
   assert.equal(python.status, 2);
   assert.match(python.stderr, /grep -o 的 pattern 前後都有 `\.\{0,n\}`.*exceeds complexity limits/);
@@ -857,7 +858,7 @@ test('hook：已 detached 的工作樹上 checkout／switch --detach <本機分�
   const elsewhere = mkdtempSync(join(realTmpdir(), 'git-bypass-cwd-'));
   try {
     // hook 輸入的 cwd 是 Bash 所在的目錄；hook 行程本身跑在別處。
-    const call = (command, cwd) => spawnSync('node', [script], { input: JSON.stringify({ cwd, tool_input: { command } }), encoding: 'utf8', cwd: elsewhere });
+    const call = (command, cwd) => spawnHook('node', [script], { input: JSON.stringify({ cwd, tool_input: { command } }), encoding: 'utf8', cwd: elsewhere });
     for (const command of ['git checkout --detach develop', 'git switch --detach develop', 'git switch -d develop', 'git checkout -q --detach main',
       'git fetch origin develop:develop && git checkout --detach develop']) {
       const allowed = call(command, dir);
@@ -881,7 +882,7 @@ test('hook：attached HEAD、目標不是本機分支或取不到狀態時 --det
   const detached = detachFixture(true);
   const plain = mkdtempSync(join(realTmpdir(), 'git-bypass-norepo-'));
   try {
-    const call = (command, cwd) => spawnSync('node', [script], { input: JSON.stringify({ cwd, tool_input: { command } }), encoding: 'utf8', cwd: plain });
+    const call = (command, cwd) => spawnHook('node', [script], { input: JSON.stringify({ cwd, tool_input: { command } }), encoding: 'utf8', cwd: plain });
     const cases = [
       ['git checkout --detach develop', attached.dir], ['git switch --detach develop', attached.dir], [`git -C ${attached.dir} checkout --detach develop`, detached.dir],
       [`git checkout --detach ${detached.sha}`, detached.dir], ['git checkout --detach origin/develop', detached.dir], ['git switch -d origin/develop', detached.dir],
@@ -896,7 +897,7 @@ test('hook：attached HEAD、目標不是本機分支或取不到狀態時 --det
     ];
     // #548 review r2：多個 `VAR=` 前綴不能讓解析停住（hook 卡到逾時）。
     for (const command of ['LC_ALL=C LANG=C git status', 'A=1 B=2 C=3 echo x']) {
-      const run = spawnSync('node', [script], { input: JSON.stringify({ cwd: detached.dir, tool_input: { command } }), encoding: 'utf8', cwd: plain, timeout: 10000 });
+      const run = spawnHook('node', [script], { input: JSON.stringify({ cwd: detached.dir, tool_input: { command } }), encoding: 'utf8', cwd: plain });
       assert.equal(run.status, 0, command);
     }
     // link 指向 attached 工作樹的子目錄：git 跟著符號連結走，`link/..` 是 attached，不是 detached。
@@ -1032,7 +1033,7 @@ test('hook：兩條真實指令的拒絕訊息給出可直接重送的改寫，�
     const pad = join(root, `claude-${process.getuid()}`, '-r', 's1', 'scratchpad');
     mkdirSync(pad, { recursive: true });
     const env = { ...process.env, CLAUDE_CODE_TMPDIR: root, SHELL: '/bin/bash' };
-    const run = (command, args) => spawnSync('node', [script, ...args], {
+    const run = (command, args) => spawnHook('node', [script, ...args], {
       input: JSON.stringify({ session_id: 's1', transcript_path: '/h/.claude/projects/-r/s1.jsonl', tool_input: { command } }), encoding: 'utf8', env });
     const gates = ['--exit-gate', 'batch-merge.mjs', '--exit-gate', 'followups.mjs'];
     for (const [command, args] of [['node scripts/batch-merge.mjs restage 1165 2>&1 | tail -n 25', gates],
@@ -1053,4 +1054,20 @@ test('hook：兩條真實指令的拒絕訊息給出可直接重送的改寫，�
     rmSync(dir, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// #687-1：3dae65e 的前綴掃描在兩個以上 `VAR=` 時不前進，hook 無窮迴圈，沒有逾時的測試照樣全綠。
+// 每個切字的 export 與整支 hook 都以 shell 形狀語料跑過，必須在 HOOK_TIMEOUT_MS 內結束。
+test('shell 形狀語料：每個切字的 export 都在逾時內結束', () => {
+  const failures = unfinishedExports(new URL('./claude-hook-git-bypass.mjs', import.meta.url), {
+    bypassReason: [], backgroundJobReason: [LONG_WAIT], probeFilterReason: [WHOLE_OUTPUT], exitGateReason: [['batch-merge.mjs']],
+    exitGateRewrite: ['batch-merge.mjs', '/tmp/log'], pipeStatusReason: [], foregroundReason: [LONG_WAIT, false], chainedHandoff: [],
+    chainedLongWaitReason: [LONG_WAIT], writesFile: [], chainedNote: [], wideGrepReason: [], selfMatchLoopReason: [], detachReason: [],
+  }, { cwd: outsideRepo });
+  assert.deepEqual(failures, []);
+});
+
+test('shell 形狀語料：整支 hook 以每個形狀當指令都在逾時內結束', async () => {
+  const failures = await unfinishedHookRuns(script, { input: command => ({ cwd: outsideRepo, tool_input: { command } }), args: [...ARGS, '--exit-gate', 'batch-merge.mjs'], cwd: outsideRepo });
+  assert.deepEqual(failures, []);
 });

@@ -33,9 +33,10 @@ function write(root, files) {
   }
 }
 
-// 假 regression 指令：每次呼叫在 $FAKE_CHECK_LOG 記下參數，以 $FAKE_CHECK_EXIT 結束（預設 0），通過時印 CHECK_PASS。
+// 假 regression 指令：每次呼叫在 $FAKE_CHECK_LOG 記下參數，以 $FAKE_CHECK_EXIT 結束（預設 0），通過時印 CHECK_PASS；有 $FAKE_CHECK_SLEEP 時先睡那麼多秒。
 const FAKE_CHECK = `#!/bin/sh
 echo "check $*" >> "$FAKE_CHECK_LOG"
+[ -n "$FAKE_CHECK_SLEEP" ] && sleep "$FAKE_CHECK_SLEEP"
 [ "\${FAKE_CHECK_EXIT:-0}" = 0 ] && echo "CHECK_PASS tests 1+2"
 exit "\${FAKE_CHECK_EXIT:-0}"
 `;
@@ -557,7 +558,10 @@ else if (sub === 'edit') console.log(find(args[2]).url);
 else if (sub === 'view' && arg('--json').includes('statusCheckRollup')) {
   const pr = find(args[2]);
   // FAKE_GH_PENDING：checks 已 pass、checks-macos 還在跑（retro spay2 1dce1925#2 的 PR 682）。
-  const rollup = process.env.FAKE_GH_PENDING
+  // FAKE_GH_PENDING_MS：同一個 head 第一次被讀 checks 之後這麼多毫秒內同上，之後全綠（checks-macos 排隊比 land.mjs 的預設期限久，#665 第 4 項）。
+  s.firstPoll ??= {}; s.firstPoll[pr.headRefOid] ??= Date.now(); save();
+  const pendingMs = process.env.FAKE_GH_PENDING_MS;
+  const rollup = process.env.FAKE_GH_PENDING || (pendingMs && Date.now() - s.firstPoll[pr.headRefOid] < Number(pendingMs))
     ? [{ name: 'checks', status: 'COMPLETED', conclusion: 'SUCCESS' }, { name: 'checks-macos', status: 'IN_PROGRESS', conclusion: '' }]
     : [{ status: 'COMPLETED', conclusion: 'SUCCESS' }];
   console.log(JSON.stringify(mergeSample(SAMPLES['pr-view-checks'], { headRefOid: pr.headRefOid, statusCheckRollup: rollup }, 'pr')));
@@ -576,7 +580,7 @@ else { console.error('fake gh：未支援 ' + args.join(' ')); process.exit(1); 
   const push = (extra = {}, ...args) => {
     const result = spawnSync('node', [script, 'push', '--title', 'batch 1：a', ...args], {
       cwd: f.repo, encoding: 'utf8', timeout: 120000,
-      env: { ...env, FAKE_CHECK_LOG: join(f.temp, 'check.log'), PATH: `${bin}:${env.PATH}`, LAND_CHECKS_POLL_MS: '1', LAND_CHECKS_TIMEOUT_MS: '10000', ...extra },
+      env: { ...env, FAKE_CHECK_LOG: join(f.temp, 'check.log'), PATH: `${bin}:${env.PATH}`, LAND_CHECKS_POLL_MS: '1', LAND_CHECKS_TIMEOUT_MS: '10000', PILOT_CI_TIMEOUT_S: '10', ...extra },
     });
     const lines = result.stdout.trim().split('\n');
     return { ...result, lines, last: lines.at(-1) };
@@ -688,10 +692,37 @@ test('push：等 CI 逾時時 STOP checks-timeout 帶 pending 的 check 名與 p
   withOrigin(f);
   assert.equal(f.land(f.key).status, 0);
   const gh = fakeGh(f);
-  const result = gh.push({ FAKE_GH_PENDING: '1', LAND_CHECKS_TIMEOUT_MS: '300' });
+  const result = gh.push({ FAKE_GH_PENDING: '1', PILOT_CI_TIMEOUT_S: '0.3' });
   assert.equal(result.status, 4, result.stdout + result.stderr);
   assert.equal(result.last, `STOP checks-timeout 40 → 重跑同一指令接著等（pending：checks-macos）：node ${script} push --title 'batch 1：a'`);
   assert.doesNotMatch(gh.calls(), /^gh pr merge /m);
+});
+
+// #665 第 4 項：push 本來就以 run_in_background 跑，land.mjs 為 Bash 前景 600 秒設的期限（LAND_CHECKS_TIMEOUT_MS，預設 480 秒）讓
+// checks-macos 排隊的每一批都多一次 STOP checks-timeout、一次喚醒與重跑。push 的等 CI 改以 $PILOT_CI_TIMEOUT_S 為期限（同 ci-run）。
+test('push：CI 比 land.mjs 的預設期限久時在腳本內續等到 PILOT_CI_TIMEOUT_S，印 LANDED，不印 STOP checks-timeout', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
+  withOrigin(f);
+  assert.equal(f.land(f.key).status, 0);
+  const gh = fakeGh(f);
+  // LAND_CHECKS_TIMEOUT_MS 300 代表手動 land.mjs 的期限；checks-macos 要 1.5 秒才綠。
+  const result = gh.push({ FAKE_GH_PENDING_MS: '1500', LAND_CHECKS_TIMEOUT_MS: '300', LAND_CHECKS_POLL_MS: '50', PILOT_CI_TIMEOUT_S: '30' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(!result.lines.some(line => line.startsWith('STOP ')), result.stdout);
+  assert.match(result.lines.find(line => line.startsWith('CHECKS_PASSED ')) ?? '', /^CHECKS_PASSED 40 /, result.stdout);
+  assert.match(result.last, /^LANDED 40 [0-9a-f]{40}$/);
+});
+
+// #665 第 4 項（PR 688）：PUSH_BEHIND_MAIN 之後 sync-main 的合併 SHA 是新一輪 CI，等它的期限從那輪開始算，不扣 sync-main Regression 花掉的時間。
+test('push：sync-main 之後的那輪 CI 有自己的 PILOT_CI_TIMEOUT_S，不扣掉 sync-main Regression 的時間', t => {
+  const { f } = mergedThenBehind(t);
+  const gh = fakeGh(f);
+  // Regression 睡 3 秒、新一輪 CI 3 秒才綠，期限 5 秒：從 push 開頭算的期限會在 CI 綠之前到。
+  const result = gh.push({ FAKE_CHECK_SLEEP: '3', FAKE_GH_PENDING_MS: '3000', LAND_CHECKS_TIMEOUT_MS: '300', LAND_CHECKS_POLL_MS: '50', PILOT_CI_TIMEOUT_S: '5' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.lines.includes('PUSH_BEHIND_MAIN pilot/integration'), result.stdout);
+  assert.ok(!result.lines.some(line => line.startsWith('STOP ')), result.stdout);
+  assert.match(result.last, /^LANDED \d+ [0-9a-f]{40}$/);
 });
 
 test('push：沒有 merged batch 時印 pilot-pr-body 的 STOP no-merged-batch，不跑 land', t => {

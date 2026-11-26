@@ -186,6 +186,24 @@ test('沒有子命令或子命令不認得：stderr 印用法、exit 2、不呼�
   }
 });
 
+test('照 gh 習慣多打 issue／pr 前綴：第一行 GH_TRACKER_DROP_PREFIX 印去掉前綴的改用指令、exit 2、不呼叫 gh（#671）', t => {
+  // base 已可觀察：stderr 第一行是通用的「不支援的子命令：issue」，不是 DROP_PREFIX。
+  for (const [args, rest] of [
+    [['issue', 'comment', '591', '--body-file', 'x.md'], 'comment 591 --body-file x.md'],
+    [['pr', 'close', '7'], 'close 7'],
+    [['issue', 'sub-issue', 'add', '1', '2'], 'sub-issue add 1 2'],
+  ]) {
+    const result = run(t, args);
+    assert.equal(result.status, 2);
+    assert.equal(result.stderr.split('\n')[0], `GH_TRACKER_DROP_PREFIX 改用：node scripts/gh-tracker.mjs ${rest}`);
+    assert.deepEqual(result.calls, []);
+  }
+  // 前綴後不是已知子命令：仍是通用用法
+  const unknown = run(t, ['issue', 'label']);
+  assert.equal(unknown.status, 2);
+  assert.match(unknown.stderr.split('\n')[0], /不支援的子命令：issue/);
+});
+
 const lookup = n => ['api', '--hostname', 'github.com', `repos/acme/app/issues/${n}`, '--jq', '.id'];
 const BATCH = [
   { op: 'create', code: 'spec', title: 'Spec', bodyFile: 'spec.md', labels: ['parent'] },

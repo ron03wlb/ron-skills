@@ -1,12 +1,12 @@
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawnHook } from './test/hook-timeout.mjs';
 import { fileURLToPath } from 'node:url';
 import { leadingSpaceBang } from './claude-hook-bang-space.mjs';
 
 const HOOK = fileURLToPath(new URL('./claude-hook-bang-space.mjs', import.meta.url));
-const hook = input => spawnSync('node', [HOOK], { input, encoding: 'utf8' });
+const hook = input => spawnHook('node', [HOOK], { input, encoding: 'utf8' });
 const submit = prompt => hook(JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt }));
 
 // spay2 retro b10f5dc4#5：使用者訊息原文開頭多一個空格，被當一般訊息送給模型，指令沒有執行，使用者以為已跑過。

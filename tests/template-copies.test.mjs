@@ -4,7 +4,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { realTmpdir } from './helpers/real-tmpdir.mjs';
+import { join } from 'node:path';
 import { pilotFiles } from '../scripts/pilot-probe.mjs';
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url));
@@ -24,6 +27,54 @@ for (const [path, entry] of Object.entries(copies)) {
       `${path} 與正本的執行權限不同：副本該可執行就 chmod 正本、git add 後執行 ${RECOPY}；否則直接執行 ${RECOPY}，它把副本權限改成正本的（印 MODE）`);
   });
 }
+
+// #674：--staged 記的是當下 HEAD；在 wip commit 上複製、之後把 wip 壓成單一 commit，stamp 就不是 HEAD 的祖先（#592 的 5264f3b），
+// 內容與 sha256 都對，只有最終 verifier 發現。淺 clone（CI 的 actions/checkout 預設 fetch-depth 1）沒有歷史可比，整項跳過；
+// 完整 clone 裡 commit 不存在（壓掉後被 gc）也算失敗。
+function staleStamps(entries, cwd) {
+  const git = (...args) => spawnSync('git', args, { cwd, encoding: 'utf8' });
+  if (git('rev-parse', '--is-shallow-repository').stdout.trim() !== 'false') return null;
+  const result = new Map();
+  return entries.filter(([, { commit }]) => {
+    if (!result.has(commit)) result.set(commit, git('merge-base', '--is-ancestor', commit, 'HEAD').status);
+    return result.get(commit) !== 0;
+  }).map(([path, { commit }]) => `${path} ${commit}`);
+}
+const STALE_FIX = '清單的 commit 不是 HEAD 的祖先（多半是 --staged 在 wip commit 上記下 HEAD，之後 wip 被 squash 或 rebase）：'
+  + '對每個列出的副本，在 squash 後的分支 git add 正本後重跑 ' + RECOPY + '（stamp 改記現在的 HEAD），或把清單那筆 commit 改成 squash 後的 base 再一起 commit（#674）';
+
+test('清單每個副本的 commit 都是 HEAD 的祖先', t => {
+  const stale = staleStamps(Object.entries(copies), new URL('..', import.meta.url));
+  if (stale === null) return t.skip('淺 clone，沒有歷史可比（CI 的 actions/checkout 預設 fetch-depth 1）');
+  assert.deepEqual(stale, [], STALE_FIX);
+});
+
+test('fixture：wip commit 記下的 stamp 在 squash 後被抓出，祖先 stamp 通過，淺 clone 跳過', () => {
+  const dir = mkdtempSync(join(realTmpdir(), 'template-stamp-'));
+  try {
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+    const git = (...args) => {
+      const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'init.defaultBranch=main', ...args], { cwd: dir, env, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout.trim();
+    };
+    git('init', '-q');
+    writeFileSync(join(dir, 'a'), 'base\n'); git('add', 'a'); git('commit', '-qm', 'base');
+    const base = git('rev-parse', 'HEAD');
+    writeFileSync(join(dir, 'a'), 'wip\n'); git('commit', '-qam', 'wip');
+    const wip = git('rev-parse', 'HEAD'); // copy-templates --staged 此時記下的 stamp
+    writeFileSync(join(dir, 'a'), 'done\n'); git('commit', '-qam', 'wip 2');
+    assert.deepEqual(staleStamps([['scripts/x.mjs', { commit: wip }]], dir), [], '壓之前 stamp 是祖先');
+    git('reset', '-q', '--soft', base); git('commit', '-qm', 'squashed');
+    assert.deepEqual(staleStamps([['scripts/x.mjs', { commit: wip }], ['scripts/y.mjs', { commit: base }]], dir), [`scripts/x.mjs ${wip}`]);
+    assert.deepEqual(staleStamps([['scripts/z.mjs', { commit: 'f'.repeat(40) }]], dir), [`scripts/z.mjs ${'f'.repeat(40)}`], '不存在的 commit 也算');
+    const shallow = join(dir, 'shallow');
+    git('clone', '-q', '--depth', '1', `file://${dir}`, shallow);
+    assert.equal(staleStamps([['scripts/x.mjs', { commit: base }]], shallow), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // L3 必接：主 checkout 的未提交改動與新檔會讓 pilot 的 Probe 停止合併（#30）；Bash 的 sed -i、重導向也會寫檔（#47）。
 test('.claude/settings.json 以 PreToolUse（Edit|Write|Bash）接上主 checkout 防護', () => {

@@ -62,6 +62,8 @@ const sent = fs.existsSync(sentFile) ? fs.readFileSync(sentFile, 'utf8').split('
 if (process.argv[3] === 'wait') reply('wait', { wait: { satisfied: true } });
 else if (process.argv[3] === 'send') { fs.appendFileSync(sentFile, arg('--text') + '\\n'); reply('send'); }
 else if (screen.raw !== undefined) process.stdout.write(screen.raw);
+// Orca CLI 本身失敗（例如自動更新期間找不到 Orca.exe，#665 第 3 項）：訊息印到 stderr、exit 1。
+else if (screen.stderr !== undefined) { process.stderr.write(screen.stderr); process.exit(1); }
 // 不帶 --screen 的讀取（累積輸出，#537）：有 scrollback 時回它，沒有時同畫面。
 else if (!process.argv.includes('--screen') && scrollback) reply('read', { terminal: { ...screen, tail: [...scrollback, ...sent.map(text => '> ' + text)] } });
 else reply('read', { terminal: { ...screen, tail: [...(screen.tail ?? []), ...sent.map(text => '> ' + text)] } });
@@ -264,6 +266,51 @@ test('--capacity <repo> 把在跑的成員數寫進帳本，合計超過上限�
   assert.equal(probe({ args: ['--capacity'], extraEnv }).status, 2);
   assert.equal(probe({ args: ['--capacity', 'a\tb'], extraEnv }).status, 2);
   assert.equal(probe({ args: ['--capacity', 'acme'], extraEnv: { ...extraEnv, PILOT_MACHINE_WORKER_CAP: 'x' } }).status, 2);
+});
+
+// #685 第 1 項：全機名額剛好滿（合計＝上限，再派 1 個就超過）時 Probe 什麼都不印，coordinator 每輪先 issue-pool claim
+// 再 pilot-dispatch --capacity 才得到 STOP capacity 4/3 other=3 +1 並 RELEASED，#632 累積 9 則認領／釋放留言。
+test('--capacity：合計剛好等於上限印 CAPACITY_FULL <合計>/<上限> <repo>=<n>…；未滿不印，超過只印 OVER_CAP', t => {
+  const { batch, probe, repo } = fixture(t, { screens: { term_1: { status: 'running', tail: ['❯'] } } });
+  batch('1', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 1 }]);
+  const ledger = join(repo, '..', 'pilot-workers.tsv');
+  const extraEnv = { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '4' };
+  // 帳本順序：other 佔 3、idle 是 0（不列），acme 這一輪報 1，合計 4/4。
+  writeFileSync(ledger, `other\t3\t${new Date().toISOString()}\nidle\t0\t${new Date().toISOString()}\n`);
+  let out = lines(probe({ args: ['--capacity', 'acme'], extraEnv }));
+  assert.equal(out.at(-1), 'CAPACITY_FULL 4/4 other=3 acme=1', out.join('\n'));
+  assert.ok(!out.some(line => line.startsWith('OVER_CAP')), out.join('\n'));
+  // 未滿：3/4 不印。
+  writeFileSync(ledger, `other\t2\t${new Date().toISOString()}\n`);
+  out = lines(probe({ args: ['--capacity', 'acme'], extraEnv }));
+  assert.ok(!out.some(line => /^(CAPACITY_FULL|OVER_CAP)\b/.test(line)), out.join('\n'));
+  // 超過：5/4 只印 OVER_CAP（格式不變）。
+  writeFileSync(ledger, `other\t4\t${new Date().toISOString()}\n`);
+  out = lines(probe({ args: ['--capacity', 'acme'], extraEnv }));
+  assert.equal(out.at(-1), 'OVER_CAP 5 4', out.join('\n'));
+  assert.ok(!out.some(line => line.startsWith('CAPACITY_FULL')), out.join('\n'));
+});
+
+// #665 第 3 項：Orca 自動更新期間（安裝目錄只剩 Uninstall Orca.exe）terminal read 失敗，Probe 印
+// WORKER 646 STUCK orca Unable to locate Orca.exe next to "C:\Users\…\orca\resources"，coordinator 照 STUCK 規則可能回報人或重派。
+test('Orca 更新中（Unable to locate Orca.exe）：只印一行 ORCA_UNAVAILABLE，不印 WORKER STUCK、--apply 不寫、仍算容量', t => {
+  const message = 'Unable to locate Orca.exe next to "C:\\Users\\ron\\AppData\\Local\\Programs\\orca\\resources"';
+  const { batch, probe, pilot, repo } = fixture(t, { screens: {
+    term_646: { stderr: `${message}\n` },
+    term_647: { stderr: `${message}\n` },
+  } });
+  batch('646-647', 'dispatched 2026-10-30T17:31:36+08:00', [{ n: 646, started: ago(500) }, { n: 647 }]);
+  const before = readFileSync(join(pilot, 'batch-646-647.md'), 'utf8');
+  const ledger = join(repo, '..', 'pilot-workers.tsv');
+  const result = probe({ args: ['--apply', '--capacity', 'acme'], extraEnv: { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '4' } });
+  assert.equal(result.status, 0, result.stderr);
+  const out = lines(result);
+  assert.deepEqual(out.filter(line => line.startsWith('ORCA_UNAVAILABLE')), [`ORCA_UNAVAILABLE ${message}`], result.stdout);
+  assert.ok(!out.some(line => /^WORKER 64[67] /.test(line)), result.stdout);
+  assert.ok(!out.some(line => /^(STAGEABLE|PARKED|MOVE) /.test(line)), result.stdout);
+  assert.equal(readFileSync(join(pilot, 'batch-646-647.md'), 'utf8'), before);
+  // worker 可能仍在跑：照 running 算進帳本，不因 Orca 暫時讀不到就放出名額。
+  assert.match(readFileSync(ledger, 'utf8'), /^acme\t2\t/);
 });
 
 // #408（investing#500 第 2 項）：Probe 印 WORKER 437 STUCK exited，帳本仍把它算成在跑，接著派工印 STOP capacity 4/3，實際只有 2 個 worker。

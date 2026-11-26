@@ -19,7 +19,9 @@
 //            batch 那行附最後一行 regression 的結果（`，regression <sha 前 7 碼> exit <code 或 none>`，staged 而沒有 regression 行時 `，regression none`）。
 //   --capacity <repo>（#178）：把這一輪還在跑的成員數（各 batch 的 running 列，扣掉這一輪讀到 DONE、STOP 與 terminal 已 exited 的，#408）以 <repo> 寫進全機帳本
 //            （同目錄 pilot-capacity.mjs 的 report：$PILOT_WORKERS_LEDGER，預設 ~/.local/state/pilot-workers.tsv）；所有 repo 的合計超過
-//            $PILOT_MACHINE_WORKER_CAP（預設 4）時最後印 OVER_CAP <合計> <上限>。只回報，不改派工；沒帶時不碰帳本。
+//            $PILOT_MACHINE_WORKER_CAP（預設 4）時最後印 OVER_CAP <合計> <上限>；合計剛好等於上限（再派 1 個就超過）時最後印
+//            CAPACITY_FULL <合計>/<上限> [<repo>=<n>...]（#685 第 1 項：計入且 running 大於 0 的列，依帳本順序，同 pilot-dispatch 的 STOP capacity 行、不帶 +<人數>；
+//            coordinator 這一輪不 claim、不 dispatch，免得 claim 之後才 STOP capacity、RELEASED）。只回報，不改派工；沒帶時不碰帳本。
 //            $PILOT_MACHINE_WORKER_CAP 空白時在這之前印 CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP，照預設 4 算（#396）。
 //            <repo> 空白或帶 tab、換行，或上限不是正整數時是用法錯誤（exit 2）。
 //   --handoff-after <n>（#368）：交接門檻，本 coordinator session 合入幾批就交接（adapter 的 Defaults 帶入），預設 2；不是正整數時是用法錯誤（exit 2）。
@@ -80,6 +82,8 @@
 //                 而 sha 等於成員 worktree 的 HEAD；<sha> 是完整的 HEAD，--apply 與 DONE 一樣寫回）｜
 //                 WORKER <n> STUCK exited|stuck-after <分鐘>|orca <錯誤碼>|no-orca|checkpoint <欄位> <值>
 //                 （terminal 已結束卻沒有結果行、超過 stuck-after、讀不到 terminal、沒有 ORCA_CLI_COMMAND、checkpoint 的時間欄位解析不了）｜
+//                 ORCA_UNAVAILABLE <訊息>（#665 第 3 項：讀 terminal 的錯誤是 Orca 本身不能用，例如自動更新期間的 `Unable to locate Orca.exe next to "…"`：
+//                 整輪只印一行（第一個讀到的訊息），這些成員不印 WORKER 行、不算 STUCK、--apply 不寫，照 running 算容量；下一輪重試）｜
 //                 WORKER <n> SLOT_WAIT <秒>｜WORKER <n> SLOT_HELD <秒>（#644 第 3 項：超過 stuck-after、但旁邊的 heavy-slot.mjs 有排隊者或持有者的 cwd
 //                 是成員 worktree（或它底下）：worker 的 pre-commit、bin/check 在等全機重型檢查 slot 或正在跑，不是卡住；秒數是已等或已持有的秒數，
 //                 都有時印 SLOT_HELD，多個時取最久的；算 running、--apply 不寫。heavy-slot.mjs 不在旁邊、沒有 perl 時照舊印 STUCK stuck-after）
@@ -143,7 +147,7 @@
 //          input＋cache_creation＋cache_read；transcript 是 $PILOT_TRANSCRIPT，沒有時是 ${CLAUDE_CONFIG_DIR:-~/.claude}/projects/*/$CLAUDE_CODE_SESSION_ID.jsonl；
 //          門檻取主分支的 adapter 與它 Pilot 段連到的檔裡的 `Handoff context: <n>`，沒宣告時 200000），達門檻時 HANDOFF_DUE 帶 ` context=<tokens>`
 //          （批數也到期時合成同一行）；讀不到 transcript 或沒有 usage 時印 HANDOFF_CONTEXT ?/<門檻> WARN <原因>，不觸發
-//   全機上限：CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP、OVER_CAP <合計> <上限>（帶 --capacity 時，見上）
+//   全機上限：CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP、OVER_CAP <合計> <上限>｜CAPACITY_FULL <合計>/<上限> [<repo>=<n>...]（帶 --capacity 時，見上）
 // exit：0 印完；2 用法錯誤；3 `--apply` 的 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，該 batch 沒寫、其他行照印，#345）；1 其他失敗（Bare guard 或 git status 失敗、APPLY_MISS、PARENT_APPLY_FAILED 等）。
 import { spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from 'node:fs';
@@ -154,7 +158,7 @@ import { changedUnits } from './lib/changed-units.mjs';
 import { mergeConflicts } from './lib/merge-tree.mjs';
 import { batchMembers, CheckpointLocked, gateLines, heldIssues, resolvedGateLines, resolvedGates, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, requestBatchKey, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
 import { SPINNER, orca } from './orca-session-send.mjs';
-import { envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
+import { check as capacityCheck, envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 import { POOL_FIELDS, blockerOpenScope, landedOn, mainPause, pool, prerequisiteOf } from './issue-pool.mjs';
 import { counterparts, declaredProjects } from './pilot-counterpart.mjs';
 import { MEMORY_AUDIT_FILE, declaredDays, memoryAuditLine } from './memory-audit.mjs';
@@ -163,6 +167,11 @@ import { MEMORY_AUDIT_FILE, declaredDays, memoryAuditLine } from './memory-audit
 const TRACKER_QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} body createdAt lastEditedAt labelEvents: timelineItems(last:1,itemTypes:[LABELED_EVENT,UNLABELED_EVENT]){nodes{... on LabeledEvent{createdAt} ... on UnlabeledEvent{createdAt}}} blockedBy(first:50){nodes{createdAt}} parent{number state repository{nameWithOwner} labels(first:50){nodes{name}}}}}}}`;
 // 每次都印的行：池子摘要（POOL_READY｜POOL_TRIAGE｜POOL_EMPTY｜POOL_FAILED，#240）、HANDOFF_COUNT（#368）與 HANDOFF_CONTEXT（CoS item 88）。
 // 只看自己那幾行的測試比對整份 stdout 前用它去掉，probe 再加常駐行時改這一處即可（#556）。
+/**
+ * Orca 本身暫時不能用的錯誤（#665 第 3 項：自動更新期間安裝目錄只剩 `Uninstall Orca.exe`，每個 terminal 指令都失敗）：
+ * 不是哪個 worker 卡住，workerState 回 `ORCA_UNAVAILABLE <訊息>`，probe 合成一行、不印該成員的 WORKER 行。
+ */
+export const ORCA_UNAVAILABLE = /Unable to locate Orca\.exe/i;
 export const ALWAYS_LINES = /^(POOL_|HANDOFF_COUNT |HANDOFF_CONTEXT )/;
 
 const USAGE = '用法：node scripts/pilot-probe.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--apply] [--status] [--capacity <repo>] [--skip-labels <label>,...] [--handoff-after <n>] [--worker-state <路徑>] [--retro-collect-in <checkout>]｜node scripts/pilot-probe.mjs --tail <handle> [--lines <n>]';
@@ -830,7 +839,7 @@ export async function workerState(ctx, member, now = Date.now(), saved = null) {
   try {
     terminal = (await orca(ctx, 'terminal', 'read', '--terminal', member.handle, '--screen')).terminal ?? {};
   } catch (error) {
-    return saved ?? `STUCK orca ${error.message}`;
+    return saved ?? (ORCA_UNAVAILABLE.test(error.message) ? `ORCA_UNAVAILABLE ${error.message.trim()}` : `STUCK orca ${error.message}`);
   }
   // resume 當下畫面最後一個結果行（成員的 resumed，#356）還是最後一個時不算：那是 resume 前的舊結果。
   const result = resultLine(terminal.tail ?? [], member.n, member.resumed);
@@ -1363,6 +1372,8 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   const landing = [];
   const batches = [];
   let running = 0;
+  // Orca 暫時不能用（#665 第 3 項）：整輪只印一行（第一個成員讀到的訊息），在第一個讀不到的成員的位置。
+  let orcaDown = false;
   for (const file of batchFiles(pilot)) {
     const key = file.slice('batch-'.length, -'.md'.length);
     const { current, members, regression, regressionExit, sha, regressing } = parseBatch(readFileSync(join(pilot, file), 'utf8'));
@@ -1376,6 +1387,12 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
       if (kind) results.push({ n: member.n, state: kind === 'DONE' ? 'done' : 'stop', sha, handle: member.handle });
       // terminal 已結束（STUCK exited）的成員不佔機器，不算容量（#408：investing 的 437 exited 仍被算進帳本，派工印 STOP capacity 4/3）。
       else if (state !== 'STUCK exited') running++;
+      // 讀不到不代表 worker 停了：照 running 算容量、不 apply，下一輪重讀。
+      if (state.startsWith('ORCA_UNAVAILABLE ')) {
+        if (!orcaDown) out.push(state);
+        orcaDown = true;
+        continue;
+      }
       out.push(`WORKER ${member.n} ${state}`);
     }
     if (apply && results.length) out.push(...applyResults(join(pilot, file), key, results));
@@ -1435,6 +1452,8 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
     out.push(...envMissingLines());
     const { total, cap } = report(ledgerPath(), capacity, running);
     if (total > cap) out.push(`OVER_CAP ${total} ${cap}`);
+    // 剛好滿（#685 第 1 項）：再派 1 個就會 STOP capacity，Pool 這一輪不 claim；列出計入的列，格式同 pilot-capacity 的 STOP capacity 行（不含 +<人數>）。
+    else if (total === cap) out.push(['CAPACITY_FULL', `${total}/${cap}`, ...capacityCheck(ledgerPath(), 0, { cap }).rows.map(row => `${row.repo}=${row.running}`)].join(' '));
   }
   if (status) {
     mkdirSync(pilot, { recursive: true });

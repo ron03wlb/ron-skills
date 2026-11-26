@@ -6,7 +6,7 @@
 // 有變化才結束、喚醒 coordinator，不再排 ScheduleWakeup（issue-pilot SKILL 的 Report and sleep）。
 // 每 interval 秒讀一次：同目錄 pilot-probe.mjs 的輸出（不帶 --apply、--status，只讀）、`<主 checkout>/.scratch/pilot/gates.md` 的內容、
 // 整合分支的 HEAD。第一輪是基準，之後任一項變了就印這一輪的全部變化並結束：
-//   probe 只算基準沒有的行（少了行不算：gate 被回答、請求處理完會反映在 gates.md 或下一個新行）；gate 檔比整份內容（人回答 gate 不一定改 probe 輸出）。
+//   probe 只算基準沒有的行（比對前去掉隨時間變動的數字：oldest=、RUNNING／stuck-after 分鐘、SLOT_HELD／SLOT_WAIT 秒、HANDOFF_CONTEXT tokens，#673；少了行不算：gate 被回答、請求處理完會反映在 gates.md 或下一個新行）；gate 檔比整份內容（人回答 gate 不一定改 probe 輸出）。
 //
 // 用法：node scripts/pilot-idle-wait.mjs <主 checkout> [--integration <分支>] [--main <分支>] [--interval <秒>] [--max-wait <秒>]
 //   --integration、--main 原樣交給 probe，--integration 也是要讀 HEAD 的分支（預設 pilot/integration）；
@@ -62,10 +62,19 @@ function snapshot({ checkout, integration, mainBranch }) {
   return { probe: probe.stdout.split('\n').filter(line => line.trim()), gates, integration: head.status === 0 ? head.stdout.trim() : '' };
 }
 
+/** 比對用的 key：去掉隨時間自己變動的數字（#673：`oldest=1.5h` → `oldest=1.6h` 不是新事件，卻約 5 分鐘就 WAKE 一次）。 */
+export const stable = line => line
+  .replace(/\boldest=\S+/g, 'oldest=*')
+  .replace(/^(WORKER \S+ RUNNING) \d+/, '$1 *')
+  .replace(/^(WORKER \S+ STUCK stuck-after) \d+/, '$1 *')
+  .replace(/^(WORKER \S+ SLOT_(?:HELD|WAIT)) \d+/, '$1 *')
+  .replace(/^(SLOT_(?:HELD|WAIT)) \d+/, '$1 *')
+  .replace(/^(HANDOFF_CONTEXT) \d+\//, '$1 */');
+
 /** 基準與本輪快照比較，傳回要印的 WAKE 行（空陣列＝仍閒置）。 */
 export function wakeLines(base, now) {
-  const seen = new Set(base.probe);
-  const out = now.probe.filter(line => !seen.has(line)).map(line => `WAKE probe ${line}`);
+  const seen = new Set(base.probe.map(stable));
+  const out = now.probe.filter(line => !seen.has(stable(line))).map(line => `WAKE probe ${line}`);
   if (base.gates !== now.gates) out.push(`WAKE gates ${GATES}`);
   if (base.integration !== now.integration) out.push(`WAKE integration ${base.integration.slice(0, 7) || 'none'} ${now.integration.slice(0, 7) || 'none'}`);
   return out;

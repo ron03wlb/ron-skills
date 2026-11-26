@@ -84,6 +84,19 @@ test('probe 少了一行、其餘不變：不算變化', t => {
   assert.match(result.stdout, /^IDLE_TIMEOUT /);
 });
 
+test('probe 行只差隨時間變動的欄位（oldest=、WORKER RUNNING 分鐘、SLOT_HELD 秒）：不算新行，真正的新行仍印（#673）', t => {
+  const base = ['RETRO_IDLE 1 oldest=1.5h threshold count=5 age=8h', 'WORKER 7 RUNNING 12', 'WORKER 8 STUCK stuck-after 40', 'WORKER 9 SLOT_HELD 30'];
+  const later = ['RETRO_IDLE 1 oldest=1.6h threshold count=5 age=8h', 'WORKER 7 RUNNING 17', 'WORKER 8 STUCK stuck-after 45', 'WORKER 9 SLOT_HELD 330'];
+  const quiet = fixture(t, [{ lines: base }, { lines: later }]);
+  // base 已觀察得到：時間欄位不同的行逐字不等於基準（改前這裡會 WAKE）
+  assert.notEqual(base[0], later[0]);
+  const idleResult = quiet.run(['--max-wait', '0.2']);
+  assert.match(idleResult.stdout, /^IDLE_TIMEOUT /);
+  const real = fixture(t, [{ lines: base }, { lines: [...later, 'RETRO_DUE 5 oldest=1.6h → go'] }]);
+  const wake = real.run(['--max-wait', '30']);
+  assert.equal(wake.stdout, 'WAKE probe RETRO_DUE 5 oldest=1.6h → go\n');
+});
+
 test('gate 檔變了：結束並印 WAKE gates', t => {
   const { run } = fixture(t, [idle, { ...idle, act: 'gates' }]);
   const result = run(['--max-wait', '30']);

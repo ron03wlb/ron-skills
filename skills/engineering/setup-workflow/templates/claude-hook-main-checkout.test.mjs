@@ -3,7 +3,8 @@ import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { spawnHook, unfinishedExports, unfinishedHookRuns } from './test/hook-timeout.mjs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirtiesMainCheckout } from './claude-hook-main-checkout.mjs';
@@ -16,7 +17,7 @@ const hook = (input, projectDir, extraEnv = {}) => {
   delete env.CLAUDE_PROJECT_DIR;
   delete env._; // 和 Claude Code 跑 hook 時一樣沒有 `_`；測試行程的 `_` 是 node 路徑，會讓 `cd $_` 碰巧離開主 checkout
   if (projectDir) env.CLAUDE_PROJECT_DIR = projectDir;
-  return spawnSync('node', [script], { input, encoding: 'utf8', env });
+  return spawnHook('node', [script], { input, encoding: 'utf8', env });
 };
 const git = (cwd, ...args) => {
   const result = spawnSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8' });
@@ -358,4 +359,20 @@ test('Bash：CLAUDE_PROJECT_DIR 之外的 repo（clone --shared 的 scratch clon
   assert.equal(bash('git checkout -q --detach HEAD', main, main).status, 2, '本專案主 checkout 照擋');
   assert.equal(bash('git checkout -q --detach HEAD', main, worktree).status, 2, 'session 開在 worktree 時切主 checkout 照擋');
   assert.equal(bash(`cd ${clone} && git checkout -q --detach HEAD`, main).status, 2, '沒有 CLAUDE_PROJECT_DIR 時照舊：任何主 checkout 都擋');
+});
+
+// #687-1：切字迴圈不前進時 hook 會卡死（git-bypass 3dae65e）；每個解析指令的 export 與整支 hook 都以 shell 形狀語料跑過，必須在逾時內結束。
+test('shell 形狀語料：bashWriteTargets、bashBranchSwitches 與整支 hook 都在逾時內結束', async () => {
+  const { root, main } = fixture();
+  try {
+    const common = join(main, '.git');
+    assert.deepEqual(unfinishedExports(new URL('./claude-hook-main-checkout.mjs', import.meta.url), {
+      bashWriteTargets: [main], bashBranchSwitches: [main, common],
+    }, { cwd: main }), []);
+    const env = { ...process.env, CLAUDE_PROJECT_DIR: main };
+    delete env._;
+    assert.deepEqual(await unfinishedHookRuns(script, { input: command => ({ tool_name: 'Bash', cwd: main, tool_input: { command } }), cwd: main, env }), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

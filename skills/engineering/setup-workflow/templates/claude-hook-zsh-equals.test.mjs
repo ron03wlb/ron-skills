@@ -1,7 +1,7 @@
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawnHook, unfinishedExports, unfinishedHookRuns } from './test/hook-timeout.mjs';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,7 @@ import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const HOOK = fileURLToPath(new URL('./claude-hook-zsh-equals.mjs', import.meta.url));
 // $SHELL 預設 zsh：整支 hook 只在 zsh 才擋，測試結果不該跟著跑測試的機器變。
-const run = (input, shell = '/bin/zsh') => spawnSync('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8', env: { ...process.env, SHELL: shell } });
+const run = (input, shell = '/bin/zsh') => spawnHook('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8', env: { ...process.env, SHELL: shell } });
 const bash = command => run({ tool_name: 'Bash', tool_input: { command } });
 
 // session 2ebf77bf 的原指令形狀：`echo ===` 當分隔線，zsh 印 `(eval):1: == not found`，後面的 pilot-probe 沒跑（#203）。
@@ -343,4 +343,18 @@ test('同一行或同一條指令有多個 heredoc 時只擋本文含反引號�
   assert.deepEqual(backtickHeredocs("cat <<A <<'B'\nplain\nA\nsee `x`\nB"), []);
   assert.deepEqual(backtickHeredocs("cat <<'A' <<B\nsee `x`\nA\nalso `y`\nB"), ['B']);
   assert.deepEqual(backtickHeredocs('cat <<A\nok\nA\ncat <<B\n`x`\nB\ncat <<C\n$(y)\nC'), ['B']);
+});
+
+// #687-1：切字迴圈不前進時 hook 會卡死（git-bypass 3dae65e）；每個解析指令的 export 與整支 hook 都以 shell 形狀語料跑過，必須在逾時內結束。
+test('shell 形狀語料：每個解析指令的 export 與整支 hook 都在逾時內結束', async () => {
+  const dir = mkdtempSync(join(realTmpdir(), 'zsh-equals-shapes-'));
+  try {
+    assert.deepEqual(unfinishedExports(new URL('./claude-hook-zsh-equals.mjs', import.meta.url), {
+      equalsWords: [], nomatchWords: [], forGlobWords: [], argGlobWords: [], unmatchedForGlobs: [{ cwd: dir, home: dir }],
+      unmatchedArgGlobs: [{ cwd: dir, home: dir }], modifierWords: [], splitWords: [], backtickHeredocs: [], usesPipestatus: [],
+    }, { cwd: dir }), []);
+    assert.deepEqual(await unfinishedHookRuns(HOOK, { cwd: dir, env: { ...process.env, SHELL: '/bin/zsh' } }), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

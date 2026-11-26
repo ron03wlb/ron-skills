@@ -1,7 +1,7 @@
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawnHook, unfinishedExports, unfinishedHookRuns } from './test/hook-timeout.mjs';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { checkPiped, ghViewCommentsWithoutJson, hashSubjectCommits, truncatedDocGrep, unquotedHeredocs } from './claude-hook-bash-pitfalls.mjs';
 
 const HOOK = fileURLToPath(new URL('./claude-hook-bash-pitfalls.mjs', import.meta.url));
-const run = input => spawnSync('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8' });
+const run = input => spawnHook('node', [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8' });
 const bash = command => run({ tool_name: 'Bash', tool_input: { command } });
 
 // retro-418.md 的原指令形狀（#444）：內文是 Markdown，行內碼被 bash 當命令替換執行。
@@ -206,5 +206,18 @@ test('非 Bash 工具、輸入不合法、沒有 command 時 exit 0 不輸出', 
     const result = run(input);
     assert.equal(result.status, 0);
     assert.equal(result.stderr, '');
+  }
+});
+
+// #687-1：切字迴圈不前進時 hook 會卡死（git-bypass 3dae65e）；每個解析指令的 export 與整支 hook 都以 shell 形狀語料跑過，必須在逾時內結束。
+test('shell 形狀語料：每個解析指令的 export 與整支 hook 都在逾時內結束', async () => {
+  const dir = mkdtempSync(join(realTmpdir(), 'bash-pitfalls-shapes-'));
+  try {
+    assert.deepEqual(unfinishedExports(new URL('./claude-hook-bash-pitfalls.mjs', import.meta.url), {
+      unquotedHeredocs: [], ghViewCommentsWithoutJson: [], checkPiped: [], truncatedDocGrep: [], hashSubjectCommits: [],
+    }, { cwd: dir }), []);
+    assert.deepEqual(await unfinishedHookRuns(HOOK, { cwd: dir }), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

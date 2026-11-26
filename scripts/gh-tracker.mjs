@@ -25,7 +25,8 @@
 // 重跑同一份檔時跳過已完成的步驟，只做剩下的（狀態檔記的步驟和檔案對不上時 exit 2）。某步失敗就停，以 gh 的 exit code 結束。
 // stdout 每步一行：`CREATED <code|-> <n>`、`COMMENTED <n>`、`CLOSED <n>`、`EDITED <n>`、`SUB_ISSUE add <parent> <child>`、`BLOCKED_BY add <n> <blocker>`，
 // 全部做完時最後一行 `BATCH_DONE <步驟數>`；重跑時已完成的步驟不印。
-// 沒有子命令或子命令不認得時，把上面的用法印到 stderr、exit 2（#219）。
+// 沒有子命令或子命令不認得時，把上面的用法印到 stderr、exit 2（#219）。第一個字是 issue 或 pr（照 gh 習慣多打）而下一個字是已知子命令時，stderr 只印一行
+// `GH_TRACKER_DROP_PREFIX 改用：node scripts/gh-tracker.mjs <去掉前綴的原參數>`、exit 2、不呼叫 gh（#671）。
 // 在 repo 根目錄執行：allow 規則比對的是 `node scripts/gh-tracker.mjs` 這個相對路徑。
 // 不合規則時 exit 2、不呼叫 gh；gh 無法執行、或查到的 database id 不是數字時也 exit 2；其餘照 gh 的 exit code。主機也固定：不帶主機的 --repo 與 gh api 會用 gh config 的預設主機。
 // gh 收到的環境也沒有 GH_HOST、GH_REPO。
@@ -251,6 +252,10 @@ if (Object.hasOwn(ISSUE_COMMANDS, command)) {
   const args = parse(rest, ISSUE_COMMANDS[command]);
   const { host, repo } = trackerTarget();
   gh(['issue', command, ...args, '--repo', `${host}/${repo}`]);
+}
+if ((command === 'issue' || command === 'pr') && (Object.hasOwn(ISSUE_COMMANDS, rest[0]) || Object.hasOwn(RELATION_COMMANDS, rest[0]) || rest[0] === 'batch')) {
+  console.error(`GH_TRACKER_DROP_PREFIX 改用：node scripts/gh-tracker.mjs ${rest.join(' ')}`);
+  process.exit(2);
 }
 if (!Object.hasOwn(RELATION_COMMANDS, command)) {
   const usage = readFileSync(new URL(import.meta.url), 'utf8').split('\n').filter(line => /^\/\/ (用法：|\s+node )/.test(line)).map(line => line.slice(3));
