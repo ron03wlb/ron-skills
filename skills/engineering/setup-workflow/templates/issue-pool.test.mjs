@@ -358,6 +358,14 @@ test('程式碼區塊照 GFM 開閉：帶資訊字串的 ~~~ 不關閉區塊、�
   assert.equal(result.stdout, 'ready #611 標題 611\nready #612 標題 612\nPREREQ 612 為什麼是 needs-info\n');
 });
 
+test('清單內縮排開啟的程式碼區塊在清單結束時關閉，之後的標題照印 PREREQ（#666 review r2）', () => {
+  const result = fakeGh({ issues: [
+    issue(621, { labels: ['enhancement', 'ready-for-agent'], body: '- 範例\n\n  ~~~md\n  ## 為什麼是 needs-triage\n\n## 為什麼是 needs-info\n' }),
+  ] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #621 標題 621\nPREREQ 621 為什麼是 needs-info\n');
+});
+
 // #591（retro 1124a，#417 第 2 項）：#339、#340 都改 pilot-probe.mjs，Pick 時沒有工具看出，要到 worker 改完 Probe 才印 OVERLAP。
 test('PICK_OVERLAP：ready 前幾張的本文提到同一個檔（裸檔名對得上完整路徑）或同一個條目時印 PICK_OVERLAP <n> <m> <檔|條目>', () => {
   const result = fakeGh({ issues: [
