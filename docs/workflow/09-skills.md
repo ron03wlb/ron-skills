@@ -63,7 +63,7 @@
 
 | skill | 做什麼 | 等級 | 來源 |
 | --- | --- | --- | --- |
-| `/retro` | 回顧一次 session，提出環境改善（檢查、導覽、規範） | L2（人輸入；adapter 有 Retro collect 條目時，pilot worker 寫 `DONE` 前與 coordinator 交接後由 skill 以 Skill tool 自動跑） | Matt（ron-skills overlay：開 Issue 前依候選提到的名稱查開著的 Issue；寫入前查並行修改；adapter 有 Retro collect 條目時改為收集模式，候選開成 `retro-candidates` Issue，條目宣告 `Collect command:` 時改照該指令走；最後把分頁切成待關閉） |
+| `/retro` | 回顧一次 session，提出環境改善（檢查、導覽、規範） | L2（人輸入；adapter 有 Retro collect 條目時，pilot worker 寫 `DONE` 前與 coordinator 交接後由 skill 以 Skill tool 自動跑） | Matt（ron-skills overlay：只有代碼品質、降低 token、流程穩定三類候選開 Issue，影響小又只發生一次的先寫進記憶、重複出現再開；開 Issue 前依候選提到的名稱查開著的 Issue；寫入前查並行修改；adapter 有 Retro collect 條目時改為收集模式，候選開成 `retro-candidates` Issue，條目宣告 `Collect command:` 時改照該指令走；最後把分頁切成待關閉） |
 | `/retro-collect` | 收集開著的 `retro-candidates` Issue，在一個 retro worktree 實作採用項，太大的另開 `retro` Issue，合入後關單；條目宣告名單的專案改用宣告的指令 | L2（人輸入，或 coordinator 依 adapter 的 Retro trigger 條目，在未收集的 retro 達 5 則或最舊滿 8 小時時以 `pilot-retro-due.mjs --start` 開分頁跑；adapter 要有 Retro collect 條目） | ron-skills |
 | `handoff` | 把對話壓成交接文件，讓新的 session 接手 | 輔助 | Matt |
 

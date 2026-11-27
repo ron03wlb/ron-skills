@@ -38,7 +38,7 @@
 <figure class="diagram" id="diagram-07-retro-loop"><iframe src="../diagrams/07-retro-loop.html" title="/retro 回饋迴圈" loading="lazy"></iframe><figcaption>/retro 回饋迴圈（互動圖：可切換主題、搜尋節點；<a href="../diagrams/07-retro-loop.html" target="_blank" rel="noopener">全頁開啟</a>）</figcaption></figure>
 <p>互動版：<a href="../diagrams/07-retro-loop.html">diagrams/07-retro-loop.html</a>（來源 <a href="../diagrams/src/07-retro-loop.dataflow.json"><code>diagrams/src/07-retro-loop.dataflow.json</code></a>）</p>
 <ul>
-<li><strong><code>/retro</code></strong>：session 結束後輸入（pilot 的 worker 與交接後的 coordinator 自己跑），它讀這次的紀錄提出改善項目（導覽、自動檢查、規範、無效規則、工具成本），依嚴重度排列。adapter 有 <strong>Retro collect</strong> 條目時，候選開成一張 <code>retro-candidates</code> Issue，不自己實作；條目宣告 <code>Collect command:</code> 的專案改照該指令走。</li>
+<li><strong><code>/retro</code></strong>：session 結束後輸入（pilot 的 worker 與交接後的 coordinator 自己跑），它讀這次的紀錄提出改善項目（導覽、自動檢查、規範、無效規則、工具成本），依嚴重度排列；開單門檻（<code>/retro</code> 的 <strong>Issue bar.</strong>）：只有三類候選可以開單：代碼品質（讓產品程式碼出錯、難維護，或造成測試漏洞）、降低 token（能明顯減少 agent 的 token 用量）、流程穩定（讓 issue-pilot、coordinator、CI、排程卡住、失敗或需要人介入）；措辭、文件小修、一次性狀況、個人偏好、跟現有規則重複的不開單，最多寫進記憶或直接丟掉；屬於三類但影響小又只發生過一次的先寫進記憶，等重複出現（之前的 <code>retro</code>／<code>retro-candidates</code> Issue（含已關閉）、<code>.scratch/retro/reports/</code> 的收集報告或記憶裡已有同類紀錄）再開。adapter 有 <strong>Retro collect</strong> 條目時，候選開成一張 <code>retro-candidates</code> Issue，不自己實作；條目宣告 <code>Collect command:</code> 的專案改照該指令走。</li>
 <li><strong><code>/retro-collect</code></strong>：收集所有開著的 <code>retro-candidates</code> Issue，在一個 retro worktree 一次實作，合入後關掉這些 Issue；太大的候選另開 <code>retro</code> Issue 交給 pilot；條目宣告本機名單的專案，名單與結案改用宣告的指令（見 <a href="05-level3.html#retro-collect">05</a>）。</li>
 <li><strong>你自己</strong>：同一句指示對 agent 說第二次時，就是該升級的訊號。</li>
 </ul>
