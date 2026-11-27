@@ -42,7 +42,7 @@ agent 每個 session 都從零開始。踩過的坑要不再踩，就得寫在�
 
 互動版：[diagrams/07-retro-loop.html](diagrams/07-retro-loop.html)（來源 [`diagrams/src/07-retro-loop.dataflow.json`](diagrams/src/07-retro-loop.dataflow.json)）
 
-- **`/retro`**：session 結束後輸入（pilot 的 worker 與交接後的 coordinator 自己跑），它讀這次的紀錄提出改善項目（導覽、自動檢查、規範、無效規則、工具成本），依嚴重度排列。adapter 有 **Retro collect** 條目時，候選開成一張 `retro-candidates` Issue，不自己實作；條目宣告 `Collect command:` 的專案改照該指令走。
+- **`/retro`**：session 結束後輸入（pilot 的 worker 與交接後的 coordinator 自己跑），它讀這次的紀錄提出改善項目（導覽、自動檢查、規範、無效規則、工具成本），依嚴重度排列；開單門檻（`/retro` 的 **Issue bar.**）：只有三類候選可以開單：代碼品質（讓產品程式碼出錯、難維護，或造成測試漏洞）、降低 token（能明顯減少 agent 的 token 用量）、流程穩定（讓 issue-pilot、coordinator、CI、排程卡住、失敗或需要人介入）；措辭、文件小修、一次性狀況、個人偏好、跟現有規則重複的不開單，最多寫進記憶或直接丟掉；屬於三類但影響小又只發生過一次的先寫進記憶，等重複出現（之前的 `retro`／`retro-candidates` Issue（含已關閉）、`.scratch/retro/reports/` 的收集報告或記憶裡已有同類紀錄）再開。adapter 有 **Retro collect** 條目時，候選開成一張 `retro-candidates` Issue，不自己實作；條目宣告 `Collect command:` 的專案改照該指令走。
 - **`/retro-collect`**：收集所有開著的 `retro-candidates` Issue，在一個 retro worktree 一次實作，合入後關掉這些 Issue；太大的候選另開 `retro` Issue 交給 pilot；條目宣告本機名單的專案，名單與結案改用宣告的指令（見 [05](05-level3.md#retro-collect)）。
 - **你自己**：同一句指示對 agent 說第二次時，就是該升級的訊號。
 
