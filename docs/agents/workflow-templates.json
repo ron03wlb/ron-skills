@@ -122,8 +122,8 @@
     },
     "scripts/issue-pool.mjs": {
       "template": "skills/engineering/setup-workflow/templates/issue-pool.mjs",
-      "commit": "4f66a1ec83ea739ee84282d6c656b1de1b93cf4e",
-      "sha256": "72fb1a864b728f2b0c0ecf9e005c0bc5e20a56b8a04aec9e525a5a392494762c"
+      "commit": "44ecd973611be680979fdd006be180bfcd4a7dca",
+      "sha256": "40eeba0fd4ec02eb735ba4b8e681b97a940a02331b5cbdc81af6b496132bf9d9"
     },
     "scripts/land.mjs": {
       "template": "skills/engineering/setup-workflow/templates/land.mjs",

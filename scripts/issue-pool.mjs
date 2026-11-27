@@ -228,17 +228,30 @@ const NO_PREREQUISITE = /^(?:無|none)(?:$|[\s。.,，、;；（(])/i;
  * 只認標題行；散文、行內文字與 ``` / ~~~ 程式碼區塊裡的不算（圍欄開閉照 GFM）。 */
 export function needsHeadingOf(body) {
   let fence;
+  const items = []; // 外層到內層各清單項的內容縮排；圍欄與標題都相對於最內層的判斷
   for (const line of (body ?? '').split(/\r?\n/)) {
-    // GFM：關閉的圍欄同符號、不短於開啟的、後面只能有空白；``` 開啟時資訊字串不能含 `（否則是行內碼）。
-    // 縮排開啟的（清單內）遇到縮排更少的非空行視為清單結束、區塊關閉，該行照常判斷：寧可多印 PREREQ，不漏印。
-    const [, indent, marker, rest] = line.match(/^( {0,3})(`{3,}|~{3,})(.*)$/) ?? [];
+    const indent = line.match(/^ */)[0].length;
     if (fence) {
-      if (marker?.[0] === fence.marker[0] && marker.length >= fence.marker.length && !rest.trim()) { fence = undefined; continue; }
-      if (!line.trim() || line.match(/^ */)[0].length >= fence.indent) continue;
+      // 圍欄屬於開啟時所在的清單項：比那一項內容縮排少的非空行結束該項、區塊一起關閉，該行照常判斷；
+      // 否則去掉那一項的縮排後判斷結束圍欄（同符號、不短於開啟的、後面只能有空白），其餘都是區塊內容。
+      if (!line.trim() || indent >= fence.container) {
+        const [, marker, rest] = line.slice(fence.container).match(/^ {0,3}(`{3,}|~{3,})(.*)$/) ?? [];
+        if (marker?.[0] === fence.marker[0] && marker.length >= fence.marker.length && !rest.trim()) fence = undefined;
+        continue;
+      }
       fence = undefined;
     }
-    if (marker && !(marker[0] === '`' && rest.includes('`'))) { fence = { marker, indent: indent.length }; continue; }
-    const heading = line.match(/^ {0,3}#{1,6}[ \t]+(為什麼是 needs-.*?)[ \t#]*$/)?.[1];
+    if (line.trim()) {
+      while (items.length && indent < items.at(-1)) items.pop();
+      const item = line.match(/^ *(?:[-*+]|\d{1,9}[.)]) {1,4}(?=\S)/)?.[0];
+      if (item) items.push(item.length);
+    }
+    const container = items.at(-1) ?? 0;
+    const relative = line.slice(container);
+    // ``` 開啟時資訊字串不能含 `（否則是行內碼）。
+    const [, marker, rest] = relative.match(/^ {0,3}(`{3,}|~{3,})(.*)$/) ?? [];
+    if (marker && !(marker[0] === '`' && rest.includes('`'))) { fence = { marker, container }; continue; }
+    const heading = relative.match(/^ {0,3}#{1,6}[ \t]+(為什麼是 needs-.*?)[ \t#]*$/)?.[1];
     if (heading) return heading;
   }
 }

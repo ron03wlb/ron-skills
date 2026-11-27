@@ -367,6 +367,16 @@ test('清單內縮排開啟的程式碼區塊在清單結束時關閉、縮排�
   assert.equal(result.stdout, 'ready #621 標題 621\nready #622 標題 622\nPREREQ 621 為什麼是 needs-info\nPREREQ 622 為什麼是 needs-info\n');
 });
 
+test('圍欄屬於開啟時所在的清單項：頂層縮排的圍欄不因靠左的內容行結束，清單內的圍欄隨清單項結束、靠左的圍欄另開頂層區塊（#666 review-only r4）', () => {
+  const ready = ['enhancement', 'ready-for-agent'];
+  const result = fakeGh({ issues: [
+    issue(631, { labels: ready, body: '  ```\n~~~md\n## 為什麼是 needs-triage\n  ```\n\n## 為什麼是 needs-info\n' }),
+    issue(632, { labels: ready, body: '- 範例\n\n  ~~~md\n  ## x\n~~~\n## 為什麼是 needs-triage\n~~~\n\n## 為什麼是 needs-info\n' }),
+  ] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #631 標題 631\nready #632 標題 632\nPREREQ 631 為什麼是 needs-info\nPREREQ 632 為什麼是 needs-info\n');
+});
+
 // #591（retro 1124a，#417 第 2 項）：#339、#340 都改 pilot-probe.mjs，Pick 時沒有工具看出，要到 worker 改完 Probe 才印 OVERLAP。
 test('PICK_OVERLAP：ready 前幾張的本文提到同一個檔（裸檔名對得上完整路徑）或同一個條目時印 PICK_OVERLAP <n> <m> <檔|條目>', () => {
   const result = fakeGh({ issues: [
