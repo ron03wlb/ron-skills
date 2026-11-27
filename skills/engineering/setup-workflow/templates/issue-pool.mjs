@@ -29,7 +29,7 @@
 // （`.scratch/pilot/main-paused`，`pilot-hold.mjs set-main` 寫、until 當天仍有效，判斷是 export 的 mainPause，Probe 的 MAIN_PAUSED 共用，#379），
 // landed 桶不逐張印，在它的位置收成一行 `LANDED_COUNT <數量> <整合分支>`；旗標過期、讀不懂或沒有時照逐行印。stale 桶預設也不逐張印，在它的位置收成一行 `STALE <數量>`，
 // 帶 `--stale` 才逐行印（/issue-queue 要逐張列認領者時帶；investing retro 1123c：每輪 Pool 約 190 行 stale 蓋過 4 行 needs-triage，#550）；Probe 的 BLOCKER_OPEN_SCOPE 用同一份 blocker 資料（export 的 blockerOpenScope，#359），這支 CLI 不印。之後 ready 桶本文有 `… prerequisite：<內容>` 一行、內容不是「無」的，
-// 依 ready 的順序各印一行 `PREREQ <n> <內容>`（先查環境或開 gate 再派）；再對 ready 桶前 PICK_TOP（5）張印 Pick 前的重疊提示（#591）：
+// 依 ready 的順序各印一行 `PREREQ <n> <內容>`（先查環境或開 gate 再派；沒有這行或寫「無」、但本文有 `#` 開頭的「為什麼是 needs-…」標題時，內容是去掉 `#` 的標題文字，#666）；再對 ready 桶前 PICK_TOP（5）張印 Pick 前的重疊提示（#591）：
 // 前面的 n 與後面的 m 本文提到同一個檔（帶常見副檔名的路徑，URL 裡的不算；裸檔名對得上完整路徑的尾段）印 `PICK_OVERLAP <n> <m> <檔>`，提到同一個 `**<條目>.**` 印 `PICK_OVERLAP <n> <m> **<條目>.**`；
 // n 本文提到的檔在別的 worktree 的實際改動裡（worktree-overlap.mjs 的 OVERLAP_WT，基準是 --integration 的分支、沒帶時 main；基底過舊的不算，n 自己號碼的分支不算）
 // 印 `PICK_OVERLAP <n> <m> <改到的檔> [**<條目>.**…]`，m 是分支最後一段 `<m>-` 的號碼、取不到時是分支名，條目是本文也提到、那個檔也改到的。
@@ -224,6 +224,40 @@ function parentDetail({ parent }, repo) {
 export const prerequisiteOf = body => (body ?? '').match(/^.*\bprerequisite\s*[：:]\s*(?:[*_]+\s*)?(\S.*?)\s*$/im)?.[1];
 /** prerequisite 寫「無」（或 none，後面可接標點或括號說明）表示不用等人；`**Operator prerequisite：** 無` 的粗體記號由 prerequisiteOf 略過。 */
 const NO_PREREQUISITE = /^(?:無|none)(?:$|[\s。.,，、;；（(])/i;
+/** 本文第一個以「為什麼是 needs-」開頭的 Markdown 標題（任一層級，去掉開頭的 `#` 與空白），沒有時 undefined：本文自己寫著還不能做（#666）。
+ * 只認標題行；散文、行內文字與 ``` / ~~~ 程式碼區塊裡的不算（圍欄開閉照 GFM）。 */
+export function needsHeadingOf(body) {
+  let fence;
+  const items = []; // 外層到內層各清單項的內容縮排；圍欄與標題都相對於最內層的判斷
+  for (const raw of (body ?? '').split(/\r?\n/)) {
+    // 行首 Tab 照 4 欄 tab stop 展開成空白，縮排才和 GFM 一致。
+    const line = raw.replace(/^[ \t]+/, lead => [...lead].reduce((s, c) => s + (c === '\t' ? ' '.repeat(4 - s.length % 4) : c), ''));
+    const indent = line.match(/^ */)[0].length;
+    if (fence) {
+      // 圍欄屬於開啟時所在的清單項：比那一項內容縮排少的非空行結束該項、區塊一起關閉，該行照常判斷；
+      // 否則去掉那一項的縮排後判斷結束圍欄（同符號、不短於開啟的、後面只能有空白），其餘都是區塊內容。
+      if (!line.trim() || indent >= fence.container) {
+        const [, marker, rest] = line.slice(fence.container).match(/^ {0,3}(`{3,}|~{3,})(.*)$/) ?? [];
+        if (marker?.[0] === fence.marker[0] && marker.length >= fence.marker.length && !rest.trim()) fence = undefined;
+        continue;
+      }
+      fence = undefined;
+    }
+    if (line.trim()) {
+      while (items.length && indent < items.at(-1)) items.pop();
+      // 清單標記離所在清單項的內容縮排 0–3 格（再多是縮排程式碼）；內容縮排是標記後的空白，空清單項或空白超過 4 格時只算 1 格。
+      const [, lead, marker, gap, text] = line.match(/^( *)([-*+]|\d{1,9}[.)])( *)(.*)$/) ?? [];
+      if (marker && lead.length - (items.at(-1) ?? 0) <= 3 && (gap || !text)) items.push(lead.length + marker.length + (!text || gap.length > 4 ? 1 : gap.length));
+    }
+    const container = items.at(-1) ?? 0;
+    const relative = line.slice(container);
+    // ``` 開啟時資訊字串不能含 `（否則是行內碼）。
+    const [, marker, rest] = relative.match(/^ {0,3}(`{3,}|~{3,})(.*)$/) ?? [];
+    if (marker && !(marker[0] === '`' && rest.includes('`'))) { fence = { marker, container }; continue; }
+    const heading = relative.match(/^ {0,3}#{1,6}[ \t]+(為什麼是 needs-.*?)[ \t#]*$/)?.[1];
+    if (heading) return heading;
+  }
+}
 
 /** 留言（依時間先後）裡，最近一則認領留言之後（沒有認領留言時是全部）最新一行 `DONE <n> <sha>` 的 sha；沒有時 undefined。
  * 認領之前的 DONE 不算：之後又被認領，表示要重做。 */
@@ -426,7 +460,9 @@ export function poolLines(issues, { repo, categories = DEFAULT_CATEGORIES, lande
   });
   for (const { issue } of rows.filter(({ bucket }) => bucket === 'ready')) {
     const prerequisite = prerequisiteOf(issue.body);
-    if (prerequisite && !NO_PREREQUISITE.test(prerequisite)) lines.push(`PREREQ ${issue.number} ${prerequisite}`);
+    // prerequisite 行優先；沒有或寫「無」時，本文有「為什麼是 needs-…」標題也印（#666）。
+    const pending = prerequisite && !NO_PREREQUISITE.test(prerequisite) ? prerequisite : needsHeadingOf(issue.body);
+    if (pending) lines.push(`PREREQ ${issue.number} ${pending}`);
   }
   lines.push(...pickOverlaps(rows.filter(({ bucket }) => bucket === 'ready').map(({ issue }) => issue), worktreeChanges));
   const missing = missingCategory(issues, categories, options.skipLabels);
