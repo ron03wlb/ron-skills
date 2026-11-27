@@ -7,16 +7,14 @@
       "Bash(node scripts/pilot-land.mjs push:*)",
       "Bash(node scripts/project-sync.mjs:*)",
       "Bash(node scripts/run-codex-review.mjs:*)",
-      "Read(//home/ron/code/**)",
-      "Read(//home/ron/orca/workspaces/**)",
-      "Read(//tmp/claude-1001/**)",
-      "Read(//mnt/c/Users/ron.chang/.orca/**)",
+      "Read(~/code/**)",
+      "Read(~/orca/workspaces/**)",
       "Read(~/.claude/**)",
       "Read(~/.local/share/orca/claude-profiles/**)",
       "Read(~/.local/state/orca-tab-titles/**)",
-      "Edit(//tmp/claude-1001/**)",
+      "Edit(~/orca/workspaces/ron-skills/**)",
       "Edit(~/.claude/projects/*/memory/**)",
-      "Edit(~/.local/share/orca/claude-profiles/*/home/projects/*/memory/**)",
+      "Edit(~/.local/share/orca/claude-profiles/**/memory/**)",
       "Bash(bin/check:*)",
       "Bash(node scripts/adapter-line.mjs:*)",
       "Bash(node scripts/doc-excerpt.mjs:*)",
@@ -29,13 +27,7 @@
       "Bash(node scripts/build-workflow-site.mjs:*)",
       "Bash(node scripts/pilot-probe.mjs:*)",
       "Bash(node scripts/pilot-retro-due.mjs:*)",
-      "Bash(node scripts/orca-worktree-create.mjs:*)",
-      "Bash(orca-ide terminal list:*)",
-      "Bash(orca-ide terminal read:*)",
-      "Bash(orca-ide orchestration check:*)"
-    ],
-    "additionalDirectories": [
-      "/home/ron/orca/workspaces/ron-skills"
+      "Bash(node scripts/orca-worktree-create.mjs:*)"
     ]
   },
   "hooks": {
