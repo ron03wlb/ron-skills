@@ -1,7 +1,8 @@
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { HOOK_TIMEOUT_MS, spawnHook } from './test/hook-timeout.mjs';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -9,7 +10,7 @@ import { isHarnessText, isMostlyEnglish, isSyntheticEntry, lastTurnTexts, simpli
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const script = fileURLToPath(new URL('./claude-hook-language.mjs', import.meta.url));
-const hook = input => spawnSync('node', [script], { input, encoding: 'utf8' });
+const hook = input => spawnHook('node', [script], { input, encoding: 'utf8' });
 
 const user = content => JSON.stringify({ type: 'user', message: { role: 'user', content } });
 const toolResult = () => JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] } });
@@ -223,11 +224,12 @@ test('hook PostToolUse：觸發時文字段與 tool_use 都還沒寫入，稍後
   const lateLines = [assistant('All closed. Now handle the source tabs.'), toolUse(toolUseId)].join('\n') + '\n';
   const child = spawn('node', ['--import', pathToFileURL(preload).href, script], {
     env: { ...process.env, CLAUDE_PROJECT_DIR: dir, HOOK_TEST_TRANSCRIPT: transcript, HOOK_TEST_APPEND: lateLines },
+    timeout: HOOK_TIMEOUT_MS, killSignal: 'SIGKILL',
   });
   const stderr = [];
   child.stderr.on('data', chunk => stderr.push(chunk));
   child.stdin.end(JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', transcript_path: transcript, tool_use_id: toolUseId }));
-  const code = await new Promise(resolve => child.on('close', resolve));
+  const code = await new Promise(resolve => child.on('close', (status, signal) => resolve(signal ? `hook 子行程 ${HOOK_TIMEOUT_MS}ms 內沒有結束（${signal}）` : status)));
   assert.equal(code, 2);
   assert.match(Buffer.concat(stderr).toString(), /All closed/);
   // 擋下時另有一行 {at, hook_event_name, session_id, tool}（#938），量測是帶 first 的那一行
@@ -298,7 +300,7 @@ function preHook(dir, transcript, input, append = '') {
   ].join('\n'));
   const readsFile = join(dir, 'reads');
   rmSync(readsFile, { force: true });
-  const result = spawnSync('node', ['--import', pathToFileURL(preload).href, script], {
+  const result = spawnHook('node', ['--import', pathToFileURL(preload).href, script], {
     input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', session_id: 'sess-938', ...input }), encoding: 'utf8',
     env: { ...process.env, CLAUDE_PROJECT_DIR: dir, HOOK_TEST_TRANSCRIPT: transcript, HOOK_TEST_READS: readsFile, HOOK_TEST_APPEND: append },
   });

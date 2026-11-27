@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { spawnHook } from './test/hook-timeout.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const hook = new URL('./claude-hook-unbare.sh', import.meta.url).pathname;
@@ -23,7 +24,7 @@ function checkoutWithWorktree(t) {
   return { main, worktree, git };
 }
 
-const run = projectDir => spawnSync(hook, [], { encoding: 'utf8', env: { ...env, CLAUDE_PROJECT_DIR: projectDir } });
+const run = projectDir => spawnHook(hook, [], { encoding: 'utf8', env: { ...env, CLAUDE_PROJECT_DIR: projectDir } });
 
 // 重現 retro 2026-10-30：主 checkout 的 session 進行中 core.bare 被設成 true。
 test('session 在主 checkout：core.bare 為 true 時還原', t => {

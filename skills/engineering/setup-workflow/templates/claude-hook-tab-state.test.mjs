@@ -1,7 +1,7 @@
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawnHook, unfinishedExports } from './test/hook-timeout.mjs';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,11 +48,11 @@ else if (b === 'rename') {
   const record = (title, handle = SELF) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, handle), title); };
   const recorded = (handle = SELF) => existsSync(join(dir, handle)) ? readFileSync(join(dir, handle), 'utf8') : null;
   const env = extra => ({ ...process.env, ORCA_CLI_COMMAND: cli, ORCA_TERMINAL_HANDLE: SELF, TAB_STATE_DIR: dir, CLAUDE_PROJECT_DIR: project, ...extra });
-  const hook = (input, extra = {}) => spawnSync('node', [script], {
+  const hook = (input, extra = {}) => spawnHook('node', [script], {
     input: typeof input === 'string' ? input : JSON.stringify({ cwd: project, transcript_path: transcript, ...input }), encoding: 'utf8', env: env(extra),
   });
   // agent 自己跑的 `node scripts/tab-state.mjs <狀態>`（/retro 最後一步切待關閉、回頭再做時切處理中）；讀回輪詢縮短，MISMATCH 不必等 5 秒。
-  const tabState = (...args) => spawnSync('node', [tabStateScript, ...args], {
+  const tabState = (...args) => spawnHook('node', [tabStateScript, ...args], {
     encoding: 'utf8', env: env({ TAB_STATE_VERIFY_MS: '300', TAB_STATE_VERIFY_RETRY_MS: '50' }),
   });
   const say = text => writeFileSync(transcript, [
@@ -396,7 +396,7 @@ else if (a === 'agent' && b === 'list') reply('agent-list', { agents: [{ orcaSes
 else fail('unexpected');
 `);
   chmodSync(cli, 0o755);
-  const hook = input => spawnSync('node', [script], {
+  const hook = input => spawnHook('node', [script], {
     input: JSON.stringify({ cwd: temp, ...input }), encoding: 'utf8',
     env: { ...process.env, ORCA_CLI_COMMAND: cli, ORCA_TERMINAL_HANDLE: '', ORCA_STRUCTURED_SESSION: '1', ORCA_AGENT_SESSION_ID: id, TAB_STATE_DIR: join(temp, 'titles'), CLAUDE_PROJECT_DIR: temp },
   });
@@ -413,4 +413,9 @@ else fail('unexpected');
   assert.equal(result.status, 0, result.stderr);
   assert.equal(readFileSync(live, 'utf8'), '處理中｜假日物品歸位');
   assert.doesNotMatch(readFileSync(log, 'utf8'), /terminal /);
+});
+
+// #687-1：切字迴圈不前進時 hook 會卡死（git-bypass 3dae65e）；解析指令的 renamedTitle 以 shell 形狀語料跑過，必須在逾時內結束。
+test('shell 形狀語料：renamedTitle 在逾時內結束', () => {
+  assert.deepEqual(unfinishedExports(new URL('./claude-hook-tab-state.mjs', import.meta.url), { renamedTitle: ['term_1'] }), []);
 });

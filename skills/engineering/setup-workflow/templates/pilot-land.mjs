@@ -77,8 +77,10 @@
 //      （PR 已開著時 land.mjs 以 gh pr edit 換上新的標題與 body）；
 //   3. land.mjs 印 `STOP behind-main …`（stage 之後 origin/<主分支> 才前進）時不照印那行，改印 `PUSH_BEHIND_MAIN <整合分支>`（不同於 Probe 的 `BEHIND_MAIN <落後數> <sha>`），跑同 sync-main 的步驟
 //      （印 RECORDED、SYNCED；它的 STOP 就以那行結束，不 land），再從 1 重來一次；第二次還是 behind-main 就照印 land.mjs 的 STOP 行結束。
-//   最後一行與 exit 是 land.mjs 的（`LANDED <pr> <merge sha>` exit 0，`STOP <原因>` exit 4）；pilot-pr-body.mjs 或 sync-main STOP 時是它們的 STOP 行（exit 4）。land.mjs 等 CI 最多約 8 分鐘、sync-main 的 Regression
-//   另計，所以 coordinator 以背景執行；`STOP checks-timeout <pr> → …` 時重跑同一行，PR 沿用、body 重產：land.mjs 經環境變數 LAND_RERUN_COMMAND
+//   最後一行與 exit 是 land.mjs 的（`LANDED <pr> <merge sha>` exit 0，`STOP <原因>` exit 4）；pilot-pr-body.mjs 或 sync-main STOP 時是它們的 STOP 行（exit 4）。coordinator 以背景執行，
+//   所以 land.mjs 等 CI 的期限不是它為 Bash 前景設的約 8 分鐘，而是經環境變數 LAND_CHECKS_TIMEOUT_MS 傳入的 $PILOT_CI_TIMEOUT_S（預設 1800 秒，同 ci-run；#665 第 4 項：
+//   checks-macos 排隊常超過 600 秒，每批多一次 STOP checks-timeout 與重跑）。期限在每次等 CI 時起算：sync-main 的 Regression 不算在內，
+//   sync-main 之後那輪 CI（第 3 步的第二次 land.mjs）有自己完整的期限。仍 `STOP checks-timeout <pr> → …` 時重跑同一行，PR 沿用、body 重產：land.mjs 經環境變數 LAND_RERUN_COMMAND
 //   收到本檔這一行（`node <本檔相對 cwd 的路徑> push …`），箭頭後印的就是它，不是 land.mjs 自己的指令（retro spay2 1dce1925#2）。
 // resolver 模組的契約（都可省略；ron-skills 的 scripts/pilot-resolve.mjs 是一例）：
 //   resolveFile(tree, path, kinds)  合併中途、不是戳記檔的衝突檔：傳回合併後的全文（本檔寫回並 git add），解不了傳回 undefined；
@@ -672,11 +674,14 @@ function push(title, loadMax, mainOption) {
   const body = join(main, '.scratch/pilot/pr-body.md');
   mkdirSync(dirname(body), { recursive: true });
   const behind = line => line.startsWith('STOP behind-main ');
+  // #665 第 4 項：push 由 coordinator 以背景執行，不受 Bash 前景 600 秒限制；land.mjs 的等 CI 改以 $PILOT_CI_TIMEOUT_S 為期限（同 ci-run），
+  // 不用它為前景設的預設 480 秒。期限在每次等 CI 時起算，sync-main 之後那輪 CI 由第二次 land.mjs 從頭計。
+  const checksTimeout = String(Math.round(Number(config.ciTimeout) * 1000));
   for (let attempt = 0; ; attempt++) {
     const prBody = runScript(main, 'pilot-pr-body.mjs', [main, '--out', body]);
     if (prBody.code !== 0) return prBody.code;
     const landed = runScript(main, 'land.mjs', [config.integration, '--keep-branch', '--title', title, '--body-file', body, '--check-command', config.check,
-      ...(mainOption ? ['--main', mainOption] : [])], { hide: line => attempt === 0 && behind(line), env: { LAND_RERUN_COMMAND: rerunSelf() } });
+      ...(mainOption ? ['--main', mainOption] : [])], { hide: line => attempt === 0 && behind(line), env: { LAND_RERUN_COMMAND: rerunSelf(), LAND_CHECKS_TIMEOUT_MS: checksTimeout } });
     if (attempt > 0 || !behind(landed.last)) return landed.code;
     console.log(`PUSH_BEHIND_MAIN ${config.integration}`);
     console.log(`SYNCED ${syncMain(loadMax, main).value}`);

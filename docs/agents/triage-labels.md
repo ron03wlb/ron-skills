@@ -27,7 +27,7 @@ Edit the "Label in our tracker" column to match whatever vocabulary you actually
 
 ## `ready-for-agent` 的輸入條件
 
-標 `ready-for-agent` 之前，先照 [issue-run.md](issue-run.md#readiness) 的 **Readiness** 檢查驗收與做法用到的輸入取得到；取不到的維持 `needs-info`。
+標 `ready-for-agent` 之前，先照 [issue-run.md](issue-run.md#readiness) 的 **Readiness** 檢查驗收與做法用到的輸入取得到；取不到的維持 `needs-info`。驗收引用串接指令或結果依 repo 狀態而定的指令（`git fetch … && git checkout …`）時，寫明 fixture 的前提狀態（哪些 ref、檔案已存在），否則 reviewer 以另一種前提驗證會回報成 P2，worker 只能自己裁定（#687：#548 驗收沒寫本機 `develop` 是否已存在）。
 
 把本文存檔後跑 `node scripts/brief-check.mjs --paths <本文檔>`：每行 `BRIEF_PATH_MISSING <path>` 都要處理，路徑寫錯就改本文，是要新增的檔或其他 repo 的路徑就在本文寫明（advisory，exit 0，不擋 label；#515：#381 寫了不存在的 `issue-pilot/ADAPTER.md`，worker 多花四次呼叫找真正的位置）。
 
