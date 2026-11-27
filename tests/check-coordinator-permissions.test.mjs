@@ -21,6 +21,6 @@ test('pilot-exceptions.md 的 Permissions 條目列出 allow 的每條規則，�
   const pilot = readFileSync(new URL('../docs/agents/pilot-exceptions.md', import.meta.url), 'utf8');
   const entry = pilot.split('\n').find(line => line.startsWith('- **Permissions.**'));
   assert.ok(entry, 'pilot-exceptions.md 沒有 Permissions 條目（#166 從 pilot.md 移過去）');
-  const listed = [...entry.matchAll(/`(Bash\([^`]*\))`/g)].map(m => m[1]).sort();
+  const listed = [...entry.matchAll(/`([A-Z][A-Za-z]*\([^`]*\))`/g)].map(m => m[1]).sort();
   assert.deepEqual(listed, [...settings.permissions.allow].sort());
 });
