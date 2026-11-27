@@ -103,3 +103,24 @@ test('retro overlay：候選牽涉 HOOK_BEHIND 的 hook script 時，先在整�
   assert.match(behind, /reproduce/);
   assert.ok(skill.indexOf('**Hook behind.**') < skill.indexOf('4. Present these candidates'), '重現要排在步驟 4 列出候選之前');
 });
+
+// CoS item 209（owner 2026-11-27）：只有代碼品質、降低 token、流程穩定三類候選開單；影響小又只發生一次的先寫進記憶，重複出現再開。
+// 門檻要排在 Collect mode 開單之前，照順序讀才不會先開單才篩。
+test('retro overlay：Issue bar 只讓三類候選開單，影響小的一次性候選先寫進記憶', t => {
+  const skill = applyOverlay(t, 'retro');
+  const bar = skill.split('\n\n').find(paragraph => paragraph.includes('**Issue bar.**'));
+  assert.ok(bar, 'overlay 沒有 Issue bar 段落');
+  assert.match(bar, /\*\*code quality\*\*/);
+  assert.match(bar, /\*\*token cost\*\*/);
+  assert.match(bar, /\*\*flow stability\*\*/);
+  assert.match(bar, /opens no Issue: at most it goes into memory, otherwise drop it/);
+  assert.match(bar, /small and that has happened only once opens no Issue yet/);
+  assert.match(bar, /--state all/, '判斷重複出現要連已關閉的 Issue 一起查');
+  assert.match(bar, /\.scratch\/retro\/reports\//);
+  assert.match(bar, /MEMORY\.md/);
+  assert.ok(skill.indexOf('**Issue bar.**') < skill.indexOf('**Collect mode.**'), '門檻要排在收集模式開單之前');
+  const collect = skill.split('\n\n').find(paragraph => paragraph.includes('**Collect mode.**'));
+  assert.match(collect, /hold back each one under \*\*Issue bar\*\*/);
+  const dedupe = skill.split('\n\n').find(paragraph => paragraph.includes('**Tracker duplicates.**'));
+  assert.match(dedupe, /passed \*\*Issue bar\*\*/);
+});

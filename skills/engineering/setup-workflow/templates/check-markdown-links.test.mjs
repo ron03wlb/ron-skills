@@ -19,6 +19,14 @@ test('檔案、<a id>、GitLab slug、reader slug 與重複 heading 皆可解析
   });
   const result = scan(f); assert.equal(result.status, 0, result.stderr); assert.equal(result.stderr, '');
 });
+test('GitLab slug 把 em dash 刪掉後的連續 - 合一；雙連字號形式拒絕', t => {
+  const f = repoFixture(t);
+  docs(f, { 'docs/a.md': '### R16 — POST /paymentAccountApplications/{id}/approve\n',
+    'docs/b.md': '[ok](a.md#r16-post-paymentaccountapplicationsidapprove)\n[gh](a.md#r16--post-paymentaccountapplicationsidapprove)\n' });
+  assert.deepEqual(failures(scan(f)), [
+    { path: 'docs/b.md', line: 2, href: 'a.md#r16--post-paymentaccountapplicationsidapprove', error: 'MISSING_ANCHOR' },
+  ]);
+});
 test('缺檔、缺 anchor、repo 外路徑皆拒絕並回報行號', t => {
   const f = repoFixture(t);
   docs(f, { 'docs/a.md': '## 標題\n', 'docs/b.md': '[x](missing.md)\n[y](a.md#不存在)\n[z](../../outside.md)\n' });
