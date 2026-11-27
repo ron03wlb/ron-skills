@@ -20,8 +20,9 @@ function proseLines(text) {
   });
   return lines;
 }
+// GitLab 標題錨點：刪標點、空白變 -、連續 - 合一（spay2 #1198：「R16 — POST」→ r16-post，與 docs site reader 的 GitLab slug 一致）
 const gitlabSlug = (heading) => heading.replace(/`/g, '').replace(/<[^>]+>/g, '').trim().toLowerCase()
-  .replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, '').replace(/\s/g, '-');
+  .replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, '').replace(/\s/g, '-').replace(/-{2,}/g, '-');
 const readerSlug = (heading) => heading.replace(/`([^`]+)`/g, '$1').replace(/<[^>]+>/g, '').toLocaleLowerCase('en')
   .replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '') || 'section';
 const anchorCache = new Map();
