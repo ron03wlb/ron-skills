@@ -323,6 +323,71 @@ test('ready 單本文的 Operator prerequisite 不是「無」時另印 PREREQ <
     + 'PREREQ 133 開跑前由 Operator 確認（保留期只能用一次）\n');
 });
 
+// #666（#652 提議 (a)）：#507 標 ready-for-agent 時本文留著「## 為什麼是 needs-triage」、沒有 prerequisite 行，Pool 不印 PREREQ，coordinator 要先讀本文才發現派不出去。
+// fixture 是 #507 補 prerequisite 行之前的本文（GitHub userContentEdits 2026-11-26T07:20:26Z 的前一版）。
+const ISSUE_507_BEFORE = "## 背景\n\nretro 1122b 收集 #414 第 2 項時拆出來的單。\n\n`skills/engineering/setup-workflow/templates/test/fixtures/orca/` 只有閒置畫面的 `read` 樣本，沒有工作中 session 的樣本。#354 的 spinner 行（`✳ Fiddle-faddling… (1m 32s · ↓ 1.2k tokens)`）是從 #323 的留言照抄進測試的，違反 `test/fake-orca.mjs` 檔頭「回應一律從真實樣本長出來」的規則（#354 的 Standards reviewer 列為 P3）。`orca-session-send.mjs` 檔頭也寫著「手上沒有忙碌中 session 的真實 `terminal read` 樣本」。\n\n## 要做的事\n\n- 在 macOS 與 WSL 各錄一份工作中 Claude Code session 的 `\"$ORCA_CLI_COMMAND\" terminal read --terminal <h> --json`（畫面上要有 spinner 行與 `draft`），去掉私人內容後存成 `read-working.json`（macOS 那份放 `fixtures/orca/macos/`，和既有樣本的放法一致）。\n- `orca-session-send.test.mjs` 的 SPINNER 測試改用這份樣本，不再手寫 spinner 行。\n- 更新 `orca-session-send.mjs` 檔頭那句「手上沒有…樣本」。\n\n## 驗收條件\n\n- [ ] 兩個平台的 `read-working.json` 都是真實錄下的輸出（Issue 留言寫明錄製的平台、Orca 版本與指令）。\n- [ ] SPINNER 相關測試讀樣本檔，測試裡沒有手寫的 spinner 行。\n- [ ] `bin/check` 通過。\n\n## 為什麼是 needs-triage\n\nWSL 樣本只能在使用者的 WSL 機器上錄（adapter Readiness：只存在於某台機器的輸入，標 ready 前要先取得）。可以先在 macOS 做一半，或請使用者錄 WSL 樣本後貼在留言。\n\n來源：#414 第 2 項（worker #354，candidate 8ecdc5c）。\n";
+
+test('ready 單本文有「為什麼是 needs-…」標題、沒有 prerequisite 行時印 PREREQ <n> <標題>（#507 改動前的本文）', () => {
+  const result = fakeGh({ issues: [issue(507, { labels: ['enhancement', 'ready-for-agent'], body: ISSUE_507_BEFORE })] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #507 標題 507\nPREREQ 507 為什麼是 needs-triage\n');
+});
+
+test('「為什麼是 needs-…」只認標題：散文、行內碼、程式碼區塊不算；needs-info 也印；非 ready 不印；prerequisite 行優先、寫「無」時印標題（#666）', () => {
+  const ready = ['enhancement', 'ready-for-agent'];
+  const result = fakeGh({ issues: [
+    issue(601, { labels: ready, body: '## 背景\n\n之前標 needs-triage，為什麼是 needs-triage 已在留言說明，`## 為什麼是 needs-triage` 已刪。\n' }),
+    issue(602, { labels: ready, body: '## 背景\n\n```md\n## 為什麼是 needs-triage\n```\n\n~~~\n# 為什麼是 needs-info\n~~~\n' }),
+    issue(603, { labels: ready, body: '## 背景\n\n### 為什麼是 needs-info\n\n缺樣本。\n' }),
+    issue(604, { labels: ['enhancement', 'needs-triage'], body: '## 為什麼是 needs-triage\n' }),
+    issue(605, { labels: ready, body: 'Operator prerequisite：先錄樣本\n\n## 為什麼是 needs-info\n' }),
+    issue(606, { labels: ready, body: '**Operator prerequisite：** 無\n\n## 為什麼是 needs-triage\n' }),
+  ] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #601 標題 601\nready #602 標題 602\nready #603 標題 603\nready #605 標題 605\nready #606 標題 606\nneeds-triage #604 標題 604\n'
+    + 'PREREQ 603 為什麼是 needs-info\nPREREQ 605 先錄樣本\nPREREQ 606 為什麼是 needs-triage\n');
+});
+
+test('程式碼區塊照 GFM 開閉：帶資訊字串的 ~~~ 不關閉區塊、行首成對的 ``` 是行內碼不開區塊（#666 review r1）', () => {
+  const ready = ['enhancement', 'ready-for-agent'];
+  const result = fakeGh({ issues: [
+    issue(611, { labels: ready, body: '~~~\n~~~ still inside\n## 為什麼是 needs-info\n~~~\n' }),
+    issue(612, { labels: ready, body: '```example```\n\n## 為什麼是 needs-info\n' }),
+  ] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #611 標題 611\nready #612 標題 612\nPREREQ 612 為什麼是 needs-info\n');
+});
+
+test('清單內縮排開啟的程式碼區塊在清單結束時關閉、縮排較少的結束圍欄照常關閉，之後的標題照印 PREREQ（#666 review r2、r3）', () => {
+  const result = fakeGh({ issues: [
+    issue(621, { labels: ['enhancement', 'ready-for-agent'], body: '- 範例\n\n  ~~~md\n  ## 為什麼是 needs-triage\n\n## 為什麼是 needs-info\n' }),
+    issue(622, { labels: ['enhancement', 'ready-for-agent'], body: '  ~~~md\n  ## 為什麼是 needs-triage\n~~~\n\n## 為什麼是 needs-info\n' }),
+  ] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #621 標題 621\nready #622 標題 622\nPREREQ 621 為什麼是 needs-info\nPREREQ 622 為什麼是 needs-info\n');
+});
+
+test('圍欄屬於開啟時所在的清單項：頂層縮排的圍欄不因靠左的內容行結束，清單內的圍欄隨清單項結束、靠左的圍欄另開頂層區塊（#666 review-only r4）', () => {
+  const ready = ['enhancement', 'ready-for-agent'];
+  const result = fakeGh({ issues: [
+    issue(631, { labels: ready, body: '  ```\n~~~md\n## 為什麼是 needs-triage\n  ```\n\n## 為什麼是 needs-info\n' }),
+    issue(632, { labels: ready, body: '- 範例\n\n  ~~~md\n  ## x\n~~~\n## 為什麼是 needs-triage\n~~~\n\n## 為什麼是 needs-info\n' }),
+  ] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #631 標題 631\nready #632 標題 632\nPREREQ 631 為什麼是 needs-info\nPREREQ 632 為什麼是 needs-info\n');
+});
+
+test('清單項照 GFM 認：縮排程式碼裡的 `- ` 不算、只有標記的空清單項算；行首 Tab 照 4 欄 tab stop 算縮排（#666 review r5）', () => {
+  const ready = ['enhancement', 'ready-for-agent'];
+  const result = fakeGh({ issues: [
+    issue(641, { labels: ready, body: '    - 範例\n      ## 為什麼是 needs-info\n' }),
+    issue(642, { labels: ready, body: '-\n  ~~~\n  範例\n## 為什麼是 needs-info\n' }),
+    issue(643, { labels: ready, body: '- 範例\n\n  ~~~md\n\t畫面輸出\n  ~~~\n\n## 為什麼是 needs-info\n' }),
+  ] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #641 標題 641\nready #642 標題 642\nready #643 標題 643\nPREREQ 642 為什麼是 needs-info\nPREREQ 643 為什麼是 needs-info\n');
+});
+
 // #591（retro 1124a，#417 第 2 項）：#339、#340 都改 pilot-probe.mjs，Pick 時沒有工具看出，要到 worker 改完 Probe 才印 OVERLAP。
 test('PICK_OVERLAP：ready 前幾張的本文提到同一個檔（裸檔名對得上完整路徑）或同一個條目時印 PICK_OVERLAP <n> <m> <檔|條目>', () => {
   const result = fakeGh({ issues: [
