@@ -377,6 +377,17 @@ test('圍欄屬於開啟時所在的清單項：頂層縮排的圍欄不因靠�
   assert.equal(result.stdout, 'ready #631 標題 631\nready #632 標題 632\nPREREQ 631 為什麼是 needs-info\nPREREQ 632 為什麼是 needs-info\n');
 });
 
+test('清單項照 GFM 認：縮排程式碼裡的 `- ` 不算、只有標記的空清單項算；行首 Tab 照 4 欄 tab stop 算縮排（#666 review r5）', () => {
+  const ready = ['enhancement', 'ready-for-agent'];
+  const result = fakeGh({ issues: [
+    issue(641, { labels: ready, body: '    - 範例\n      ## 為什麼是 needs-info\n' }),
+    issue(642, { labels: ready, body: '-\n  ~~~\n  範例\n## 為什麼是 needs-info\n' }),
+    issue(643, { labels: ready, body: '- 範例\n\n  ~~~md\n\t畫面輸出\n  ~~~\n\n## 為什麼是 needs-info\n' }),
+  ] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #641 標題 641\nready #642 標題 642\nready #643 標題 643\nPREREQ 642 為什麼是 needs-info\nPREREQ 643 為什麼是 needs-info\n');
+});
+
 // #591（retro 1124a，#417 第 2 項）：#339、#340 都改 pilot-probe.mjs，Pick 時沒有工具看出，要到 worker 改完 Probe 才印 OVERLAP。
 test('PICK_OVERLAP：ready 前幾張的本文提到同一個檔（裸檔名對得上完整路徑）或同一個條目時印 PICK_OVERLAP <n> <m> <檔|條目>', () => {
   const result = fakeGh({ issues: [

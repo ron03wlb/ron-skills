@@ -229,7 +229,9 @@ const NO_PREREQUISITE = /^(?:無|none)(?:$|[\s。.,，、;；（(])/i;
 export function needsHeadingOf(body) {
   let fence;
   const items = []; // 外層到內層各清單項的內容縮排；圍欄與標題都相對於最內層的判斷
-  for (const line of (body ?? '').split(/\r?\n/)) {
+  for (const raw of (body ?? '').split(/\r?\n/)) {
+    // 行首 Tab 照 4 欄 tab stop 展開成空白，縮排才和 GFM 一致。
+    const line = raw.replace(/^[ \t]+/, lead => [...lead].reduce((s, c) => s + (c === '\t' ? ' '.repeat(4 - s.length % 4) : c), ''));
     const indent = line.match(/^ */)[0].length;
     if (fence) {
       // 圍欄屬於開啟時所在的清單項：比那一項內容縮排少的非空行結束該項、區塊一起關閉，該行照常判斷；
@@ -243,8 +245,9 @@ export function needsHeadingOf(body) {
     }
     if (line.trim()) {
       while (items.length && indent < items.at(-1)) items.pop();
-      const item = line.match(/^ *(?:[-*+]|\d{1,9}[.)]) {1,4}(?=\S)/)?.[0];
-      if (item) items.push(item.length);
+      // 清單標記離所在清單項的內容縮排 0–3 格（再多是縮排程式碼）；內容縮排是標記後的空白，空清單項或空白超過 4 格時只算 1 格。
+      const [, lead, marker, gap, text] = line.match(/^( *)([-*+]|\d{1,9}[.)])( *)(.*)$/) ?? [];
+      if (marker && lead.length - (items.at(-1) ?? 0) <= 3 && (gap || !text)) items.push(lead.length + marker.length + (!text || gap.length > 4 ? 1 : gap.length));
     }
     const container = items.at(-1) ?? 0;
     const relative = line.slice(container);
