@@ -7,6 +7,10 @@
 //   不沿註解或字串裡的檔名擴散：腳本在註解裡互相提及，照提及擴散幾乎每次都選到全部測試（實測 132/137）。
 //   「提及」是內文出現相對路徑，或出現檔名（前後不是英數、`-`、`_`、`.`）。.mjs 以外、檔名在 repo 裡不唯一的（例如 SKILL.md），
 //   檔名不算，要出現「上層目錄/檔名」或 `'上層目錄', '檔名'`（path.join 的寫法）。
+//   docs/agents/ 底下的 adapter 檔另有規則：測試要從 repo 根讀它才算提及，也就是寫出相對於測試目錄的路徑（`new URL('../docs/agents/x.md', import.meta.url)`），
+//   或把完整路徑（或存著它的常數）傳給本檔以 import.meta.url 解析到 repo 根的識別字（`read('docs/agents/x.md')`、`join(root, 'docs', 'agents', 'x.md')`、
+//   `new URL(`../${FILE}`, import.meta.url)`）。很多測試在暫存 repo 裡用同名路徑當 fixture，照完整路徑或檔名算，改一行 pilot.md 就挑出 24 支、
+//   要排 heavy-slot（#628）。照 Pilot 段連結或 adapter-line.mjs 讀條目、不寫出路徑的測試，釘在 check-subset.json 的 tests。
 //   漏選的測試（例如腳本以 spawn 呼叫另一支腳本）仍由 Regression 與 CI 的完整套件攔下，只是晚一點發現。
 // 用法：node scripts/check-subset.mjs [--base <ref>] [--tree <tree>]
 //   --base <ref>   比對基準，取 merge-base(<ref>, HEAD)；預設 origin/main，沒有時 main
@@ -48,15 +52,36 @@ export function dependencies(file, text) {
   return [...text.matchAll(DEPENDENCY)].map(match => posix.normalize(posix.join(posix.dirname(file), match[2])));
 }
 
-/** 回傳判斷 text 是否提及 path 的函式；names 是 repo 裡每個檔名出現的次數。 */
+const ROOT_ANCHOR = /\b(?:const|let|var)\s+(\w+)\s*=[^\n]*?new URL\(\s*(['"`])((?:\.{1,2}\/?)+)(?:\$\{\w+\})?\2\s*,\s*import\.meta\.url/g;
+const ROOT_TEMPLATE = /new URL\(\s*`((?:\.{1,2}\/?)+)\$\{(\w+)\}`\s*,\s*import\.meta\.url/g;
+
+/**
+ * test 從 repo 根讀 path：字面寫出相對於 test 目錄的路徑；或把 path（整串、path.join 分段，或存著 path 的常數）
+ * 傳給本檔宣告、以 import.meta.url 解析到 repo 根的識別字，或填進解析到 repo 根的 `new URL(`../${常數}`, import.meta.url)`。
+ */
+function readsFromRoot(test, text, path) {
+  const quote = '[\'"`]';
+  const toRoot = base => posix.join(posix.dirname(test), base, '.') === '.';
+  if (new RegExp(`${quote}${escape(posix.relative(posix.dirname(test), path))}${quote}`).test(text)) return true;
+  const literal = `${quote}${path.split('/').map(escape).join(`(?:/|${quote},\\s*${quote})`)}${quote}`;
+  const aliases = [...text.matchAll(new RegExp(`\\b(?:const|let|var)\\s+(\\w+)\\s*=\\s*${quote}${escape(path)}${quote}`, 'g'))].map(match => match[1]);
+  const argument = [literal, ...aliases.map(alias => `${alias}\\b`)].join('|');
+  for (const [, name, , base] of text.matchAll(ROOT_ANCHOR)) {
+    if (toRoot(base) && new RegExp(`\\b${name}(?:\\(|\\s*,)\\s*(?:${argument})`).test(text)) return true;
+  }
+  return [...text.matchAll(ROOT_TEMPLATE)].some(([, base, name]) => toRoot(base) && aliases.includes(name));
+}
+
+/** 回傳判斷測試檔 test（內文 text）是否提及 path 的函式；names 是 repo 裡每個檔名出現的次數。 */
 function mentionOf(path, names) {
+  if (path.startsWith('docs/agents/')) return (test, text) => readsFromRoot(test, text, path);
   const name = basename(path);
   const parent = basename(dirname(path));
   const word = text => new RegExp(`(^|[^\\w.-])${escape(text)}($|[^\\w-])`);
   const patterns = [word(path)];
   if (path.endsWith('.mjs') || names.get(name) === 1) patterns.push(word(name));
   else if (parent !== '.') patterns.push(word(`${parent}/${name}`), new RegExp(`['"\`]${escape(parent)}['"\`],\\s*['"\`]${escape(name)}['"\`]`));
-  return text => patterns.some(pattern => pattern.test(text));
+  return (test, text) => patterns.some(pattern => pattern.test(text));
 }
 
 /**
@@ -104,7 +129,7 @@ export function plan({ changed, files, read, table }) {
     }
   }
   const mentions = [...reached].map(path => mentionOf(path, names));
-  for (const file of files) if (isTest(file) && (reached.has(file) || mentions.some(mention => mention(text(file))))) tests.add(file);
+  for (const file of files) if (isTest(file) && (reached.has(file) || mentions.some(mention => mention(file, text(file))))) tests.add(file);
   return { steps: table.steps.filter(step => steps.has(step)), tests: [...tests].sort() };
 }
 
