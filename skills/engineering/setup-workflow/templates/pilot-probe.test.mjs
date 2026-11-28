@@ -2451,6 +2451,66 @@ test('超過 stuck-after、heavy-slot 有排隊者的 cwd 在成員 worktree：�
   assert.ok(out.some(line => /^WORKER 56 STUCK stuck-after 12[12]$/.test(line)), result.stdout);
 });
 
+// #719：#637 worker term_1206e388 在 DONE 前的 retro 停在編輯記憶檔的確認框（coordinator 讀到的畫面），
+// Probe 只在 102 分鐘後印 STUCK stuck-after，coordinator 還要 tail 畫面才知道是確認框。
+const SENSITIVE = '/work/dev/.claude/projects/-work-dev-code-demo/memory/retro-one-off-pending.md';
+const PROMPT_637 = [
+  '● Update(~/.claude/projects/-work-dev-code-demo/memory/retro-one-off-pending.md)',
+  '╭──────────────────────────────────────────────────────────────────────────────────╮',
+  ' Edit file                                                                        │',
+  ` Claude requested permissions to edit ${SENSITIVE} which is a sensitive file.     │`,
+  ' 21                                                                                 │',
+  ' 22  **Why:** owner\'s issue bar says small one-offs wait in memory until they recur.  │',
+  '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│',
+  ' Do you want to make this edit to retro-one-off-pending.md?                           │',
+  ' ❯ 1. Yes                                                                             │',
+  '   2. No                                                                              │',
+  '                                                                                      │',
+  ' Esc to cancel · Tab to amend                                                         │',
+];
+
+test('worker 畫面停在權限確認框：不等 stuck-after 印 WORKER <n> PROMPT <檔>，超過門檻也不印 STUCK；--apply 不寫回（#719）', t => {
+  const { batch, pilot, probe } = fixture(t, { screens: {
+    term_637: { status: 'running', tail: PROMPT_637 },
+    term_638: { status: 'running', tail: PROMPT_637 },
+    // 沒有 sensitive file 那行（另一種版本，選項與 Esc 之間沒空行）：摘要用問句。
+    term_639: { status: 'running', tail: ['╌╌╌╌╌╌', ' Do you want to create permission-prompts-self-serve.md?', ' ❯ 1. Yes', '   2. No', ' Esc to cancel · Tab to amend'] },
+    // Bash 指令的確認框：摘要是指令，換行的長選項也算在選單裡。
+    term_643: { status: 'running', tail: ['❯ 繼續', '╭────╮', ' Bash command', '', '   git push origin HEAD', '   推送分支', '', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. Yes, and don\'t ask again for git push commands in', '      /work/dev/code/demo', '   3. No', '', ' Esc to cancel · Tab to amend', '╰────╯'] },
+  } });
+  batch('637-638-639-643', 'dispatched 2026-11-28T11:00:00+08:00', [{ n: 637, started: ago(5) }, { n: 638, started: ago(102) }, { n: 639, started: ago(5) }, { n: 643, started: ago(5) }]);
+  const file = join(pilot, 'batch-637-638-639-643.md');
+  const before = readFileSync(file, 'utf8');
+  const result = probe({ args: ['--apply'] });
+  assert.equal(result.status, 0, result.stderr);
+  const out = lines(result);
+  assert.ok(out.includes(`WORKER 637 PROMPT edit ${SENSITIVE}`), result.stdout);
+  assert.ok(out.includes(`WORKER 638 PROMPT edit ${SENSITIVE}`), result.stdout);
+  assert.ok(out.includes('WORKER 639 PROMPT create permission-prompts-self-serve.md'), result.stdout);
+  assert.ok(out.includes('WORKER 643 PROMPT git push origin HEAD'), result.stdout);
+  assert.ok(!out.some(line => /^WORKER (63[789]|643) (STUCK|RUNNING)/.test(line)), result.stdout);
+  assert.equal(readFileSync(file, 'utf8'), before);
+});
+
+test('`Do you want` 只在捲動歷史或畫面上方出現過、worker 目前在跑或回到輸入框：不印 PROMPT（#719）', t => {
+  const { batch, probe } = fixture(t, { screens: {
+    // 確認框已回答，畫面上方殘留問句，底部是 spinner。
+    term_640: { status: 'running', tail: [...PROMPT_637, '● Update(retro-one-off-pending.md)', '  ⎿  Updated 1 line', '✳ Fiddle-faddling… (1m 32s · ↓ 1.2k tokens · esc to interrupt)'] },
+    // 只在累積輸出裡有確認框，畫面閒置在輸入框。
+    term_641: { status: 'running', tail: ['● 等 pre-commit', '❯'], scrollback: [...PROMPT_637, ...filler, '❯'] },
+    // 報告文字引用了 `Do you want`、後面也有選項樣的行，但不是停在 Esc to cancel 選單。
+    term_642: { status: 'running', tail: ['  掃 `Do you want` / `Esc to cancel` 的畫面', '  1. Yes 是一次性放行', '❯'] },
+  } });
+  batch('640-641-642', 'dispatched 2026-11-28T11:00:00+08:00', [{ n: 640, started: ago(5) }, { n: 641, started: ago(5) }, { n: 642, started: ago(102) }]);
+  const result = probe();
+  assert.equal(result.status, 0, result.stderr);
+  const out = lines(result);
+  assert.ok(!out.some(line => / PROMPT /.test(line)), result.stdout);
+  assert.ok(out.some(line => /^WORKER 640 RUNNING [56]$/.test(line)), result.stdout);
+  assert.ok(out.some(line => /^WORKER 641 RUNNING [56]$/.test(line)), result.stdout);
+  assert.ok(out.some(line => /^WORKER 642 STUCK stuck-after 10[23]$/.test(line)), result.stdout);
+});
+
 test('超過 stuck-after、成員 worktree 的檢查正持有 heavy-slot：印 SLOT_HELD <秒>（#644）', async t => {
   const { batch, probe, temp, probeEnv } = fixture(t, { screens: { term_561: { status: 'running', tail: ['❯'] } } });
   const worktree = join(temp, 'w', 'issue-561');

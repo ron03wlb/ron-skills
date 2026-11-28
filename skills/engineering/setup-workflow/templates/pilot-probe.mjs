@@ -90,7 +90,10 @@
 //                 整輪只印一行（第一個讀到的訊息），這些成員不印 WORKER 行、不算 STUCK、--apply 不寫，照 running 算容量；下一輪重試）｜
 //                 WORKER <n> SLOT_WAIT <秒>｜WORKER <n> SLOT_HELD <秒>（#644 第 3 項：超過 stuck-after、但旁邊的 heavy-slot.mjs 有排隊者或持有者的 cwd
 //                 是成員 worktree（或它底下）：worker 的 pre-commit、bin/check 在等全機重型檢查 slot 或正在跑，不是卡住；秒數是已等或已持有的秒數，
-//                 都有時印 SLOT_HELD，多個時取最久的；算 running、--apply 不寫。heavy-slot.mjs 不在旁邊、沒有 perl 時照舊印 STUCK stuck-after）
+//                 都有時印 SLOT_HELD，多個時取最久的；算 running、--apply 不寫。heavy-slot.mjs 不在旁邊、沒有 perl 時照舊印 STUCK stuck-after）｜
+//                 WORKER <n> PROMPT <要確認的檔或指令摘要>（#719：畫面底部是 Claude Code 的權限確認框（`Do you want …?`、`1.` 起的選項、`Esc to cancel`），
+//                 不等 stuck-after、不印 STUCK；摘要是 sensitive file 那行的動作與路徑、`Bash command` 的指令或問句；算 running、--apply 不寫；
+//                 只在畫面上方或累積輸出裡出現過的確認框不算。coordinator 通知人，不代按）
 //                 畫面上沒有自己的結果行（捲走、terminal 已結束或讀不到）時，改用 pilot-watch.mjs 記下的 `.scratch/pilot/results/<handle>`
 //                 （`<ISO 時間> <結果行>`）：號碼相符、時間晚於成員列的 started 與最後一行 `resumed:` 的時間、不是 resumed 記下的舊結果行才算，
 //                 印成同一行 DONE／STOP，--apply 照常寫回（#413 第 1 項：watch 已印 DONE，畫面隨後捲走或 terminal 結束，Probe 只印 RUNNING／STUCK exited）；
@@ -762,6 +765,45 @@ export function resultLine(tail, n, ignore) {
 /** 畫面上 worker 還在工作（spinner 或 `esc to interrupt`）。 */
 export const workingScreen = tail => screenLines(tail).some(line => line.includes('esc to interrupt') || SPINNER.test(line));
 
+/** 只有框線（`╭─╮`、`╌╌╌`）或空白的行。 */
+const BORDER_ONLY = /^[\s─━│┃╭╮╰╯╌╍┄┅┈┉═]*$/u;
+
+/**
+ * 畫面底部是 Claude Code 的權限確認框時傳回要確認的摘要，否則 null（#719：#637 worker 停在編輯記憶檔的確認框，Probe 只在 stuck-after 後印 STUCK）。
+ * 確認框要在畫面最底：由下往上略過框線與空白行，第一行是 `Esc to cancel…`，往上（最多 12 行，容得下換行的選項）有 `1.` 起的選項行，
+ * 再往上是 `Do you want …?`；中間有 spinner 或 `esc to interrupt` 就不算。只在上方或捲動歷史裡出現過的 `Do you want` 不算。
+ * 摘要：問句往上到前一個提示列或 spinner 之間有 `Claude requested permissions to <動作> <路徑> which is a sensitive file` 時是 `<動作> <路徑>`，
+ * 有 `Bash command` 標題時是它下一個非空行（指令），都沒有時是問句去掉 `Do you want to` 與問號；超過 160 字截斷。
+ */
+export function permissionPrompt(tail) {
+  const rows = screenLines(tail).map(resultText);
+  let i = rows.length - 1;
+  while (i >= 0 && (BORDER_ONLY.test(rows[i]) || rows[i].startsWith('⏵⏵'))) i--;
+  if (i < 0 || !/^Esc to cancel\b/i.test(rows[i])) return null;
+  const working = row => row.includes('esc to interrupt') || SPINNER.test(row);
+  let option = false;
+  let question = -1;
+  for (let j = i - 1; j >= Math.max(0, i - 12); j--) {
+    if (working(rows[j])) return null;
+    if (/^Do you want\b.*\?$/.test(rows[j])) { question = j; break; }
+    if (/^(?:❯\s*)?\d+\.\s+\S/.test(rows[j])) option = true;
+  }
+  if (question < 0 || !option) return null;
+  let summary = rows[question].replace(/^Do you want (?:to )?/, '').replace(/\?$/, '').trim();
+  for (let j = question - 1; j >= 0; j--) {
+    const row = rows[j];
+    if (working(row) || /^(?:✻|⏵⏵)/.test(row) || row === '❯') break;
+    const sensitive = row.match(/^Claude requested permissions to (\S+) (.+?) which is a sensitive file\b/);
+    if (sensitive) { summary = `${sensitive[1]} ${sensitive[2]}`; break; }
+    if (/^Bash command$/.test(row)) {
+      const command = rows.slice(j + 1, question).find(next => next.trim() && !BORDER_ONLY.test(next));
+      if (command) summary = command.trim();
+      break;
+    }
+  }
+  return summary.length > 160 ? `${summary.slice(0, 159)}…` : summary;
+}
+
 /** scrollbackMatch 往回讀的累積輸出行數。 */
 const SCROLLBACK_LINES = 2000;
 
@@ -851,6 +893,9 @@ export async function workerState(ctx, member, now = Date.now(), saved = null) {
   const result = resultLine(terminal.tail ?? [], member.n, member.resumed);
   if (result) return result;
   if (saved) return saved;
+  // 停在權限確認框（#719）：不等 stuck-after、不讀累積輸出；照 running 算容量、--apply 不寫。
+  const prompt = terminal.status === 'exited' ? null : permissionPrompt(terminal.tail);
+  if (prompt) return `PROMPT ${prompt}`;
   if (!workingScreen(terminal.tail)) {
     try {
       const match = await scrollbackMatch(ctx, member.handle, member.n);
