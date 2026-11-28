@@ -20,6 +20,9 @@
 //     4. lastOutputAt 距今至少 10 分鐘。
 //     5. 畫面閒置（`terminal read --screen` 的最後 40 行）：沒有 `esc to interrupt`、沒有工作中的 spinner 或 `…ing…` 行、
 //        有一行空的 `❯` 提示列（含輸入框邊框 `│ ❯   │` 的寫法），而且 draft（未送出的輸入）是空的。
+//        例外（#713）：Orca 的 draft 會留著啟動時送的 prompt，畫面輸入框卻是空的。draft 等於這個分頁記下的啟動 prompt（tab-state.mjs 的
+//        launchPrompts：openSession、pilot-handoff `--to` 送達後記，本腳本送 `/retro` 後也記）、而且最後一行 `❯` 提示列是空的，就當殘留不算草稿；
+//        沒有記錄時退一步：draft 是 `/` 開頭的單行、最後一行 `❯` 是空的才當殘留。
 //     6. 待關閉另外要：--roster 有給時，它的輸出沒有這個 handle 的 DONE／PENDING 列（spay2 這類宣告 roster 的專案：retro 檔還沒收就不關）；
 //        同一分頁沒有其他 pane（`terminal close --tab` 會一起關）。
 //   通過後：待 Retro → `terminal send --text /retro --enter`，記 sent[handle]（同一 handle 只送一次）；待關閉 → `terminal close --terminal <handle> --tab`。
@@ -49,7 +52,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { orca as orcaCall } from './orca-session-send.mjs';
-import { recordedTitle, tabTitleOf } from './tab-state.mjs';
+import { launchPrompts, recordLaunchPrompt, recordedTitle, tabTitleOf } from './tab-state.mjs';
 
 export const IDLE_MS = 10 * 60_000;
 /**
@@ -91,11 +94,19 @@ export function rosterRows(output) {
 /**
  * 畫面閒置判斷：工作中（`esc to interrupt`、spinner、`…ing…`）→ busy；有未送出的 draft → draft；
  * 沒有一行空的 `❯` 提示列 → no-prompt（看不清楚）；都不是 → null（閒置）。
+ * `launched` 是這個分頁記下的啟動 prompt（#713）：draft 等於其中一則、最後一行 `❯` 是空的，就是 Orca 的殘留、不算草稿；
+ * 沒有記錄（空陣列）時，draft 是 `/` 開頭的單行、最後一行 `❯` 是空的才算殘留。
  */
-export function screenBusy(tail, draft = '') {
+export function screenBusy(tail, draft = '', launched = []) {
   const lines = (Array.isArray(tail) ? tail : [tail ?? '']).flatMap(line => String(line).split('\n'));
   if (lines.some(line => line.includes('esc to interrupt') || SPINNER.test(line) || /\b\w+ing\b.*…/u.test(line))) return 'screen-busy';
-  if (String(draft ?? '').trim()) return 'screen-draft';
+  const text = String(draft ?? '').trim();
+  if (text) {
+    const lastPrompt = lines.filter(line => /^[\s│]*❯/u.test(line)).at(-1);
+    const known = launched.map(prompt => String(prompt).trim()).filter(Boolean);
+    const residue = known.length ? known.includes(text) : text.startsWith('/') && !text.includes('\n');
+    if (!(lastPrompt !== undefined && /^[\s│]*❯[\s │]*$/u.test(lastPrompt) && residue)) return 'screen-draft';
+  }
   if (!lines.some(line => /^[\s│]*❯[\s │]*$/u.test(line))) return 'screen-no-prompt';
   return null;
 }
@@ -152,7 +163,8 @@ export function sweepPlan({ terminals, main, self = null, coordinator = null, ti
     if (retro && sent[handle]) return skip(`already-sent ${sent[handle].at}`);
     if (!Number.isFinite(terminal.lastOutputAt)) return skip('idle-unknown');
     const idle = now - terminal.lastOutputAt;
-    if (idle < IDLE_MS) return skip(`not-idle ${Math.floor(idle / 60_000)}m`);
+    // lastOutputAt 晚於 now（時鐘差、剛輸出）時 idle 為負，仍跳過，但分鐘數不印負的（#713）
+    if (idle < IDLE_MS) return skip(`not-idle ${Math.max(0, Math.floor(idle / 60_000))}m`);
     return { kind: retro ? 'retro' : 'close', handle, title, terminal };
   });
   return { actions, other: terminals.length - mine.length };
@@ -172,9 +184,12 @@ export function readState(file) {
 /**
  * 整支流程；Orca（async）、roster、decisions 寫入都可注入，測試不碰真的 terminal。
  * @param {{ main: string, orca: (...args: string[]) => Promise<any>, roster?: (() => string) | null, record?: (line: string, reason: string) => void,
- *   self?: string|null, now: number, dryRun?: boolean, log?: (line: string) => void, recorded?: (handle: string) => string|null }} ctx
+ *   self?: string|null, now: number, dryRun?: boolean, log?: (line: string) => void, recorded?: (handle: string) => string|null,
+ *   launched?: (handle: string) => string[], remember?: (handle: string, prompt: string) => void }} ctx
+ *   launched／remember：讀、記這個分頁的啟動 prompt（CLI 用 tab-state.mjs 的 launchPrompts／recordLaunchPrompt；缺省不讀不寫）。
  */
-export async function sweep({ main, orca, roster = null, record = () => {}, self = null, now, dryRun = false, log = () => {}, recorded = () => null }) {
+export async function sweep({ main, orca, roster = null, record = () => {}, self = null, now, dryRun = false, log = () => {}, recorded = () => null,
+  launched = () => [], remember = () => {} }) {
   const lines = [];
   const emit = (line, reason) => {
     const out = dryRun && /^TAB_(RETRO_SENT|CLOSED)/.test(line) ? `${line} dry-run` : line;
@@ -247,7 +262,7 @@ export async function sweep({ main, orca, roster = null, record = () => {}, self
       skip(handle, `screen-unreadable ${firstLine(error)}`);
       continue;
     }
-    const busy = screenBusy((screen?.tail ?? []).slice(-SCREEN_LINES), screen?.draft);
+    const busy = screenBusy((screen?.tail ?? []).slice(-SCREEN_LINES), screen?.draft, launched(handle));
     if (busy) { skip(handle, busy); continue; }
     if (action.kind === 'close') {
       const roster = rosterOnce();
@@ -263,6 +278,7 @@ export async function sweep({ main, orca, roster = null, record = () => {}, self
         if (!dryRun) {
           await orca('terminal', 'send', '--terminal', handle, '--text', '/retro', '--enter');
           state.sent[handle] = { at: new Date(now).toISOString(), title: action.title };
+          remember(handle, '/retro'); // Orca 的 draft 也可能留著這則，換待關閉後不該被當草稿擋住（#713）
         }
         counts.sent++;
         emit(`TAB_RETRO_SENT ${handle} ${action.title}`, '待 Retro 分頁閒置 ≥10 分鐘、畫面閒置、未送過');
@@ -348,7 +364,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       await sweep({
         main, roster, record, now, dryRun, self: process.env.ORCA_TERMINAL_HANDLE || null,
         orca: (...rest) => orcaCall({ cli, signal: AbortSignal.timeout(ORCA_MS) }, ...rest),
-        recorded: recordedTitle, log: line => console.log(line),
+        recorded: recordedTitle, launched: launchPrompts, remember: recordLaunchPrompt, log: line => console.log(line),
       });
     } finally {
       finish(); // sweep 意外拋錯時，先前漏記的列也要報

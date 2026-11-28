@@ -5,7 +5,7 @@
 // 帶 `--worktree <path>`（要在自己 worktree 跑的 session）時，在該 worktree 新開分頁；
 // 新分頁時標題前面加上分頁狀態「處理中｜」（tab-state.mjs；已有狀態前綴就換掉），命名並記下標題（Orca 讀不回，見 tab-state.mjs）。
 // split 模式不改名也不記標題：分頁標題歸呼叫者，split 出來的 session 跑 tab-state 時也不改（印 TAB_STATE_SKIP split，#378）。
-// 之後等 TUI 就緒（兩輪）→ 送出 prompt 並讀畫面確認送達（orca-session-send.mjs 的 waitTuiReady／sendPrompt）。
+// 之後等 TUI 就緒（兩輪）→ 送出 prompt 並讀畫面確認送達（orca-session-send.mjs 的 waitTuiReady／sendPrompt），送達後記下啟動 prompt（tab-state.mjs 的 recordLaunchPrompt，#713）。
 // 送出不帶 `--wait-submit`：Orca 從 WSL 常因無法確認 prompt-delivery 回 runtime_unavailable 且完全不送出。
 // 任何「開新 session 接手」的交接都走這裡，不手動組 create／split／rename／wait／send。
 // 啟動指令預設裸 `claude`（吃全域設定的模型）；openSession 帶 `model` 時改成 `claude --model <model>`。只有 pilot-handoff.mjs 開後繼 coordinator 時
@@ -25,7 +25,7 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { orca, sendPrompt, waitTuiReady } from './orca-session-send.mjs';
 import { SESSION_KINDS, closeSession, envMissingLines, ledgerPath, machineCap, renameSession, reserveSession, stopLine, validRepo } from './pilot-capacity.mjs';
-import { recordTitle, withState } from './tab-state.mjs';
+import { recordLaunchPrompt, recordTitle, withState } from './tab-state.mjs';
 
 const USAGE = '用法：node scripts/orca-session-split.mjs --title <分頁標題> --prompt <第一個 prompt> [--tab | --worktree <path>] [--capacity <repo> --kind fix|retro]（需要 ORCA_CLI_COMMAND）';
 
@@ -70,6 +70,8 @@ export async function openSession(ctx, { title, prompt, main, self = process.env
   } catch (error) {
     return { stop: `orca ${error.message}`, handle };
   }
+  // Orca 的 draft 之後可能一直留著這段 prompt：記下來，tab-sweep 才不把殘留當成草稿（#713；記不下只是少了輔助）。
+  recordLaunchPrompt(handle, prompt);
   return { handle };
 }
 

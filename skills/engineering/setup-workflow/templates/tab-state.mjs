@@ -129,6 +129,36 @@ export function forgetTitleRecord(handle) {
   if (handle) rmSync(file(handle), { force: true });
 }
 
+/**
+ * 啟動 prompt 記錄（#713）：Orca 的 `draft` 會留著分頁啟動時送進去的 prompt（例如交接送的 `/loop /issue-pilot`），畫面輸入框卻是空的；
+ * Orca 的 terminal list／show 沒有 launch prompt 欄位，所以開分頁或重啟的流程（orca-session-split 的 openSession、pilot-handoff `--to`）
+ * 送達後自己記下，tab-sweep 送 `/retro` 後也記；tab-sweep 拿 draft 與它比對。和標題記錄同一個目錄，檔名 `<handle>.launch`（JSON 陣列，最多 LAUNCH_KEEP 則）。
+ */
+const LAUNCH_KEEP = 5;
+const launchFile = handle => `${file(handle)}.launch`;
+
+/** 這個 handle 記下的啟動 prompt（舊到新）；沒有記錄或讀不懂時為空陣列。 */
+export function launchPrompts(handle) {
+  try {
+    const list = handle && existsSync(launchFile(handle)) ? JSON.parse(readFileSync(launchFile(handle), 'utf8')) : [];
+    return Array.isArray(list) ? list.filter(prompt => typeof prompt === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 記下送進這個 handle 的 prompt（重複的移到最後）；記錄只是輔助，寫不進去時傳回 false，不丟錯。 */
+export function recordLaunchPrompt(handle, prompt) {
+  try {
+    const list = [...launchPrompts(handle).filter(old => old !== prompt), prompt].slice(-LAUNCH_KEEP);
+    mkdirSync(dir(), { recursive: true });
+    writeFileSync(launchFile(handle), `${JSON.stringify(list)}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** 找出含 `handle` 這個 pane 的分頁（有標題的那一層）；visualLayouts 是分割、群組與分頁組成的巢狀結構。 */
 function tabOf(node, handle) {
   if (Array.isArray(node)) {
