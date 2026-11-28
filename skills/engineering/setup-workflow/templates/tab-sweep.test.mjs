@@ -185,6 +185,24 @@ test('全是 TAB_SKIP 的一輪也在 decisions 記一筆 SUMMARY；dry-run 不�
   }
 });
 
+// #660：sessions.md 讀不到（例如是目錄，EISDIR）時直接拋錯，CLI exit 1、stdout 空、decisions.md 沒有列，看守會判成沒跑。
+test('sessions.md 讀不到：印 TAB_SWEEP_FAILED sessions 再印 SUMMARY，兩列都記，不動任何分頁', async () => {
+  const main = fixture();
+  try {
+    rmSync(join(main, '.scratch/pilot/sessions.md'));
+    mkdirSync(join(main, '.scratch/pilot/sessions.md'));
+    const { lines, recorded, calls } = await run(main);
+    assert.equal(lines.length, 2, lines.join('\n'));
+    assert.match(lines[0], /^TAB_SWEEP_FAILED sessions \S/);
+    assert.equal(lines[1], 'SUMMARY sent=0 closed=0 skipped=0 failed=0 other=0');
+    assert.deepEqual(recorded.map(r => r.split(' — ')[0]), lines);
+    assert.deepEqual(sendsAndCloses(calls), []);
+    assert.ok(!calls.some(c => c.startsWith('terminal read')), '不讀任何分頁的畫面');
+  } finally {
+    rmSync(main, { recursive: true, force: true });
+  }
+});
+
 test('screenBusy：esc to interrupt、spinner、…ing…、草稿、沒有空提示列都不算閒置；框線內的空 ❯ 算', () => {
   assert.equal(screenBusy(IDLE_SCREEN), null);
   assert.equal(screenBusy(['❯']), null);

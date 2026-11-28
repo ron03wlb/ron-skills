@@ -196,7 +196,15 @@ export async function sweep({ main, orca, roster = null, record = () => {}, self
   }
   const terminals = list?.terminals ?? [];
   const sessionsPath = join(main, '.scratch/pilot/sessions.md');
-  const coordinator = coordinatorHandle(existsSync(sessionsPath) ? readFileSync(sessionsPath, 'utf8') : '');
+  let coordinator;
+  try {
+    coordinator = coordinatorHandle(existsSync(sessionsPath) ? readFileSync(sessionsPath, 'utf8') : '');
+  } catch (error) {
+    // 比照 state 檔：不拋錯，印失敗再印 SUMMARY，看守才分得出跑了與沒跑（#660）；認不出 coordinator，這輪不動任何分頁
+    emit(`TAB_SWEEP_FAILED sessions ${firstLine(error)}`, 'sessions.md 讀不到，認不出現任 coordinator，這輪不動任何分頁');
+    emit('SUMMARY sent=0 closed=0 skipped=0 failed=0 other=0', '每輪都記一列，看守分得出跑了但沒事與沒跑（#646）');
+    return { lines, state };
+  }
   if (!self && !coordinator) {
     emit('TAB_SWEEP_FAILED coordinator-unknown', '認不出現任 coordinator（沒有 ORCA_TERMINAL_HANDLE，sessions.md 也沒有交接行），這輪不動任何分頁');
     return { lines, state };
