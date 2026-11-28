@@ -55,8 +55,9 @@ else if (b === 'rename') {
   const tabState = (...args) => spawnHook('node', [tabStateScript, ...args], {
     encoding: 'utf8', env: env({ TAB_STATE_VERIFY_MS: '300', TAB_STATE_VERIFY_RETRY_MS: '50' }),
   });
-  const say = text => writeFileSync(transcript, [
-    { type: 'user', message: { role: 'user', content: '/issue-run 126 --worker x' } },
+  // 預設是 worker session：使用者指令是 `/issue-run <文字裡 DONE 的號碼，沒有就 126> --worker x`；`prompt` 換成別的 session 的指令（例如 coordinator 的 /issue-pilot）。
+  const say = (text, prompt = `/issue-run ${text.match(/^DONE (\d+) /m)?.[1] ?? 126} --worker x`) => writeFileSync(transcript, [
+    { type: 'user', message: { role: 'user', content: prompt } },
     { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } },
   ].map(entry => JSON.stringify(entry)).join('\n'));
   return { project, transcript, record, recorded, hook, tabState, say, calls: () => readFileSync(log, 'utf8'), tabNow: () => readFileSync(tab, 'utf8') };
@@ -100,6 +101,35 @@ test('Stop：worker 最後一段文字是 DONE 結果行就轉成待 Retro，之
   const result = hook({ hook_event_name: 'Stop', stop_hook_active: false });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(recorded(), '待 Retro｜#126 分頁狀態｜收尾｜候選');
+});
+
+// #650：現任 coordinator 只會是處理中，直到 HANDED_OFF。被 push gate 通知叫醒的一輪，回報裡單獨一行轉述 worker 的 DONE 結果行（中間或結尾），
+// Stop 不能把 coordinator 的分頁換成待 Retro；只有這個 session 自己是該 Issue 的 worker（`/issue-run <n> --worker`）才算。
+test('Stop：coordinator 轉述 worker 的 DONE 結果行不換成待 Retro；HANDED_OFF 才換', t => {
+  const COORDINATOR = '<command-message>issue-pilot</command-message>\n<command-name>/issue-pilot</command-name>\n<command-args></command-args>';
+  const { record, recorded, hook, say, calls } = fixture(t);
+  record('處理中｜[維運] issue-pilot coordinator');
+  for (const text of [`Push gate：batch 649 已落地。\n\nDONE 649 ${SHA}\n\n下一輪 30 分鐘後。`, `worker 回報：\n\nDONE 649 ${SHA}`]) {
+    say(text, COORDINATOR);
+    const result = hook({ hook_event_name: 'Stop', stop_hook_active: false });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(recorded(), '處理中｜[維運] issue-pilot coordinator', text);
+  }
+  // 別的 Issue 的 worker 轉述別張單的 DONE 也不算
+  say(`DONE 649 ${SHA}`, '/issue-run 650 --worker x');
+  assert.equal(hook({ hook_event_name: 'Stop', stop_hook_active: false }).status, 0);
+  assert.equal(recorded(), '處理中｜[維運] issue-pilot coordinator');
+  assert.doesNotMatch(calls(), /rename/);
+  assert.equal(hook(bash('node scripts/pilot-handoff.mjs --session s --pid 1 --reason x', 'HANDED_OFF term_new\n')).status, 0);
+  assert.equal(recorded(), '待 Retro｜[維運] issue-pilot coordinator');
+});
+
+test('Stop：worker 以 slash command 格式（<command-args>）開工時，自己的 DONE 結果行照常轉成待 Retro', t => {
+  const { record, recorded, hook, say } = fixture(t);
+  record('處理中｜#650 分頁狀態');
+  say(`摘要……\n\nDONE 650 ${SHA}`, '<command-message>issue-run</command-message>\n<command-name>/issue-run</command-name>\n<command-args>650 --worker /x/.scratch/pilot/batch-649-650.md</command-args>');
+  assert.equal(hook({ hook_event_name: 'Stop', stop_hook_active: false }).status, 0);
+  assert.equal(recorded(), '待 Retro｜#650 分頁狀態');
 });
 
 test('Stop：別的 hook 蓋掉標題時，以 Orca 實際分頁標題為準：記錄有前綴也要補處理中；實際標題有前綴時不動', t => {
@@ -254,6 +284,18 @@ test('landed：Push gate 入口 pilot-land.mjs push（內部以 --keep-branch �
   const result = hook(bash("node scripts/pilot-land.mjs push --title 'batch 1：x' --check-command 'bin/check --upstream'", `LANDED 140 ${SHA}\n`));
   assert.equal(result.status, 0, result.stderr);
   assert.equal(calls(), '');
+});
+
+// #650：coordinator Dispatch 時認領已落地的單，issue-pool.mjs claim 印 `LANDED <n> <sha>`（exit 4，「別重派」），那不是落地動作。
+test('landed：issue-pool.mjs（claim 回報既有落地）印的 LANDED 不觸發，現任 coordinator 維持處理中', t => {
+  const { record, recorded, hook, calls } = fixture(t);
+  record('處理中｜[維運] issue-pilot coordinator');
+  for (const command of ['node scripts/issue-pool.mjs claim 649', 'cd /x && node scripts/issue-pool.mjs claim 649 --integration pilot/integration']) {
+    const result = hook(bash(command, `LANDED 649 ${SHA}\n`));
+    assert.equal(result.status, 0, result.stderr);
+  }
+  assert.equal(calls(), '');
+  assert.equal(recorded(), '處理中｜[維運] issue-pilot coordinator');
 });
 
 test('landed：以引號帶的 --keep-branch 選項照樣不觸發；引號裡含空白的標題、訊息才不算（spay2 #1159 Codex 發現）', t => {
