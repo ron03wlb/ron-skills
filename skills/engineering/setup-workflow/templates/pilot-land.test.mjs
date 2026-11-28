@@ -224,6 +224,29 @@ test('只有 workflow-templates.json 衝突：取兩邊 copies 的聯集重算�
   assert.equal(merged.copies['scripts/b.mjs'].sha256, hash('b\n'));
 });
 
+// #637：解完衝突的 commit 會跑 pre-commit，pre-commit 排 heavy-slot；別的 repo 一直忙時等滿上限就 STOP git commit。
+// 這次 commit 不設等待上限（HEAVY_CHECK_TIMEOUT=0），Regression 的 slot 仍照呼叫端的上限。
+test('解完衝突的 commit 帶 HEAVY_CHECK_TIMEOUT=0；Regression 的 heavy-slot 上限照呼叫端設定', t => {
+  const entry = (template, sha256) => ({ template, commit: 'c0ffee', sha256 });
+  const manifest = copies => `${JSON.stringify({ copies }, null, 2)}\n`;
+  const hash = text => spawnSync('shasum', ['-a', '256'], { input: text, encoding: 'utf8' }).stdout.split(' ')[0];
+  const f = fixture(t, {
+    base: { [MANIFEST]: manifest({}) },
+    members: [
+      { n: 1, files: { 'scripts/a.mjs': 'a\n', [MANIFEST]: manifest({ 'scripts/a.mjs': entry('t/a.mjs', hash('a\n')) }) } },
+      { n: 2, files: { 'scripts/b.mjs': 'b\n', [MANIFEST]: manifest({ 'scripts/b.mjs': entry('t/b.mjs', hash('b\n')) }) } },
+    ],
+    extraEnv: { HEAVY_CHECK_TIMEOUT: '0.5' },
+  });
+  const hook = join(git(f.repo, 'rev-parse', '--absolute-git-dir'), 'hooks', 'pre-commit');
+  writeFileSync(hook, '#!/bin/sh\necho "pre-commit $HEAVY_CHECK_TIMEOUT" >> "$FAKE_CHECK_LOG"\n');
+  chmodSync(hook, 0o755);
+  const result = f.land(f.key, '--check-command', 'echo "regression $HEAVY_CHECK_TIMEOUT" >> "$FAKE_CHECK_LOG"; bin/check');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(result.lines.filter(line => line.startsWith('RESOLVED')), [`RESOLVED 2 restamp ${MANIFEST}`]);
+  assert.equal(f.checks(), 'pre-commit 0\nregression 0.5\ncheck \n');
+});
+
 test('--resolver：專案模組解它認得的檔、補種類，專案戳記檔最後交給它的 restamp', t => {
   const f = fixture(t, {
     base: { 'notes.txt': 'base\n', 'stamp.json': '{}\n', 'other.txt': 'o\n' },

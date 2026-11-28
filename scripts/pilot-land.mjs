@@ -19,7 +19,8 @@
 //               衝突時，衝突檔先交給 resolver 的 resolveFile 解（沒有 resolver 就解不了），最後重算戳記檔：
 //                 docs/agents/workflow-templates.json（copy-templates.mjs 的副本清單，每個導入 repo 都有）由本檔的 restampManifest 重算，
 //                 resolver 的 STAMP_FILES 與 isGenerated 認得的產物交給它的 restamp(tree, files)；解法名稱是 resolver 加進 kinds 的名稱，戳記檔加 `restamp`，以 + 相連。
-//               有一個檔解不了就 `merge --abort`，印 STOP conflict。
+//               有一個檔解不了就 `merge --abort`，印 STOP conflict。解完的 `commit --no-edit` 帶 HEAVY_CHECK_TIMEOUT=0：
+//               pre-commit 排 heavy-slot 時不設等待上限，別的 repo 一直忙也不會等滿 1800 秒就 STOP git commit（#637；Regression 的上限不變）。
 //               staged SHA 與 stage 時的 integration tip 寫成 checkpoint 的 `current: staged <sha> onto <tip>`，同一次寫入留 land 存活標記
 //               `regressing: <sha> pid <本行程 pid>`（#361：Probe 看到標記的 pid 還是 pilot-land 時印 REGRESSING，不印 RESTAGE … none）。
 //   held 關卡   成員都 done 之後、load 關卡之前：<主 checkout>/.scratch/pilot/gates.md 開著的 gate 以 `- hold：#<n>` hold 住 done 成員 #n
@@ -389,7 +390,9 @@ function mergeResolving(tree, ref, label, describe) {
   try {
     const how = conflicted.length ? resolveConflicts(tree, conflicted) : undefined;
     if (how) {
-      must(tree, 'commit', '--no-edit');
+      // pre-commit 排全機 heavy-slot：別的 repo 一直忙時等滿上限就 STOP git commit、下一輪又排到隊尾，所以這次不設上限（#637）。
+      const commit = run('git', ['-C', tree, 'commit', '--no-edit'], { env: { ...childEnv, HEAVY_CHECK_TIMEOUT: '0' } });
+      if (commit.status !== 0) throw new Stop(`git commit ${commit.reason}`);
       console.log(`RESOLVED ${label} ${how} ${conflicted.join(' ')}`);
       return;
     }
