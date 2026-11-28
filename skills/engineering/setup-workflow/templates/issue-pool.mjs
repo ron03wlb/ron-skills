@@ -16,7 +16,7 @@
 // retro-candidates（`retro-candidates` label：retro 的候選清單，等 `/retro-collect`；被 `/retro-collect` 認領、指派之後也歸這裡，不混進 claimed、stale，#270）、
 // `--skip-labels` 帶的每個 label（逗號分隔，adapter 宣告的「不進分級的 label」，例如 investing 的 `ci-report` 報告單）：歸到以該 label 命名的桶，與 retro-candidates 同樣處理，排在它之後，
 // 多個時取 --skip-labels 裡第一個掛著的（#326；沒帶時沒有這些桶）、
-// landed（只在帶 --integration 時：已指派，且最近一則認領留言之後有 `DONE <n> <sha>` 結果行而且那個 sha 是整合分支的祖先，或已落地在整合分支（landedOn）；已做完、等合入 main，不算進行中，#352；
+// landed（只在帶 --integration 時：已指派，且最近一則認領留言之後有 `DONE <n> <sha>` 結果行而且那個 sha 是整合分支的祖先，或已落地在整合分支（landedOn；落地 commit 已在 origin 的共用分支、而本文最後編輯與最近一則認領都比它晚的不算，#692）；已做完、等合入 main，不算進行中，#352；
 // DONE 的 sha 不在整合分支（stage 衝突沒合進去）不算落地，照 claimed／stale 分，#644）、
 // stale（已指派，超過 --stale-hours（預設 24）沒有新留言或新指派）、claimed（已指派）、
 // in-review（有開著的 PR 以 closing reference 指向這張單：單獨跑的 /issue-run 做完、沒留指派也沒留認領的單，不能再派一次，#284；只看 GitHub，GitLab 沒有這個桶）、blocked（有開著的 blocked_by）、
@@ -28,7 +28,7 @@
 // 帶 --integration 時已落地在整合分支的本 repo blocker 後面接 ` (landed <分支>)`（#352）。帶 --integration 而且主 checkout 的 main 暫停旗標有效時
 // （`.scratch/pilot/main-paused`，`pilot-hold.mjs set-main` 寫、until 當天仍有效，判斷是 export 的 mainPause，Probe 的 MAIN_PAUSED 共用，#379），
 // landed 桶不逐張印，在它的位置收成一行 `LANDED_COUNT <數量> <整合分支>`；旗標過期、讀不懂或沒有時照逐行印。stale 桶預設也不逐張印，在它的位置收成一行 `STALE <數量>`，
-// 帶 `--stale` 才逐行印（/issue-queue 要逐張列認領者時帶；investing retro 1123c：每輪 Pool 約 190 行 stale 蓋過 4 行 needs-triage，#550）；Probe 的 BLOCKER_OPEN_SCOPE 用同一份 blocker 資料（export 的 blockerOpenScope，#359），這支 CLI 不印。之後 ready 桶本文有 `… prerequisite：<內容>` 一行、內容不是「無」的，
+// 帶 `--stale` 才逐行印（/issue-queue 要逐張列認領者時帶；investing retro 1123c：每輪 Pool 約 190 行 stale 蓋過 4 行 needs-triage，#550）；Probe 的 BLOCKER_OPEN_SCOPE 用同一份 blocker 資料（export 的 blockerOpenScope，#359），這支 CLI 不印。之後 ready 桶本文有行首的 `<字> prerequisite：<內容>` 一行（可帶清單標記與粗體；散文或行內碼裡提到的不算，#692）、內容不是「無」的，
 // 依 ready 的順序各印一行 `PREREQ <n> <內容>`（先查環境或開 gate 再派；沒有這行或寫「無」、但本文有 `#` 開頭的「為什麼是 needs-…」標題時，內容是去掉 `#` 的標題文字，#666）；再對 ready 桶前 PICK_TOP（5）張印 Pick 前的重疊提示（#591）：
 // 前面的 n 與後面的 m 本文提到同一個檔（帶常見副檔名的路徑，URL 裡的不算；裸檔名對得上完整路徑的尾段）印 `PICK_OVERLAP <n> <m> <檔>`，提到同一個 `**<條目>.**` 印 `PICK_OVERLAP <n> <m> **<條目>.**`；
 // n 本文提到的檔在別的 worktree 的實際改動裡（worktree-overlap.mjs 的 OVERLAP_WT，基準是 --integration 的分支、沒帶時 main；基底過舊的不算，n 自己號碼的分支不算）
@@ -45,7 +45,8 @@
 // claim 是 session 開始處理一張 Issue 前的認領：先留「認領：<機器>／<session>」（整則留言只有這一行；<機器> 是 $ISSUE_POOL_HOSTNAME，沒設時 os.hostname()，本機認領者的判斷也用它；session 預設
 // $CLAUDE_CODE_SESSION_ID，其次 $ORCA_TERMINAL_HANDLE），再指派給自己（HOSTS.md 的 Assign yourself），印 `CLAIMED <n>`。同一個帳號會在好幾台機器上跑，
 // 指派分不出是誰，所以看認領留言：
-// - 已被指派時，最近一則認領留言必須是這個 session、作者還在指派名單裡，才再認領一次（重派；新留言順便更新 stale 的時間），否則不改 Issue。
+// - 已被指派時，最近一則認領留言必須是這個 session、作者還在指派名單裡，才再認領一次（重派），否則不改 Issue。重派不再留一則一樣的認領（#692：#632 留了 9 則），
+//   改成放掉再加回自己的指派，新的指派事件更新 stale 的時間；之後重讀，這期間有別的 session 留了認領就 STOP。沒被指派（已釋放）時照常留言。
 // - 還沒人指派、但最近一則認領是別的 session 在 5 分鐘內留的：對方正在認領，不改 Issue。
 // - 寫入後重讀：這次讀到之後新增的認領留言裡，最早一則不是自己就是別台搶先了，收回自己的留言（指派到這裡一定是同一個帳號，不動）。
 // - 擋下的認領者是這台機器上已交接出去的前任 coordinator（主 checkout 的 `.scratch/pilot/sessions.md` 有它的 handoff 行），
@@ -57,6 +58,9 @@
 // 被擋時印 `STOP <n> claimed <機器>／<session>`（沒有認領留言、或最近一則認領的作者已不在指派名單時，是指派者登入名），exit 4。
 // 帶 --integration 時先看是否已落地：整合分支有這張的落地 commit（landedOn），或已指派且最近一則認領留言之後有 `DONE <n> <sha>` 而且那個 sha 是整合分支的祖先，就印 `LANDED <n> <sha>`、
 // exit 4，不留言也不指派（#352：#145 的 commit 早已在 develop，claim 照樣認領，worker 白跑），交給收尾。
+// 落地的 sha 已在 origin 的預設分支（origin/HEAD，沒設時 origin/main）、Issue 還開著，而且本文或 label 在落地之後（DONE 留言的時間，否則那個 commit 的 committer date）變動過時，
+// 是重新細化的單（#692：#507 先做完的一半早在 main，本文改寫成新範圍），先印 `LANDED_STALE <n> <sha>` 再照常認領；之後 landed 桶
+// 在本文最後編輯與最近一則認領都比那個落地 commit 晚時不再把它算落地（只改 label 的照舊算；claim 每次都照上面重新判斷）。
 // 只有 DONE、sha 不在整合分支（#644：stage 衝突沒合進去，不能當落地漏派）時先印 `DONE_NOT_LANDED <n> <sha>`，再照常認領。
 // --integration 的分支查不到時同 gh 失敗，exit 1。
 // children 是母單（Map）視圖，只支援 GitHub（tracker 是 GitLab 時 exit 2）：一次 `gh api graphql` 取回母單的 subIssues（GitHub 每張母單最多 100 張子單），
@@ -80,6 +84,8 @@ const BLOCKED_BY_FIELDS = 'blockedBy(first:50){nodes{number state repository{nam
 export const POOL_FIELDS = `number title body ${LABEL_FIELDS} assignees(first:20){nodes{login}} subIssuesSummary{total} ${BLOCKED_BY_FIELDS} blocking(first:50){nodes{number state repository{nameWithOwner}}} comments(last:10){nodes{createdAt body}} timelineItems(last:1,itemTypes:[ASSIGNED_EVENT]){nodes{... on AssignedEvent{createdAt}}} closedByPullRequestsReferences(first:10,includeClosedPrs:false){nodes{state}} parent{number repository{nameWithOwner}}`;
 const QUERY = `query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$cursor,states:OPEN){pageInfo{hasNextPage endCursor} nodes{${POOL_FIELDS} lastEditedAt}}}}`;
 const OPEN_WORK_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){closedByPullRequestsReferences(first:20,includeClosedPrs:false){nodes{number state url headRefName}}}}}`;
+// claim 的 LANDED_STALE（#692）：Issue 是否開著、本文最後編輯與最近的 label 增減。
+const REVISION_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){state lastEditedAt timelineItems(last:50,itemTypes:[LABELED_EVENT,UNLABELED_EVENT]){nodes{... on LabeledEvent{createdAt} ... on UnlabeledEvent{createdAt}}}}}}`;
 const CHILDREN_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number subIssues(first:100){nodes{number title state ${LABEL_FIELDS} ${BLOCKED_BY_FIELDS} comments(last:1){nodes{body}}}}}}}`;
 // GitLab 的 Issue 是 work item：label、指派、子項目、相依與留言都在 widgets 裡；notes 分成留言（comments）與系統紀錄（activity，指派紀錄在這裡）。
 const GITLAB_QUERY = `query($fullPath:ID!,$cursor:String){project(fullPath:$fullPath){workItems(types:[ISSUE],state:opened,first:50,after:$cursor){pageInfo{hasNextPage endCursor} nodes{iid title widgets{__typename ... on WorkItemWidgetLabels{labels(first:50){nodes{title}}} ... on WorkItemWidgetAssignees{assignees(first:20){nodes{username}}} ... on WorkItemWidgetHierarchy{hasChildren parent{iid namespace{fullPath}}} ... on WorkItemWidgetLinkedItems{linkedItems(first:50){nodes{linkType workItem{iid state namespace{fullPath}}}}} ... on WorkItemWidgetNotes{comments:notes(filter:ONLY_COMMENTS,last:10){nodes{createdAt body}} activity:notes(filter:ONLY_ACTIVITY,last:100){nodes{createdAt body}}} ... on WorkItemWidgetDescription{description}}}}}}`;
@@ -143,8 +149,15 @@ function github({ repo, host }) {
       return JSON.parse(gh('api', 'graphql', '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `number=${n}`, '-f', `query=${OPEN_WORK_QUERY}`)).data.repository.issue.closedByPullRequestsReferences.nodes;
     },
     view: n => JSON.parse(gh('issue', 'view', ...target(n), '--json', 'assignees,comments')),
+    revision(n) {
+      const [owner, name] = this.repo().split('/');
+      const issue = JSON.parse(gh('api', 'graphql', '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `number=${n}`, '-f', `query=${REVISION_QUERY}`)).data.repository.issue;
+      return { open: issue.state === 'OPEN', changedAt: latest([issue.lastEditedAt, ...issue.timelineItems.nodes.map(({ createdAt }) => createdAt)]) };
+    },
     comment: (n, body) => gh('issue', 'comment', ...target(n), '--body', body),
     assign: n => gh('issue', 'edit', ...target(n), '--add-assignee', '@me'),
+    // 已指派給自己時再 add 不產生指派事件，所以先放掉再加回（#692）。
+    reassign(n) { gh('issue', 'edit', ...target(n), '--remove-assignee', '@me'); gh('issue', 'edit', ...target(n), '--add-assignee', '@me'); },
     // `--delete-last` 刪的是這個帳號最新一則，前提見 claim。
     retract: n => gh('issue', 'comment', ...target(n), '--delete-last', '--yes'),
   };
@@ -158,6 +171,9 @@ function gitlab({ repo, host, origin }) {
   const api = (...args) => JSON.parse(raw(...args));
   const project = repo ? encodeURIComponent(repo) : ':id';
   const target = n => [n, ...(repo ? ['-R', origin ? `${origin}/${repo}` : repo] : [])];
+  // --paginate 預設逐頁原樣印出（`[...][...]`，help 說會合併但 v1.126.0 的 api.go 沒有），所以用 ndjson 一行一則。
+  const notesOf = n => raw(`projects/${project}/issues/${n}/notes?sort=asc&order_by=created_at&per_page=100`, '--paginate', '--output', 'ndjson')
+    .split('\n').filter(Boolean).map(line => JSON.parse(line));
   return {
     closingPrs: () => [],
     repo: () => repo ?? api(`projects/${project}`).path_with_namespace,
@@ -172,16 +188,26 @@ function gitlab({ repo, host, origin }) {
     },
     view(n) {
       const issue = api(`projects/${project}/issues/${n}`);
-      // --paginate 預設逐頁原樣印出（`[...][...]`，help 說會合併但 v1.126.0 的 api.go 沒有），所以用 ndjson 一行一則。
-      const notes = raw(`projects/${project}/issues/${n}/notes?sort=asc&order_by=created_at&per_page=100`, '--paginate', '--output', 'ndjson')
-        .split('\n').filter(Boolean).map(line => JSON.parse(line));
+      const notes = notesOf(n);
       return {
         assignees: issue.assignees.map(({ username }) => ({ login: username })),
         comments: notes.filter(({ system }) => !system).map(({ id, author, body, created_at }) => ({ id, author: { login: author.username }, body, createdAt: created_at })),
       };
     },
+    // 本文編輯在系統紀錄（`changed the description`）；label 增減不在系統紀錄裡，只在 resource_label_events（spay2 #1201 實查，#692 review r1）。
+    revision(n) {
+      const edits = notesOf(n).filter(({ system, body }) => system && /^changed the description/.test(body ?? ''));
+      const labels = raw(`projects/${project}/issues/${n}/resource_label_events?per_page=100`, '--paginate', '--output', 'ndjson').split('\n').filter(Boolean).map(line => JSON.parse(line));
+      return { open: api(`projects/${project}/issues/${n}`).state === 'opened', changedAt: latest([...edits, ...labels].map(({ created_at }) => created_at)) };
+    },
     comment: (n, body) => glab('issue', 'note', ...target(n), '-m', body),
     assign: n => glab('issue', 'update', ...target(n), '--assignee', `+${api('user').username}`),
+    // `-` 從指派名單移除、`+` 加回（HOSTS.md 的 glab issue update 旗標），產生新的「assigned to」系統紀錄（#692）。
+    reassign(n) {
+      const { username } = api('user');
+      glab('issue', 'update', ...target(n), '--assignee', `-${username}`);
+      glab('issue', 'update', ...target(n), '--assignee', `+${username}`);
+    },
     // DELETE 回 204、沒有內容，不解析；重讀還看不到自己那則時無從依 id 收回，留著。
     retract: (n, note) => note && raw('-X', 'DELETE', `projects/${project}/issues/${n}/notes/${note.id}`),
   };
@@ -206,6 +232,9 @@ function trackerOf(repoArg) {
   return kind === 'gitlab' ? gitlab(options) : github(options);
 }
 
+/** ISO 時間裡最晚的一個（ms），沒有或都讀不懂時 0。 */
+const latest = times => Math.max(0, ...times.filter(Boolean).map(Date.parse).filter(Number.isFinite));
+
 const openNodes = ({ nodes }) => nodes.filter(({ state }) => state === 'OPEN');
 
 /** 認領之後最後一次動靜：最近一則留言或最近一次指派，取較晚的；都沒有時是 0（視為過期）。 */
@@ -220,8 +249,9 @@ function parentDetail({ parent }, repo) {
   return `parent ${owner && owner !== repo ? owner : ''}#${parent.number} `;
 }
 
-/** 本文第一行 `… prerequisite：<內容>` 的內容（去掉頭尾空白），沒有這行時 undefined；PREREQ 與 pilot-probe 的 HUMAN_NO_GATE 共用（#352）。 */
-export const prerequisiteOf = body => (body ?? '').match(/^.*\bprerequisite\s*[：:]\s*(?:[*_]+\s*)?(\S.*?)\s*$/im)?.[1];
+/** 本文第一行 `<字> prerequisite：<內容>` 的內容（去掉頭尾空白），沒有這行時 undefined；PREREQ 與 pilot-probe 的 HUMAN_NO_GATE 共用（#352）。
+ * 只認行首：前面只能有縮排、一個清單標記與粗體／斜體記號，`prerequisite` 前最多一個英文字（`Operator`、`Human`）；散文或行內碼裡提到的不算（#692：#666 本文的 `` `Operator prerequisite：` 行 ``）。 */
+export const prerequisiteOf = body => (body ?? '').match(/^[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)?[*_]*(?:[A-Za-z]+[ \t]+)?prerequisite[*_]*[ \t]*[：:][ \t]*(?:[*_]+[ \t]*)?(\S.*?)[ \t]*$/im)?.[1];
 /** prerequisite 寫「無」（或 none，後面可接標點或括號說明）表示不用等人；`**Operator prerequisite：** 無` 的粗體記號由 prerequisiteOf 略過。 */
 const NO_PREREQUISITE = /^(?:無|none)(?:$|[\s。.,，、;；（(])/i;
 /** 本文第一個以「為什麼是 needs-」開頭的 Markdown 標題（任一層級，去掉開頭的 `#` 與空白），沒有時 undefined：本文自己寫著還不能做（#666）。
@@ -261,12 +291,15 @@ export function needsHeadingOf(body) {
 
 /** 留言（依時間先後）裡，最近一則認領留言之後（沒有認領留言時是全部）最新一行 `DONE <n> <sha>` 的 sha；沒有時 undefined。
  * 認領之前的 DONE 不算：之後又被認領，表示要重做。 */
-export function doneSha(comments, n) {
+export const doneSha = (comments, n) => lastDone(comments, n)?.sha;
+
+/** doneSha 的那一行連同所在留言：{ sha, createdAt }；沒有時 undefined。 */
+function lastDone(comments, n) {
   const start = comments.findLastIndex(({ body }) => claimerOf({ body: body ?? '' }));
   const pattern = new RegExp(`^\\s*DONE ${n}\\s+(\\S+)`, 'gm');
-  for (const { body } of comments.slice(start + 1).reverse()) {
+  for (const { body, createdAt } of comments.slice(start + 1).reverse()) {
     const sha = [...(body ?? '').matchAll(pattern)].at(-1)?.[1];
-    if (sha) return sha;
+    if (sha) return { sha, createdAt };
   }
   return undefined;
 }
@@ -299,6 +332,9 @@ export function landedOn(integration, log = integrationLog, isAncestor = isAnces
   const commits = log(integration);
   const landed = n => commits.find(([, subject]) => subject.includes(`(#${n})`) || mergedBranches(subject).some(branch => branchOfIssue(branch, n)))?.[0];
   landed.contains = sha => isAncestor(integration, sha);
+  // 落地的 sha 是否已在 origin 的共用分支，與它的 committer date（ms）：重新細化的判斷用（#692）。
+  landed.shared = sha => isAncestor(sharedBranch(), sha);
+  landed.committedAt = sha => Date.parse(gitOut('log', '-1', '--format=%cI', sha) ?? '');
   return landed;
 }
 
@@ -310,7 +346,21 @@ const doneNotLanded = (n, { assigned, comments }, landed) => {
 
 /** 已落地的 sha：整合分支上的落地（landed 是 landedOn 的結果），或已指派且最近一則認領之後有 `DONE` 結果行、而且那個 sha 是整合分支的祖先（#644）；pool 的 landed 桶與 claim 的 LANDED 共用。
  * landed 沒有 contains（Probe 自己組的）時，DONE 的 sha 照舊當落地。 */
-const landedSha = (n, { assigned, comments }, landed) => landed(n) ?? (assigned && !doneNotLanded(n, { assigned, comments }, landed) ? doneSha(comments, n) : undefined);
+const landedSha = (n, { assigned, comments, editedAt }, landed) => {
+  const sha = landed(n);
+  if (sha && !reclaimedAfter(sha, { comments, editedAt }, landed)) return sha;
+  return assigned && !doneNotLanded(n, { assigned, comments }, landed) ? doneSha(comments, n) : undefined;
+};
+
+/** 整合分支上的落地 commit 已在共用分支，而本文最後編輯（editedAt，pool 列表的 lastEditedAt）與最近一則認領都比它晚：claim 印過 LANDED_STALE 之後重做的單，
+ * 不再算落地（#692 review r1）。只有認領比它晚不算：上 main 之後、Close 之前被單獨的 /issue-run 認領的單仍是落地（#352 的 #145，review r2）。
+ * landed 沒有 shared（Probe 自己組的）、沒有 editedAt（claim 讀的 view、GitLab 列表）或沒有認領留言時為假；只改 label 的重新細化在 pool 照舊歸 landed。 */
+function reclaimedAfter(sha, { comments, editedAt }, landed) {
+  const claimed = comments.filter(({ body }) => claimerOf({ body: body ?? '' })).at(-1);
+  if (!claimed || !editedAt || !landed.shared?.(sha)) return false;
+  const at = landed.committedAt(sha);
+  return Date.parse(claimed.createdAt) > at && Date.parse(editedAt) > at;
+}
 
 /** 每張 Issue 歸到一個桶，優先序見檔頭；landed 是 landedOn 的結果，沒給時沒有 landed 桶。 */
 export function bucketOf(issue, { staleHours = 24, now = Date.now(), landed, skipLabels = [] } = {}) {
@@ -321,7 +371,7 @@ export function bucketOf(issue, { staleHours = 24, now = Date.now(), landed, ski
   const skipped = skipLabels.find(name => labels.has(name));
   if (skipped) return skipped;
   if (issue.assignees.nodes.length) {
-    if (landed && landedSha(issue.number, { assigned: true, comments: issue.comments.nodes }, landed)) return 'landed';
+    if (landed && landedSha(issue.number, { assigned: true, comments: issue.comments.nodes, editedAt: issue.lastEditedAt }, landed)) return 'landed';
     return now - lastActivity(issue) > staleHours * 3600_000 ? 'stale' : 'claimed';
   }
   // `includeClosedPrs:false` 仍會回已合併的 PR（#281 的 PR #282 回 MERGED），所以要看 state。
@@ -586,13 +636,31 @@ export function claimedBy(comments, session) {
   return Boolean(claimer) && (claimer === claimerName(session) || Boolean(takeoverSession(claimer, session)));
 }
 
+/** origin 的預設分支（origin/HEAD），沒設時 origin/main；共用分支上的 commit 才算真的做完。 */
+const sharedBranch = () => gitOut('rev-parse', '--abbrev-ref', 'origin/HEAD') ?? 'origin/main';
+
+/**
+ * 落地的 sha 之後這張單又重新細化過（#692：#507 先做完的一半已在 origin/main，本文改寫成新的範圍，claim 卻印 LANDED）：
+ * sha 已在 origin 的共用分支（sharedBranch）、Issue 還開著，而且本文或 label 在落地之後有變動時為真。
+ * 落地的時間是 sha 來自 DONE 留言時那則留言的時間，否則（整合分支的 `(#<n>)` 主旨或合入的分支）是那個 commit 的 committer date。
+ * sha 不在共用分支時不查 tracker：還在等推上 main 的單本來就開著。
+ */
+function reworked(n, sha, comments, tracker, landed) {
+  if (!landed.shared(sha)) return false;
+  const done = lastDone(comments, n);
+  const at = done?.sha === sha ? Date.parse(done.createdAt) : landed.committedAt(sha);
+  const { open, changedAt } = tracker.revision(n);
+  return open && Number.isFinite(at) && changedAt > at;
+}
+
 function claim(n, tracker, session, takeStale, landed) {
   const read = () => tracker.view(n);
   const stop = claimer => { console.log(`STOP ${n} claimed ${claimer}`); return 4; };
   const mine = claimerName(session);
   const before = read();
   const sha = landed && landedSha(n, { assigned: before.assignees.length > 0, comments: before.comments }, landed);
-  if (sha) { console.log(`LANDED ${n} ${sha}`); return 4; }
+  if (sha && !reworked(n, sha, before.comments, tracker, landed)) { console.log(`LANDED ${n} ${sha}`); return 4; }
+  if (sha) console.log(`LANDED_STALE ${n} ${sha}`);
   const unlanded = landed && doneNotLanded(n, { assigned: before.assignees.length > 0, comments: before.comments }, landed);
   if (unlanded) console.log(`DONE_NOT_LANDED ${n} ${unlanded}`);
   const last = before.comments.filter(claimerOf).at(-1);
@@ -615,12 +683,20 @@ function claim(n, tracker, session, takeStale, landed) {
     stale = blocker.split('／')[1];
   }
   const claimant = takeover ? blocker : mine;
-  // 先留言再指派：指派成功、留言失敗時，重跑會被自己沒有留言的指派擋住。
-  tracker.comment(n, `認領：${claimant}`);
-  tracker.assign(n);
+  // 已指派、最近一則認領已是自己（沒被釋放）：不再留一則一樣的認領（#692：#632 留了 9 則），只重新指派，讓活動時間照 Dispatch 的規則更新。
+  // takeover、stale 接手的最近一則認領是別人，不在此列。
+  const renew = before.assignees.length > 0 && Boolean(last) && claimerOf(last) === mine;
+  if (renew) tracker.reassign(n);
+  else {
+    // 先留言再指派：指派成功、留言失敗時，重跑會被自己沒有留言的指派擋住。
+    tracker.comment(n, `認領：${claimant}`);
+    tracker.assign(n);
+  }
   const added = read().comments.slice(before.comments.length);
   const first = added.find(claimerOf);
   if (first && claimerOf(first) !== claimant) {
+    // 只重新指派時沒有自己的留言可收回。
+    if (renew) return stop(claimerOf(first));
     // 收回搶輸的留言，不然贏家重派時最近一則認領是自己的，會被擋下。GitHub 的 `--delete-last` 刪的是這個帳號最新一則（輸家的留言在贏家的認領之後），
     // 所以前提是贏家這幾秒內沒有再留言；GitLab 依重讀到的留言 id 刪自己那則。
     tracker.retract(n, added.findLast(comment => claimerOf(comment) === claimant));
