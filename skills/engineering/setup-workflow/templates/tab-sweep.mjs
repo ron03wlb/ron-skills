@@ -13,7 +13,9 @@
 //   每個分頁照下面順序判斷，任一條不成立就跳過（判斷比看守的 TAB_DONE 保守：看守只看前綴）：
 //     1. 不是自己（ORCA_TERMINAL_HANDLE）、不是現任 coordinator（`.scratch/pilot/sessions.md` 最後一個 `→ terminal <handle>`）；
 //        兩者都認不出來時整輪不動（TAB_SWEEP_FAILED coordinator-unknown）。
-//     2. 標題以 `待 Retro｜` 或 `待關閉｜` 開頭（處理中｜、沒有前綴的不動）。
+//     2. 標題以 `待 Retro｜` 或 `待關閉｜` 開頭（處理中｜、沒有前綴的不動）。例外（#649）：`.scratch/retro/collector` 記的收集者分頁
+//        停在 `處理中｜`，但啟動之後 `.scratch/retro/reports/` 已有檔、或 `.scratch/retro/triggers.log` 已有 collect 行時，收集已完成，
+//        當作待關閉（狀態列殘留的「1 shell still running」「← 1 agent」不算在跑；同 pilot-retro-due.mjs 的 collectedSince）。
 //     3. 是分頁的第一個 pane（split 出來的 pane 不代表分頁）；待 Retro 而且沒送過（`.scratch/pilot/tab-sweep.json` 的 sent）。
 //     4. lastOutputAt 距今至少 10 分鐘。
 //     5. 畫面閒置（`terminal read --screen` 的最後 40 行）：沒有 `esc to interrupt`、沒有工作中的 spinner 或 `…ing…` 行、
@@ -42,7 +44,7 @@
 // 環境變數：ORCA_CLI_COMMAND（沒有時 TAB_SWEEP_FAILED no-orca）、ORCA_TERMINAL_HANDLE（自己）、TAB_SWEEP_NOW（ISO，測試固定現在時刻）。
 // exit：0 完成（含只記錄的失敗）；1 有一列沒記進 decisions.md（TAB_RECORD_FAILED）；2 用法錯誤。
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { orca as orcaCall } from './orca-session-send.mjs';
@@ -97,6 +99,23 @@ export function screenBusy(tail, draft = '') {
   return null;
 }
 
+/**
+ * 已收完的收集者 handle（#649）：`.scratch/retro/collector`（`<ISO 時刻> <handle>`）的啟動時刻之後，reports/ 有 mtime ≥ 該時刻的檔，
+ * 或 triggers.log 有 time ≥ 該時刻的 collect 行；否則 null。與 pilot-retro-due.mjs 的 collectedSince 同一條規則，自己帶一份理由同 SPINNER。
+ */
+export function collectedCollector(main) {
+  const retro = join(main, '.scratch/retro');
+  const [at, handle] = (existsSync(join(retro, 'collector')) ? readFileSync(join(retro, 'collector'), 'utf8') : '').trim().split(/\s+/);
+  const since = Date.parse(at);
+  if (!handle || !Number.isFinite(since)) return null;
+  const reports = join(retro, 'reports');
+  if (existsSync(reports) && readdirSync(reports).some(name => statSync(join(reports, name)).mtimeMs >= since)) return handle;
+  const log = existsSync(join(retro, 'triggers.log')) ? readFileSync(join(retro, 'triggers.log'), 'utf8') : '';
+  return log.split('\n').some(line => {
+    try { const record = JSON.parse(line); return record.event === 'collect' && Date.parse(record.time) >= since; } catch { return false; }
+  }) ? handle : null;
+}
+
 /** pane 樹（first 先於 second）的第一個 terminal handle。 */
 const firstPane = node => node === null || typeof node !== 'object' ? null
   : typeof node.handle === 'string' ? node.handle : firstPane(node.first) ?? firstPane(node.second);
@@ -116,7 +135,7 @@ export const ownerOf = (layouts, handle) => firstPane(tabOf(layouts, handle)?.pa
  * 不讀畫面的判斷（純函式）：每個主 checkout 分頁回 skip，或候選動作 retro／close（之後還要過畫面與 roster）。
  * @returns {{ actions: {kind: 'retro'|'close'|'skip', handle: string, title?: string, reason?: string, terminal: object}[], other: number }}
  */
-export function sweepPlan({ terminals, main, self = null, coordinator = null, titleOf, ownerOf: owner = () => null, sent, now }) {
+export function sweepPlan({ terminals, main, self = null, coordinator = null, titleOf, ownerOf: owner = () => null, sent, now, collected = null }) {
   const mine = terminals.filter(t => inMain(t.worktreePath, main));
   const actions = mine.map(terminal => {
     const { handle } = terminal;
@@ -125,7 +144,8 @@ export function sweepPlan({ terminals, main, self = null, coordinator = null, ti
     if (handle === coordinator) return skip('coordinator');
     const title = titleOf(handle) ?? '';
     const retro = title.startsWith(RETRO);
-    if (!retro && !title.startsWith(CLOSE)) return skip(STATE_PREFIX.test(title) ? 'working' : 'no-state');
+    const done = handle === collected && title.startsWith('處理中｜');
+    if (!retro && !done && !title.startsWith(CLOSE)) return skip(STATE_PREFIX.test(title) ? 'working' : 'no-state');
     const first = owner(handle);
     if (first && first !== handle) return skip('split-pane');
     if (retro && sent[handle]) return skip(`already-sent ${sent[handle].at}`);
@@ -184,6 +204,7 @@ export async function sweep({ main, orca, roster = null, record = () => {}, self
   const titleOf = handle => tabTitleOf(list.visualLayouts, handle) ?? recorded(handle);
   const { actions, other } = sweepPlan({
     terminals, main, self, coordinator, sent: state.sent, now, titleOf, ownerOf: handle => ownerOf(list.visualLayouts, handle),
+    collected: collectedCollector(main),
   });
   let rows;
   const rosterOnce = () => {

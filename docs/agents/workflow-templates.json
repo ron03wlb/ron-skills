@@ -267,8 +267,8 @@
     },
     "scripts/pilot-retro-due.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-retro-due.mjs",
-      "commit": "23ae2c22eab2901b15e2099bee1be2e3e2f1eda3",
-      "sha256": "3cbec503a45cb7445e8384ecfb46862eeaf030198423b2d71d3ee1de28aae1ad"
+      "commit": "187e377c93196e97071a8fc43253298feb0030af",
+      "sha256": "9f705e96d7dc8f9e05ce4ee1870b32cec0e5bde355a4935e281cec86d29a8e32"
     },
     "scripts/pilot-sources.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-sources.mjs",
@@ -302,8 +302,8 @@
     },
     "scripts/tab-sweep.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-sweep.mjs",
-      "commit": "36dca3fda533ee36469cec671e143576262cfc22",
-      "sha256": "c6a7bda727e70077a48dd18934f0b66df9841fc82431abfab752be0ab3da936d"
+      "commit": "187e377c93196e97071a8fc43253298feb0030af",
+      "sha256": "28b022f0d1494d5fd4d125d108d7120b881624a65144d5de0e94935eae7e247b"
     },
     "scripts/token-usage.mjs": {
       "template": "skills/engineering/setup-workflow/templates/token-usage.mjs",
