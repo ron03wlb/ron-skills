@@ -116,6 +116,8 @@
 //          沒關的 batch 裡 `parked after #<m>` 的成員，在 #m 以 done 留在 `closed` 的 batch 之後印 UNPARK <n>（state 是 `parked after #<m> fresh` 時印 UNPARK_FRESH <n>，#482）；
 //          current 是 merged／pushed 的 batch 在 git fetch 後比 origin/<主分支>，印 IN_MAIN <key>｜NOT_IN_MAIN <key>（no-sha：checkpoint 沒有 SHA）｜FETCH_FAILED <錯誤>；
 //          還沒進 origin/<主分支> 的 merged batch 改印 RESUME_PUSH <key>（整合分支的 tip 等於最後一次 regression SHA，且那一行是 exit 0），
+//          但主 checkout 的 `.scratch/pilot/landing.pid` 是 `command=push`、它的 pid 還是 pilot-land（landAlive）時改印
+//          PUSHING <key> pid=<pid> out=<輸出檔>（#693：前任背景跑的 push 還在等 CI；等它用 `pilot-watch.mjs --pid <pid> --out <輸出檔>`），
 //          不符合時印 NOT_IN_MAIN <key> no-regression（沒有 regression 行或 SHA 解析不到）｜NOT_IN_MAIN <key> regression-failed <code 或 none>
 //          （#130：最後一行 regression 的 exit 不是 0，或 SHA 後面沒緊接 exit <code>）｜NOT_IN_MAIN <key> tip <tip 前 7 碼或 none>
 //          gates.md 有開著的 gate 的 parked 以 `all-push` 開頭（擋住所有 push）時，上面所有 NOT_IN_MAIN／RESUME_PUSH 合成一行
@@ -156,7 +158,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { changedUnits } from './lib/changed-units.mjs';
 import { mergeConflicts } from './lib/merge-tree.mjs';
-import { batchMembers, CheckpointLocked, gateLines, heldIssues, resolvedGateLines, resolvedGates, isOpenRequest, landAlive, now, openGates, parksAllPush, regressingMark, requestBatchKey, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
+import { batchMembers, CheckpointLocked, gateLines, heldIssues, resolvedGateLines, resolvedGates, isOpenRequest, landAlive, landingHolder, now, openGates, parksAllPush, regressingMark, requestBatchKey, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
 import { SPINNER, orca } from './orca-session-send.mjs';
 import { check as capacityCheck, envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
 import { POOL_FIELDS, blockerOpenScope, landedOn, mainPause, pool, prerequisiteOf } from './issue-pool.mjs';
@@ -895,13 +897,15 @@ export async function heavySlotState(worktree, now = Date.now()) {
  * 還沒進 origin/<主分支> 的 `merged` batch：Push gate 的前提是整合分支的 tip 等於最後一次 Regression SHA。
  * 符合時 coordinator 從 Push gate 第 1 步接著做；Integrate 之後又有 commit、沒有 regression 行，
  * 或最後一行 regression 的 exit 不是 0、沒寫 exit 時（#130：exit 1 被誤判為通過、ff 進了整合分支），直接推會送出沒驗過的內容。
+ * `pushing` 是還活著的 push 鎖（landingHolder）時，符合的 batch 印 PUSHING 而不是 RESUME_PUSH（#693：push 還在跑，不必從第 1 步重做）。
  */
-function mergedNotInMain(checkout, integration, key, regression, regressionExit) {
+function mergedNotInMain(checkout, integration, key, regression, regressionExit, pushing) {
   const regressionSha = regression && rev(checkout, `${regression}^{commit}`);
   if (!regressionSha) return `NOT_IN_MAIN ${key} no-regression`;
   if (regressionExit !== '0') return `NOT_IN_MAIN ${key} regression-failed ${regressionExit ?? 'none'}`;
   const tip = rev(checkout, `refs/heads/${integration}`);
-  return tip === regressionSha ? `RESUME_PUSH ${key}` : `NOT_IN_MAIN ${key} tip ${tip.slice(0, 7) || 'none'}`;
+  if (tip !== regressionSha) return `NOT_IN_MAIN ${key} tip ${tip.slice(0, 7) || 'none'}`;
+  return pushing ? `PUSHING ${key} pid=${pushing.pid} out=${pushing.out}` : `RESUME_PUSH ${key}`;
 }
 
 /**
@@ -1424,6 +1428,9 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
       const parking = openGates(readStore(pilot, 'gates.md')).find(parksAllPush);
       const pause = !parking && mainPause(checkout);
       const pending = [];
+      // #693：還活著的 push 鎖（只在有待推 batch 時查一次 ps）。
+      const holder = landingHolder(checkout);
+      const pushing = holder?.command === 'push' && landAlive(holder.pid) ? holder : undefined;
       const expected = line => /^(RESUME_PUSH \S+|NOT_IN_MAIN \S+( tip \S+)?)$/.test(line);
       const unpushed = (key, line) => (parking || (pause && expected(line)) ? pending.push(key) : out.push(line));
       for (const { key, sha, regression, regressionExit, merged } of landing) {
@@ -1431,7 +1438,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
         else if (git(checkout, 'merge-base', '--is-ancestor', sha, `origin/${main}`).status === 0) {
           out.push(`IN_MAIN ${key}`);
           if (apply && merged) out.push(...applyPushed(join(pilot, `batch-${key}.md`), key));
-        } else unpushed(key, merged ? mergedNotInMain(checkout, integration, key, regression, regressionExit) : `NOT_IN_MAIN ${key}`);
+        } else unpushed(key, merged ? mergedNotInMain(checkout, integration, key, regression, regressionExit, pushing) : `NOT_IN_MAIN ${key}`);
       }
       if (pending.length) out.push(parking ? `PUSH_PARKED ${parking.id} ${pending.length} batches` : `MAIN_PAUSED ${pause.reason} until ${pause.until} pending ${pending.length} batches`);
     }

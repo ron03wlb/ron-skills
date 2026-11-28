@@ -20,6 +20,7 @@
 //
 // 用法：node scripts/pilot-watch.mjs [<handle>|<checkpoint>.md]... [--batch <key>]... [--checkout <主 checkout>] [--interval <秒>] [--worker-state <路徑>]
 //       node scripts/pilot-watch.mjs --tail <handle> [--lines <n>]
+//       node scripts/pilot-watch.mjs --pid <pid> [--out <輸出檔>] [--lines <n>] [--interval <秒>]
 //   --batch    監看 <主 checkout>/.scratch/pilot/batch-<key>.md 裡 state 為 running 的成員；可重複，每一批都監看（investing 舊版只看最後一批，發生三次）。
 //              --checkout 預設是目前目錄所屬 repo 的主 checkout（`git worktree list` 的第一個）。
 //   <checkpoint>.md  直接給 batch checkpoint 的路徑，同 --batch；batch 名取檔名 `batch-<key>.md` 的 key（不是這個形狀時取去掉 .md 的檔名）。
@@ -30,6 +31,10 @@
 //   --worker-state <路徑>（#466，只對 batch 成員）：worker checkpoint 的路徑，`<worktree>`、`<n>` 換成成員列的值，預設 `<worktree>/.scratch/issue-run-<n>/state.md`
 //              （同 pilot-probe.mjs 的 --worker-state）。
 //   --tail <handle> [--lines <n>]：唯讀，印該 worker 畫面的最後 n 行（預設 40），與 `pilot-probe.mjs --tail` 同一份實作；不能和其他參數併用。
+//   --pid <pid> [--out <輸出檔>]（#693）：等前任留下的行程（Probe 的 `PUSHING <key> pid=<pid> out=<輸出檔>`）結束，coordinator 以背景執行，結束即被叫醒：
+//              每 --interval 秒（這個模式預設 15）以 kill 0 檢查，pid 不在之後印 `PID_EXITED <pid>`，有 --out 時再印輸出檔最後 --lines 行（預設 40），
+//              檔不在時印 `NO_OUTPUT <輸出檔>`；exit 0。不讀 Orca，不需要 ORCA_CLI_COMMAND（#679：手寫的 `pgrep -f` 迴圈比對到自己的命令列，永遠不結束）。
+//              不能和 handle、checkpoint、--batch、--tail 併用。
 // stdout（<batch> 是批次名，直接給的 handle 是 `-`）：
 //   RESULT <batch> <handle> <結果行>（新的 `DONE <n> <sha>`、`STOP <n> <cause>`，去掉縮排與框線）｜
 //   RESULT <batch> <handle> DONE <n> <sha> from-state（#466：batch 成員的 terminal 已結束、沒有結果行，worker checkpoint 最後一行 `State:` 是
@@ -43,10 +48,10 @@ import { basename, dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { orca } from './orca-session-send.mjs';
-import { addPostland, updateCheckpoint } from './lib/pilot-store.mjs';
+import { addPostland, pidAlive, updateCheckpoint } from './lib/pilot-store.mjs';
 import { WORKER_STATE, parseBatch, postlandCommands, recordResult, resultMatch, screenLines, scrollbackMatch, stateResult, workerTail, workingScreen } from './pilot-probe.mjs';
 
-const USAGE = '用法：node scripts/pilot-watch.mjs [<handle>|<checkpoint>.md]... [--batch <key>]... [--checkout <主 checkout>] [--interval <秒>] [--worker-state <路徑>]｜node scripts/pilot-watch.mjs --tail <handle> [--lines <n>]（需要 ORCA_CLI_COMMAND）';
+const USAGE = '用法：node scripts/pilot-watch.mjs [<handle>|<checkpoint>.md]... [--batch <key>]... [--checkout <主 checkout>] [--interval <秒>] [--worker-state <路徑>]｜node scripts/pilot-watch.mjs --tail <handle> [--lines <n>]（需要 ORCA_CLI_COMMAND）｜node scripts/pilot-watch.mjs --pid <pid> [--out <輸出檔>] [--lines <n>] [--interval <秒>]';
 
 const oneLine = text => String(text).replace(/\s+/g, ' ').trim() || 'unknown';
 
@@ -54,14 +59,20 @@ const oneLine = text => String(text).replace(/\s+/g, ' ').trim() || 'unknown';
 export function parseArgs(argv) {
   const options = { handles: [], checkpoints: [], batches: [], intervalMs: 60_000 };
   let tail;
+  let pid;
+  let out;
   let lines;
   let interval = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (['--tail', '--lines', '--interval', '--batch', '--checkout', '--worker-state'].includes(arg)) {
+    if (['--tail', '--lines', '--interval', '--batch', '--checkout', '--worker-state', '--pid', '--out'].includes(arg)) {
       const value = argv[++i];
       if (value === undefined || value.startsWith('--')) return { error: `${arg} 要有值` };
       if (arg === '--tail') tail = value;
+      else if (arg === '--pid') {
+        pid = Number(value);
+        if (!/^\d+$/.test(value) || pid < 1) return { error: `--pid 要是正整數：${value}` };
+      } else if (arg === '--out') out = value;
       else if (arg === '--lines') {
         lines = Number(value);
         if (!Number.isInteger(lines) || lines < 1) return { error: `--lines 要是正整數：${value}` };
@@ -81,17 +92,39 @@ export function parseArgs(argv) {
     else if (arg.endsWith('.md')) options.checkpoints.push(arg);
     else options.handles.push(arg);
   }
+  if (pid !== undefined) {
+    if (tail !== undefined || options.handles.length || options.checkpoints.length || options.batches.length || options.checkout !== undefined || options.workerState !== undefined) {
+      return { error: '--pid 不能和 handle、checkpoint、--batch、--tail 併用' };
+    }
+    return { pid, out, lines: lines ?? 40, intervalMs: interval ? options.intervalMs : 15_000 };
+  }
+  if (out !== undefined) return { error: '--out 只能和 --pid 一起用' };
   if (tail !== undefined) {
     if (options.handles.length || options.checkpoints.length || options.batches.length || options.checkout !== undefined || options.workerState !== undefined || interval) {
       return { error: '--tail 不能和其他參數併用' };
     }
     return { tail, lines: lines ?? 40 };
   }
-  if (lines !== undefined) return { error: '--lines 只能和 --tail 一起用' };
+  if (lines !== undefined) return { error: '--lines 只能和 --tail 或 --pid 一起用' };
   if (options.checkout !== undefined && !options.batches.length) return { error: '--checkout 只能和 --batch 一起用' };
   if (options.workerState !== undefined && !options.batches.length && !options.checkpoints.length) return { error: '--worker-state 只能和 batch 一起用' };
   if (!options.handles.length && !options.checkpoints.length && !options.batches.length) return { error: '沒有 handle、checkpoint 或 --batch' };
   return options;
+}
+
+/** `--pid`：等 pid 結束，印 PID_EXITED 與輸出檔尾巴（#693）。 */
+async function waitPid({ pid, out, lines, intervalMs }) {
+  while (pidAlive(pid)) await sleep(intervalMs);
+  process.stdout.write(`PID_EXITED ${pid}\n`);
+  if (out === undefined) return 0;
+  let text;
+  try { text = readFileSync(out, 'utf8'); } catch {
+    process.stdout.write(`NO_OUTPUT ${out}\n`);
+    return 0;
+  }
+  const tail = text.trimEnd().split('\n').slice(-lines).join('\n');
+  if (tail) process.stdout.write(`${tail}\n`);
+  return 0;
 }
 
 /** checkpoint 路徑 → batch 名：`batch-<key>.md` 取 key，其他取去掉 .md 的檔名。 */
@@ -204,6 +237,7 @@ async function main(argv) {
     process.stderr.write(`${options.error}\n${USAGE}\n`);
     return 2;
   }
+  if (options.pid !== undefined) return waitPid(options);
   const cli = process.env.ORCA_CLI_COMMAND;
   if (!cli) {
     process.stderr.write(`沒有 $ORCA_CLI_COMMAND，讀不到 terminal\n${USAGE}\n`);

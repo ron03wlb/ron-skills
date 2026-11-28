@@ -2647,3 +2647,34 @@ test('tracker 查詢失敗時 Retro trigger 由 pilot-retro-due 自己查（gh �
   assert.match(result.stdout, /^RETRO_FAILED gh exit 1/m);
   assert.match(result.stdout, /^HANDOFF_COUNT /m);
 });
+
+// #693（#679）：前任以背景跑的 `pilot-land.mjs push` 還在等 CI，Probe 卻印 RESUME_PUSH，照 Push gate 字面要從第 1 步重做。
+// push 在主 checkout 的 `.scratch/pilot/landing.pid` 持鎖；鎖的 pid 還是 pilot-land、子命令是 push 時改印 `PUSHING <key> pid=<pid> out=<輸出檔>`，
+// 不印 RESUME_PUSH；pid 已死、或活著的是 Stage 的鎖時照舊 RESUME_PUSH。
+test('merged 的 batch 待推、push 鎖的 pid 還活著：印 PUSHING <key> pid=<pid> out=<檔>，不印 RESUME_PUSH；pid 已死照舊', t => {
+  const { batch, probe, git, pilot, temp } = fixture(t);
+  git('switch', '-q', '-c', 'pilot/integration');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'staged');
+  const staged = git('rev-parse', 'HEAD');
+  git('switch', '-q', 'main');
+  batch('11', `merged ${staged}`, [{ n: 11, state: 'done', candidate: 'abc1234' }]);
+  writeFileSync(join(pilot, 'batch-11.md'), readFileSync(join(pilot, 'batch-11.md'), 'utf8') + `regression: ${staged} exit 0 CHECK_PASS tests 1\n`);
+  const file = join(temp, 'pilot-land.mjs');
+  writeFileSync(file, 'setTimeout(() => {}, 60000);\n');
+  const child = spawn(process.execPath, [file], { stdio: 'ignore' });
+  t.after(() => child.kill());
+  const out = join(pilot, 'landing-push.out');
+  const lock = join(pilot, 'landing.pid');
+  writeFileSync(lock, `pid=${child.pid} command=push key=pilot/integration out=${out}\n`);
+  let lines_ = lines(probe());
+  assert.ok(lines_.includes(`PUSHING 11 pid=${child.pid} out=${out}`), lines_.join('\n'));
+  assert.ok(!lines_.includes('RESUME_PUSH 11'), lines_.join('\n'));
+  // Stage 的鎖不是 push：照舊 RESUME_PUSH。
+  writeFileSync(lock, `pid=${child.pid} command=stage key=12 out=${out}\n`);
+  assert.ok(lines(probe()).includes('RESUME_PUSH 11'));
+  const gone = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout;
+  writeFileSync(lock, `pid=${gone} command=push key=pilot/integration out=${out}\n`);
+  lines_ = lines(probe());
+  assert.ok(lines_.includes('RESUME_PUSH 11'), lines_.join('\n'));
+  assert.ok(!lines_.some(line => line.startsWith('PUSHING ')), lines_.join('\n'));
+});
