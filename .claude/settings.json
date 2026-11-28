@@ -1,4 +1,5 @@
 {
+  "autoMemoryDirectory": "~/.claude/projects/-home-ron-code-ron-skills/memory",
   "permissions": {
     "allow": [
       "Bash(node scripts/gh-tracker.mjs:*)",
@@ -13,8 +14,6 @@
       "Read(~/.local/share/orca/claude-profiles/**)",
       "Read(~/.local/state/orca-tab-titles/**)",
       "Edit(~/orca/workspaces/ron-skills/**)",
-      "Edit(~/.claude/projects/*/memory/**)",
-      "Edit(~/.local/share/orca/claude-profiles/**/memory/**)",
       "Bash(bin/check:*)",
       "Bash(node scripts/adapter-line.mjs:*)",
       "Bash(node scripts/doc-excerpt.mjs:*)",
