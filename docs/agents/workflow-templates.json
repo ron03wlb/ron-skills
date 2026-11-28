@@ -177,8 +177,8 @@
     },
     "scripts/orca-session-split.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-split.mjs",
-      "commit": "23ae2c22eab2901b15e2099bee1be2e3e2f1eda3",
-      "sha256": "76ac4aaa72021be3f02e898dcac9e857fda797e2b4c41f747989c26a421c2540"
+      "commit": "3a777b602e51def38ac4c86ccc9110a552c5ea34",
+      "sha256": "890d463c8b5de518d3523155575f636fda529fd17d6d13eb1742f5f6d424727c"
     },
     "scripts/orca-worktree-create.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-worktree-create.mjs",
@@ -197,8 +197,8 @@
     },
     "scripts/pilot-capacity.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-capacity.mjs",
-      "commit": "7ffd52a6f18f8174f38d095c7cc3a1824576a663",
-      "sha256": "8614239b35f7dcc67b893f9c4039105c5a193c90331b2716dc0113ad2bf07200"
+      "commit": "3a777b602e51def38ac4c86ccc9110a552c5ea34",
+      "sha256": "03c05a1efb46a82eca26c3c824bafb166a048f5564405f8530acc1b922da73b0"
     },
     "scripts/pilot-close.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-close.mjs",

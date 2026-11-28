@@ -9,7 +9,7 @@
 //   超過 2 小時沒更新的列（coordinator 已經停了）與解析不了的列不算進合計，也不刪。改寫時先寫暫存檔再 rename，讀的一方不會讀到半份；
 //   讀、改、寫整段持有 `<帳本>.lock` 目錄鎖（mkdir），兩個 coordinator 同時 report 也不會蓋掉對方的列；鎖超過 30 秒沒放（持有者被殺）視為遺留、拿掉重來，
 //   等 10 秒還拿不到就失敗（exit 1）。
-// 上限：$PILOT_MACHINE_WORKER_CAP，沒設時 4；CLI 的 report、check 這時先印 `CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP default 4 → 告訴人：設在 ~/.claude/settings.json 的 env` 再用 4（#396）。
+// 上限：$PILOT_MACHINE_WORKER_CAP，沒設時 4；CLI 的 report、check、open 這時先印 `CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP default 4 → 告訴人：設在 ~/.claude/settings.json 的 env` 再用 4（#396）。
 // 環境變數（#396）：Bash tool 的 shell 不讀 ~/.zshrc，寫在那裡的變數在 coordinator 那裡是空的，容量檢查會默默用預設值或略過別的 repo；
 //   每台機器把這些變數設在 Bash tool 讀得到的地方（使用者層級 ~/.claude/settings.json 的 `env`）。
 //   `env [<名稱>...]` 檢查 $PILOT_MACHINE_WORKER_CAP 與帶入的名稱（例如 INVESTING_DATA_ROOT），空白（未設或空字串）的各印一行
@@ -27,7 +27,7 @@
 //       node scripts/pilot-capacity.mjs open <repo> fix|retro <handle>
 //       node scripts/pilot-capacity.mjs close <handle>
 //       node scripts/pilot-capacity.mjs env [<環境變數名稱>...]
-// stdout：$PILOT_MACHINE_WORKER_CAP 空白時 report、check 先印 `CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP default 4 → 告訴人：…`（同上）；env 見上；report 印 `REPORTED <repo> <running> <合計>/<上限>`；
+// stdout：$PILOT_MACHINE_WORKER_CAP 空白時 report、check、open 先印 `CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP default 4 → 告訴人：…`（同上）；env 見上；report 印 `REPORTED <repo> <running> <合計>/<上限>`；
 //         check 在「合計＋新增人數」不超過上限時印 `CAPACITY ok <合計>/<上限>`，超過時印 `STOP capacity <合計>/<上限> [<repo>=<n>...] +<新增人數>`（合計已含新增人數；中間列出計入且 running 大於 0 的列，#408；
 //         session 列依 repo 與 kind 合成 `<repo>:<kind>=<n>`，#622）；
 //         open 印 `SESSION_OPENED <handle> <repo> <kind> <合計>/<上限>`（同一個 handle 再 open 只刷新那一列）；close 印 `SESSION_CLOSED <handle>`，沒有這列時 `SESSION_NONE <handle>`。

@@ -10,7 +10,7 @@ import { recordFix } from './orca-session-split.mjs';
 const script = join(source, 'orca-session-split.mjs');
 
 // 記錄呼叫的假 Orca CLI（回應由 test/fake-orca.mjs 的真實樣本長出）。
-function fixture(t, { self, sendRejected = false, swallow = 0, waitError = false, createFails = false } = {}) {
+function fixture(t, { self, sendRejected = false, swallow = 0, waitError = false, createFails = false, clearLedger = false } = {}) {
   const { temp, repo } = repoFixture(t);
   const log = join(temp, 'orca.log');
   writeFileSync(log, '');
@@ -22,7 +22,7 @@ fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n
 ${orcaReplySource()}
 if (b === 'split') reply('split', { split: { handle: 'term_split' } });
 else if (b === 'rename') reply('rename', { rename: { handle: process.argv[4] } });
-else if (b === 'create') ${createFails ? `fail('runtime_unavailable')` : `reply('create', { terminal: { handle: 'term_new' } })`};
+else if (b === 'create') ${createFails ? `fail('runtime_unavailable')` : `${clearLedger ? 'fs.writeFileSync(process.env.PILOT_WORKERS_LEDGER, \'\'), ' : ''}reply('create', { terminal: { handle: 'term_new' } })`};
 else if (b === 'wait') ${waitError ? `fail('runtime_unavailable')` : `reply('wait', { wait: { satisfied: true } })`};
 else if (b === 'send') { fs.appendFileSync(sentFile, arg('--text') + '\\n'); reply('send', { send: { accepted: ${!sendRejected} } }); }
 else if (b === 'read') reply('read', { terminal: { tail: sent().length > ${swallow} ? [sent().pop()] : ['❯'] } });
@@ -191,6 +191,16 @@ test('--capacity 分頁開好但送出失敗：帳本記那個分頁的 handle�
   const result = open(['--title', 'fix', '--prompt', 'y', '--tab', '--capacity', 'ron-skills', '--kind', 'fix']);
   assert.equal(result.stdout.trim(), 'STOP send term_new');
   assert.match(readFileSync(ledger, 'utf8'), /^session\tron-skills\tfix\tterm_new\t/m);
+});
+
+// #622 review 3：分頁開好時預留列已被清掉（例如別的寫入者刪了它），renameSession 回 false：印 WARN 與補記指令，不默默少算。
+test('--capacity 分頁開好但預留列已不在帳本：stderr 印 WARN capacity-record 與補記指令，照常 OPENED', t => {
+  const { open, ledger } = fixture(t, { clearLedger: true });
+  const result = open(['--title', 'fix', '--prompt', 'y', '--tab', '--capacity', 'ron-skills', '--kind', 'fix']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'OPENED term_new');
+  assert.match(result.stderr, /^WARN capacity-record pending-row-missing → node scripts\/pilot-capacity\.mjs close pending:\S+ && node scripts\/pilot-capacity\.mjs open ron-skills fix term_new$/m);
+  assert.equal(readFileSync(ledger, 'utf8'), '');
 });
 
 test('recordFix：補記指令先 close 預留列再 open 真的 handle', () => {
