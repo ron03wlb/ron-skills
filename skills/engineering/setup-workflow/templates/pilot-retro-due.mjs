@@ -18,6 +18,9 @@
 //       1123a 開著 42 張只看到 30 張），內文有 `From: retro-collect` 行的不算
 //       （收集者自己的 retro，不讓一次收集觸發下一次），年齡取建立時間。
 //   安全點：`.scratch/pilot/batch-*.md` 有 `current: staged …` 的 batch（stage 到整合分支合入之間，含 regression 在跑）時，到期也只印 RETRO_WAIT。
+//     批次狀態不在這裡的 repo（spay2 #1227：`.scratch/batch-<key>/state.md`，`current:` 在行中段，預設判定從來看不到）在 Retro trigger 條目宣告
+//     `Retro safe point: \`<command>\``：到期時才在 coordinator checkout 以 sh -c 跑它，輸出第一個字是 `BUSY` 時印 `RETRO_WAIT busy <第二個字>`，
+//     其他輸出（含沒有輸出）算安全；exit 非 0 或逾時印 `RETRO_FAILED safe-point exit <code>：<stderr 最後一行>`。宣告了就不再讀 .scratch/pilot/batch-*.md。
 //   已有收集者：--collect-in 的 `.scratch/retro/collector`（`--start` 寫的 `<ISO 時刻> <handle>`）的 handle 還在 `orca terminal list`、標題是 `處理中｜` 開頭時，
 //     到期也只印 RETRO_RUNNING；收集者跑完會把分頁換成待 Retro／待關閉，就不算在跑。讀不到 Orca（沒有 ORCA_CLI_COMMAND 或呼叫失敗）時當作沒有在跑。
 //     標題沒換（#649：收完的分頁停在處理中｜，狀態列殘留「1 shell still running」或「← 1 agent」，連續 12 小時印 RETRO_RUNNING）時，
@@ -30,6 +33,7 @@
 //   RETRO_IDLE <則數> oldest=<小時|-> threshold count=<n> age=<h>h
 //   RETRO_DUE <則數> oldest=<小時|-> → node scripts/pilot-retro-due.mjs <coordinator checkout> [--collect-in <checkout>] --start
 //   RETRO_WAIT staged <batch key> <則數> oldest=<小時|->（到期，但 land 中；下一個 tick 再看）
+//   RETRO_WAIT busy <key> <則數> oldest=<小時|->（到期，但宣告的 Retro safe point 印了 BUSY <key>）
 //   RETRO_RUNNING <handle> <則數> oldest=<小時|->（到期，但已有收集者在跑）
 //   RETRO_FAILED <原因>（tracker 或 Roster command 失敗、宣告格式錯；exit 1）
 //   --start：重新判斷，到期時開分頁（orca-session-split.mjs 的 openSession，新分頁、標題 `處理中｜retro-collect`，第一個 prompt `/retro-collect`），
@@ -152,6 +156,26 @@ export function stagedBatch(checkout) {
   return null;
 }
 
+/** Retro trigger 條目宣告的安全點指令（`Retro safe point: \`<command>\``）；沒宣告時 null。 */
+export function declaredSafePoint(triggerEntry) {
+  return (triggerEntry ?? '').match(/Retro safe point:\s*`([^`]+)`/)?.[1] ?? null;
+}
+
+/**
+ * 安全點：宣告了指令時跑它（輸出第一個字 BUSY → { reason: 'busy', key: 第二個字 }，否則 null；失敗時 throw，訊息是 RETRO_FAILED 的原因），
+ * 沒宣告時是 stagedBatch（{ reason: 'staged', key } 或 null）。
+ */
+export function safePoint(checkout, command) {
+  if (!command) {
+    const key = stagedBatch(checkout);
+    return key ? { reason: 'staged', key } : null;
+  }
+  const run = spawnSync('sh', ['-c', command], { cwd: checkout, encoding: 'utf8', timeout: 120000, maxBuffer: 64 * 1024 * 1024 });
+  if (run.status !== 0) throw new Error(`safe-point exit ${run.status ?? run.error?.code ?? run.signal}：${(run.stderr || run.stdout || '').trim().split('\n').at(-1) ?? ''}`);
+  const [word, key] = (run.stdout ?? '').trim().split(/\s+/);
+  return word === 'BUSY' ? { reason: 'busy', key: key || '-' } : null;
+}
+
 const hours = ms => (ms === null ? '-' : `${(Math.floor(ms / HOUR * 10) / 10).toFixed(1)}h`);
 
 /**
@@ -159,7 +183,7 @@ const hours = ms => (ms === null ? '-' : `${(Math.floor(ms / HOUR * 10) / 10).to
  * 回 { state: 'IDLE'|'DUE'|'WAIT'|'RUNNING', count, oldest(ms|null) }：count ≥ threshold.count，或至少一則且最舊一則 ≥ ageHours 時到期；
  * 到期時 staged（batch key）優先於 running（handle）。
  */
-export function retroDue({ items, threshold, now, staged = null, running = null }) {
+export function retroDue({ items, threshold, now, staged = null, running = null, waitReason = 'staged' }) {
   const ages = items.map(item => item.createdAt).filter(at => Number.isFinite(at)).map(at => now - at);
   const oldest = ages.length ? Math.max(...ages) : null;
   const due = items.length >= threshold.count || (items.length > 0 && oldest !== null && oldest >= threshold.ageHours * HOUR);
@@ -167,14 +191,14 @@ export function retroDue({ items, threshold, now, staged = null, running = null 
   const byCount = items.length >= threshold.count;
   const byAge = items.length > 0 && oldest !== null && oldest >= threshold.ageHours * HOUR;
   const trigger = !due ? null : byCount && byAge ? 'count+age' : byCount ? 'count' : 'age';
-  return { state, count: items.length, oldest, staged, running, trigger };
+  return { state, count: items.length, oldest, staged, running, trigger, waitReason };
 }
 
 /** 判斷結果 → 輸出行。 */
 export function dueLine(result, threshold, startCommand) {
   const tail = `${result.count} oldest=${hours(result.oldest)}`;
   if (result.state === 'IDLE') return `RETRO_IDLE ${tail} threshold count=${threshold.count} age=${threshold.ageHours}h`;
-  if (result.state === 'WAIT') return `RETRO_WAIT staged ${result.staged} ${tail}`;
+  if (result.state === 'WAIT') return `RETRO_WAIT ${result.waitReason ?? 'staged'} ${result.staged} ${tail}`;
   if (result.state === 'RUNNING') return `RETRO_RUNNING ${result.running} ${tail}`;
   return `RETRO_DUE ${tail} → ${startCommand}`;
 }
@@ -258,10 +282,19 @@ export async function evaluate({ checkout, collectIn, cli, now, startCommand, is
   } catch (error) {
     return { line: `RETRO_FAILED ${error.message}`, failed: true };
   }
-  const staged = stagedBatch(checkout);
-  const probe = retroDue({ items, threshold, now, staged });
+  // 安全點只在到期時判斷：宣告的指令可能要讀整個 pilot 狀態（spay2 #1227）。
+  let wait = null;
+  if (retroDue({ items, threshold, now }).state === 'DUE') {
+    try {
+      wait = safePoint(checkout, declaredSafePoint(entryText(texts, 'Retro trigger')));
+    } catch (error) {
+      return { line: `RETRO_FAILED ${error.message}`, failed: true };
+    }
+  }
+  const staged = wait?.key ?? null;
+  const probe = retroDue({ items, threshold, now, staged, waitReason: wait?.reason });
   const running = probe.state === 'DUE' ? (await runningCollector(collectIn, cli)) ?? planInProgress(collectIn, now) : null;
-  const result = retroDue({ items, threshold, now, staged, running });
+  const result = retroDue({ items, threshold, now, staged, running, waitReason: wait?.reason });
   return { line: dueLine(result, threshold, startCommand), result, threshold };
 }
 

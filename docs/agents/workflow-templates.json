@@ -267,8 +267,8 @@
     },
     "scripts/pilot-retro-due.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-retro-due.mjs",
-      "commit": "187e377c93196e97071a8fc43253298feb0030af",
-      "sha256": "9f705e96d7dc8f9e05ce4ee1870b32cec0e5bde355a4935e281cec86d29a8e32"
+      "commit": "b49b78a8f77d4257c97779084f6b355d704deb7f",
+      "sha256": "092744ed60efb60c1ad48425071bfba4071689a16b4700994358e33c0d5ac6ee"
     },
     "scripts/pilot-sources.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-sources.mjs",
