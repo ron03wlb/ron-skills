@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { orcaReplySource } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
-import { forgetTitleRecord, recordTitle, recordedTitle, sameTopic, sessionTarget, setState, stripState, withState } from './tab-state.mjs';
+import { forgetTitleRecord, launchPrompts, recordLaunchPrompt, recordTitle, recordedTitle, sameTopic, sessionTarget, setState, stripState, withState } from './tab-state.mjs';
 
 const script = fileURLToPath(new URL('./tab-state.mjs', import.meta.url));
 const SELF = 'term_self';
@@ -440,6 +440,29 @@ test('forgetTitleRecord：刪掉 recordTitle 寫的紀錄（含要轉換檔名�
     forgetTitleRecord(handle);
   }
   forgetTitleRecord(undefined);
+});
+
+// #713：tab-sweep 拿 Orca 的 draft 比對這份記錄，分得出啟動 prompt 的殘留與真的草稿。
+test('recordLaunchPrompt／launchPrompts：依 handle 記下送過的 prompt，重複的移到最後、最多 5 則；沒有或壞掉的記錄是空陣列', t => {
+  const temp = mkdtempSync(join(realTmpdir(), 'tab-state-'));
+  const saved = process.env.TAB_STATE_DIR;
+  process.env.TAB_STATE_DIR = join(temp, 'titles');
+  t.after(() => {
+    if (saved === undefined) delete process.env.TAB_STATE_DIR; else process.env.TAB_STATE_DIR = saved;
+    rmSync(temp, { recursive: true, force: true });
+  });
+  assert.deepEqual(launchPrompts('term:a/b c'), []);
+  assert.equal(recordLaunchPrompt('term:a/b c', '/loop /issue-pilot'), true);
+  assert.equal(recordLaunchPrompt('term:a/b c', '/retro'), true);
+  assert.equal(recordLaunchPrompt('term:a/b c', '/loop /issue-pilot'), true);
+  assert.deepEqual(launchPrompts('term:a/b c'), ['/retro', '/loop /issue-pilot']);
+  assert.equal(recordedTitle('term:a/b c'), null, '不和標題記錄混在一起');
+  for (const n of [1, 2, 3, 4, 5, 6]) recordLaunchPrompt('term_x', `/p${n}`);
+  assert.deepEqual(launchPrompts('term_x'), ['/p2', '/p3', '/p4', '/p5', '/p6']);
+  writeFileSync(join(temp, 'titles', 'term_x.launch'), 'not json');
+  assert.deepEqual(launchPrompts('term_x'), []);
+  process.env.TAB_STATE_DIR = join(temp, 'titles', 'term_x.launch', 'nested');
+  assert.equal(recordLaunchPrompt('term_y', '/x'), false, '寫不進去時回 false、不丟錯');
 });
 
 // #413 第 5 項（investing#510）：回報未加引號的 `待 Retro --topic …` 印 TAB_STATE_MISMATCH、加引號後正常。--topic 之前的參數以空白併起來當狀態，

@@ -36,7 +36,7 @@ import { pathToFileURL } from 'node:url';
 import { orca, sendToSession } from './orca-session-send.mjs';
 import { ADAPTER, pilotFiles, pilotSection } from './pilot-probe.mjs';
 import { MODEL_ID, openSession } from './orca-session-split.mjs';
-import { recordedTitle, sameTopic, withState } from './tab-state.mjs';
+import { recordLaunchPrompt, recordedTitle, sameTopic, withState } from './tab-state.mjs';
 
 const USAGE = '用法：node scripts/pilot-handoff.mjs --session <id> --pid <pid> --reason <原因> [--to <name|handle>] [--held-check <指令>]（需要 ORCA_CLI_COMMAND）';
 export const LOOP_COMMAND = '/loop /issue-pilot';
@@ -216,6 +216,7 @@ async function handoff(cli, paths, { session, pid, reason, heldCheck, to }, sign
   } else {
     const sent = await sendToSession(ctx, target.handle, LOOP_COMMAND);
     if (sent.stop) return stop(sent.stop);
+    recordLaunchPrompt(target.handle, LOOP_COMMAND); // 新分頁由 openSession 記；Orca 的 draft 殘留這段時 tab-sweep 靠它分辨（#713）
   }
   const receiver = target?.handle ?? handle;
   let taken;

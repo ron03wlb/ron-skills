@@ -94,7 +94,7 @@ test('呼叫者不是 coordinator：STOP not-coordinator，不改 coordinator �
 });
 
 test('交接：改寫為 handoff 行、在主 checkout 開分頁並送出 /loop /issue-pilot，等新 session 寫入 pid 行才 HANDED_OFF', t => {
-  const { repo, coordinator, log, handoff } = fixture(t);
+  const { repo, coordinator, log, handoff, titles } = fixture(t);
   const result = handoff();
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), 'HANDED_OFF term_pilot name ron-skills-ac');
@@ -104,6 +104,7 @@ test('交接：改寫為 handoff 行、在主 checkout 開分頁並送出 /loop 
   assert.match(calls, /^terminal send --terminal term_pilot --text \/loop \/issue-pilot --enter --json$/m);
   assert.doesNotMatch(calls, /terminal split/);
   assert.match(readFileSync(coordinator, 'utf8'), /^pid 99 /);
+  assert.deepEqual(JSON.parse(readFileSync(join(titles, 'term_pilot.launch'), 'utf8')), ['/loop /issue-pilot'], '#713：記下啟動 prompt');
 });
 
 // CoS item 41：只有交接開的後繼 coordinator 換模型。adapter（主 checkout 的 docs/agents/issue-run.md 的 Pilot 段與它連到的檔）宣告
@@ -235,6 +236,7 @@ test('--to 對到自己與另一個同標題分頁：排除自己，HANDED_OFF �
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), 'HANDED_OFF term_peer name ron-skills-ac');
   assert.match(readFileSync(log, 'utf8'), /^terminal send --terminal term_peer --text \/loop \/issue-pilot --enter --json$/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(titles, 'term_peer.launch'), 'utf8')), ['/loop /issue-pilot'], '#713：既有 session 收到的也記');
 });
 
 for (const [name, to, extra, reason, cause] of [
