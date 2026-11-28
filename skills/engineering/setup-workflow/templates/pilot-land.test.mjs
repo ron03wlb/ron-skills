@@ -910,3 +910,58 @@ test('名額 0、sync-main 的 CI_PENDING：STOP load ci-pending，重跑沿用�
   assert.equal(git(f.repo, 'rev-parse', 'pilot/integration'), sha);
   assert.equal(f.checks(), '');
 });
+
+// #693（#679、#685-2）：push、sync-main、Stage 執行期間在主 checkout 的 `.scratch/pilot/landing.pid` 持有一行鎖
+// `pid=<pid> command=<子命令> key=<key> out=<輸出檔>`，結束時移除；另一個子命令遇到活著的鎖印 `STOP busy <子命令> <key> pid=<pid>`、exit 4，什麼都不動。
+// 活著的鎖：命令列帶 pilot-land 的 node 行程（同 Probe 的 landAlive）；pid 已死的殘留鎖清掉照常做。
+function landSleeper(t, temp) {
+  const file = join(temp, 'pilot-land.mjs');
+  writeFileSync(file, 'setTimeout(() => {}, 60000);\n');
+  const child = spawn(process.execPath, [file], { stdio: 'ignore' });
+  t.after(() => child.kill());
+  return child.pid;
+}
+
+test('push 鎖還活著：Stage 印 STOP busy push <整合分支> pid=<pid>、exit 4，stage worktree、分支與 checkpoint 都不動', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
+  const pid = landSleeper(t, f.temp);
+  const lock = join(f.repo, '.scratch/pilot/landing.pid');
+  const held = `pid=${pid} command=push key=pilot/integration out=${join(f.repo, '.scratch/pilot/landing-push.out')}\n`;
+  writeFileSync(lock, held);
+  const before = { checkpoint: f.read(), branches: git(f.repo, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads'), head: git(f.stageTree, 'rev-parse', '--abbrev-ref', 'HEAD') };
+  const result = f.land(f.key);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.equal(result.last, `STOP busy push pilot/integration pid=${pid}`);
+  assert.deepEqual({ checkpoint: f.read(), branches: git(f.repo, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads'), head: git(f.stageTree, 'rev-parse', '--abbrev-ref', 'HEAD') }, before);
+  assert.equal(git(f.stageTree, 'status', '--porcelain'), '');
+  assert.equal(readFileSync(lock, 'utf8'), held);
+  assert.equal(f.checks(), '');
+  // sync-main 與 push 也一樣擋。
+  for (const args of [['sync-main'], ['push', '--title', 'x']]) {
+    const other = f.land(...args);
+    assert.equal(other.status, 4, other.stdout + other.stderr);
+    assert.equal(other.last, `STOP busy push pilot/integration pid=${pid}`);
+  }
+});
+
+test('Stage 期間持有 landing.pid（含本行程 pid、子命令、key、輸出檔），結束後移除；輸出檔收到 stdout；pid 已死的殘留鎖清掉照常做', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
+  const lock = join(f.repo, '.scratch/pilot/landing.pid');
+  const gone = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout;
+  writeFileSync(lock, `pid=${gone} command=push key=pilot/integration out=/nowhere\n`);
+  const during = join(f.temp, 'during.pid');
+  const result = f.land(f.key, '--check-command', `cp '${lock}' '${during}' && echo 'CHECK_PASS tests 1'`);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const out = join(f.repo, `.scratch/pilot/landing-${f.key}.out`);
+  assert.match(readFileSync(during, 'utf8'), new RegExp(`^pid=\\d+ command=stage key=${f.key} out=${out.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n$`));
+  assert.ok(!existsSync(lock), 'landing.pid 沒移除');
+  assert.equal(readFileSync(out, 'utf8').trim().split('\n').at(-1), result.last);
+});
+
+test('STOP 結束（例如 STOP hold）也移除 landing.pid', t => {
+  const f = fixture(t, { members: [{ n: 1, files: { 'a.txt': 'a\n' } }] });
+  writeFileSync(join(f.repo, '.scratch/pilot/hold'), '');
+  const result = f.land(f.key);
+  assert.equal(result.last, 'STOP hold', result.stdout + result.stderr);
+  assert.ok(!existsSync(join(f.repo, '.scratch/pilot/landing.pid')));
+});

@@ -152,8 +152,8 @@
     },
     "scripts/lib/pilot-store.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/pilot-store.mjs",
-      "commit": "17729e71653f41ad69300e85bbccbc06ffb51623",
-      "sha256": "0a1c3521ed6c2abf7ec84e90c69a2c3f4016c1438d4cfeb70c1a44cac6305836"
+      "commit": "3eaff1e2a66b9b77b101d0ee67e6ae5026fcc88e",
+      "sha256": "d93a652de436fb6355952b2a0db0295e22914dd10428a7b0833873954fc1915b"
     },
     "scripts/lib/protected-paths.mjs": {
       "template": "skills/engineering/setup-workflow/templates/lib/protected-paths.mjs",
@@ -242,8 +242,8 @@
     },
     "scripts/pilot-land.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-land.mjs",
-      "commit": "bf85caec31d6f60be62080a2c02636bfdca6d22d",
-      "sha256": "a5615da4f777c5f6450485d196afb39f84553917b75cbc4898a5dc0692b6f055"
+      "commit": "3eaff1e2a66b9b77b101d0ee67e6ae5026fcc88e",
+      "sha256": "8bd0dfe94712e58b6125f73f4051256e44b1461ff8a03339da2105856fd45831"
     },
     "scripts/pilot-pr-body.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-pr-body.mjs",
@@ -252,8 +252,8 @@
     },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",
-      "commit": "30dacdb2b1126aa54c58546eda41375978ea7f1e",
-      "sha256": "2862b8758387cc413c8a7c006f62aa93c3e7b4034d174ac36fb9717c94b7d7c0"
+      "commit": "3eaff1e2a66b9b77b101d0ee67e6ae5026fcc88e",
+      "sha256": "1c58a57a07dbe0361552d9b65dd12cccccb8bcdefe081a3405d6e6ead48a15ae"
     },
     "scripts/pilot-register.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-register.mjs",
@@ -282,8 +282,8 @@
     },
     "scripts/pilot-watch.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-watch.mjs",
-      "commit": "f75cf822f4bf557a3da1709245101a05ec536015",
-      "sha256": "f62489e7103be7549f3e88df9504b7ab1cec4537abb1a17e8c919feef7cd9a7d"
+      "commit": "3eaff1e2a66b9b77b101d0ee67e6ae5026fcc88e",
+      "sha256": "9efbaee237a6c4227c494ba5fe5cfd1b3ed7fa7184c6f20327fcc19d3ac48f9e"
     },
     "scripts/run-codex-review.mjs": {
       "template": "skills/engineering/setup-workflow/templates/run-codex-review.mjs",
