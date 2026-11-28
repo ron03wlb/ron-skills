@@ -83,6 +83,12 @@
 //   checks-macos 排隊常超過 600 秒，每批多一次 STOP checks-timeout 與重跑）。期限在每次等 CI 時起算：sync-main 的 Regression 不算在內，
 //   sync-main 之後那輪 CI（第 3 步的第二次 land.mjs）有自己完整的期限。仍 `STOP checks-timeout <pr> → …` 時重跑同一行，PR 沿用、body 重產：land.mjs 經環境變數 LAND_RERUN_COMMAND
 //   收到本檔這一行（`node <本檔相對 cwd 的路徑> push …`），箭頭後印的就是它，不是 land.mjs 自己的指令（retro spay2 1dce1925#2）。
+// 執行鎖（#693：#679 接手時前任的 push 還在等 CI、#685 Stage 與 push 撞同一個 stage worktree）：push、sync-main 與 batch（Stage）在轉交 stage worktree 之後、
+//   動任何東西之前，以 O_EXCL 建主 checkout 的 `.scratch/pilot/landing.pid`，一行 `pid=<pid> command=<push|sync-main|stage> key=<key> out=<輸出檔>`
+//   （push、sync-main 的 key 是整合分支名，Stage 的是 batch key；lib/pilot-store.mjs 的 acquireLanding），行程結束（含 STOP、例外）時移除；
+//   同時把本行程的 stdout 也寫進 <輸出檔> `.scratch/pilot/landing-<batch key|push|sync-main>.out`（開始時清空），Probe 的 PUSHING 行指向它。
+//   鎖已在、持有的 pid 還是 pilot-land（landAlive）時印 `STOP busy <子命令> <key> pid=<pid>`、exit 4，stage worktree、分支、checkpoint 與輸出檔都不動；
+//   pid 已死就清掉照常做。前任的 push 用 `pilot-watch.mjs --pid <pid> --out <輸出檔>` 背景等完再看。
 // resolver 模組的契約（都可省略；ron-skills 的 scripts/pilot-resolve.mjs 是一例）：
 //   resolveFile(tree, path, kinds)  合併中途、不是戳記檔的衝突檔：傳回合併後的全文（本檔寫回並 git add），解不了傳回 undefined；
 //                                   用到的解法名稱加進 Set kinds，依加入順序出現在 RESOLVED 行。
@@ -99,20 +105,20 @@
 //     依號碼先合入、自己的分支改過這個檔的成員）、`integration`（成員開分支之後整合分支改過），或以 + 相連的多個來源（`member 79+integration`、`member 1+member 3`），
 //     都看不出來（不該發生）時是 `unknown`；種類是 resolver 的 conflictKind，沒有時 `code`（程式檔）或 `other`。
 //     例：`STOP conflict 108 scripts/lib/hosts.mjs=member 79:code docs/notes.md=integration:other`。以及 `STOP checkpoint …`、`STOP member <n> <state>`、`STOP dirty <worktree>`、
-//   `STOP no-stage-worktree`、`STOP create …`、`STOP merge <n> …`、`STOP git …`、`STOP load <load> <門檻>`、`STOP load slot-timeout <秒數>s`、`STOP load ci-pending <run url>`，
+//   `STOP no-stage-worktree`、`STOP busy <子命令> <key> pid=<pid>`（另一支 pilot-land 還持有執行鎖）、`STOP create …`、`STOP merge <n> …`、`STOP git …`、`STOP load <load> <門檻>`、`STOP load slot-timeout <秒數>s`、`STOP load ci-pending <run url>`，
 //   `STOP member <n> running (<WORKER 狀態>)，先跑 pilot-probe.mjs --apply`。之前的行：`WORKER <n> DONE <sha>`、`WORKER <n> STOP <cause>`（讀畫面寫回的 running 成員）、`STAGED <key> <sha> onto <tip>`、
 //   `RESUME <key> <sha>`、`RESUME <key> <sha> ci-pending`、`RESOLVED <n> <解法> <檔案…>`，Bare guard 還原主 checkout 時的 `UNBARE <主 checkout>`；
 //   MERGED 之前（已 merged 的重跑也印）對 checkpoint 每個 done 成員的每條 `postland: #<n> <command>` 印 `POSTLAND_PENDING <n> <command>`（#502，依成員號碼；沒有 postland 行時不印）。
 // exit：0 MERGED；4 STOP；3 checkpoint 鎖等到逾時（印 `CHECKPOINT_LOCKED <lock> <持鎖內容>`，#345）；2 用法錯誤；1 其他失敗（程式錯誤，不印 STOP）。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { availableParallelism, loadavg } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CI_PENDING_EXIT, CI_UNAVAILABLE_EXIT } from './ci-run.mjs';
 import { slotCommand, slotDelegatedLine, slotTimeoutLine } from './heavy-slot.mjs';
-import { batchMembers, CheckpointLocked, dropRegressing, exitIfLocked, gateIssues, heldIssues, openGates, postlandEntries, runInStageWorktree, updateCheckpoint } from './lib/pilot-store.mjs';
+import { acquireLanding, batchMembers, CheckpointLocked, dropRegressing, exitIfLocked, gateIssues, heldIssues, openGates, postlandEntries, runInStageWorktree, updateCheckpoint } from './lib/pilot-store.mjs';
 
 const USAGE = '用法：node scripts/pilot-land.mjs <batch key> [--branch retro/<x>] [--check-command <指令>] [--integration <分支>] [--main <分支>] [--resolver <模組>] [--load-max <n>] | sync-main [同上選項，不含 --branch] | push --title <標題> [同 sync-main 的選項]（--branch 時 key 是 req-<n>；門檻預設 $PILOT_LOAD_MAX，再來 3 × 核心數；在主 checkout 跑；沒有 stage worktree 時要 ORCA_CLI_COMMAND）';
 const LOAD = /^\d+(\.\d+)?$/;
@@ -781,6 +787,25 @@ function recordSync(main, sha, value, upstream) {
   }
 }
 
+/**
+ * 執行鎖（#693）：push、sync-main 與 Stage（batch key）在主 checkout 的 `.scratch/pilot/landing.pid` 持鎖到行程結束，
+ * 同時把本行程的 stdout 也寫進 `.scratch/pilot/landing-<key>.out`（push、sync-main 的 <key> 是子命令名），Probe 的 PUSHING 行指向它。
+ * 另一支 pilot-land 還活著持鎖時丟 `STOP busy <子命令> <key> pid=<pid>`，什麼都不動。
+ */
+function holdLanding(key) {
+  const main = mainCheckout();
+  const command = key === 'push' || key === 'sync-main' ? key : 'stage';
+  const out = join(main, `.scratch/pilot/landing-${key}.out`);
+  const busy = acquireLanding(main, { command, key: command === 'stage' ? key : config.integration, out });
+  if (busy) throw new Stop(`busy ${busy.command} ${busy.key} pid=${busy.pid}`);
+  writeFileSync(out, '');
+  const write = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (chunk, ...rest) => {
+    try { appendFileSync(out, chunk); } catch { /* 輸出檔寫不進去不影響本次執行 */ }
+    return write(chunk, ...rest);
+  };
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [key, ...rest] = process.argv.slice(2);
   const options = {};
@@ -811,6 +836,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   Object.assign(config, { check, integration, main, loadWait: Number(loadWait), loadPoll: Number(loadPoll), ciTimeout: ciTimeout });
   if (resolverPath) config.resolver = await import(pathToFileURL(resolverPath).href);
   try {
+    holdLanding(key);
     // `sync-main --branch …`、`push --branch …` 已被上面 req-<n> 的檢查擋成用法錯誤。
     if (key === 'push') process.exit(push(title, Number(loadMax), options.main));
     if (key === 'sync-main') {

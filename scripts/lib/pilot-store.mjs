@@ -1,5 +1,5 @@
 // 由 setup-workflow 範本同步，勿在此改：改正本後以 copy-templates.mjs 複製（副本清單 docs/agents/workflow-templates.json）。
-// pilot 存檔（issue-pilot 的 PILOT-STORE.md）正本 script 共用的小工具：存檔目錄、時間格式、用法錯誤，requests.md、gates.md 的解析（probe 與 pilot-request、pilot-gate 共用），以及 checkpoint 讀改寫的加鎖與原子寫入（withCheckpointLock、updateCheckpoint，#345）與 land 存活標記（regressingMark、landAlive，#361）。
+// pilot 存檔（issue-pilot 的 PILOT-STORE.md）正本 script 共用的小工具：存檔目錄、時間格式、用法錯誤，requests.md、gates.md 的解析（probe 與 pilot-request、pilot-gate 共用），以及 checkpoint 讀改寫的加鎖與原子寫入（withCheckpointLock、updateCheckpoint，#345）與 land 存活標記（regressingMark、landAlive，#361），以及 pilot-land 的執行鎖 landing.pid（landingHolder、acquireLanding，#693）。
 // 存檔一律在 coordinator checkout 的 `.scratch/pilot/`；checkout 由呼叫者傳入，不寫死任何專案路徑。
 import { spawnSync } from 'node:child_process';
 import { accessSync, closeSync, constants, existsSync, linkSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
@@ -36,7 +36,8 @@ const EMPTY_LOCK_MS = 2000;
 const heldLocks = new Set();
 let exitHook = false;
 const pause = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-const pidAlive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+/** pid 還在：kill 0 成功，或 EPERM（別的使用者的行程）。 */
+export const pidAlive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
 
 /** 等到逾時還拿不到鎖：`message` 是 `CHECKPOINT_LOCKED <lock> <持鎖內容>`。 */
 export class CheckpointLocked extends Error {}
@@ -148,6 +149,58 @@ export function landAlive(pid) {
   const ps = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
   if (ps.error) return true;
   return ps.status === 0 && ps.stdout.includes('pilot-land');
+}
+
+/** pilot-land 執行鎖的檔名（#693），在 coordinator checkout 的存檔目錄下。 */
+export const LANDING_LOCK = 'landing.pid';
+const LANDING_LINE = /^pid=(\d+) command=(\S+) key=(\S+) out=(.+)$/;
+
+/**
+ * 讀 pilot-land 執行鎖 `<checkout>/.scratch/pilot/landing.pid`（一行 `pid=<pid> command=<push|sync-main|stage> key=<key> out=<輸出檔>`）：
+ * 傳回 `{ raw, mtime, pid, command, key, out }`（讀不懂時只有 raw、mtime，pid 是 null），沒有鎖時 undefined。不判斷存活，存活用 landAlive(pid)。
+ */
+export function landingHolder(checkout) {
+  const lock = join(storeDir(checkout), LANDING_LOCK);
+  let raw;
+  let mtime;
+  try {
+    raw = readFileSync(lock, 'utf8');
+    mtime = statSync(lock).mtimeMs;
+  } catch { return undefined; }
+  const match = LANDING_LINE.exec(raw.trim());
+  return match ? { raw, mtime, pid: Number(match[1]), command: match[2], key: match[3], out: match[4] } : { raw, mtime, pid: null };
+}
+
+/**
+ * 取得 pilot-land 執行鎖（#693：push、sync-main、Stage 互斥，Probe 據此印 PUSHING）：以 O_EXCL 建立，內容是本行程的 pid、command、key 與 out。
+ * 鎖已在而持有者還是活著的 pilot-land（landAlive）時不動任何東西，傳回那份鎖（`{ pid, command, key, out }`）；pid 已死、或讀不懂且超過 2 秒時搬開重搶。
+ * 拿到時傳回 undefined，行程結束（含 process.exit、未捕捉的例外）時由 exit hook 移除；只移除內容仍是自己寫的那份。
+ */
+export function acquireLanding(checkout, { command, key, out }) {
+  const lock = join(storeDir(checkout), LANDING_LOCK);
+  const line = `pid=${process.pid} command=${command} key=${key} out=${out}\n`;
+  mkdirSync(dirname(lock), { recursive: true });
+  for (;;) {
+    try {
+      const fd = openSync(lock, 'wx');
+      try { writeSync(fd, line); } finally { closeSync(fd); }
+      break;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+    const holder = landingHolder(checkout);
+    if (!holder) continue;
+    if (holder.pid ? landAlive(holder.pid) : Date.now() - holder.mtime <= EMPTY_LOCK_MS) {
+      if (holder.pid) return holder;
+      pause(50);
+      continue;
+    }
+    breakLock(lock, holder);
+  }
+  process.on('exit', () => {
+    try { if (readFileSync(lock, 'utf8') === line) rmSync(lock, { force: true }); } catch { /* 已不在 */ }
+  });
+  return undefined;
 }
 
 /** CLI 的頂層 catch：CheckpointLocked 印它的訊息並 exit 3（可動手：等持鎖者結束後重跑同一條指令，鎖住的那個檔沒寫）；其他錯誤直接返回，由呼叫端照原本的方式處理。 */

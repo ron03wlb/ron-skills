@@ -475,3 +475,28 @@ test('batch 成員 A 活著時結束（不是一開始就已結束）：照樣�
   const result = run(['--batch', '501-502', '--checkout', 'checkout', ...fast]);
   assert.equal(result.stdout, 'EXITED 501-502 term_501\n');
 });
+
+// #693：Probe 印 `PUSHING <key> pid=<pid> out=<輸出檔>` 時，後繼以 `pilot-watch.mjs --pid <pid> --out <輸出檔>` 背景等前任的 push：
+// pid 結束後印 `PID_EXITED <pid>` 與輸出檔最後 --lines 行（預設 40）、exit 0；不讀 Orca，沒有 ORCA_CLI_COMMAND 也能跑（#679：手寫 pgrep 迴圈比對到自己）。
+test('--pid：pid 結束後 exit 0，印 PID_EXITED 與輸出檔尾巴', t => {
+  const { temp, run } = fixture(t);
+  const out = join(temp, 'landing-push.out');
+  writeFileSync(out, `${Array.from({ length: 50 }, (_, i) => `line ${i}`).join('\n')}\nLANDED 12 ${SHA}\n`);
+  const sleeper = spawnSync(process.execPath, ['-e', 'const c = require("child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 800)"], { detached: true, stdio: "ignore" }); c.unref(); process.stdout.write(String(c.pid))'], { encoding: 'utf8' }).stdout;
+  const started = Date.now();
+  const result = run(['--pid', sleeper, '--out', out, '--lines', '3', ...fast], {});
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(Date.now() - started >= 300, '沒等 pid 結束');
+  assert.deepEqual(result.stdout.trim().split('\n'), [`PID_EXITED ${sleeper}`, 'line 48', 'line 49', `LANDED 12 ${SHA}`]);
+});
+
+test('--pid：輸出檔不在時印 PID_EXITED 與 NO_OUTPUT <檔>，exit 0；--pid 不能和 handle 併用', t => {
+  const { temp, run } = fixture(t);
+  const gone = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout;
+  const missing = join(temp, 'nope.out');
+  const result = run(['--pid', gone, '--out', missing], {});
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [`PID_EXITED ${gone}`, `NO_OUTPUT ${missing}`]);
+  assert.equal(run(['--pid', gone, 'term_1'], {}).status, 2);
+  assert.equal(run(['--pid', 'abc'], {}).status, 2);
+});
