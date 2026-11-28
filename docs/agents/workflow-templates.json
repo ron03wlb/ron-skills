@@ -87,8 +87,8 @@
     },
     "scripts/claude-hook-tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-tab-state.mjs",
-      "commit": "595b29e8dd07129df1861defb7b3e0c94b4d2f9e",
-      "sha256": "f5b0967ec3a2b20695ebbfa05e00e3cce9c47813cdfc39e50855d6bb9cef48a7"
+      "commit": "187e377c93196e97071a8fc43253298feb0030af",
+      "sha256": "5494bd0150b175d8f1ff0062aca3e21abc4bd1697afb9bbc14a3893511d91c56"
     },
     "scripts/claude-hook-unbare.sh": {
       "template": "skills/engineering/setup-workflow/templates/claude-hook-unbare.sh",
