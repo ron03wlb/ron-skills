@@ -135,6 +135,26 @@ test('CLI：1 則滿 8h 觸發；land 中（staged batch）印 RETRO_WAIT', t =>
   assert.match(fixture(t, { issues: [issue(7, 8.5)], batch: 'merged abc1234' }).run().stdout, /^RETRO_DUE /, 'merged 已過 stage 到合入的區段');
 });
 
+// spay2 #1227：spay2 的批次狀態檔在 `.scratch/batch-<key>/state.md`、`current:` 不在行首，預設判定從來看不到 land 中的批次。
+// adapter 在 Retro trigger 條目宣告 `Retro safe point: \`<command>\``：輸出第一個字是 BUSY 時印 RETRO_WAIT busy <key>，沒宣告時照舊讀 .scratch/pilot/batch-*.md。
+test('CLI：宣告 Retro safe point 時改由它判定；BUSY <key> 印 RETRO_WAIT busy <key>，其他輸出照常到期', t => {
+  const declared = command => `- **Retro trigger.** \`Retro trigger: count=5 age=8h\`\n  - Retro safe point: \`${command}\``;
+  const busy = fixture(t, { trigger: declared("echo 'BUSY batch-i1133 regressing'"), issues: [issue(7, 8.5)] }).run();
+  assert.equal(busy.status, 0, busy.stderr);
+  assert.equal(busy.stdout, 'RETRO_WAIT busy batch-i1133 1 oldest=8.5h\n');
+  const free = fixture(t, { trigger: declared('echo FREE'), issues: [issue(7, 8.5)], batch: 'staged abc1234 onto def5678' }).run();
+  assert.match(free.stdout, /^RETRO_DUE 1 oldest=8\.5h → /, '宣告了就只看宣告的指令，不再讀 .scratch/pilot/batch-*.md');
+  assert.match(fixture(t, { trigger: declared('true'), issues: [issue(7, 8.5)] }).run().stdout, /^RETRO_DUE 1 /, '沒有輸出也不算 BUSY');
+});
+
+test('CLI：Retro safe point 失敗時 RETRO_FAILED safe-point <原因> exit 1；沒到期時不跑它', t => {
+  const failing = '- **Retro trigger.** `Retro trigger: count=5 age=8h`\n  - Retro safe point: `echo boom >&2; exit 3`';
+  const failed = fixture(t, { trigger: failing, issues: [issue(7, 8.5)] }).run();
+  assert.equal(failed.status, 1);
+  assert.equal(failed.stdout, 'RETRO_FAILED safe-point exit 3：boom\n');
+  assert.match(fixture(t, { trigger: failing, issues: [issue(7, 1)] }).run().stdout, /^RETRO_IDLE 1 /, '沒到期不必判斷安全點');
+});
+
 test('CLI：自訂門檻；宣告格式錯、Roster 沒有 Roster due 時 RETRO_FAILED exit 1', t => {
   assert.match(fixture(t, { trigger: '- **Retro trigger.** `Retro trigger: count=2 age=24h`', issues: [issue(1, 1), issue(2, 1)] }).run().stdout, /^RETRO_DUE 2 /);
   const bad = fixture(t, { trigger: '- **Retro trigger.** `Retro trigger: count=five`' }).run();
