@@ -327,6 +327,39 @@ test('--capacity：terminal 已 exited 的成員不算進帳本', t => {
   assert.match(readFileSync(ledger, 'utf8'), /^investing\t2\t/);
 });
 
+// #622：fix unit／retro 收集者的 session 列由 Probe 每輪維護：terminal 已 exited 或已不在就清掉，還在跑就刷新時間；別的 repo 的不碰。
+test('--capacity：自己 repo 的 session 列，exited 與分頁已不在的清掉、還在跑的刷新時間，別的 repo 的不碰', t => {
+  const { probe, repo } = fixture(t, { screens: {
+    term_fix: { status: 'running', tail: ['❯'] },
+    term_retro: { status: 'exited', tail: ['Bye!'] },
+    term_other: { status: 'exited', tail: ['Bye!'] },
+  } });
+  const ledger = join(repo, '..', 'pilot-workers.tsv');
+  const old = new Date(Date.now() - 90 * 60000).toISOString();
+  writeFileSync(ledger, [
+    `session\tacme\tfix\tterm_fix\t${old}`, `session\tacme\tretro\tterm_retro\t${old}`,
+    `session\tacme\tfix\tterm_gone\t${old}`, `session\tother\tfix\tterm_other\t${old}`, `session\tacme\tfix\tpending:1.x\t${old}`, 'session\tacme\tfix', ''].join('\n'));
+  const result = probe({ args: ['--capacity', 'acme'], extraEnv: { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '4' } });
+  assert.equal(result.status, 0, result.stderr);
+  const rows = readFileSync(ledger, 'utf8').split('\n').filter(Boolean);
+  const fix = rows.find(row => row.includes('\tterm_fix\t'));
+  assert.ok(fix && Date.parse(fix.split('\t')[4]) > Date.parse(old), rows.join('\n'));
+  assert.ok(!rows.some(row => /\tterm_(retro|gone)\t/.test(row)), rows.join('\n'));
+  assert.ok(rows.includes(`session\tother\tfix\tterm_other\t${old}`), rows.join('\n'));
+  // 預留中（split 還在開分頁）的 pending 列沒有 terminal 可讀，不碰。
+  assert.ok(rows.includes(`session\tacme\tfix\tpending:1.x\t${old}`), rows.join('\n'));
+  // 合計：acme 0 個成員 + term_fix + term_other + pending = 3，未滿不印 CAPACITY_FULL。
+  assert.ok(!lines(result).some(line => /^(CAPACITY_FULL|OVER_CAP)/.test(line)), result.stdout);
+});
+
+test('--capacity：session 列算進合計，剛好滿時 CAPACITY_FULL 列出 <repo>:<kind>', t => {
+  const { probe, repo } = fixture(t, { screens: { term_fix: { status: 'running', tail: ['❯'] } } });
+  const ledger = join(repo, '..', 'pilot-workers.tsv');
+  writeFileSync(ledger, `other\t1\t${new Date().toISOString()}\nsession\tacme\tfix\tterm_fix\t${new Date().toISOString()}\n`);
+  const out = lines(probe({ args: ['--capacity', 'acme'], extraEnv: { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '2' } }));
+  assert.ok(out.includes('CAPACITY_FULL 2/2 other=1 acme:fix=1'), out.join('\n'));
+});
+
 // #396：$PILOT_MACHINE_WORKER_CAP 空白時照預設 4 寫帳本，但先印 CAPACITY_ENV_MISSING，不再默默用預設值。
 test('--capacity 時 $PILOT_MACHINE_WORKER_CAP 空白印 CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP；有值時不印', t => {
   const { batch, probe, repo } = fixture(t, { screens: { term_1: { status: 'running', tail: ['❯'] } } });
