@@ -32,6 +32,8 @@
 //   RETRO_FAILED <原因>（tracker 或 Roster command 失敗、宣告格式錯；exit 1）
 //   --start：重新判斷，到期時開分頁（orca-session-split.mjs 的 openSession，新分頁、標題 `處理中｜retro-collect`，第一個 prompt `/retro-collect`），
 //     寫 `.scratch/retro/collector`，印 RETRO_STARTED <handle>；沒到期時印上面那一行、不開；開分頁失敗印 RETRO_START_FAILED <原因>（exit 4）。
+//     開分頁走 orca-session-split.mjs 的 openCountedSession（#622）：全機帳本（pilot-capacity.mjs）已滿時不開，印 `RETRO_START_FAILED capacity <合計>/<上限> [<repo>=<n>...] +1`；
+//     開成功時記一筆 `retro` session 列，repo 是 coordinator checkout 的目錄名（同 Probe 的 `--capacity <repo>`），由 Probe 每輪刷新或在收集者結束時清掉。
 //     開成功時（CoS item 89：自動觸發沒接上卻沒人發現，要留證據）也在 --collect-in 的 `.scratch/retro/triggers.log`（JSONL）追加一行
 //     `{"time","event":"start","trigger":"count"|"age"|"count+age","uncollected","oldestHours","handle","threshold":{"count","ageHours"}}`，
 //     並以同目錄的 pilot-decision.mjs 在 coordinator checkout 的 decisions.md 記一列（沒有那支或它失敗時 stderr 說明，照樣印 RETRO_STARTED）。
@@ -42,11 +44,11 @@
 // exit：0 印完；1 RETRO_FAILED；2 用法錯誤；4 RETRO_START_FAILED。
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { trackerKind } from './lib/hosts.mjs';
 import { orca } from './orca-session-send.mjs';
-import { openSession } from './orca-session-split.mjs';
+import { openCountedSession, recordFix } from './orca-session-split.mjs';
 import { WORKING, recordedTitle, tabTitleOf } from './tab-state.mjs';
 
 export const DEFAULT_COUNT = 5;
@@ -314,7 +316,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.log('RETRO_START_FAILED no-orca（沒有 ORCA_CLI_COMMAND；請人在主 checkout 輸入 /retro-collect）');
     process.exit(4);
   }
-  const opened = await openSession({ cli }, { title: 'retro-collect', prompt: '/retro-collect', main: collectIn, newTab: true });
+  const opened = await openCountedSession({ cli }, { title: 'retro-collect', prompt: '/retro-collect', main: collectIn, newTab: true }, { repo: basename(checkout), kind: 'retro' });
+  if (opened.recordError) console.error(`WARN capacity-record ${opened.recordError} → ${recordFix({ repo: basename(checkout), kind: 'retro', ...opened })}`);
   if (opened.stop) {
     console.log(`RETRO_START_FAILED ${opened.stop}`);
     process.exit(4);

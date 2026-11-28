@@ -1,9 +1,9 @@
 {
   "sources": {
     "skills/engineering/issue-run/SKILL.md": "cffd12ed55b2bda296d6695d283e2dff76c0316ea4e7bc95c620cc75b0c3fd54",
-    "skills/engineering/issue-pilot/SKILL.md": "06b4b3716b8c942a3461feeb47645326cc2a7dadc064b4d29dd6b82ff444f4ae",
+    "skills/engineering/issue-pilot/SKILL.md": "22246189e1eb8f6de6f1a2a58d3cd6ad6e08475acfb871b3f69267dbc5d6c79f",
     "skills/engineering/retro-collect/SKILL.md": "958a414820b5987049c8095298e68a2cd4e17b6fd0da32243d7b69ac9bdb4fd7",
-    "skills/engineering/setup-workflow/SKILL.md": "d08b5c0d67258ee98e1f5a214e9beebef17db8e5c79afcd4e0ec24ae9744c61f",
+    "skills/engineering/setup-workflow/SKILL.md": "350a235d7995901801b4c817b837099a4bb9bd72dc24a7e01e96658cca13fa99",
     "skills/engineering/issue-run/ADAPTER.md": "e2336e85cba6f1f5cbdc0b53b526410fe840ece3fec7a6f551980c29786965f0"
   }
 }

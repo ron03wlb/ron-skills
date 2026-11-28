@@ -101,11 +101,14 @@ else if (b === 'list' && fs.existsSync(${JSON.stringify(tab)})) reply('list-visu
 else if (b === 'list') reply('list-visual', { terminals: [], visualLayouts: [] });
 `);
   chmodSync(join(bin, 'orca'), 0o755);
+  // 全機帳本放在暫存目錄（#622：--start 開分頁前查帳本、開成功後記一筆 retro session），不碰真的 ~/.local/state。
+  const ledger = join(temp, 'pilot-workers.tsv');
   const run = (...args) => spawnSync(process.execPath, [SCRIPT, root, ...args], {
     cwd: root, encoding: 'utf8', env: { ...process.env, ...FAST, PATH: `${bin}:${process.env.PATH}`, RETRO_DUE_NOW: new Date(NOW).toISOString(),
-      ORCA_CLI_COMMAND: orca ? join(bin, 'orca') : '', ORCA_TERMINAL_HANDLE: '', TAB_STATE_DIR: join(temp, 'titles') },
+      ORCA_CLI_COMMAND: orca ? join(bin, 'orca') : '', ORCA_TERMINAL_HANDLE: '', TAB_STATE_DIR: join(temp, 'titles'),
+      PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '2' },
   });
-  return { root, run, log, tab };
+  return { root, run, log, tab, ledger };
 }
 const issue = (number, hours, body = '1. x') => ({ number, createdAt: new Date(NOW - hours * HOUR).toISOString(), body });
 
@@ -238,4 +241,21 @@ test('CLI：手動收集者的計畫檔還沒有報告時 RETRO_RUNNING plan-<ke
   rmSync(join(root, '.scratch/retro/reports'), { recursive: true });
   assert.equal(run('--log-collect', '1124a', '--item', '#1=done').status, 0);
   assert.match(run().stdout, /^RETRO_DUE /, 'triggers.log 已有 collect 行：收完了');
+});
+
+// #622：收集者跑完整檢查，算進全機帳本。
+test('CLI --start：全機上限已滿時不開分頁，印 RETRO_START_FAILED capacity、exit 4、不寫 collector', t => {
+  const { root, run, log, ledger } = fixture(t, { orca: true, issues: [issue(1, 9)] });
+  writeFileSync(ledger, `spay2\t2\t${new Date().toISOString()}\n`);
+  const started = run('--start');
+  assert.equal(started.status, 4, started.stderr);
+  assert.equal(started.stdout, 'RETRO_START_FAILED capacity 3/2 spay2=2 +1\n');
+  assert.doesNotMatch(existsSync(log) ? readFileSync(log, 'utf8') : '', /terminal create/);
+  assert.equal(existsSync(join(root, '.scratch/retro/collector')), false);
+});
+
+test('CLI --start：開成功時在帳本記一筆 retro session（repo 是 coordinator checkout 的目錄名）', t => {
+  const { run, ledger } = fixture(t, { orca: true, issues: [issue(1, 9)] });
+  assert.equal(run('--start').stdout, 'RETRO_STARTED term_new\n');
+  assert.match(readFileSync(ledger, 'utf8'), /^session\trepo\tretro\tterm_new\t\d{4}-/m);
 });

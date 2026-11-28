@@ -5,11 +5,12 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { join } from 'node:path';
 import { FAST, orcaReplySource } from './test/fake-orca.mjs';
 import { repoFixture, run, source } from './test/repo-fixture.mjs';
+import { recordFix } from './orca-session-split.mjs';
 
 const script = join(source, 'orca-session-split.mjs');
 
 // 記錄呼叫的假 Orca CLI（回應由 test/fake-orca.mjs 的真實樣本長出）。
-function fixture(t, { self, sendRejected = false, swallow = 0, waitError = false } = {}) {
+function fixture(t, { self, sendRejected = false, swallow = 0, waitError = false, createFails = false } = {}) {
   const { temp, repo } = repoFixture(t);
   const log = join(temp, 'orca.log');
   writeFileSync(log, '');
@@ -21,16 +22,17 @@ fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n
 ${orcaReplySource()}
 if (b === 'split') reply('split', { split: { handle: 'term_split' } });
 else if (b === 'rename') reply('rename', { rename: { handle: process.argv[4] } });
-else if (b === 'create') reply('create', { terminal: { handle: 'term_new' } });
+else if (b === 'create') ${createFails ? `fail('runtime_unavailable')` : `reply('create', { terminal: { handle: 'term_new' } })`};
 else if (b === 'wait') ${waitError ? `fail('runtime_unavailable')` : `reply('wait', { wait: { satisfied: true } })`};
 else if (b === 'send') { fs.appendFileSync(sentFile, arg('--text') + '\\n'); reply('send', { send: { accepted: ${!sendRejected} } }); }
 else if (b === 'read') reply('read', { terminal: { tail: sent().length > ${swallow} ? [sent().pop()] : ['❯'] } });
 `);
   chmodSync(cli, 0o755);
   const titles = join(temp, 'titles');
-  const open = args => run(repo, ['node', script, ...args], { env: { ORCA_CLI_COMMAND: cli, ...FAST, ORCA_TERMINAL_HANDLE: self ?? '', TAB_STATE_DIR: titles } });
+  const ledger = join(temp, 'pilot-workers.tsv');
+  const open = (args, extra = {}) => run(repo, ['node', script, ...args], { env: { ORCA_CLI_COMMAND: cli, ...FAST, ORCA_TERMINAL_HANDLE: self ?? '', TAB_STATE_DIR: titles, PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '2', ...extra } });
   const recorded = handle => readFileSync(join(titles, handle), 'utf8');
-  return { repo, log, open, recorded, titles };
+  return { repo, log, open, recorded, titles, ledger };
 }
 
 // split 出來的 pane 和呼叫者同一個分頁：分頁標題歸呼叫者，不改名也不記標題（#378）。
@@ -133,4 +135,65 @@ test('命令列開 session 不吃 adapter 的 Coordinator model 宣告：仍是�
   assert.equal(open(['--title', 'x', '--prompt', 'y', '--tab']).stdout.trim(), 'OPENED term_new');
   assert.match(readFileSync(log, 'utf8'), / --command claude --json$/m);
   assert.doesNotMatch(readFileSync(log, 'utf8'), /--model/);
+});
+
+// #622：fix unit／retro 收集者的分頁算進全機帳本。
+test('--capacity 上限已滿：STOP capacity、exit 4、沒呼叫 Orca 開分頁、帳本不變', t => {
+  const { log, open, ledger } = fixture(t);
+  const rows = `spay2\t2\t${new Date().toISOString()}\n`;
+  writeFileSync(ledger, rows);
+  const result = open(['--title', 'fix', '--prompt', 'y', '--tab', '--capacity', 'ron-skills', '--kind', 'fix']);
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(result.stdout.trim(), 'STOP capacity 3/2 spay2=2 +1');
+  assert.equal(readFileSync(log, 'utf8'), '');
+  assert.equal(readFileSync(ledger, 'utf8'), rows);
+});
+
+test('--capacity 沒滿：開分頁並在帳本記一筆 session 列', t => {
+  const { open, ledger } = fixture(t);
+  writeFileSync(ledger, `spay2\t1\t${new Date().toISOString()}\n`);
+  const result = open(['--title', 'fix', '--prompt', 'y', '--tab', '--capacity', 'ron-skills', '--kind', 'fix']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'OPENED term_new');
+  assert.match(readFileSync(ledger, 'utf8'), /^session\tron-skills\tfix\tterm_new\t\d{4}-/m);
+});
+
+test('--capacity 開分頁那一步就失敗（沒有 handle）：刪掉預留、不記帳', t => {
+  const { open, ledger } = fixture(t, { createFails: true });
+  assert.equal(open(['--title', 'fix', '--prompt', 'y', '--tab', '--capacity', 'ron-skills', '--kind', 'fix']).status, 4);
+  assert.equal(existsSync(ledger) ? readFileSync(ledger, 'utf8') : '', '');
+});
+
+test('--capacity 與 --kind 要一起給，kind 只能 fix|retro：否則 exit 2', t => {
+  const { open, log } = fixture(t);
+  for (const extra of [['--capacity', 'ron-skills'], ['--kind', 'fix'], ['--capacity'], ['--kind'], ['--capacity', '--kind', 'fix'], ['--capacity', 'ron-skills', '--kind', 'worker'], ['--capacity', 'session', '--kind', 'fix']]) {
+    assert.equal(open(['--title', 'x', '--prompt', 'y', ...extra]).status, 2, extra.join(' '));
+  }
+  assert.equal(readFileSync(log, 'utf8'), '');
+});
+
+test('openCountedSession 兩個同時開、只剩一個名額：只開一個，另一個 STOP capacity', async t => {
+  const { ledger, repo } = fixture(t);
+  const { openCountedSession } = await import(script);
+  const cli = join(repo, '..', 'orca');
+  process.env.TAB_STATE_DIR = join(repo, '..', 'titles');
+  t.after(() => { delete process.env.TAB_STATE_DIR; });
+  const open = () => openCountedSession({ cli }, { title: 'fix', prompt: 'y', main: repo, newTab: true }, { repo: 'ron-skills', kind: 'fix', file: ledger, cap: 1 });
+  const results = await Promise.all([open(), open()]);
+  assert.equal(results.filter(result => result.handle && !result.stop).length, 1, JSON.stringify(results));
+  assert.match(results.find(result => result.stop).stop, /^capacity 2\/1 ron-skills:fix=1 \+1$/);
+  assert.match(readFileSync(ledger, 'utf8'), /^session\tron-skills\tfix\tterm_new\t/m);
+});
+
+// #622 review 2：送出後確認失敗（STOP 帶 handle）時分頁還開著，預留列換成它的 handle，由 Probe 在 terminal 結束時清掉。
+test('--capacity 分頁開好但送出失敗：帳本記那個分頁的 handle，不釋出名額', t => {
+  const { open, ledger } = fixture(t, { sendRejected: true });
+  const result = open(['--title', 'fix', '--prompt', 'y', '--tab', '--capacity', 'ron-skills', '--kind', 'fix']);
+  assert.equal(result.stdout.trim(), 'STOP send term_new');
+  assert.match(readFileSync(ledger, 'utf8'), /^session\tron-skills\tfix\tterm_new\t/m);
+});
+
+test('recordFix：補記指令先 close 預留列再 open 真的 handle', () => {
+  assert.equal(recordFix({ repo: 'ron-skills', kind: 'fix', handle: 'term_x', pending: 'pending:1.a' }),
+    'node scripts/pilot-capacity.mjs close pending:1.a && node scripts/pilot-capacity.mjs open ron-skills fix term_x');
 });
