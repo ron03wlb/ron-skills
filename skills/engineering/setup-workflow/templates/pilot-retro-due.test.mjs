@@ -3,7 +3,7 @@ import './test/isolate-git-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_AGE_HOURS, DEFAULT_COUNT, declaredRoster, declaredThreshold, labelledRetro, retroDue, rosterItems, trackerItems } from './pilot-retro-due.mjs';
@@ -166,6 +166,33 @@ test('CLI --start：到期時新開分頁送 /retro-collect、記下收集者；
   assert.equal(run().stdout, 'RETRO_RUNNING term_new 1 oldest=9.0h\n');
   writeFileSync(tab, '待關閉｜retro-collect');
   assert.match(run().stdout, /^RETRO_DUE 1 /);
+});
+
+// #649：收集者跑完（report 已落地）但分頁標題留在處理中｜、狀態列殘留「1 shell still running」或「← 1 agent」，
+// 這裡連續 12 小時印 RETRO_RUNNING，retro-candidates 沒人收。收集者啟動之後有 report 或 collect 紀錄就不算在跑。
+test('CLI：收集者分頁仍是處理中｜但啟動後已寫 report 或 collect 紀錄時照常到期；真的在收（計畫 4 小時內有動、沒有 report）仍 RETRO_RUNNING', t => {
+  const { root, run, tab } = fixture(t, { orca: true, issues: [issue(1, 9)] });
+  const started = Date.parse('2026-11-23T03:00:00Z');
+  mkdirSync(join(root, '.scratch/retro/reports'), { recursive: true });
+  writeFileSync(join(root, '.scratch/retro/collector'), `${new Date(started).toISOString()} term_new\n`);
+  writeFileSync(tab, '處理中｜retro-collect');
+  const stamp = (path, at) => utimesSync(path, at / 1000, at / 1000);
+  const old = join(root, '.scratch/retro/reports/2026-11-22-1122a.md');
+  writeFileSync(old, 'x');
+  stamp(old, started - HOUR);
+  const plan = join(root, '.scratch/retro/plan-1123a.md');
+  writeFileSync(plan, '# plan\n');
+  stamp(plan, NOW - HOUR);
+  assert.equal(run().stdout, 'RETRO_RUNNING term_new 1 oldest=9.0h\n', '啟動前的舊 report 不算；計畫還在動、沒有 report');
+  const report = join(root, '.scratch/retro/reports/2026-11-23-1123a.md');
+  writeFileSync(report, 'x');
+  stamp(report, NOW - HOUR / 2);
+  assert.match(run().stdout, /^RETRO_DUE 1 /, '已寫 report：收完了，標題殘留處理中｜不算');
+  rmSync(report);
+  appendFileSync(join(root, '.scratch/retro/triggers.log'), `${JSON.stringify({ time: new Date(started - HOUR).toISOString(), event: 'collect', key: '1122a' })}\n`);
+  assert.match(run().stdout, /^RETRO_RUNNING term_new /, '啟動前的 collect 紀錄不算');
+  appendFileSync(join(root, '.scratch/retro/triggers.log'), `${JSON.stringify({ time: new Date(NOW - HOUR / 2).toISOString(), event: 'collect', key: '1123a' })}\n`);
+  assert.match(run().stdout, /^RETRO_DUE 1 /, '啟動後的 collect 紀錄（落地失敗也寫）：收完了');
 });
 
 test('CLI --start：沒到期時照印那一行、不開分頁', t => {

@@ -4,7 +4,7 @@ import './test/isolate-orca-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { IDLE_MS, STATE_FILE, coordinatorHandle, inMain, rosterRows, screenBusy, sweep } from './tab-sweep.mjs';
@@ -111,6 +111,37 @@ test('待關閉的分頁被關、待 Retro 的分頁送 /retro；處理中、現
     const again = await run(main);
     assert.ok(again.lines.some(l => l.startsWith('TAB_SKIP term_retro already-sent ')), '同一 handle 只送一次');
     assert.ok(!again.calls.some(c => c.startsWith('terminal send')));
+  } finally {
+    rmSync(main, { recursive: true, force: true });
+  }
+});
+
+// #649：retro-collect 收完、report 已落地，分頁標題卻留在處理中｜，狀態列殘留「1 shell still running」或「← 1 agent」，
+// 這裡每輪 TAB_SKIP working，分頁 12 小時沒人關。收集者（.scratch/retro/collector）啟動後已有 report 或 collect 紀錄時當待關閉處理。
+test('收完的收集者分頁停在處理中｜、狀態列殘留 shell／agent 計數：當待關閉關掉；還沒收完的仍是 working', async () => {
+  const main = fixture();
+  try {
+    const started = NOW - 3 * 3_600_000;
+    mkdirSync(join(main, '.scratch/retro/reports'), { recursive: true });
+    writeFileSync(join(main, '.scratch/retro/collector'), `${new Date(started).toISOString()} term_collect\n`);
+    const old = join(main, '.scratch/retro/reports/2026-11-24-1124a.md');
+    writeFileSync(old, 'x');
+    utimesSync(old, (started - 3_600_000) / 1000, (started - 3_600_000) / 1000);
+    const residue = ['✻ Baked for 20m 9s · done 3:34 PM', '', '│ ❯        │', '  ⏵⏵ auto mode on · 1 shell still running · ← 1 agent'];
+    const fake = () => fakeOrca({
+      terminals: [term('term_collect'), term('term_working')],
+      titles: { term_collect: '處理中｜retro-collect', term_working: '處理中｜#12 worker' },
+      screens: { term_collect: residue },
+    });
+    const before = await run(main, { fake: fake() });
+    assert.ok(before.lines.includes('TAB_SKIP term_collect working'), '啟動前的舊 report 不算收完');
+    const report = join(main, '.scratch/retro/reports/2026-11-25-1125a.md');
+    writeFileSync(report, 'x');
+    utimesSync(report, (NOW - 3_600_000) / 1000, (NOW - 3_600_000) / 1000);
+    const after = await run(main, { fake: fake() });
+    assert.deepEqual(sendsAndCloses(after.calls), ['terminal close --terminal term_collect --tab']);
+    assert.ok(after.lines.includes('TAB_CLOSED term_collect 處理中｜retro-collect'));
+    assert.ok(after.lines.includes('TAB_SKIP term_working working'), '不是收集者的處理中｜照舊不動');
   } finally {
     rmSync(main, { recursive: true, force: true });
   }

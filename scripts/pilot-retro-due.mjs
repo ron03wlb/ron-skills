@@ -20,6 +20,8 @@
 //   安全點：`.scratch/pilot/batch-*.md` 有 `current: staged …` 的 batch（stage 到整合分支合入之間，含 regression 在跑）時，到期也只印 RETRO_WAIT。
 //   已有收集者：--collect-in 的 `.scratch/retro/collector`（`--start` 寫的 `<ISO 時刻> <handle>`）的 handle 還在 `orca terminal list`、標題是 `處理中｜` 開頭時，
 //     到期也只印 RETRO_RUNNING；收集者跑完會把分頁換成待 Retro／待關閉，就不算在跑。讀不到 Orca（沒有 ORCA_CLI_COMMAND 或呼叫失敗）時當作沒有在跑。
+//     標題沒換（#649：收完的分頁停在處理中｜，狀態列殘留「1 shell still running」或「← 1 agent」，連續 12 小時印 RETRO_RUNNING）時，
+//     以檔案為準：紀錄的啟動時刻之後 reports/ 有檔、或 triggers.log 有 collect 行，就是收完了（collectedSince）。
 //     手動開的收集者（沒經 --start、分頁標題沒有狀態前綴；CoS item 89：term_41eb9968「Retro-collect retro-candidates issues」收 20 張時這裡印了 RETRO_DUE）
 //     由計畫檔認：--collect-in 的 `.scratch/retro/plan-<key>.md` 最近 4 小時內改過，而且還沒有 `reports/<日期>-<key>.md`、triggers.log 也沒有這個 key 的
 //     collect 行（retro-collect 的 Close 兩者都寫，落地失敗也寫）時印 RETRO_RUNNING plan-<key>；超過 4 小時沒動的計畫檔當作中斷，不擋下一次。
@@ -177,12 +179,26 @@ export function dueLine(result, threshold, startCommand) {
   return `RETRO_DUE ${tail} → ${startCommand}`;
 }
 
-/** 收集者分頁還在跑：紀錄的 handle 在 terminal list，分頁標題（Orca 的版面資料；沒涵蓋時用 tab-state 的紀錄）以 `處理中｜` 開頭。 */
+/**
+ * 收集者啟動（since，ms）之後已收完：`.scratch/retro/reports/` 有 mtime ≥ since 的檔，或 triggers.log 有 time ≥ since 的 collect 行
+ * （retro-collect 的 Close 兩者都寫，落地失敗也寫）。#649：收完的分頁標題可能留在處理中｜、狀態列殘留 shell／agent 計數，不能當成在跑。
+ */
+export function collectedSince(collectIn, since) {
+  if (!Number.isFinite(since)) return false;
+  const dir = join(collectIn, '.scratch/retro/reports');
+  if (existsSync(dir) && readdirSync(dir).some(name => statSync(join(dir, name)).mtimeMs >= since)) return true;
+  const log = existsSync(join(collectIn, TRIGGERS_LOG)) ? readFileSync(join(collectIn, TRIGGERS_LOG), 'utf8') : '';
+  return log.split('\n').some(line => {
+    try { const record = JSON.parse(line); return record.event === 'collect' && Date.parse(record.time) >= since; } catch { return false; }
+  });
+}
+
+/** 收集者分頁還在跑：紀錄的 handle 在 terminal list，分頁標題（Orca 的版面資料；沒涵蓋時用 tab-state 的紀錄）以 `處理中｜` 開頭，而且啟動後還沒收完（collectedSince）。 */
 export async function runningCollector(collectIn, cli) {
   const record = join(collectIn, COLLECTOR_FILE);
   if (!cli || !existsSync(record)) return null;
-  const handle = readFileSync(record, 'utf8').trim().split(/\s+/)[1];
-  if (!handle) return null;
+  const [at, handle] = readFileSync(record, 'utf8').trim().split(/\s+/);
+  if (!handle || collectedSince(collectIn, Date.parse(at))) return null;
   try {
     const list = await orca({ cli, signal: AbortSignal.timeout(15000) }, 'terminal', 'list', '--include-visual-layouts');
     if (!(list.terminals ?? []).some(terminal => terminal.handle === handle)) return null;

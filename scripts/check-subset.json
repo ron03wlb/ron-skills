@@ -32,6 +32,10 @@
       "related": true
     },
     {
+      "match": ["docs/agents/pilot-*.md"],
+      "tests": ["tests/pilot-project-flags.test.mjs", "tests/pilot-push-gate-scripts.test.mjs", "tests/pilot-resume-tui-timeout.test.mjs"]
+    },
+    {
       "match": ["docs/adr/**", "*.md"],
       "steps": ["links"],
       "related": true
