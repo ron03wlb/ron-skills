@@ -5,7 +5,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { check, closeSession, machineTotal, missingEnv, readLedger, report, sessionRows, touchSessions } from './pilot-capacity.mjs';
+import { PENDING, check, closeSession, machineTotal, missingEnv, readLedger, renameSession, report, reserveSession, sessionRows, touchSessions } from './pilot-capacity.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./pilot-capacity.mjs', import.meta.url));
@@ -180,4 +180,17 @@ test('open 用法錯誤 exit 2：kind 不是 fix|retro、handle 空或帶空白�
   for (const args of [['open', 'ron-skills', 'worker', 'term_x'], ['open', 'ron-skills', 'fix', 'term x'], ['open', 'ron-skills', 'fix'], ['open', 'session', 'fix', 'term_x'], ['close'], ['report', 'session', '1']]) {
     assert.equal(run(file, args).status, 2, args.join(' '));
   }
+});
+
+// #622 review：check 與記帳分開時，兩個 coordinator 會各自通過最後一個名額；預留在同一把鎖裡檢查並寫入。
+test('reserveSession：同一把鎖裡檢查並寫一筆 pending 列，名額只給第一個；renameSession 換成真的 handle', t => {
+  const file = ledger(t);
+  const first = reserveSession(file, { repo: 'ron-skills', kind: 'fix' }, { now: NOW, cap: 1 });
+  assert.equal(first.ok, true);
+  assert.ok(first.handle.startsWith(PENDING), first.handle);
+  const second = reserveSession(file, { repo: 'spay2', kind: 'retro' }, { now: NOW, cap: 1 });
+  assert.deepEqual({ ok: second.ok, total: second.total, rows: second.rows }, { ok: false, total: 2, rows: [{ repo: 'ron-skills:fix', running: 1 }] });
+  assert.equal(sessionRows(readLedger(file)).length, 1);
+  assert.equal(renameSession(file, first.handle, 'term_fix', { now: NOW }), true);
+  assert.deepEqual(sessionRows(readLedger(file)).map(row => row.handle), ['term_fix']);
 });

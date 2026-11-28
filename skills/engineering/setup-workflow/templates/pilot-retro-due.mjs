@@ -317,7 +317,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(4);
   }
   const opened = await openCountedSession({ cli }, { title: 'retro-collect', prompt: '/retro-collect', main: collectIn, newTab: true }, { repo: basename(checkout), kind: 'retro' });
-  if (opened.recordError) console.error(`全機帳本沒記到收集者（${opened.recordError}）；分頁已開`);
+  if (opened.recordError) console.error(`全機帳本的預留列沒換成 ${opened.handle}（${opened.recordError}）；分頁已開，預留列照算名額、2 小時後不計`);
   if (opened.stop) {
     console.log(`RETRO_START_FAILED ${opened.stop}`);
     process.exit(4);

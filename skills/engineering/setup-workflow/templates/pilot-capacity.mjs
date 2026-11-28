@@ -18,7 +18,7 @@
 // 匯出的 report 另有 `add` 選項（#353，pilot-dispatch.mjs 派出後用）：寫入的是那一列的現值（2 小時內更新過才算）加上人數，讀寫在同一把鎖裡。
 // session 列（#622）：batch 成員以外、同樣跑完整檢查的分頁（tooling fix unit、`/retro-collect` 收集者）各記一列
 //   `session\t<repo>\t<kind>\t<handle>\t<ISO 時間>`（kind 是 fix 或 retro），每列算 1 個，和 repo 列同一本帳、同一把鎖；
-//   orca-session-split.mjs `--capacity <repo> --kind <kind>` 開分頁成功後 open，pilot-probe.mjs `--capacity <repo>` 每輪對自己 repo 的 session 列
+//   orca-session-split.mjs `--capacity <repo> --kind <kind>` 開分頁前以 reserveSession 預留（handle `pending:` 開頭）、開成功後 renameSession 換成分頁的 handle，pilot-probe.mjs `--capacity <repo>` 每輪對自己 repo 的 session 列
 //   讀 terminal：已 exited 或分頁已不在就 close，還在跑就刷新時間。超過 2 小時沒刷新的 session 列不計，任何一次改寫帳本時順手刪掉。
 //   第一欄 `session` 是保留字，不能當 repo 名稱；還沒同步這一版的副本把 session 列當成解析不了的列（不計、原樣保留）。
 //
@@ -33,6 +33,7 @@
 //         open 印 `SESSION_OPENED <handle> <repo> <kind> <合計>/<上限>`（同一個 handle 再 open 只刷新那一列）；close 印 `SESSION_CLOSED <handle>`，沒有這列時 `SESSION_NONE <handle>`。
 //         open 只記帳、不檢查上限：開之前先 check 1（orca-session-split.mjs 的 --capacity 這樣做）。
 // exit：0 report、open、close 完成、CAPACITY ok 或 env；4 STOP capacity；2 用法錯誤；1 其他失敗（讀寫帳本失敗）。
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -51,6 +52,8 @@ export const SESSION = 'session';
 /** session 列的 kind：tooling fix unit 與 /retro-collect 收集者。 */
 export const SESSION_KINDS = ['fix', 'retro'];
 const HANDLE = /^[^\s]+$/;
+/** 預留列的 handle 前綴：split 開分頁之前先占的名額，還沒有 terminal 可讀（Probe 不碰，開好後換成真的 handle）。 */
+export const PENDING = 'pending:';
 
 /** repo 名稱寫進帳本的一格：不能空、不能有 tab 或換行，也不能是 session 列的保留字。 */
 export function validRepo(repo) {
@@ -219,6 +222,37 @@ export function openSession(file, { repo, kind, handle }, { now = new Date(), ca
   const rows = rewrite(file, now, rows => (rows.some(row => row.session && row.handle === handle)
     ? rows.map(row => (row.session && row.handle === handle ? mine : row)) : [...rows, mine]));
   return { total: machineTotal(rows, now), cap };
+}
+
+/**
+ * 預留一個 session 名額（#622 review：check 與記帳分開時，兩個 coordinator 會各自通過最後一個名額）：在同一把鎖裡算合計＋1，
+ * 不超過上限才寫一筆 handle 為 `pending:<pid>.<uuid>` 的列。傳回 check 的形狀 `{ ok, total, cap, rows, add: 1 }`，ok 時另有 `handle`。
+ * 開好分頁後以 renameSession 換成真的 handle，開不成時以 closeSession 刪掉；都沒做到的預留列 2 小時後不計。
+ */
+export function reserveSession(file, { repo, kind }, { now = new Date(), cap = machineCap() } = {}) {
+  if (cap === undefined) throw new Error('上限不是正整數（$PILOT_MACHINE_WORKER_CAP）');
+  if (!validRepo(repo)) throw new Error(`repo 名稱不能空、不能有 tab 或換行、不能是 ${SESSION}：${JSON.stringify(repo)}`);
+  if (!SESSION_KINDS.includes(kind)) throw new Error(`kind 只能是 ${SESSION_KINDS.join('|')}：${JSON.stringify(kind)}`);
+  const handle = `${PENDING}${process.pid}.${randomUUID()}`;
+  let result;
+  rewrite(file, now, rows => {
+    const total = machineTotal(rows, now) + 1;
+    result = { ok: total <= cap, total, cap, rows: holders(rows, now), add: 1 };
+    return result.ok ? [...rows, { session: true, repo, kind, handle, line: sessionLine({ repo, kind, handle }, now), time: now.getTime() }] : rows;
+  });
+  return result.ok ? { ...result, handle } : result;
+}
+
+/** 把 from 的 session 列換成 handle to（時間刷新成 now）；有換到時 true。 */
+export function renameSession(file, from, to, { now = new Date() } = {}) {
+  if (!validHandle(to)) throw new Error(`handle 不能空、不能有空白：${JSON.stringify(to)}`);
+  let found = false;
+  rewrite(file, now, rows => rows.map(row => {
+    if (!row.session || row.handle !== from) return row;
+    found = true;
+    return { ...row, handle: to, time: now.getTime(), line: sessionLine({ ...row, handle: to }, now) };
+  }));
+  return found;
 }
 
 /** 刪掉 handle 的 session 列；有刪到時 true。 */

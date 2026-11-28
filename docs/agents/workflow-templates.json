@@ -177,8 +177,8 @@
     },
     "scripts/orca-session-split.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-split.mjs",
-      "commit": "a1dc365b3390bf2e0ce652425ec90213244494ce",
-      "sha256": "8ef92ad5aa7bd26619115e0664f2056c7fe5eaef48fb9dd7a9684349348a23ab"
+      "commit": "7ffd52a6f18f8174f38d095c7cc3a1824576a663",
+      "sha256": "b1c81429b225acf7143eb98297a8a6fb5c671b7161b2d3e3a305e1fe141d7451"
     },
     "scripts/orca-worktree-create.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-worktree-create.mjs",
@@ -197,8 +197,8 @@
     },
     "scripts/pilot-capacity.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-capacity.mjs",
-      "commit": "a1dc365b3390bf2e0ce652425ec90213244494ce",
-      "sha256": "248a70315f94b4c70fa69c00b703789ba81c69b7aef6ca1c18b1660d0b277695"
+      "commit": "7ffd52a6f18f8174f38d095c7cc3a1824576a663",
+      "sha256": "8614239b35f7dcc67b893f9c4039105c5a193c90331b2716dc0113ad2bf07200"
     },
     "scripts/pilot-close.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-close.mjs",
@@ -252,8 +252,8 @@
     },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",
-      "commit": "a1dc365b3390bf2e0ce652425ec90213244494ce",
-      "sha256": "71ac00d9776fde53a62581796a23e7228180028b58aff3d15b22f84add647028"
+      "commit": "7ffd52a6f18f8174f38d095c7cc3a1824576a663",
+      "sha256": "9c7c8d7743c6fa79be4afd0dafbe71534553f8be21283482f5fb63e659379409"
     },
     "scripts/pilot-register.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-register.mjs",
@@ -267,8 +267,8 @@
     },
     "scripts/pilot-retro-due.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-retro-due.mjs",
-      "commit": "a1dc365b3390bf2e0ce652425ec90213244494ce",
-      "sha256": "56e94655feca5f2eff3b744b5c6cd8a89926fbda23e6bec393e4adf2636ffe7e"
+      "commit": "7ffd52a6f18f8174f38d095c7cc3a1824576a663",
+      "sha256": "61fb112c18decf1a003122b8863553d80f2c6d293281cfb3fbe1b02e1b627934"
     },
     "scripts/pilot-sources.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-sources.mjs",

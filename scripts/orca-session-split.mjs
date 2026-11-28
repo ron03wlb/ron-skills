@@ -12,7 +12,8 @@
 // 帶它（adapter 的 `Coordinator model:` 宣告）；本支的命令列不讀 adapter、不帶 `--model`，其他用途開的 session 都是裸 `claude`。
 //
 // `--capacity <repo> --kind fix|retro`（#622：tooling fix unit 與 /retro-collect 收集者跑完整檢查，卻不是 batch 成員）：開分頁前以同目錄 pilot-capacity.mjs 的
-//   check 1 看全機帳本，超過上限就印 `STOP capacity <合計>/<上限> [<repo>=<n>...] +1`、不開；開成功（送出 prompt）才記一筆 session 列，
+//   帳本鎖裡預留一個名額（合計＋1，兩個呼叫者不會同時拿到最後一個），超過上限就印 `STOP capacity <合計>/<上限> [<repo>=<n>...] +1`、不開；
+//   開成功（送出 prompt）後預留列換成分頁的 handle，開不成時刪掉；帳本讀寫失敗時印 `STOP capacity ledger <原因>`、不開。這筆 session 列
 //   之後由 pilot-probe.mjs `--capacity <repo>` 每輪刷新或在 terminal 結束時清掉。兩個旗標要一起給；`<repo>` 同 Probe 的 `--capacity <repo>`（主 checkout 的目錄名）。
 //   $PILOT_MACHINE_WORKER_CAP 空白時先印 CAPACITY_ENV_MISSING 那一行（pilot-capacity.mjs）。
 //
@@ -23,7 +24,7 @@
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { orca, sendPrompt, waitTuiReady } from './orca-session-send.mjs';
-import { SESSION_KINDS, check, envMissingLines, ledgerPath, machineCap, openSession as recordSession, stopLine, validRepo } from './pilot-capacity.mjs';
+import { SESSION_KINDS, closeSession, envMissingLines, ledgerPath, machineCap, renameSession, reserveSession, stopLine, validRepo } from './pilot-capacity.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
 
 const USAGE = '用法：node scripts/orca-session-split.mjs --title <分頁標題> --prompt <第一個 prompt> [--tab | --worktree <path>] [--capacity <repo> --kind fix|retro]（需要 ORCA_CLI_COMMAND）';
@@ -73,18 +74,25 @@ export async function openSession(ctx, { title, prompt, main, self = process.env
 }
 
 /**
- * 算進全機帳本的 openSession（#622）：先 check 1，超過上限回 `{ stop: 'capacity …' }`、不開；開成功才記一筆 `<kind>` session 列。
+ * 算進全機帳本的 openSession（#622）：先在帳本鎖裡預留一個名額（pilot-capacity.mjs 的 reserveSession，合計＋1 超過上限就回
+ * `{ stop: 'capacity …' }`、不開；兩個呼叫者不會同時拿到最後一個名額），開成功後把預留列換成分頁的 handle，開不成時刪掉預留列。
+ * 帳本讀寫失敗時不開分頁，回 `{ stop: 'capacity ledger <原因>' }`。
  * `capacity` 是 `{ repo, kind, file?, cap? }`（file 預設 $PILOT_WORKERS_LEDGER，cap 預設 $PILOT_MACHINE_WORKER_CAP）；其餘同 openSession。
- * 記帳失敗不算開分頁失敗：回 `{ handle, recordError }`，呼叫者在 stderr 說明。
+ * 開好後換 handle 失敗時回 `{ handle, recordError }`：預留列仍佔著名額（2 小時後不計），呼叫者在 stderr 說明。
  */
 export async function openCountedSession(ctx, options, { repo, kind, file = ledgerPath(), cap = machineCap() }) {
   if (cap === undefined) return { stop: 'capacity cap-invalid（$PILOT_MACHINE_WORKER_CAP 不是正整數）' };
-  const room = check(file, 1, { cap });
+  let room;
+  try {
+    room = reserveSession(file, { repo, kind }, { cap });
+  } catch (error) {
+    return { stop: `capacity ledger ${error.message}` };
+  }
   if (!room.ok) return { stop: stopLine(room).replace(/^STOP /, '') };
   const opened = await openSession(ctx, options);
-  if (opened.stop) return opened;
   try {
-    recordSession(file, { repo, kind, handle: opened.handle }, { cap });
+    if (opened.stop) closeSession(file, room.handle);
+    else renameSession(file, room.handle, opened.handle);
     return opened;
   } catch (error) {
     return { ...opened, recordError: error.message };
@@ -99,7 +107,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const repo = value('--capacity');
   const kind = value('--kind');
   const cli = process.env.ORCA_CLI_COMMAND;
-  const counted = repo !== undefined || kind !== undefined;
+  // 旗標在、值卻缺（例如最後一個參數是 `--capacity`）也算帶了，交給下一行判成用法錯誤，不默默略過檢查。
+  const counted = args.includes('--capacity') || args.includes('--kind');
   const badCapacity = counted && (!validRepo(repo) || !SESSION_KINDS.includes(kind) || machineCap() === undefined);
   if (!title || !prompt || !cli || badCapacity) {
     console.error(USAGE);
@@ -110,7 +119,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const options = { title, prompt, main: worktree ?? mainCheckout(), newTab: Boolean(worktree) || args.includes('--tab') };
     if (counted) for (const line of envMissingLines()) console.log(line);
     const opened = counted ? await openCountedSession({ cli }, options, { repo, kind }) : await openSession({ cli }, options);
-    if (opened.recordError) console.error(`帳本沒記到 session（${opened.recordError}）；分頁已開`);
+    if (opened.recordError) console.error(`帳本的預留列沒換成 ${opened.handle}（${opened.recordError}）；分頁已開，預留列照算名額、2 小時後不計`);
     console.log(opened.stop ? `STOP ${opened.stop}` : `OPENED ${opened.handle}`);
     process.exit(opened.stop ? 4 : 0);
   } catch (error) {

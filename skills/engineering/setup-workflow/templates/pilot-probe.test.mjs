@@ -338,7 +338,7 @@ test('--capacity：自己 repo 的 session 列，exited 與分頁已不在的清
   const old = new Date(Date.now() - 90 * 60000).toISOString();
   writeFileSync(ledger, [
     `session\tacme\tfix\tterm_fix\t${old}`, `session\tacme\tretro\tterm_retro\t${old}`,
-    `session\tacme\tfix\tterm_gone\t${old}`, `session\tother\tfix\tterm_other\t${old}`, ''].join('\n'));
+    `session\tacme\tfix\tterm_gone\t${old}`, `session\tother\tfix\tterm_other\t${old}`, `session\tacme\tfix\tpending:1.x\t${old}`, ''].join('\n'));
   const result = probe({ args: ['--capacity', 'acme'], extraEnv: { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '4' } });
   assert.equal(result.status, 0, result.stderr);
   const rows = readFileSync(ledger, 'utf8').split('\n').filter(Boolean);
@@ -346,7 +346,9 @@ test('--capacity：自己 repo 的 session 列，exited 與分頁已不在的清
   assert.ok(fix && Date.parse(fix.split('\t')[4]) > Date.parse(old), rows.join('\n'));
   assert.ok(!rows.some(row => /\tterm_(retro|gone)\t/.test(row)), rows.join('\n'));
   assert.ok(rows.includes(`session\tother\tfix\tterm_other\t${old}`), rows.join('\n'));
-  // 合計：acme 0 個成員 + term_fix + term_other = 2，未滿不印 CAPACITY_FULL。
+  // 預留中（split 還在開分頁）的 pending 列沒有 terminal 可讀，不碰。
+  assert.ok(rows.includes(`session\tacme\tfix\tpending:1.x\t${old}`), rows.join('\n'));
+  // 合計：acme 0 個成員 + term_fix + term_other + pending = 3，未滿不印 CAPACITY_FULL。
   assert.ok(!lines(result).some(line => /^(CAPACITY_FULL|OVER_CAP)/.test(line)), result.stdout);
 });
 

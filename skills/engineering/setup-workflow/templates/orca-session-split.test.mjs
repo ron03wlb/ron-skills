@@ -165,8 +165,21 @@ test('--capacity 開分頁失敗：不記帳', t => {
 
 test('--capacity 與 --kind 要一起給，kind 只能 fix|retro：否則 exit 2', t => {
   const { open, log } = fixture(t);
-  for (const extra of [['--capacity', 'ron-skills'], ['--kind', 'fix'], ['--capacity', 'ron-skills', '--kind', 'worker'], ['--capacity', 'session', '--kind', 'fix']]) {
+  for (const extra of [['--capacity', 'ron-skills'], ['--kind', 'fix'], ['--capacity'], ['--kind'], ['--capacity', 'ron-skills', '--kind', 'worker'], ['--capacity', 'session', '--kind', 'fix']]) {
     assert.equal(open(['--title', 'x', '--prompt', 'y', ...extra]).status, 2, extra.join(' '));
   }
   assert.equal(readFileSync(log, 'utf8'), '');
+});
+
+test('openCountedSession 兩個同時開、只剩一個名額：只開一個，另一個 STOP capacity', async t => {
+  const { ledger, repo } = fixture(t);
+  const { openCountedSession } = await import(script);
+  const cli = join(repo, '..', 'orca');
+  process.env.TAB_STATE_DIR = join(repo, '..', 'titles');
+  t.after(() => { delete process.env.TAB_STATE_DIR; });
+  const open = () => openCountedSession({ cli }, { title: 'fix', prompt: 'y', main: repo, newTab: true }, { repo: 'ron-skills', kind: 'fix', file: ledger, cap: 1 });
+  const results = await Promise.all([open(), open()]);
+  assert.equal(results.filter(result => result.handle && !result.stop).length, 1, JSON.stringify(results));
+  assert.match(results.find(result => result.stop).stop, /^capacity 2\/1 ron-skills:fix=1 \+1$/);
+  assert.match(readFileSync(ledger, 'utf8'), /^session\tron-skills\tfix\tterm_new\t/m);
 });
