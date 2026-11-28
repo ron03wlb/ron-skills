@@ -49,9 +49,11 @@ test('在 Orca pane 內：split 在呼叫者旁邊、不改分頁標題、送出
 });
 
 test('不在 Orca pane 內：在主 checkout 新開 terminal', t => {
-  const { repo, log, open } = fixture(t);
+  const { repo, log, open, titles } = fixture(t);
   assert.equal(open(['--title', 'x', '--prompt', 'y']).stdout.trim(), 'OPENED term_new');
   assert.match(readFileSync(log, 'utf8'), new RegExp(`terminal create --worktree path:${repo} --title 處理中｜x --command claude`));
+  // #713：送達後記下啟動 prompt，tab-sweep 才分得出 Orca draft 的殘留與真的草稿
+  assert.deepEqual(JSON.parse(readFileSync(join(titles, 'term_new.launch'), 'utf8')), ['y']);
 });
 
 test('--tab：即使在 pane 內也在主 checkout 新開分頁，不 split', t => {
@@ -87,10 +89,11 @@ test('第三次（延後）重送送達即成功；三次都被吞才 STOP send�
 });
 
 test('send 被拒：STOP send，exit 4', t => {
-  const { open } = fixture(t, { self: 'term_self', sendRejected: true });
+  const { open, titles } = fixture(t, { self: 'term_self', sendRejected: true });
   const result = open(['--title', 'x', '--prompt', 'y']);
   assert.equal(result.status, 4);
   assert.equal(result.stdout.trim(), 'STOP send term_split');
+  assert.equal(existsSync(join(titles, 'term_split.launch')), false, '沒送達不記啟動 prompt');
 });
 
 test('--worktree 而 STOP：只印 STOP', t => {

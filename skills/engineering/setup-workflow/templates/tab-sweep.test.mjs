@@ -53,7 +53,7 @@ const layouts = (titles, panes = {}) => [{
 }];
 
 /** 注入的 async Orca：回應由真實樣本合出（mergeSample 不讓替身自創欄位）。 */
-function fakeOrca({ terminals = TERMINALS, titles = TITLES, screens = SCREENS, panes = {}, fail = {} } = {}) {
+function fakeOrca({ terminals = TERMINALS, titles = TITLES, screens = SCREENS, drafts = {}, panes = {}, fail = {} } = {}) {
   const calls = [];
   const at = main => terminals.map(t => (t.worktreePath === MAIN ? { ...t, worktreePath: main } : t));
   const orca = main => async (...args) => {
@@ -63,7 +63,7 @@ function fakeOrca({ terminals = TERMINALS, titles = TITLES, screens = SCREENS, p
     if (sub === 'list') return mergeSample(ORCA_SAMPLES['list-visual'], { terminals: at(main), visualLayouts: layouts(titles, panes) }, 'list-visual');
     if (sub === 'read') {
       const handle = args[args.indexOf('--terminal') + 1];
-      return mergeSample(ORCA_SAMPLES.read, { terminal: { handle, tail: screens[handle] ?? IDLE_SCREEN, draft: '' } }, 'read');
+      return mergeSample(ORCA_SAMPLES.read, { terminal: { handle, tail: screens[handle] ?? IDLE_SCREEN, draft: drafts[handle] ?? '' } }, 'read');
     }
     if (sub === 'send') return ORCA_SAMPLES.send;
     if (sub === 'close') return ORCA_SAMPLES.close;
@@ -210,9 +210,57 @@ test('screenBusy：esc to interrupt、spinner、…ing…、草稿、沒有空�
   assert.equal(screenBusy(BUSY_SCREEN), 'screen-busy');
   assert.equal(screenBusy(['  Running tests (esc to interrupt)', '❯']), 'screen-busy');
   assert.equal(screenBusy(['✻ Compacting conversation…', '❯']), 'screen-busy');
-  assert.equal(screenBusy(['❯'], '/retro'), 'screen-draft');
+  assert.equal(screenBusy(['❯'], '/retro', ['/loop /issue-pilot']), 'screen-draft');
+  assert.equal(screenBusy(['❯'], '打一半'), 'screen-draft');
   assert.equal(screenBusy(['❯ 打一半']), 'screen-no-prompt');
   assert.equal(screenBusy([]), 'screen-no-prompt');
+});
+
+// #713：Orca 的 draft 留著分頁啟動時送的 prompt（`/loop /issue-pilot`），畫面輸入框卻是空的 `❯`，每輪 TAB_SKIP screen-draft、分頁 193 分鐘沒關。
+// G51 定案：draft 等於這個分頁已記下的啟動 prompt、最後一行 ❯ 提示列是空的，才當殘留；沒有記錄時退到「`/` 開頭的單行」加空提示列。
+test('screenBusy：draft 是已記下的啟動 prompt、最後一行 ❯ 是空的才當殘留；沒有記錄時只放過 / 開頭的單行', () => {
+  const launch = ['/loop /issue-pilot'];
+  assert.equal(screenBusy(IDLE_SCREEN, '/loop /issue-pilot', launch), null);
+  assert.equal(screenBusy(IDLE_SCREEN, '  /loop /issue-pilot\n', launch), null, '前後空白不算差別');
+  assert.equal(screenBusy(IDLE_SCREEN, '/loop /issue-pilot 再補一句', launch), 'screen-draft', '不等於啟動 prompt');
+  assert.equal(screenBusy(['❯', '❯ /loop /issue-pilot'], '/loop /issue-pilot', launch), 'screen-draft', '最後一行 ❯ 有字：真的打在輸入框');
+  assert.equal(screenBusy(BUSY_SCREEN, '/loop /issue-pilot', launch), 'screen-busy');
+  assert.equal(screenBusy(IDLE_SCREEN, '/loop /issue-pilot'), null, '沒有記錄：/ 開頭的單行放過');
+  assert.equal(screenBusy(IDLE_SCREEN, '/retro', []), null);
+  assert.equal(screenBusy(IDLE_SCREEN, '打一半的話'), 'screen-draft', '沒有記錄：不是 / 開頭');
+  assert.equal(screenBusy(IDLE_SCREEN, '/loop\n/issue-pilot'), 'screen-draft', '沒有記錄：多行');
+  assert.equal(screenBusy(['❯ /retro'], '/retro'), 'screen-draft', '沒有記錄：提示列有字');
+});
+
+test('殘留的啟動 prompt 不擋關分頁，真的草稿仍 TAB_SKIP screen-draft；送 /retro 後記下它；lastOutputAt 晚於現在不印負分鐘', async () => {
+  const main = fixture();
+  try {
+    const terminals = [term('term_launch'), term('term_typed'), term('term_bare'), term('term_retro'), term('term_future', { lastOutputAt: NOW + 30_000 })];
+    const titles = { term_launch: '待關閉｜Loop issue-pilot command', term_typed: '待關閉｜typed', term_bare: '待關閉｜bare', term_retro: '待 Retro｜r', term_future: '待關閉｜future' };
+    const drafts = { term_launch: '/loop /issue-pilot', term_typed: '/loop /issue-pilot', term_bare: '/issue-run 12 --worker x' };
+    const launches = { term_launch: ['/loop /issue-pilot'], term_typed: ['/issue-run 9 --worker y'] };
+    const remembered = [];
+    const { lines, calls } = await run(main, {
+      fake: fakeOrca({ terminals, titles, drafts }), launched: handle => launches[handle] ?? [],
+      remember: (handle, prompt) => remembered.push(`${handle} ${prompt}`),
+    });
+    assert.ok(lines.includes('TAB_CLOSED term_launch 待關閉｜Loop issue-pilot command'), lines.join('\n'));
+    assert.ok(lines.includes('TAB_SKIP term_typed screen-draft'), '有記錄但 draft 不等於它');
+    assert.ok(lines.includes('TAB_CLOSED term_bare 待關閉｜bare'), '沒有記錄：/ 開頭單行加空提示列');
+    assert.ok(lines.includes('TAB_SKIP term_future not-idle 0m'));
+    assert.ok(!lines.some(line => /not-idle -/.test(line)));
+    assert.deepEqual(sendsAndCloses(calls), [
+      'terminal close --terminal term_launch --tab',
+      'terminal close --terminal term_bare --tab',
+      'terminal send --terminal term_retro --text /retro --enter',
+    ]);
+    assert.deepEqual(remembered, ['term_retro /retro'], '送出的 /retro 也算這個分頁的已知 prompt');
+    const dry = await run(main, { dryRun: true, fake: fakeOrca({ terminals: [term('term_r2')], titles: { term_r2: '待 Retro｜r2' } }), remember: (handle, prompt) => remembered.push(`${handle} ${prompt}`) });
+    assert.ok(dry.lines.includes('TAB_RETRO_SENT term_r2 待 Retro｜r2 dry-run'));
+    assert.deepEqual(remembered, ['term_retro /retro'], 'dry-run 不記');
+  } finally {
+    rmSync(main, { recursive: true, force: true });
+  }
 });
 
 test('認不出現任 coordinator 時整輪不動；split pane、同分頁其他 pane、roster 未收、roster 失敗都不關', async () => {

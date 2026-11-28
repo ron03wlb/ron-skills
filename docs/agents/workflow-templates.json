@@ -177,8 +177,8 @@
     },
     "scripts/orca-session-split.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-split.mjs",
-      "commit": "3a777b602e51def38ac4c86ccc9110a552c5ea34",
-      "sha256": "890d463c8b5de518d3523155575f636fda529fd17d6d13eb1742f5f6d424727c"
+      "commit": "650be6b7f2e0a0d4af10918dc165c1d873337ecc",
+      "sha256": "903bbabd53625380054cfce8d865bb731dc90fcc547dbe4d0d05da445370b543"
     },
     "scripts/orca-worktree-create.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-worktree-create.mjs",
@@ -227,8 +227,8 @@
     },
     "scripts/pilot-handoff.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-handoff.mjs",
-      "commit": "3568ca5b825edfcb87002953286aec1e2e8597fa",
-      "sha256": "d06fe918e906bc107a34b7bf401396ba01d65e22543b67a454fbeec7f64a9230"
+      "commit": "650be6b7f2e0a0d4af10918dc165c1d873337ecc",
+      "sha256": "2b89194950e757acec57a029da9f067b547f00542c40f56d4424f7da94aa8b35"
     },
     "scripts/pilot-hold.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-hold.mjs",
@@ -297,13 +297,13 @@
     },
     "scripts/tab-state.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-state.mjs",
-      "commit": "2ed35c541db8331b995fb8433830bb54673a3b87",
-      "sha256": "d7a68571baa6d7eebf256af568f7e5d5adab61388ea6e96e1c9361eaa9aa7903"
+      "commit": "650be6b7f2e0a0d4af10918dc165c1d873337ecc",
+      "sha256": "aeb447174c24aea7728b148f6c7ce35dc774ec6383dd5681dd18ef5338ad0822"
     },
     "scripts/tab-sweep.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-sweep.mjs",
-      "commit": "4e37befd89a7755ff4db689a2edd226aae31bd39",
-      "sha256": "62d7dc316cb80e49f46d70f75710eedfba277e7093993e235318cd6910f166f3"
+      "commit": "650be6b7f2e0a0d4af10918dc165c1d873337ecc",
+      "sha256": "47f749759ce0112f77ccfd36bffa6ec0fc7653fbf35ef2d27c9d6d846cc4ada8"
     },
     "scripts/token-usage.mjs": {
       "template": "skills/engineering/setup-workflow/templates/token-usage.mjs",
