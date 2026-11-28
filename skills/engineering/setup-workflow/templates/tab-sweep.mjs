@@ -31,7 +31,8 @@
 //   TAB_SKIP <handle> <原因>：self、coordinator、working、no-state、split-pane、already-sent <ISO>、not-idle <分>m、idle-unknown、
 //     screen-busy、screen-no-prompt、screen-draft、screen-unreadable <錯誤>、retro-uncollected <DONE|PENDING> <session8>、roster-failed、shared-tab <handle,…>
 //   TAB_FAILED <handle> <retro-send|close> <原因>（沒記入 sent，下個 tick 再試）
-//   TAB_SWEEP_FAILED <原因>（no-orca、terminal-list、roster、coordinator-unknown；exit 0。state <錯誤>：tab-sweep.json 寫不進去，印在 SUMMARY 前）
+//   TAB_SWEEP_FAILED <原因>（no-orca、terminal-list、roster、coordinator-unknown；exit 0。state <錯誤>：tab-sweep.json 寫不進去，印在 SUMMARY 前；
+//     sessions <錯誤>：sessions.md 讀不到，不動任何分頁，其後印全為 0 的 SUMMARY，#660）
 //   TAB_SWEEP_OFF（tab-sweep.json 的 "enabled": false：用量吃緊時人暫停，每個 /retro 都花用量；不呼叫 Orca）
 //   SUMMARY sent=<n> closed=<n> skipped=<n> failed=<n> other=<其他 worktree 分頁數>
 //   TAB_RECORD_FAILED <exit> <stderr 首行>（有一列沒記進 decisions.md；印在最後、exit 1，其他行照印，#646）
@@ -196,7 +197,15 @@ export async function sweep({ main, orca, roster = null, record = () => {}, self
   }
   const terminals = list?.terminals ?? [];
   const sessionsPath = join(main, '.scratch/pilot/sessions.md');
-  const coordinator = coordinatorHandle(existsSync(sessionsPath) ? readFileSync(sessionsPath, 'utf8') : '');
+  let coordinator;
+  try {
+    coordinator = coordinatorHandle(existsSync(sessionsPath) ? readFileSync(sessionsPath, 'utf8') : '');
+  } catch (error) {
+    // 比照 state 檔：不拋錯，印失敗再印 SUMMARY，看守才分得出跑了與沒跑（#660）；認不出 coordinator，這輪不動任何分頁
+    emit(`TAB_SWEEP_FAILED sessions ${firstLine(error)}`, 'sessions.md 讀不到，認不出現任 coordinator，這輪不動任何分頁');
+    emit('SUMMARY sent=0 closed=0 skipped=0 failed=0 other=0', '每輪都記一列，看守分得出跑了但沒事與沒跑（#646）');
+    return { lines, state };
+  }
   if (!self && !coordinator) {
     emit('TAB_SWEEP_FAILED coordinator-unknown', '認不出現任 coordinator（沒有 ORCA_TERMINAL_HANDLE，sessions.md 也沒有交接行），這輪不動任何分頁');
     return { lines, state };
