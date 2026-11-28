@@ -81,7 +81,12 @@ test('每一種喚醒（/loop、task notification、Entry 與交接後第一輪�
   const skill = read('skills/engineering/issue-pilot/SKILL.md');
   const intro = paragraph(skill, 'Run these in order;');
   assert.match(intro, /Every wake MUST run the whole tick, step 4 included: a `\/loop` wake, a task-notification wake \(the background watcher, a landing or push-gate task, the idle wait\), and this session's first tick after \[Entry\]\(#entry\) or a \[Handoff\]\(#handoff\)/);
-  assert.match(intro, /handle the notification in the step it belongs to, then carry on through the remaining steps of the same tick/);
+  // #660：「在所屬步驟處理、再跑剩下的步驟」從第 7 步（Land、push gate）往後跑會跳過第 4 步；改成先收下結果，再從第 1 步跑整輪。
+  assert.doesNotMatch(intro, /carry on through the remaining steps/);
+  const takeIn = intro.search(/On a notification wake, first take in the finished task's result/);
+  const fromStart = intro.search(/then run the whole tick from step 1 in order, acting on that result in the step it belongs to/);
+  assert.ok(takeIn >= 0 && fromStart > takeIn, '先收下已完成任務的結果，再從第 1 步照順序跑完整輪');
+  assert.match(intro, /NEVER start the tick at the step the notification belongs to/);
   assert.match(intro, /NEVER treat a notification wake as a tick that only handles that event/);
   const steps = skill.split('\n');
   const trigger = steps.find(line => line.startsWith('4. **Retro trigger.**'));
@@ -92,7 +97,10 @@ test('每一種喚醒（/loop、task notification、Entry 與交接後第一輪�
   assert.match(sweep, /a tick with no Tab sweep row means the step did not run/);
   assert.match(sweep, /`TAB_RECORD_FAILED <exit> <error>`.*record that run's last result row \(`SUMMARY`, `TAB_SWEEP_OFF`, or `TAB_SWEEP_FAILED`\) yourself with `pilot-decision\.mjs` in the same tick, and it too is retried next tick, never a gate/);
   assert.match(read('docs/agents/pilot-retro-collect.md'), /^- \*\*Tab sweep\.\*\*.*每輪的 `SUMMARY`.*全是 `TAB_SKIP` 也記.*`TAB_RECORD_FAILED <exit> <錯誤>`.*由 coordinator 用 `pilot-decision\.mjs` 補記/m);
-  assert.match(read('docs/workflow/05-level3.md'), /被 watcher、落地或 push gate 的通知叫醒的那一輪，與 Entry、交接後的第一輪，都要跑這一步/);
+  const level3 = read('docs/workflow/05-level3.md');
+  assert.match(level3, /被 watcher、落地或 push gate 的通知叫醒的那一輪，與 Entry、交接後的第一輪，都要跑這一步/);
+  assert.match(level3, /先收下已完成任務的結果，再從第 1 步照順序跑完整輪/);
+  assert.doesNotMatch(level3, /再在同一輪跑下去/);
 });
 
 test('retro-collect 把給 owner 否決的段落寫到 Retro collect checkout 的 .scratch/retro/reports/<YYYY-MM-DD>-<key>.md', () => {
