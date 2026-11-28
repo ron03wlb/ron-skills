@@ -31,7 +31,8 @@
 //   TAB_SKIP <handle> <原因>：self、coordinator、working、no-state、split-pane、already-sent <ISO>、not-idle <分>m、idle-unknown、
 //     screen-busy、screen-no-prompt、screen-draft、screen-unreadable <錯誤>、retro-uncollected <DONE|PENDING> <session8>、roster-failed、shared-tab <handle,…>
 //   TAB_FAILED <handle> <retro-send|close> <原因>（沒記入 sent，下個 tick 再試）
-//   TAB_SWEEP_FAILED <原因>（no-orca、terminal-list、roster、coordinator-unknown；exit 0。state <錯誤>：tab-sweep.json 寫不進去，印在 SUMMARY 前）
+//   TAB_SWEEP_FAILED <原因>（no-orca、terminal-list、roster、coordinator-unknown；exit 0。state <錯誤>：tab-sweep.json 寫不進去，印在 SUMMARY 前；
+//     sessions <錯誤>：sessions.md 讀不到，不動任何分頁，其後印全為 0 的 SUMMARY，#660）
 //   TAB_SWEEP_OFF（tab-sweep.json 的 "enabled": false：用量吃緊時人暫停，每個 /retro 都花用量；不呼叫 Orca）
 //   SUMMARY sent=<n> closed=<n> skipped=<n> failed=<n> other=<其他 worktree 分頁數>
 //   TAB_RECORD_FAILED <exit> <stderr 首行>（有一列沒記進 decisions.md；印在最後、exit 1，其他行照印，#646）
