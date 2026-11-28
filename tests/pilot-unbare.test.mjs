@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { env } from './helpers/git-fixture.mjs';
 import { realTmpdir } from './helpers/real-tmpdir.mjs';
 import { ALWAYS_LINES } from '../scripts/pilot-probe.mjs';
 
 // pilot-unbare.sh 本身的行為測在 setup-workflow 正本旁（templates/pilot-unbare.test.mjs）；這裡只測本 repo 的副本擺放（#246）。
-// pre-commit hook 會匯出 GIT_DIR、GIT_INDEX_FILE；不清掉的話 `git -C <暫存 repo> config core.bare true` 會寫進本 repo 的共用 config（#20 worker 實測）。
-const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+// env 取 git-fixture 的：pre-commit hook 會匯出 GIT_DIR、GIT_INDEX_FILE，不清掉的話 `git -C <暫存 repo> config core.bare true` 會寫進本 repo 的共用 config（#20 worker 實測）；
+// 繼承的 CLAUDE_CODE_SESSION_ID 會讓 probe 在長 session 裡多印 HANDOFF_DUE（#663）。
 
 function checkout(t) {
   const repo = mkdtempSync(join(realTmpdir(), 'pilot-unbare-'));
