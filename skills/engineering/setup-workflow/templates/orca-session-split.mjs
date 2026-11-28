@@ -13,7 +13,7 @@
 //
 // `--capacity <repo> --kind fix|retro`（#622：tooling fix unit 與 /retro-collect 收集者跑完整檢查，卻不是 batch 成員）：開分頁前以同目錄 pilot-capacity.mjs 的
 //   帳本鎖裡預留一個名額（合計＋1，兩個呼叫者不會同時拿到最後一個），超過上限就印 `STOP capacity <合計>/<上限> [<repo>=<n>...] +1`、不開；
-//   分頁開好後（送出失敗而 STOP 時也是）預留列換成分頁的 handle，分頁沒開成時刪掉；換 handle 失敗時 stderr 印 `WARN capacity-record <原因> → <補記指令>`；帳本讀寫失敗時印 `STOP capacity ledger <原因>`、不開。這筆 session 列
+//   分頁開好後（送出失敗而 STOP 時也是）預留列換成分頁的 handle，分頁沒開成時刪掉；換 handle 失敗時 stderr 印 `WARN capacity-record <原因> → <補記指令（先 close 預留列再 open）>`；帳本讀寫失敗時印 `STOP capacity ledger <原因>`、不開。這筆 session 列
 //   之後由 pilot-probe.mjs `--capacity <repo>` 每輪刷新或在 terminal 結束時清掉。兩個旗標要一起給；`<repo>` 同 Probe 的 `--capacity <repo>`（主 checkout 的目錄名）。
 //   $PILOT_MACHINE_WORKER_CAP 空白時先印 CAPACITY_ENV_MISSING 那一行（pilot-capacity.mjs）。
 //
@@ -73,14 +73,18 @@ export async function openSession(ctx, { title, prompt, main, self = process.env
   return { handle };
 }
 
+/** 換 handle 失敗時給人的補記指令：先刪預留列再記真的 handle，同一個分頁不算兩次。 */
+export const recordFix = ({ repo, kind, handle, pending }) =>
+  `node scripts/pilot-capacity.mjs close ${pending} && node scripts/pilot-capacity.mjs open ${repo} ${kind} ${handle}`;
+
 /**
  * 算進全機帳本的 openSession（#622）：先在帳本鎖裡預留一個名額（pilot-capacity.mjs 的 reserveSession，合計＋1 超過上限就回
  * `{ stop: 'capacity …' }`、不開；兩個呼叫者不會同時拿到最後一個名額），開成功後把預留列換成分頁的 handle，開不成時刪掉預留列。
  * 帳本讀寫失敗時不開分頁，回 `{ stop: 'capacity ledger <原因>' }`。
  * `capacity` 是 `{ repo, kind, file?, cap? }`（file 預設 $PILOT_WORKERS_LEDGER，cap 預設 $PILOT_MACHINE_WORKER_CAP）；其餘同 openSession。
  * 開分頁那一步就失敗（沒有 handle）時刪掉預留；STOP 帶 handle 時分頁還開著，預留列照樣換成它的 handle。
- * 換 handle 失敗時回 `{ handle, recordError }`（stop 照舊）：預留列仍佔著名額但 Probe 讀不到它、2 小時後不計，呼叫者在 stderr 印
- * `WARN capacity-record <原因>`（同 pilot-dispatch.mjs 的 `WARN capacity-report`），人照那一行補記：`node scripts/pilot-capacity.mjs open <repo> <kind> <handle>`。
+ * 換 handle 失敗時回 `{ handle, recordError, pending }`（stop 照舊；pending 是預留列的 handle）：預留列仍佔著名額但 Probe 讀不到它、2 小時後不計，呼叫者在 stderr 印
+ * `WARN capacity-record <原因>`（同 pilot-dispatch.mjs 的 `WARN capacity-report`），人照那一行補記（recordFix：先 close 預留列再 open）。
  */
 export async function openCountedSession(ctx, options, { repo, kind, file = ledgerPath(), cap = machineCap() }) {
   if (cap === undefined) return { stop: 'capacity cap-invalid（$PILOT_MACHINE_WORKER_CAP 不是正整數）' };
@@ -98,7 +102,7 @@ export async function openCountedSession(ctx, options, { repo, kind, file = ledg
     else closeSession(file, room.handle);
     return opened;
   } catch (error) {
-    return { ...opened, recordError: error.message };
+    return { ...opened, recordError: error.message, pending: room.handle };
   }
 }
 
@@ -124,7 +128,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const options = { title, prompt, main: worktree ?? mainCheckout(), newTab: Boolean(worktree) || args.includes('--tab') };
     if (counted) for (const line of envMissingLines()) console.log(line);
     const opened = counted ? await openCountedSession({ cli }, options, { repo, kind }) : await openSession({ cli }, options);
-    if (opened.recordError) console.error(`WARN capacity-record ${opened.recordError} → node scripts/pilot-capacity.mjs open ${repo} ${kind} ${opened.handle}`);
+    if (opened.recordError) console.error(`WARN capacity-record ${opened.recordError} → ${recordFix({ repo, kind, ...opened })}`);
     console.log(opened.stop ? `STOP ${opened.stop}` : `OPENED ${opened.handle}`);
     process.exit(opened.stop ? 4 : 0);
   } catch (error) {

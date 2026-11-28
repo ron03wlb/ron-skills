@@ -338,7 +338,7 @@ test('--capacity：自己 repo 的 session 列，exited 與分頁已不在的清
   const old = new Date(Date.now() - 90 * 60000).toISOString();
   writeFileSync(ledger, [
     `session\tacme\tfix\tterm_fix\t${old}`, `session\tacme\tretro\tterm_retro\t${old}`,
-    `session\tacme\tfix\tterm_gone\t${old}`, `session\tother\tfix\tterm_other\t${old}`, `session\tacme\tfix\tpending:1.x\t${old}`, ''].join('\n'));
+    `session\tacme\tfix\tterm_gone\t${old}`, `session\tother\tfix\tterm_other\t${old}`, `session\tacme\tfix\tpending:1.x\t${old}`, 'session\tacme\tfix', ''].join('\n'));
   const result = probe({ args: ['--capacity', 'acme'], extraEnv: { PILOT_WORKERS_LEDGER: ledger, PILOT_MACHINE_WORKER_CAP: '4' } });
   assert.equal(result.status, 0, result.stderr);
   const rows = readFileSync(ledger, 'utf8').split('\n').filter(Boolean);

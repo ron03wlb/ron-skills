@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { join } from 'node:path';
 import { FAST, orcaReplySource } from './test/fake-orca.mjs';
 import { repoFixture, run, source } from './test/repo-fixture.mjs';
+import { recordFix } from './orca-session-split.mjs';
 
 const script = join(source, 'orca-session-split.mjs');
 
@@ -190,4 +191,9 @@ test('--capacity 分頁開好但送出失敗：帳本記那個分頁的 handle�
   const result = open(['--title', 'fix', '--prompt', 'y', '--tab', '--capacity', 'ron-skills', '--kind', 'fix']);
   assert.equal(result.stdout.trim(), 'STOP send term_new');
   assert.match(readFileSync(ledger, 'utf8'), /^session\tron-skills\tfix\tterm_new\t/m);
+});
+
+test('recordFix：補記指令先 close 預留列再 open 真的 handle', () => {
+  assert.equal(recordFix({ repo: 'ron-skills', kind: 'fix', handle: 'term_x', pending: 'pending:1.a' }),
+    'node scripts/pilot-capacity.mjs close pending:1.a && node scripts/pilot-capacity.mjs open ron-skills fix term_x');
 });

@@ -48,7 +48,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { trackerKind } from './lib/hosts.mjs';
 import { orca } from './orca-session-send.mjs';
-import { openCountedSession } from './orca-session-split.mjs';
+import { openCountedSession, recordFix } from './orca-session-split.mjs';
 import { WORKING, recordedTitle, tabTitleOf } from './tab-state.mjs';
 
 export const DEFAULT_COUNT = 5;
@@ -317,7 +317,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(4);
   }
   const opened = await openCountedSession({ cli }, { title: 'retro-collect', prompt: '/retro-collect', main: collectIn, newTab: true }, { repo: basename(checkout), kind: 'retro' });
-  if (opened.recordError) console.error(`WARN capacity-record ${opened.recordError} → node scripts/pilot-capacity.mjs open ${basename(checkout)} retro ${opened.handle}`);
+  if (opened.recordError) console.error(`WARN capacity-record ${opened.recordError} → ${recordFix({ repo: basename(checkout), kind: 'retro', ...opened })}`);
   if (opened.stop) {
     console.log(`RETRO_START_FAILED ${opened.stop}`);
     process.exit(4);

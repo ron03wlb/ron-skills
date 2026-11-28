@@ -1371,8 +1371,8 @@ export async function maintainSessions(ctx, repo, file = ledgerPath(), now = new
   const live = [];
   const gone = [];
   if (!ctx.cli) return { live, gone };
-  // 預留列（`pending:`，split 還在開分頁）沒有 terminal 可讀，不碰。
-  for (const { handle } of sessionRows(readLedger(file)).filter(row => row.repo === repo && !row.handle.startsWith(PENDING))) {
+  // 預留列（`pending:`，split 還在開分頁）沒有 terminal 可讀，不碰；格式壞的 session 列（running 是 NaN）不計、也不讀。
+  for (const { handle } of sessionRows(readLedger(file)).filter(row => row.repo === repo && row.running === 1 && !row.handle.startsWith(PENDING))) {
     try {
       const terminal = (await orca(ctx, 'terminal', 'read', '--terminal', handle, '--screen')).terminal ?? {};
       (terminal.status === 'exited' ? gone : live).push(handle);
