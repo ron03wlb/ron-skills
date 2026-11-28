@@ -177,8 +177,8 @@
     },
     "scripts/orca-session-split.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-session-split.mjs",
-      "commit": "7ffd52a6f18f8174f38d095c7cc3a1824576a663",
-      "sha256": "b1c81429b225acf7143eb98297a8a6fb5c671b7161b2d3e3a305e1fe141d7451"
+      "commit": "1cb15daad1a6fdac8a2c7b1e5faa3fa14e4a9e6d",
+      "sha256": "38b940485422143a4bd6838040d2a311370519af58d13e12afe09e1a591ea3f3"
     },
     "scripts/orca-worktree-create.mjs": {
       "template": "skills/engineering/setup-workflow/templates/orca-worktree-create.mjs",
@@ -252,8 +252,8 @@
     },
     "scripts/pilot-probe.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-probe.mjs",
-      "commit": "7ffd52a6f18f8174f38d095c7cc3a1824576a663",
-      "sha256": "9c7c8d7743c6fa79be4afd0dafbe71534553f8be21283482f5fb63e659379409"
+      "commit": "1cb15daad1a6fdac8a2c7b1e5faa3fa14e4a9e6d",
+      "sha256": "b1dc47be5877726d62acf77d64f8463c6b24ababd7d72c756829ef8d46a2819e"
     },
     "scripts/pilot-register.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-register.mjs",
@@ -267,8 +267,8 @@
     },
     "scripts/pilot-retro-due.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-retro-due.mjs",
-      "commit": "7ffd52a6f18f8174f38d095c7cc3a1824576a663",
-      "sha256": "61fb112c18decf1a003122b8863553d80f2c6d293281cfb3fbe1b02e1b627934"
+      "commit": "1cb15daad1a6fdac8a2c7b1e5faa3fa14e4a9e6d",
+      "sha256": "744e5870e0bef031df8301dc0f0ec50847fca6d4e1bc9461aae2c8f2f833e869"
     },
     "scripts/pilot-sources.mjs": {
       "template": "skills/engineering/setup-workflow/templates/pilot-sources.mjs",

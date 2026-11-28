@@ -1399,6 +1399,8 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   const ahead = adapterAhead(checkout, { integration, main, source });
   const out = [...checkoutState(checkout, main), ...(source.fetchError ? [`FETCH_FAILED adapter-ref ${source.fetchError}`] : []), ...ahead, ...scriptsAhead(checkout, ahead, { integration, main }), ...hookBehind(checkout, { integration, main }), ...openRows(pilot), ...tracker.lines];
   if (apply) out.push(...applyParentFixes(checkout, tracker.fixes));
+  // session 列（#622）在數成員之前維護：它要等 Orca，放在數完與寫帳本之間會拉長兩者的間隔（Wait then act）。
+  if (capacity) await maintainSessions(ctx, capacity);
   const landing = [];
   const batches = [];
   let running = 0;
@@ -1483,7 +1485,6 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   out.push(...handoffLines(batches, sessionStart(readStore(pilot, 'coordinator'), readStore(pilot, 'sessions.md')), handoffAfter, sessionContext(), declaredContext(declared)));
   if (capacity) {
     out.push(...envMissingLines());
-    await maintainSessions(ctx, capacity);
     const { total, cap } = report(ledgerPath(), capacity, running);
     if (total > cap) out.push(`OVER_CAP ${total} ${cap}`);
     // 剛好滿（#685 第 1 項）：再派 1 個就會 STOP capacity，Pool 這一輪不 claim；列出計入的列，格式同 pilot-capacity 的 STOP capacity 行（不含 +<人數>）。
