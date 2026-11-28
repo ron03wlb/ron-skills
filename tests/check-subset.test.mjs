@@ -76,6 +76,48 @@ test('plan：repo 裡不唯一的檔名要帶上層目錄才算提及', () => {
   assert.deepEqual(toyPlan(['skills/two/SKILL.md']).tests, []);
 });
 
+// #628：docs/agents/ 的 adapter 檔，測試要從 repo 根讀它才算提及；暫存 repo 裡同名的 fixture 路徑與裸檔名不算。
+const AGENT_FILES = {
+  ...TOY_FILES,
+  'docs/agents/adapter.md': '',
+  'tests/agent-url.test.mjs': "const text = readFileSync(new URL('../docs/agents/adapter.md', import.meta.url), 'utf8');\n",
+  'tests/agent-helper.test.mjs': "const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');\nassert.match(read('docs/agents/adapter.md'), /x/);\n",
+  'tests/agent-root.test.mjs': "const root = new URL('..', import.meta.url).pathname;\nreadFileSync(join(root, 'docs', 'agents', 'adapter.md'));\n",
+  'tests/agent-fixture.test.mjs': "const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');\nwriteFileSync(join(f.repo, 'docs/agents/adapter.md'), read('scripts/c.mjs'));\nconst PATH = 'docs/agents/adapter.md';\n",
+  'tests/agent-name.test.mjs': '// 和 adapter.md 的 Probe 條目同名\n',
+  'tests/agent-const.test.mjs': "const FILE = 'docs/agents/adapter.md';\nconst size = statSync(new URL(`../${FILE}`, import.meta.url)).size;\n",
+  'tests/agent-const-fixture.test.mjs': "const FILE = 'docs/agents/adapter.md';\nconst read = path => readFileSync(join(dir, path), 'utf8');\nread(FILE);\n",
+};
+
+test('plan：docs/agents/ 的檔只有從 repo 根讀它的測試才相關，fixture 路徑與裸檔名不算（#628）', () => {
+  const result = plan({ changed: ['docs/agents/adapter.md'], files: Object.keys(AGENT_FILES), read: file => AGENT_FILES[file] ?? '', table: TOY });
+  // 路徑先存進常數再交給 repo 根的 URL 也算；常數交給暫存目錄的 reader 不算。
+  assert.deepEqual(result.tests, ['tests/agent-const.test.mjs', 'tests/agent-helper.test.mjs', 'tests/agent-root.test.mjs', 'tests/agent-url.test.mjs', 'tests/docs-links.test.mjs']);
+  // docs/agents/ 以外的檔維持原規則：唯一檔名照樣算提及。
+  assert.deepEqual(plan({ changed: ['scripts/c.mjs'], files: Object.keys(AGENT_FILES), read: file => AGENT_FILES[file] ?? '', table: TOY }).tests, ['tests/agent-fixture.test.mjs', 'tests/c.test.mjs']);
+});
+
+// #628：PR #627 只改 pilot.md 一行就挑出 24 支，超過 pre-commit 免排 slot 的 CHECK_SLOT_FREE_TESTS（預設 10）。
+test('本 repo 只改 docs/agents/pilot.md：子集不超過 10 支，仍含從 repo 根讀它的測試，不含暫存 repo 的 fixture 測試（#628）', () => {
+  const files = spawnSync('git', ['ls-files'], { cwd: root, encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+  const read = file => { try { return readFileSync(join(root, file), 'utf8'); } catch { return ''; } };
+  const { tests } = plan({ changed: ['docs/agents/pilot.md'], files, read, table: TABLE });
+  assert.ok(tests.length <= 10, `${tests.length}：${tests.join(' ')}`);
+  for (const reader of ['tests/auto-retro.test.mjs', 'tests/triage-brief.test.mjs', 'tests/pilot-probe-overlap.test.mjs']) assert.ok(tests.includes(reader), reader);
+  for (const fixture of ['tests/entry-survival.test.mjs', 'tests/port-entries.test.mjs', 'skills/engineering/setup-workflow/templates/adapter-line.test.mjs']) assert.ok(!tests.includes(fixture), fixture);
+});
+
+// #628：這三支照 Pilot 段連結或 adapter-line.mjs 讀拆出檔的條目，不寫出檔名；提及規則收緊後要在對應表釘住。
+test('掃 Pilot 段拆出檔條目的測試：改任一份 docs/agents/pilot-*.md 都在子集裡（#628）', () => {
+  const files = spawnSync('git', ['ls-files'], { cwd: root, encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+  const split = files.filter(file => /^docs\/agents\/pilot-[^/]+\.md$/.test(file));
+  assert.ok(split.includes('docs/agents/pilot-round.md') && split.includes('docs/agents/pilot-after-merge.md'));
+  for (const changed of split) {
+    const { tests } = plan({ changed: [changed], files: files.filter(file => file.startsWith('tests/')), read: () => '', table: TABLE });
+    for (const scanner of ['tests/pilot-project-flags.test.mjs', 'tests/pilot-push-gate-scripts.test.mjs', 'tests/pilot-resume-tui-timeout.test.mjs']) assert.ok(tests.includes(scanner), `${changed}：${scanner}`);
+  }
+});
+
 const source = readFileSync(join(root, 'bin/check'), 'utf8');
 
 test('對應表與 bin/check 的步驟群組一致，每條規則的步驟都在清單裡', () => {
