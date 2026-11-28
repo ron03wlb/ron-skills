@@ -5,7 +5,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { machineTotal, missingEnv, readLedger, report } from './pilot-capacity.mjs';
+import { check, closeSession, machineTotal, missingEnv, readLedger, report, sessionRows, touchSessions } from './pilot-capacity.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./pilot-capacity.mjs', import.meta.url));
@@ -135,4 +135,49 @@ test('持有者被殺留下的鎖超過 30 秒就拿掉重來', t => {
   utimesSync(`${file}.lock`, old, old);
   assert.deepEqual(report(file, 'a', 1, { cap: 4 }), { running: 1, total: 1, cap: 4 });
   assert.equal(existsSync(`${file}.lock`), false);
+});
+
+// #622：fix unit 與 /retro-collect 分頁也跑完整檢查，記成 session 列算進合計。
+test('CLI open 記一筆 fix session 後 check 的合計多 1；剛好滿時 STOP capacity exit 4；close 之後不計', t => {
+  const file = ledger(t);
+  const env = { PILOT_MACHINE_WORKER_CAP: '3' };
+  assert.equal(run(file, ['report', 'ron-skills', '2'], env).status, 0);
+  assert.equal(run(file, ['check', '1'], env).stdout.trim(), 'CAPACITY ok 3/3');
+  const opened = run(file, ['open', 'ron-skills', 'fix', 'term_fix'], env);
+  assert.equal(opened.status, 0, opened.stderr);
+  assert.equal(opened.stdout.trim(), 'SESSION_OPENED term_fix ron-skills fix 3/3');
+  assert.equal(run(file, ['check', '0'], env).stdout.trim(), 'CAPACITY ok 3/3');
+  const full = run(file, ['check', '1'], env);
+  assert.equal(full.status, 4);
+  assert.equal(full.stdout.trim(), 'STOP capacity 4/3 ron-skills=2 ron-skills:fix=1 +1');
+  assert.equal(run(file, ['report', 'ron-skills', '2'], env).stdout.trim(), 'REPORTED ron-skills 2 3/3');
+  const closed = run(file, ['close', 'term_fix'], env);
+  assert.equal(closed.status, 0, closed.stderr);
+  assert.equal(closed.stdout.trim(), 'SESSION_CLOSED term_fix');
+  assert.equal(run(file, ['check', '1'], env).stdout.trim(), 'CAPACITY ok 3/3');
+  assert.equal(run(file, ['close', 'term_fix'], env).stdout.trim(), 'SESSION_NONE term_fix');
+});
+
+test('session 列：超過 2 小時沒刷新的不計，touchSessions 刷新後再計；report 改寫 repo 列時 session 列原樣保留', t => {
+  const file = ledger(t);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `ron-skills\t1\t${ago(5)}\nsession\tron-skills\tretro\tterm_old\t${ago(121)}\nsession\tspay2\tfix\tterm_new\t${ago(10)}\n`);
+  assert.equal(machineTotal(readLedger(file), NOW), 2);
+  assert.deepEqual(check(file, 0, { now: NOW, cap: 4 }).rows.map(row => `${row.repo}=${row.running}`), ['ron-skills=1', 'spay2:fix=1']);
+  report(file, 'ron-skills', 2, { now: NOW, cap: 4 });
+  assert.match(readFileSync(file, 'utf8'), /session\tspay2\tfix\tterm_new\t/);
+  assert.deepEqual(touchSessions(file, ['term_new'], { now: NOW }), ['term_new']);
+  assert.equal(machineTotal(readLedger(file), NOW), 3);
+  // 超過 2 小時的 session 列在改寫時清掉（它已不計，留著只讓帳本變長）。
+  assert.doesNotMatch(readFileSync(file, 'utf8'), /term_old/);
+  assert.deepEqual(sessionRows(readLedger(file)).map(row => row.handle), ['term_new']);
+  assert.equal(closeSession(file, 'term_new', { now: NOW }), true);
+  assert.equal(machineTotal(readLedger(file), NOW), 2);
+});
+
+test('open 用法錯誤 exit 2：kind 不是 fix|retro、handle 空或帶空白、repo 是保留字 session', t => {
+  const file = ledger(t);
+  for (const args of [['open', 'ron-skills', 'worker', 'term_x'], ['open', 'ron-skills', 'fix', 'term x'], ['open', 'ron-skills', 'fix'], ['open', 'session', 'fix', 'term_x'], ['close'], ['report', 'session', '1']]) {
+    assert.equal(run(file, args).status, 2, args.join(' '));
+  }
 });

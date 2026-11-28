@@ -11,16 +11,22 @@
 // 啟動指令預設裸 `claude`（吃全域設定的模型）；openSession 帶 `model` 時改成 `claude --model <model>`。只有 pilot-handoff.mjs 開後繼 coordinator 時
 // 帶它（adapter 的 `Coordinator model:` 宣告）；本支的命令列不讀 adapter、不帶 `--model`，其他用途開的 session 都是裸 `claude`。
 //
-// 用法（cwd 為 repo 內任一 checkout）：node scripts/orca-session-split.mjs --title <分頁標題（split 模式不用）> --prompt <第一個 prompt> [--tab | --worktree <path>]
-// stdout：OPENED <terminal handle>，或 STOP <原因>（create <錯誤>、tui-timeout <handle>、send <handle>、orca <錯誤碼>）。
+// `--capacity <repo> --kind fix|retro`（#622：tooling fix unit 與 /retro-collect 收集者跑完整檢查，卻不是 batch 成員）：開分頁前以同目錄 pilot-capacity.mjs 的
+//   check 1 看全機帳本，超過上限就印 `STOP capacity <合計>/<上限> [<repo>=<n>...] +1`、不開；開成功（送出 prompt）才記一筆 session 列，
+//   之後由 pilot-probe.mjs `--capacity <repo>` 每輪刷新或在 terminal 結束時清掉。兩個旗標要一起給；`<repo>` 同 Probe 的 `--capacity <repo>`（主 checkout 的目錄名）。
+//   $PILOT_MACHINE_WORKER_CAP 空白時先印 CAPACITY_ENV_MISSING 那一行（pilot-capacity.mjs）。
+//
+// 用法（cwd 為 repo 內任一 checkout）：node scripts/orca-session-split.mjs --title <分頁標題（split 模式不用）> --prompt <第一個 prompt> [--tab | --worktree <path>] [--capacity <repo> --kind fix|retro]
+// stdout：OPENED <terminal handle>，或 STOP <原因>（capacity <合計>/<上限> …、create <錯誤>、tui-timeout <handle>、send <handle>、orca <錯誤碼>）。
 //   tui-timeout 時 stderr 先印分頁畫面尾巴（orca-session-send.mjs 的 `SCREEN_TAIL`，#536）。
 // exit：0 已送出；4 STOP；2 用法錯誤或沒有 ORCA_CLI_COMMAND；1 其他失敗。
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { orca, sendPrompt, waitTuiReady } from './orca-session-send.mjs';
+import { SESSION_KINDS, check, envMissingLines, ledgerPath, machineCap, openSession as recordSession, stopLine, validRepo } from './pilot-capacity.mjs';
 import { recordTitle, withState } from './tab-state.mjs';
 
-const USAGE = '用法：node scripts/orca-session-split.mjs --title <分頁標題> --prompt <第一個 prompt> [--tab | --worktree <path>]（需要 ORCA_CLI_COMMAND）';
+const USAGE = '用法：node scripts/orca-session-split.mjs --title <分頁標題> --prompt <第一個 prompt> [--tab | --worktree <path>] [--capacity <repo> --kind fix|retro]（需要 ORCA_CLI_COMMAND）';
 
 /** `--model` 值只允許英數字與 `._-`：值原樣拼進 Orca 的 `--command`，其他字元可能被 shell 解讀。 */
 export const MODEL_ID = /^[A-Za-z0-9._-]+$/;
@@ -66,19 +72,45 @@ export async function openSession(ctx, { title, prompt, main, self = process.env
   return { handle };
 }
 
+/**
+ * 算進全機帳本的 openSession（#622）：先 check 1，超過上限回 `{ stop: 'capacity …' }`、不開；開成功才記一筆 `<kind>` session 列。
+ * `capacity` 是 `{ repo, kind, file?, cap? }`（file 預設 $PILOT_WORKERS_LEDGER，cap 預設 $PILOT_MACHINE_WORKER_CAP）；其餘同 openSession。
+ * 記帳失敗不算開分頁失敗：回 `{ handle, recordError }`，呼叫者在 stderr 說明。
+ */
+export async function openCountedSession(ctx, options, { repo, kind, file = ledgerPath(), cap = machineCap() }) {
+  if (cap === undefined) return { stop: 'capacity cap-invalid（$PILOT_MACHINE_WORKER_CAP 不是正整數）' };
+  const room = check(file, 1, { cap });
+  if (!room.ok) return { stop: stopLine(room).replace(/^STOP /, '') };
+  const opened = await openSession(ctx, options);
+  if (opened.stop) return opened;
+  try {
+    recordSession(file, { repo, kind, handle: opened.handle }, { cap });
+    return opened;
+  } catch (error) {
+    return { ...opened, recordError: error.message };
+  }
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const value = flag => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
   const title = value('--title');
   const prompt = value('--prompt');
+  const repo = value('--capacity');
+  const kind = value('--kind');
   const cli = process.env.ORCA_CLI_COMMAND;
-  if (!title || !prompt || !cli) {
+  const counted = repo !== undefined || kind !== undefined;
+  const badCapacity = counted && (!validRepo(repo) || !SESSION_KINDS.includes(kind) || machineCap() === undefined);
+  if (!title || !prompt || !cli || badCapacity) {
     console.error(USAGE);
     process.exit(2);
   }
   try {
     const worktree = value('--worktree');
-    const opened = await openSession({ cli }, { title, prompt, main: worktree ?? mainCheckout(), newTab: Boolean(worktree) || args.includes('--tab') });
+    const options = { title, prompt, main: worktree ?? mainCheckout(), newTab: Boolean(worktree) || args.includes('--tab') };
+    if (counted) for (const line of envMissingLines()) console.log(line);
+    const opened = counted ? await openCountedSession({ cli }, options, { repo, kind }) : await openSession({ cli }, options);
+    if (opened.recordError) console.error(`帳本沒記到 session（${opened.recordError}）；分頁已開`);
     console.log(opened.stop ? `STOP ${opened.stop}` : `OPENED ${opened.handle}`);
     process.exit(opened.stop ? 4 : 0);
   } catch (error) {

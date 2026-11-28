@@ -23,6 +23,9 @@
 //            CAPACITY_FULL <合計>/<上限> [<repo>=<n>...]（#685 第 1 項：計入且 running 大於 0 的列，依帳本順序，同 pilot-dispatch 的 STOP capacity 行、不帶 +<人數>；
 //            coordinator 這一輪不 claim、不 dispatch，免得 claim 之後才 STOP capacity、RELEASED）。只回報，不改派工；沒帶時不碰帳本。
 //            $PILOT_MACHINE_WORKER_CAP 空白時在這之前印 CAPACITY_ENV_MISSING PILOT_MACHINE_WORKER_CAP，照預設 4 算（#396）。
+//            寫帳本之前先維護帳本裡 <repo> 的 session 列（#622：orca-session-split.mjs --capacity 記的 fix unit 與 /retro-collect 收集者）：
+//            讀各 handle 的 terminal，已 exited 或分頁已不在（terminal_handle_stale）就刪掉，還在跑就刷新時間；Orca 讀不到時不動（2 小時沒刷新的自然不計）。
+//            session 列算進合計，CAPACITY_FULL 把它們列成 `<repo>:<kind>=<n>`。不印額外的行。
 //            <repo> 空白或帶 tab、換行，或上限不是正整數時是用法錯誤（exit 2）。
 //   --handoff-after <n>（#368）：交接門檻，本 coordinator session 合入幾批就交接（adapter 的 Defaults 帶入），預設 2；不是正整數時是用法錯誤（exit 2）。
 //   --worker-state <路徑>（#466）：worker checkpoint 的路徑，`<worktree>`、`<n>` 換成成員列的 worktree 與號碼，預設 `<worktree>/.scratch/issue-run-<n>/state.md`；
@@ -160,7 +163,7 @@ import { changedUnits } from './lib/changed-units.mjs';
 import { mergeConflicts } from './lib/merge-tree.mjs';
 import { batchMembers, CheckpointLocked, gateLines, heldIssues, resolvedGateLines, resolvedGates, isOpenRequest, landAlive, landingHolder, now, openGates, parksAllPush, regressingMark, requestBatchKey, tableCells, updateCheckpoint } from './lib/pilot-store.mjs';
 import { SPINNER, orca } from './orca-session-send.mjs';
-import { check as capacityCheck, envMissingLines, ledgerPath, machineCap, report, validRepo } from './pilot-capacity.mjs';
+import { check as capacityCheck, closeSession, envMissingLines, ledgerPath, machineCap, readLedger, report, sessionRows, touchSessions, validRepo } from './pilot-capacity.mjs';
 import { POOL_FIELDS, blockerOpenScope, landedOn, mainPause, pool, prerequisiteOf } from './issue-pool.mjs';
 import { counterparts, declaredProjects } from './pilot-counterpart.mjs';
 import { MEMORY_AUDIT_FILE, declaredDays, memoryAuditLine } from './memory-audit.mjs';
@@ -1359,6 +1362,27 @@ export async function retroLines(ctx, checkout, { collectIn, issues } = {}) {
   return result || failed ? [line] : [];
 }
 
+/**
+ * 帳本裡 repo 的 session 列（#622）：terminal 已 exited 或分頁已不在的刪掉，還在跑的刷新時間；讀不到 Orca（沒有 cli、其他錯誤）的不動。
+ * 先刷新再刪：改寫帳本時會清掉超過 2 小時的 session 列，還在跑的要先刷新才不會被一起清掉。傳回 `{ live, gone }`（handle 陣列）。
+ */
+export async function maintainSessions(ctx, repo, file = ledgerPath(), now = new Date()) {
+  const live = [];
+  const gone = [];
+  if (!ctx.cli) return { live, gone };
+  for (const { handle } of sessionRows(readLedger(file)).filter(row => row.repo === repo)) {
+    try {
+      const terminal = (await orca(ctx, 'terminal', 'read', '--terminal', handle, '--screen')).terminal ?? {};
+      (terminal.status === 'exited' ? gone : live).push(handle);
+    } catch (error) {
+      if (/terminal_handle_stale/.test(error.message)) gone.push(handle);
+    }
+  }
+  if (live.length) touchSessions(file, live, { now });
+  for (const handle of gone) closeSession(file, handle, { now });
+  return { live, gone };
+}
+
 export async function probe(ctx, checkout, { integration = 'pilot/integration', main = 'main', apply = false, status = false, capacity, skipLabels = [], handoffAfter = 2, retroCollectIn } = {}) {
   const pilot = join(checkout, '.scratch/pilot');
   // 開著的 batch checkpoint 的成員：Pool 不再挑它們，池子摘要也略過。
@@ -1457,6 +1481,7 @@ export async function probe(ctx, checkout, { integration = 'pilot/integration', 
   out.push(...handoffLines(batches, sessionStart(readStore(pilot, 'coordinator'), readStore(pilot, 'sessions.md')), handoffAfter, sessionContext(), declaredContext(declared)));
   if (capacity) {
     out.push(...envMissingLines());
+    await maintainSessions(ctx, capacity);
     const { total, cap } = report(ledgerPath(), capacity, running);
     if (total > cap) out.push(`OVER_CAP ${total} ${cap}`);
     // 剛好滿（#685 第 1 項）：再派 1 個就會 STOP capacity，Pool 這一輪不 claim；列出計入的列，格式同 pilot-capacity 的 STOP capacity 行（不含 +<人數>）。
