@@ -254,21 +254,30 @@ function parentDetail({ parent }, repo) {
 export const prerequisiteOf = body => (body ?? '').match(/^[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)?[*_]*(?:[A-Za-z]+[ \t]+)?prerequisite[*_]*[ \t]*[：:][ \t]*(?:[*_]+[ \t]*)?(\S.*?)[ \t]*$/im)?.[1];
 /** prerequisite 寫「無」（或 none，後面可接標點或括號說明）表示不用等人；`**Operator prerequisite：** 無` 的粗體記號由 prerequisiteOf 略過。 */
 const NO_PREREQUISITE = /^(?:無|none)(?:$|[\s。.,，、;；（(])/i;
+/** 圍欄行（開啟與結束共用）：0–3 格縮排、三個以上 ` 或 ~，其後是資訊字串或結束圍欄後的空白。 */
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 /** 本文第一個以「為什麼是 needs-」開頭的 Markdown 標題（任一層級，去掉開頭的 `#` 與空白），沒有時 undefined：本文自己寫著還不能做（#666）。
- * 只認標題行；散文、行內文字與 ``` / ~~~ 程式碼區塊裡的不算（圍欄開閉照 GFM）。 */
+ * 只認標題行；散文、行內文字、``` / ~~~ 程式碼區塊與 HTML 註解 `<!-- -->` 裡的不算（圍欄開閉照 GFM，其他 HTML 區塊不處理，#700）。
+ * 刻意不認（#700 決定維持）：標題文字包行內格式（`` ## 為什麼是 `needs-triage` ``、`## **為什麼是 needs-info**`）或在引用區塊 `>` 裡的不印；主題分隔線 `* * *` 當成清單項，後面的縮排行照清單項內容判斷（多印，方向可接受）。 */
 export function needsHeadingOf(body) {
   let fence;
+  let comment = false; // 在跨行的 HTML 註解裡：到含 `-->` 的那一行結束（GFM HTML 區塊第 2 型）
   const items = []; // 外層到內層各清單項的內容縮排；圍欄與標題都相對於最內層的判斷
   for (const raw of (body ?? '').split(/\r?\n/)) {
     // 行首 Tab 照 4 欄 tab stop 展開成空白，縮排才和 GFM 一致。
     const line = raw.replace(/^[ \t]+/, lead => [...lead].reduce((s, c) => s + (c === '\t' ? ' '.repeat(4 - s.length % 4) : c), ''));
     const indent = line.match(/^ */)[0].length;
+    if (comment) {
+      comment = !line.includes('-->');
+      continue;
+    }
     if (fence) {
       // 圍欄屬於開啟時所在的清單項：比那一項內容縮排少的非空行結束該項、區塊一起關閉，該行照常判斷；
       // 否則去掉那一項的縮排後判斷結束圍欄（同符號、不短於開啟的、後面只能有空白），其餘都是區塊內容。
       if (!line.trim() || indent >= fence.container) {
-        const [, marker, rest] = line.slice(fence.container).match(/^ {0,3}(`{3,}|~{3,})(.*)$/) ?? [];
-        if (marker?.[0] === fence.marker[0] && marker.length >= fence.marker.length && !rest.trim()) fence = undefined;
+        const [, marker, rest] = line.slice(fence.container).match(FENCE) ?? [];
+        // 「只能有空白」只認 ASCII 空白與 Tab：String#trim 會吃 U+00A0，`~~~` 接不換行空白就被當成結束圍欄（#700）。
+        if (marker?.[0] === fence.marker[0] && marker.length >= fence.marker.length && /^[ \t]*$/.test(rest)) fence = undefined;
         continue;
       }
       fence = undefined;
@@ -282,9 +291,12 @@ export function needsHeadingOf(body) {
     const container = items.at(-1) ?? 0;
     const relative = line.slice(container);
     // ``` 開啟時資訊字串不能含 `（否則是行內碼）。
-    const [, marker, rest] = relative.match(/^ {0,3}(`{3,}|~{3,})(.*)$/) ?? [];
+    const [, marker, rest] = relative.match(FENCE) ?? [];
     if (marker && !(marker[0] === '`' && rest.includes('`'))) { fence = { marker, container }; continue; }
-    const heading = relative.match(/^ {0,3}#{1,6}[ \t]+(為什麼是 needs-.*?)[ \t#]*$/)?.[1];
+    // HTML 註解開頭的行（含同一行就結束的）整行略過，沒有 `-->` 時一直略過到有的那一行。
+    if (/^ {0,3}<!--/.test(relative)) { comment = !relative.includes('-->'); continue; }
+    // 結尾序列照 GFM：前面要有空白或 Tab 的一串 `#`，`F#` 的 `#` 是標題文字（#700）。
+    const heading = relative.match(/^ {0,3}#{1,6}[ \t]+(為什麼是 needs-.*?)(?:[ \t]+#+)?[ \t]*$/)?.[1];
     if (heading) return heading;
   }
 }

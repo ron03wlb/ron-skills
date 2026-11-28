@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { needsHeadingOf } from './issue-pool.mjs';
 import { mergeSample } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
 import { git, run as runIn } from './test/repo-fixture.mjs';
@@ -404,6 +405,34 @@ test('清單項照 GFM 認：縮排程式碼裡的 `- ` 不算、只有標記的
   ] }).run();
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'ready #641 標題 641\nready #642 標題 642\nready #643 標題 643\nPREREQ 642 為什麼是 needs-info\nPREREQ 643 為什麼是 needs-info\n');
+});
+
+// #700（#666 review 的 P3）：needsHeadingOf 的邊界。
+test('needsHeadingOf 只刪 ATX 結尾序列（前面有空白的 # 串）：標題文字末尾的 # 保留（#700）', () => {
+  assert.equal(needsHeadingOf('## 為什麼是 needs-info F#\n'), '為什麼是 needs-info F#');
+  assert.equal(needsHeadingOf('## 為什麼是 needs-info ##\n'), '為什麼是 needs-info');
+  assert.equal(needsHeadingOf('## 為什麼是 needs-info F# ##  \n'), '為什麼是 needs-info F#');
+  assert.equal(needsHeadingOf('## 為什麼是 needs-info\t#\n'), '為什麼是 needs-info');
+});
+
+test('needsHeadingOf 略過 HTML 註解（可跨行）：裡面的標題不算、``` 不開圍欄，註解之後照常判斷（#700）', () => {
+  assert.equal(needsHeadingOf('<!--\n```\n-->\n## 為什麼是 needs-triage\n'), '為什麼是 needs-triage');
+  assert.equal(needsHeadingOf('<!--\n## 為什麼是 needs-info\n-->\n'), undefined);
+  assert.equal(needsHeadingOf('<!-- ## 為什麼是 needs-info -->\n'), undefined);
+  assert.equal(needsHeadingOf('<!-- 註解 --> 後面\n## 為什麼是 needs-info\n'), '為什麼是 needs-info');
+  assert.equal(needsHeadingOf('```\n<!--\n```\n## 為什麼是 needs-info\n'), '為什麼是 needs-info');
+});
+
+test('needsHeadingOf 的結束圍欄後面只認 ASCII 空白與 Tab：~~~ 接 U+00A0 不關圍欄（#700）', () => {
+  assert.equal(needsHeadingOf('~~~\n~~~ \n## 為什麼是 needs-info\n~~~\n'), undefined);
+  assert.equal(needsHeadingOf('~~~\n~~~ \t\n## 為什麼是 needs-info\n'), '為什麼是 needs-info');
+});
+
+test('needsHeadingOf 鎖定現狀：行內格式或引用區塊裡的標題不印；* * * 後的縮排行當成清單項內容（#700 決定不修）', () => {
+  assert.equal(needsHeadingOf('## 為什麼是 `needs-triage`\n'), undefined);
+  assert.equal(needsHeadingOf('## **為什麼是 needs-info**\n'), undefined);
+  assert.equal(needsHeadingOf('> ## 為什麼是 needs-triage\n'), undefined);
+  assert.equal(needsHeadingOf('* * *\n\n    ## 為什麼是 needs-info\n'), '為什麼是 needs-info');
 });
 
 // #591（retro 1124a，#417 第 2 項）：#339、#340 都改 pilot-probe.mjs，Pick 時沒有工具看出，要到 worker 改完 Probe 才印 OVERLAP。
