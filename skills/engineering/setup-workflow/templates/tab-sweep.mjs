@@ -105,9 +105,9 @@ export function screenBusy(tail, draft = '', launched = []) {
     const lastPrompt = lines.filter(line => /^[\s│]*❯/u.test(line)).at(-1);
     const known = launched.map(prompt => String(prompt).trim()).filter(Boolean);
     const residue = known.length ? known.includes(text) : text.startsWith('/') && !text.includes('\n');
-    if (!(lastPrompt !== undefined && /^[\s│]*❯[\s │]*$/u.test(lastPrompt) && residue)) return 'screen-draft';
+    if (!(lastPrompt !== undefined && /^[\s│]*❯[\s\u00a0│]*$/u.test(lastPrompt) && residue)) return 'screen-draft';
   }
-  if (!lines.some(line => /^[\s│]*❯[\s │]*$/u.test(line))) return 'screen-no-prompt';
+  if (!lines.some(line => /^[\s│]*❯[\s\u00a0│]*$/u.test(line))) return 'screen-no-prompt';
   return null;
 }
 

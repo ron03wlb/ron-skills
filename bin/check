@@ -130,6 +130,8 @@ want() { [[ -z $subset || " $subset_steps " == *" $1 "* ]]; }
 
 node scripts/check-node-version.mjs
 node scripts/check-conflict-markers.mjs
+# .mjs 原始碼不能留原始 U+00A0 或零寬字元，Edit 對不上也看不出來（#716）；和衝突標記一樣便宜，不分子集都跑。
+node scripts/check-invisible-chars.mjs
 if want sync-skills; then
 bin/sync-skills --check
 fi

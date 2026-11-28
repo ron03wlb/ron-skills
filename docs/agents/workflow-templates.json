@@ -302,8 +302,8 @@
     },
     "scripts/tab-sweep.mjs": {
       "template": "skills/engineering/setup-workflow/templates/tab-sweep.mjs",
-      "commit": "650be6b7f2e0a0d4af10918dc165c1d873337ecc",
-      "sha256": "47f749759ce0112f77ccfd36bffa6ec0fc7653fbf35ef2d27c9d6d846cc4ada8"
+      "commit": "724cc419c7d1f6132ebf28f2b27fffa094465aa6",
+      "sha256": "138c0399fee379b851611217585345a61057d452f159429f36178551262fa7a6"
     },
     "scripts/token-usage.mjs": {
       "template": "skills/engineering/setup-workflow/templates/token-usage.mjs",

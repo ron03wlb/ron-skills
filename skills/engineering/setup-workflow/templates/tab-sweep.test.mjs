@@ -206,7 +206,7 @@ test('sessions.md 讀不到：印 TAB_SWEEP_FAILED sessions 再印 SUMMARY，兩
 test('screenBusy：esc to interrupt、spinner、…ing…、草稿、沒有空提示列都不算閒置；框線內的空 ❯ 算', () => {
   assert.equal(screenBusy(IDLE_SCREEN), null);
   assert.equal(screenBusy(['❯']), null);
-  assert.equal(screenBusy(['● x', '❯ ']), null);
+  assert.equal(screenBusy(['● x', '❯\u00a0']), null);
   assert.equal(screenBusy(BUSY_SCREEN), 'screen-busy');
   assert.equal(screenBusy(['  Running tests (esc to interrupt)', '❯']), 'screen-busy');
   assert.equal(screenBusy(['✻ Compacting conversation…', '❯']), 'screen-busy');
