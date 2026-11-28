@@ -424,7 +424,7 @@ test('needsHeadingOf 略過 HTML 註解（可跨行）：裡面的標題不算�
 });
 
 test('needsHeadingOf 的結束圍欄後面只認 ASCII 空白與 Tab：~~~ 接 U+00A0 不關圍欄（#700）', () => {
-  assert.equal(needsHeadingOf('~~~\n~~~ \n## 為什麼是 needs-info\n~~~\n'), undefined);
+  assert.equal(needsHeadingOf('~~~\n~~~\u00a0\n## 為什麼是 needs-info\n~~~\n'), undefined);
   assert.equal(needsHeadingOf('~~~\n~~~ \t\n## 為什麼是 needs-info\n'), '為什麼是 needs-info');
 });
 

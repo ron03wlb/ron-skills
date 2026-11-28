@@ -33,7 +33,11 @@
     },
     {
       "match": ["docs/agents/pilot-*.md"],
-      "tests": ["tests/pilot-project-flags.test.mjs", "tests/pilot-push-gate-scripts.test.mjs", "tests/pilot-resume-tui-timeout.test.mjs"]
+      "tests": ["tests/pilot-project-flags.test.mjs", "tests/pilot-push-gate-scripts.test.mjs", "tests/pilot-resume-tui-timeout.test.mjs", "tests/pilot-split.test.mjs"]
+    },
+    {
+      "match": ["docs/agents/issue-run.md"],
+      "tests": ["tests/template-copies.test.mjs"]
     },
     {
       "match": ["docs/adr/**", "*.md"],

@@ -118,6 +118,80 @@ test('掃 Pilot 段拆出檔條目的測試：改任一份 docs/agents/pilot-*.m
   }
 });
 
+/** 去掉 `//` 與 `/* *\/` 註解，字串（含模板字串）原樣保留；只在註解裡提到的讀法不算。 */
+export function stripComments(text) {
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '\'' || c === '"' || c === '`') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== c && !(c !== '`' && text[j] === '\n')) j += text[j] === '\\' ? 2 : 1;
+      out += text.slice(i, j + 1);
+      i = j;
+    } else if (c === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i++;
+      out += '\n';
+    } else if (c === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      i = end === -1 ? text.length : end + 1;
+    } else out += c;
+  }
+  return out;
+}
+
+// 動態讀本 repo adapter、不寫出個別檔名的寫法：照 Pilot 段連結讀（pilot-probe.mjs 的 pilotFiles，或包它的 tests/helpers/pilot-docs.mjs）、
+// 以 repo 根為 cwd spawn adapter-line.mjs、readdirSync 掃 docs/agents 目錄。都要求是程式碼裡的呼叫或 import，註解不算。
+const DYNAMIC_READS = [
+  ['pilotFiles', text => /\bpilotFiles\s*\(/.test(text) || /\bfrom\s*['"`][./]*helpers\/pilot-docs\.mjs['"`]/.test(text)],
+  ['adapter-line', text => /\b(?:spawn|spawnSync|execFile|execFileSync)\s*\([^;]*?['"`]scripts\/adapter-line\.mjs['"`]/.test(text)],
+  ['readdir docs/agents', text => /\breaddirSync\s*\(/.test(text) && /['"`](?:\.\.\/)*docs\/agents\/?['"`]|['"`]docs['"`]\s*,\s*['"`]agents['"`]\s*\)/.test(text)],
+];
+
+/** 用到動態讀法的測試檔：`[{ file, reads }]`。 */
+export function dynamicAdapterReaders({ files, read }) {
+  return files.flatMap(file => {
+    const code = stripComments(read(file));
+    const reads = DYNAMIC_READS.filter(([, uses]) => uses(code)).map(([name]) => name);
+    return reads.length ? [{ file, reads }] : [];
+  });
+}
+
+/** 動態讀 adapter、卻沒釘在任一條 `docs/agents/` 開頭規則 tests 裡的測試檔，以 `檔名（讀法）` 列出。 */
+export function unpinnedAdapterReaders({ files, read, table }) {
+  const pinned = table.rules.filter(rule => rule.match.some(glob => glob.startsWith('docs/agents/'))).flatMap(rule => rule.tests ?? []);
+  return dynamicAdapterReaders({ files, read })
+    .filter(({ file }) => !pinned.some(glob => globRegExp(glob).test(file)))
+    .map(({ file, reads }) => `${file}（${reads.join('、')}）`);
+}
+
+// #710：#628、#654 兩次都是動態讀 adapter 的測試被子集漏掉，到完整 bin/check 才紅。範本測試（setup-workflow/templates/*.test.mjs）
+// 只對暫存 repo 跑副本，不讀本 repo 的 docs/agents，不在掃描範圍；本檔的命中是守門自己的假資料，也不算。
+const repoTests = () => spawnSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', 'tests/*.test.mjs'], { cwd: root, encoding: 'utf8' }).stdout.split('\n').filter(file => file && file !== 'tests/check-subset.test.mjs');
+const readRepo = file => { try { return readFileSync(join(root, file), 'utf8'); } catch { return ''; } };
+
+test('動態讀 adapter 的測試都釘在 docs/agents/ 規則的 tests 裡（#710）', () => {
+  const files = repoTests();
+  assert.ok(files.includes('tests/pilot-resume-tui-timeout.test.mjs'));
+  assert.deepEqual(unpinnedAdapterReaders({ files, read: readRepo, table: TABLE }), []);
+});
+
+test('守門：拿掉一支已釘的測試就列出它；只在註解提到讀法的不算（#710）', () => {
+  const files = repoTests();
+  const without = { ...TABLE, rules: TABLE.rules.map(rule => ({ ...rule, tests: rule.tests?.filter(file => file !== 'tests/pilot-resume-tui-timeout.test.mjs') })) };
+  assert.deepEqual(unpinnedAdapterReaders({ files, read: readRepo, table: without }), ['tests/pilot-resume-tui-timeout.test.mjs（adapter-line）']);
+  const FAKE = {
+    'tests/comment-only.test.mjs': "// 用 execFileSync('node', ['scripts/adapter-line.mjs', 'Resume']) 讀條目\n/* pilotFiles(adapter) 與 readdirSync('docs/agents') */\nconst s = 'see // scripts/adapter-line.mjs';\n",
+    'tests/spawn.test.mjs': "const entry = execFileSync('node', ['scripts/adapter-line.mjs', 'Resume'], { cwd: root });\n",
+    'tests/helper.test.mjs': "import { pilotEntry } from './helpers/pilot-docs.mjs';\n",
+    'tests/readdir.test.mjs': "const dir = new URL('../docs/agents/', import.meta.url);\nreaddirSync(dir);\n",
+  };
+  const fake = { files: Object.keys(FAKE), read: file => FAKE[file], table: { rules: [] } };
+  assert.deepEqual(dynamicAdapterReaders(fake).map(({ file }) => file), ['tests/spawn.test.mjs', 'tests/helper.test.mjs', 'tests/readdir.test.mjs']);
+  assert.deepEqual(unpinnedAdapterReaders({ ...fake, table: { rules: [{ match: ['docs/agents/**'], tests: ['tests/spawn.test.mjs', 'tests/helper.test.mjs', 'tests/readdir.test.mjs'] }, { match: ['scripts/**'], tests: ['tests/comment-only.test.mjs'] }] } }), []);
+  // 釘在 docs/agents/ 以外的規則不算。
+  assert.deepEqual(unpinnedAdapterReaders({ ...fake, table: { rules: [{ match: ['scripts/**'], tests: ['tests/*.test.mjs'] }] } }).length, 3);
+});
+
 const source = readFileSync(join(root, 'bin/check'), 'utf8');
 
 test('對應表與 bin/check 的步驟群組一致，每條規則的步驟都在清單裡', () => {
