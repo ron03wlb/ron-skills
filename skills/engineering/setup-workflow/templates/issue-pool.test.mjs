@@ -7,10 +7,10 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeSample } from './test/fake-orca.mjs';
 import { realTmpdir } from './test/real-tmpdir.mjs';
-import { git } from './test/repo-fixture.mjs';
+import { git, run as runIn } from './test/repo-fixture.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./issue-pool.mjs', import.meta.url));
-// 真實 gh 回應的樣本（ron03wlb/ron-skills 2026-10-31；`parent` 是 2026-11-21 對 #108 補查的）：issues.json 是列表用的 `gh api graphql`，issue-view.json 是 claim 讀的
+// 真實 gh 回應的樣本（ron03wlb/ron-skills 2026-10-31；`parent` 是 2026-11-21、`lastEditedAt` 是 2026-11-28 對 #108 補查的）：issues.json 是列表用的 `gh api graphql`，issue-view.json 是 claim 讀的
 // `gh issue view --json assignees,comments`。fixture 只能覆寫樣本有的欄位，替身才不會長出 GitHub 沒有的形狀。
 const fixture = name => JSON.parse(readFileSync(new URL(`./test/fixtures/github/${name}.json`, import.meta.url), 'utf8'));
 const SAMPLE = fixture('issues');
@@ -48,7 +48,7 @@ const view = ({ assignees = [], comments = [] } = {}) => mergeSample(VIEW, {
 /** PATH 上的假 gh：`api graphql` 回 issues 頁面；`issue view` 依序回 views 的第 i 個（用完就一直回最後一個），其餘只記錄 argv；
  * 每次呼叫一行 JSON 寫進 calls.log。script 在暫存的 git repo 裡跑，sessions 給了就寫成它的 `.scratch/pilot/sessions.md`。
  * CLAUDE_CONFIG_DIR 指向暫存目錄，不讀使用者的 ~/.claude；transcripts 是 { <session>: [最後寫入幾小時前, 內容] }。 */
-function fakeGh({ issues = [], views = [view()], sessions, transcripts = {}, children, linkedPrs = [], env = {} } = {}) {
+function fakeGh({ issues = [], views = [view()], sessions, transcripts = {}, children, linkedPrs = [], revision = { state: 'OPEN', lastEditedAt: null, labelEvents: [] }, env = {} } = {}) {
   const dir = mkdtempSync(join(realTmpdir(), 'issue-pool-'));
   const repo = join(dir, 'repo');
   mkdirSync(repo);
@@ -76,7 +76,9 @@ const log = ${JSON.stringify(join(dir, 'calls.log'))};
 let previous = [];
 try { previous = readFileSync(log, 'utf8').trim().split('\\n').map(line => JSON.parse(line)); } catch {}
 appendFileSync(log, JSON.stringify(args) + '\\n');
-if (args[0] === 'api' && args[1] === 'graphql' && args.some(arg => arg.includes('headRefName'))) process.stdout.write(JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes: ${JSON.stringify(linkedPrs)} } } } } }));
+// claim 的 LANDED_STALE 讀的本文編輯與 label 事件（形狀照 2026-11-28 對 #507 實查的回應）。
+if (args[0] === 'api' && args[1] === 'graphql' && args.some(arg => arg.includes('LABELED_EVENT'))) process.stdout.write(JSON.stringify({ data: { repository: { issue: { state: ${JSON.stringify(revision.state)}, lastEditedAt: ${JSON.stringify(revision.lastEditedAt)}, timelineItems: { nodes: ${JSON.stringify(revision.labelEvents.map(createdAt => ({ __typename: 'LabeledEvent', createdAt })))} } } } } }));
+else if (args[0] === 'api' && args[1] === 'graphql' && args.some(arg => arg.includes('headRefName'))) process.stdout.write(JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes: ${JSON.stringify(linkedPrs)} } } } } }));
 else if (args[0] === 'api' && args[1] === 'graphql' && args.some(arg => arg.includes('subIssues('))) process.stdout.write(readFileSync(${JSON.stringify(join(dir, 'children.json'))}));
 else if (args[0] === 'api' && args[1] === 'graphql') process.stdout.write(readFileSync(${JSON.stringify(join(dir, 'page.json'))}));
 else if (args[0] === 'issue' && args[1] === 'view') {
@@ -321,6 +323,22 @@ test('ready 單本文的 Operator prerequisite 不是「無」時另印 PREREQ <
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'ready #133 標題 133\nready #134 標題 134\nready #136 標題 136\nready #137 標題 137\nready #138 標題 138\nblocked #135 ready-for-agent by #3 標題 135\n'
     + 'PREREQ 133 開跑前由 Operator 確認（保留期只能用一次）\n');
+});
+
+// #692 第 1 項（#691）：#666 本文在散文裡以行內碼提到 `Operator prerequisite：`，Pool 印出 `PREREQ 666 ` 行；…`。fixture 是 #666 本文的背景段。
+const ISSUE_666_BACKGROUND = '## 背景\n\n#652（retro 07227339）：#507 標 `ready-for-agent`、在 Pool 的 ready 桶排第一，但本文有一段「## 為什麼是 needs-triage」寫明 WSL 樣本只能在使用者機器上錄。`issue-pool.mjs` 沒印 `PREREQ 507`，因為本文沒有 `Operator prerequisite：` 行；coordinator 要先 `gh issue view 507` 才發現派不出去，改派 #557（decisions.md 2026-11-26T04:52:26+08:00）。\n\nretro 1126b 只修了這一張（#507 補 `**Operator prerequisite：**` 行、改回 `needs-info`），同類情形（標 ready 時沒把本文的「還不能做」段落拿掉或轉成 prerequisite 行）還會再發生。\n';
+
+test('prerequisite 行只認行首（可帶清單標記、粗體）；散文與行內碼裡提到的不算（#666 本文，#692）', () => {
+  const ready = ['enhancement', 'ready-for-agent'];
+  const result = fakeGh({ issues: [
+    issue(666, { labels: ready, body: ISSUE_666_BACKGROUND }),
+    issue(667, { labels: ready, body: '## 背景\n\n本文沒有 `Operator prerequisite：` 行時不印。\n\n**Operator prerequisite：** 先錄 WSL 樣本\n' }),
+    issue(668, { labels: ready, body: '## 背景\n\n- **Operator prerequisite：** 先開 gate\n' }),
+    issue(669, { labels: ready, body: '## 背景\n\n  1. Human prerequisite: 先申請憑證\n' }),
+  ] }).run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ready #666 標題 666\nready #667 標題 667\nready #668 標題 668\nready #669 標題 669\n'
+    + 'PREREQ 667 先錄 WSL 樣本\nPREREQ 668 先開 gate\nPREREQ 669 先申請憑證\n');
 });
 
 // #666（#652 提議 (a)）：#507 標 ready-for-agent 時本文留著「## 為什麼是 needs-triage」、沒有 prerequisite 行，Pool 不印 PREREQ，coordinator 要先讀本文才發現派不出去。
@@ -649,14 +667,31 @@ test('claim：認領留言的作者已不在指派名單（指派換了人）就
   assert.equal(result.stdout, 'STOP 7 claimed bob\n');
 });
 
-// 重派同一張：再留一次認領，讓 Pool 的活動時間跟著更新，正在做的單不會被列成 stale。
-test('claim：最近一則認領是同一個 session 時照常再認領一次', () => {
+// 重派同一張：Pool 的活動時間要跟著更新，正在做的單才不會被列成 stale；#692 第 2 項（#683）：以前每次再留一則認領，#632 留了 9 則一模一樣的，
+// 現在已指派、最近一則認領是自己時不留言，改成放掉再加回自己的指派（新的指派事件更新活動時間）。
+test('claim：同一個 session 連跑兩次只留一則認領留言，兩次都印 CLAIMED，第二次以重新指派更新活動時間', () => {
   const mine = `認領：${HOST}／sess-1`;
-  const { run, calls } = fakeGh({ views: [view({ assignees: ['ron'], comments: [['ron', mine]] }), view({ assignees: ['ron'], comments: [['ron', mine], ['ron', mine]] })] });
+  const { run, calls } = fakeGh({ views: [view(), view({ assignees: ['ron'], comments: [['ron', mine]] })] });
+  for (const _ of [1, 2]) {
+    const result = run('claim', '7', '--session', 'sess-1');
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, 'CLAIMED 7\n');
+  }
+  assert.deepEqual(writes(calls()), [
+    ['issue', 'comment', '7', '--repo', 'acme/app', '--body', mine],
+    ['issue', 'edit', '7', '--repo', 'acme/app', '--add-assignee', '@me'],
+    ['issue', 'edit', '7', '--repo', 'acme/app', '--remove-assignee', '@me'],
+    ['issue', 'edit', '7', '--repo', 'acme/app', '--add-assignee', '@me'],
+  ]);
+});
+
+test('claim：同一個 session 重新指派期間別的 session 留了認領就停下（自己沒留言，不收回）', () => {
+  const mine = `認領：${HOST}／sess-1`;
+  const { run, calls } = fakeGh({ views: [view({ assignees: ['ron'], comments: [['ron', mine]] }), view({ assignees: ['ron'], comments: [['ron', mine], ['ron', '認領：other-box／sess-9']] })] });
   const result = run('claim', '7', '--session', 'sess-1');
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, 'CLAIMED 7\n');
-  assert.equal(writes(calls()).length, 2);
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, 'STOP 7 claimed other-box／sess-9\n');
+  assert.deepEqual(writes(calls()).map(args => args.at(-1)), ['@me', '@me']);
 });
 
 // #135：handoff 之後重派，認領者是這台機器上已交接出去的前任 coordinator（sessions.md 有它的 handoff 行），
@@ -835,6 +870,72 @@ test('claim --integration：DONE 留言的 sha 不在整合分支時印 DONE_NOT
   assert.equal(result.stdout, `DONE_NOT_LANDED 7 ${sha('issue/7-wip')}\nCLAIMED 7\n`);
 });
 
+// #692 第 3 項（#665-1）：#507 先做完的一半 fd34a6c（主旨 `(#507)`）早已在 origin/main，#507 仍開著、本文改寫成新的 Agent Brief，
+// claim 卻印 `LANDED 507 fd34a6c…`、exit 4。實查 #507 沒有認領留言也沒有指派：LANDED 來自整合分支的 `(#507)` 主旨，不是 DONE 留言。
+/** 整合分支上加一個 committer date 是 hoursAgo 的 commit，並把 origin/main 指到整合分支（已推上 main）；回傳 sha。 */
+function landedOnMain(repo, subject, hours) {
+  const at = hoursAgo(hours);
+  const g = args => { const r = runIn(repo, ['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args], { env: { GIT_COMMITTER_DATE: at, GIT_AUTHOR_DATE: at } }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+  g(['checkout', '-q', 'pilot/integration']);
+  g(['commit', '-q', '--allow-empty', '-m', subject]);
+  g(['update-ref', 'refs/remotes/origin/main', 'pilot/integration']);
+  g(['checkout', '-q', 'main']);
+  return g(['rev-parse', 'pilot/integration']);
+}
+
+test('claim --integration：落地 commit 已在 origin/main、Issue 開著、本文在那之後改過時印 LANDED_STALE <n> <sha> 後照常認領（#507 形狀）', () => {
+  const mine = `認領：${HOST}／sess-1`;
+  const f = fakeGh({ views: [view(), view({ assignees: ['ron'], comments: [['ron', mine]] })], revision: { state: 'OPEN', lastEditedAt: hoursAgo(1), labelEvents: [] } });
+  integrationBranch(f.repo);
+  const sha = landedOnMain(f.repo, 'test(orca-session-send): SPINNER 測試改讀 WSL 錄的樣本 (#507)', 48);
+  const result = f.run('claim', '507', '--session', 'sess-1', '--integration', 'pilot/integration');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `LANDED_STALE 507 ${sha}\nCLAIMED 507\n`);
+  assert.equal(writes(f.calls()).filter(([, sub]) => sub === 'comment').length, 1);
+});
+
+test('claim --integration：DONE 的 sha 已在 origin/main、DONE 之後 label 有變動時印 LANDED_STALE 後照常認領', () => {
+  const mine = `認領：${HOST}／sess-1`;
+  const comments = [['ron', mine, hoursAgo(10)], ['ron', 'DONE 7 @DONE_SHA@', hoursAgo(5)]];
+  const f = fakeGh({ views: [view({ assignees: ['ron'], comments })], revision: { state: 'OPEN', lastEditedAt: hoursAgo(9), labelEvents: [hoursAgo(1)] } });
+  integrationBranch(f.repo);
+  const sha = landedOnMain(f.repo, '做 X', 6);
+  f.fillSha(sha);
+  const result = f.run('claim', '7', '--session', 'sess-1', '--integration', 'pilot/integration');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `LANDED_STALE 7 ${sha}\nCLAIMED 7\n`);
+});
+
+test('claim --integration：落地 commit 已在 origin/main 但本文與 label 在那之後沒動、或 Issue 已關，照舊印 LANDED、不改 Issue', () => {
+  for (const revision of [{ state: 'OPEN', lastEditedAt: hoursAgo(72), labelEvents: [hoursAgo(60)] }, { state: 'CLOSED', lastEditedAt: hoursAgo(1), labelEvents: [] }]) {
+    const f = fakeGh({ views: [view()], revision });
+    integrationBranch(f.repo);
+    const sha = landedOnMain(f.repo, '加 X (#145)', 48);
+    const result = f.run('claim', '145', '--session', 'sess-1', '--integration', 'pilot/integration');
+    assert.equal(result.status, 4, revision.state);
+    assert.equal(result.stdout, `LANDED 145 ${sha}\n`);
+    assert.deepEqual(writes(f.calls()), []);
+  }
+});
+
+// #692 review r1（Spec P2）：LANDED_STALE 照常認領之後，Pool 不能又把這張歸回 landed（不算進行中、Close 會當成做完）。
+// review r2（Spec P2）：只看認領時間會把「上 main 之後、Close 之前被單獨的 /issue-run 認領」的單（#352 的 #145 形狀）也拿出 landed，所以本文也要在落地之後改過。
+test('--integration：落地 commit 已在 origin/main、之後本文改過又被認領的單歸 claimed，不歸 landed；認領在落地之前、或本文沒改過的照舊歸 landed', () => {
+  const ready = ['enhancement', 'ready-for-agent'];
+  const f = fakeGh({ issues: [
+    { ...issue(507, { labels: ready, assignees: ['ron'], assignedAt: hoursAgo(1), comments: [['認領：box／s1', hoursAgo(1)]] }), lastEditedAt: hoursAgo(2) },
+    { ...issue(145, { labels: ready, assignees: ['ron'], assignedAt: hoursAgo(1), comments: [['認領：box／s0', hoursAgo(72)]] }), lastEditedAt: hoursAgo(2) },
+    { ...issue(146, { labels: ready, assignees: ['ron'], assignedAt: hoursAgo(12), comments: [['認領：box／s2', hoursAgo(12)]] }), lastEditedAt: hoursAgo(72) },
+  ] });
+  integrationBranch(f.repo);
+  landedOnMain(f.repo, '先做的一半 (#507)', 48);
+  landedOnMain(f.repo, '加 X (#145)', 48);
+  landedOnMain(f.repo, '加 Y (#146)', 48);
+  const result = f.run('--integration', 'pilot/integration', '--stale');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'landed #145 標題 145\nlanded #146 標題 146\nclaimed #507 標題 507\n');
+});
+
 test('--integration：DONE 留言的 sha 不在整合分支的單不歸 landed', () => {
   const f = fakeGh({ issues: [issue(229, { labels: ['enhancement', 'ready-for-agent'], assignees: ['ron'], assignedAt: hoursAgo(2),
     comments: [['認領：box／s1', hoursAgo(2)], ['DONE 229 @DONE_SHA@', hoursAgo(1)]] })] });
@@ -993,7 +1094,7 @@ const glView = ({ assignees = [], notes = [] } = {}) => ({
 /** PATH 上的假 glab，在 origin 指向 originUrl、docs/agents/issue-tracker.md 為 trackerDoc 的暫存 repo 裡跑。
  * `api graphql` 回 work items 頁面；`api projects/<p>` 回專案；`api user` 回登入者；`api projects/<p>/issues/<n>` 與 `.../notes` 依序回 views 的第 i 個；
  * 其餘只記錄 argv。 */
-function fakeGlab({ items = [], views = [glView()], originUrl = 'https://gitlab.example.com/acme/app.git', trackerDoc = 'Issues live in GitLab; use the `glab` CLI.\n' } = {}) {
+function fakeGlab({ items = [], views = [glView()], labelEvents = [], originUrl = 'https://gitlab.example.com/acme/app.git', trackerDoc = 'Issues live in GitLab; use the `glab` CLI.\n' } = {}) {
   const dir = mkdtempSync(join(realTmpdir(), 'issue-pool-glab-'));
   const repo = join(dir, 'repo');
   mkdirSync(join(repo, 'docs/agents'), { recursive: true });
@@ -1005,6 +1106,7 @@ function fakeGlab({ items = [], views = [glView()], originUrl = 'https://gitlab.
   writeFileSync(join(dir, 'page.json'), JSON.stringify(page));
   writeFileSync(join(dir, 'views.json'), JSON.stringify(views));
   writeFileSync(join(dir, 'samples.json'), JSON.stringify({ project: glabFixture('project'), user: glabFixture('user') }));
+  writeFileSync(join(dir, 'label-events.json'), JSON.stringify(labelEvents));
   writeFileSync(join(dir, 'glab'), `#!/usr/bin/env node
 const { appendFileSync, readFileSync } = require('node:fs');
 const args = process.argv.slice(2);
@@ -1024,6 +1126,8 @@ else if (/\\/notes/.test(endpoint ?? '')) {
   if (args.includes('ndjson')) process.stdout.write(notes.map(note => JSON.stringify(note) + '\\n').join(''));
   else for (let i = 0; i === 0 || i < notes.length; i += 100) process.stdout.write(JSON.stringify(notes.slice(i, i + 100)));
 }
+// label 增減不在系統紀錄裡，只在 resource_label_events（spay2 #1201 2026-11-28 實查）；--output ndjson 每個元素一行。
+else if (/\\/resource_label_events/.test(endpoint ?? '')) process.stdout.write(read('label-events.json').map(event => JSON.stringify(event) + '\\n').join(''));
 else if (/\\/issues\\/\\d+$/.test(endpoint ?? '')) process.stdout.write(JSON.stringify(nth(endpoint).issue));
 else if (endpoint) process.stdout.write(JSON.stringify(read('samples.json').project));
 `);
@@ -1120,6 +1224,19 @@ test('GitLab claim：系統紀錄不算留言；別台的認領比自己早就�
   assert.equal(result.status, 4);
   assert.equal(result.stdout, 'STOP 7 claimed other／s9\n');
   assert.deepEqual(glWrites(calls()).at(-1), ['api', '-X', 'DELETE', 'projects/:id/issues/7/notes/301']);
+});
+
+// #692 review r1（Spec P2）：GitLab 的 label 增減只在 resource_label_events，只改 label 的重新細化原本仍判 LANDED。
+test('GitLab claim --integration：落地 commit 已在 origin/main、之後只有 label 變動時印 LANDED_STALE 後照常認領', () => {
+  const { run, repo } = fakeGlab({
+    views: [glView(), glView({ assignees: ['ron'], notes: [['ron', `認領：${glMine}`, new Date().toISOString(), 301]] })],
+    labelEvents: [{ id: 1, action: 'add', created_at: hoursAgo(1), label: { id: 9, name: 'ready-for-agent' } }],
+  });
+  integrationBranch(repo);
+  const sha = landedOnMain(repo, '加 X (#7)', 48);
+  const result = run('claim', '7', '--session', 's1', '--integration', 'pilot/integration');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `LANDED_STALE 7 ${sha}\nCLAIMED 7\n`);
 });
 
 test('GitLab claim：已被別的 session 認領就停下，不改 Issue', () => {
